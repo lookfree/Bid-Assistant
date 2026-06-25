@@ -1,0 +1,232 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: var(--font-geist-sans), 'Geist Fallback';
+  --font-mono: var(--font-geist-mono), 'Geist Mono Fallback';
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.25);
+  --radius-2xl: calc(var(--radius) * 1.5);
+  --radius-3xl: calc(var(--radius) * 1.75);
+  --radius-4xl: calc(var(--radius) * 2);
+}
+
+:root {
+  color-scheme: light;
+  /* 政务红白体系：白 + 中性灰为底，主色 #C00000 做点睛 */
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.205 0.003 30);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.205 0.003 30);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.205 0.003 30);
+  /* 主色 = 政务红 #C00000 */
+  --primary: oklch(0.486 0.213 28.6);
+  --primary-foreground: oklch(1 0 0);
+  /* 次级表面 #FAFAFA */
+  --secondary: oklch(0.985 0.001 30);
+  --secondary-foreground: oklch(0.205 0.003 30);
+  /* muted #F5F4F4 */
+  --muted: oklch(0.965 0.0015 30);
+  --muted-foreground: oklch(0.52 0.005 30);
+  /* 选中/高亮浅红底 */
+  --accent: oklch(0.965 0.0015 30);
+  --accent-foreground: oklch(0.205 0.003 30);
+  /* 高风险/废标同主色红 #C00000 */
+  --destructive: oklch(0.486 0.213 28.6);
+  /* 发丝级边框 #ECEAEA（微暖） */
+  --border: oklch(0.93 0.0025 30);
+  --input: oklch(0.93 0.0025 30);
+  /* 焦点环 = 主色红 */
+  --ring: oklch(0.486 0.213 28.6);
+  /* 品牌强调色 #C00000：主按钮、Logo、激活态、焦点、hero 高亮 */
+  --brand: oklch(0.486 0.213 28.6);
+  --brand-foreground: oklch(1 0 0);
+  --chart-1: oklch(0.486 0.213 28.6);
+  --chart-2: oklch(0.627 0.179 149);
+  --chart-3: oklch(0.667 0.162 58);
+  --chart-4: oklch(0.52 0.005 30);
+  --chart-5: oklch(0.43 0.197 29);
+  --radius: 0.5rem;
+  /* 工具区侧边栏：浅色、紧凑、发丝分隔 */
+  --sidebar: oklch(1 0 0);
+  --sidebar-foreground: oklch(0.205 0.003 30);
+  --sidebar-primary: oklch(0.486 0.213 28.6);
+  --sidebar-primary-foreground: oklch(1 0 0);
+  --sidebar-accent: oklch(0.965 0.0015 30);
+  --sidebar-accent-foreground: oklch(0.205 0.003 30);
+  --sidebar-border: oklch(0.93 0.0025 30);
+  --sidebar-ring: oklch(0.486 0.213 28.6);
+  --success: oklch(0.627 0.179 149);
+  --success-foreground: oklch(1 0 0);
+  --warning: oklch(0.667 0.162 58);
+  --warning-foreground: oklch(1 0 0);
+}
+
+.dark {
+  color-scheme: dark;
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.62 0.2 28);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.62 0.2 28);
+  --brand: oklch(0.62 0.2 28);
+  --brand-foreground: oklch(1 0 0);
+  --success: oklch(0.7 0.16 150);
+  --success-foreground: oklch(0.205 0 0);
+  --warning: oklch(0.75 0.15 65);
+  --warning-foreground: oklch(0.205 0 0);
+  --chart-1: oklch(0.62 0.2 28);
+  --chart-2: oklch(0.7 0.16 150);
+  --chart-3: oklch(0.75 0.15 65);
+  --chart-4: oklch(0.708 0 0);
+  --chart-5: oklch(0.62 0.2 28);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.62 0.2 28);
+  --sidebar-primary-foreground: oklch(1 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.62 0.2 28);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    color-scheme: dark;
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.205 0 0);
+    --card-foreground: oklch(0.985 0 0);
+    --popover: oklch(0.205 0 0);
+    --popover-foreground: oklch(0.985 0 0);
+    --primary: oklch(0.922 0 0);
+    --primary-foreground: oklch(0.205 0 0);
+    --secondary: oklch(0.269 0 0);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+    --accent: oklch(0.269 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.62 0.2 28);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.62 0.2 28);
+    --brand: oklch(0.62 0.2 28);
+    --brand-foreground: oklch(1 0 0);
+    --success: oklch(0.7 0.16 150);
+    --success-foreground: oklch(0.205 0 0);
+    --warning: oklch(0.75 0.15 65);
+    --warning-foreground: oklch(0.205 0 0);
+    --chart-1: oklch(0.62 0.2 28);
+    --chart-2: oklch(0.7 0.16 150);
+    --chart-3: oklch(0.75 0.15 65);
+    --chart-4: oklch(0.708 0 0);
+    --chart-5: oklch(0.62 0.2 28);
+    --sidebar: oklch(0.205 0 0);
+    --sidebar-foreground: oklch(0.985 0 0);
+    --sidebar-primary: oklch(0.62 0.2 28);
+    --sidebar-primary-foreground: oklch(1 0 0);
+    --sidebar-accent: oklch(0.269 0 0);
+    --sidebar-accent-foreground: oklch(0.985 0 0);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.62 0.2 28);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* 数据密集型界面：数字统一等宽（健康分 / 积分 / 价格 / 相似度） */
+    font-variant-numeric: tabular-nums;
+  }
+  html {
+    @apply font-sans;
+  }
+  /* 标题统一收紧字距，锋利克制 */
+  h1, h2, h3, h4 {
+    @apply tracking-tight;
+  }
+}
+
+/*
+ * 政务红白品牌类（全站统一换肤入口）
+ * gradient-brand     —— 政务红 #C00000（极轻同色渐变 #C00000→#A30000），用于主按钮 / Logo 底 / 图标块 / 激活态
+ * gradient-brand-soft —— 极浅红底 rgba(192,0,0,0.06)，用于选中 / 高亮的轻底
+ * text-gradient-brand —— 实色政务红 #C00000，hero 标题高亮等点睛
+ */
+@utility gradient-brand {
+  background-image: linear-gradient(135deg, oklch(0.486 0.213 28.6) 0%, oklch(0.43 0.197 29) 100%);
+  background-color: var(--brand);
+}
+@utility gradient-brand-soft {
+  background-image: none;
+  background-color: color-mix(in oklch, var(--brand) 6%, transparent);
+}
+@utility text-gradient-brand {
+  background-image: none;
+  -webkit-background-clip: border-box;
+  background-clip: border-box;
+  color: var(--brand);
+}

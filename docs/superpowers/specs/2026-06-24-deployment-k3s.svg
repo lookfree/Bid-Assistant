@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="724" viewBox="0 0 1100 724" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', Helvetica, Arial, sans-serif">
+  <defs>
+    <filter id="sh" x="-4%" y="-4%" width="108%" height="120%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arr" markerWidth="10" markerHeight="10" refX="7" refY="5" orient="auto">
+      <path d="M0,0 L8,5 L0,10 Z" fill="#326ce5"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1100" height="724" fill="#f8fafc"/>
+
+  <text x="40" y="40" font-size="24" font-weight="700" fill="#0f172a">k3s 部署架构 · 多节点 / 自动负载</text>
+  <text x="40" y="62" font-size="13" fill="#64748b">无状态层进集群（Service 发现 + kube-proxy 自动 LB + HPA/KEDA 扩缩）· 有状态留集群外 · 无需 Nacos　|　2026-06-24</text>
+
+  <!-- k3s 集群大框 -->
+  <rect x="40" y="80" width="720" height="332" rx="16" fill="#ffffff" stroke="#326ce5" stroke-width="2" stroke-dasharray="7 4" filter="url(#sh)"/>
+  <text x="58" y="104" font-size="14" font-weight="700" fill="#1e3a8a">☸ k3s 集群 · 单二进制控制面 + N 个 worker（k3s agent join 加节点）</text>
+
+  <!-- 接入 -->
+  <rect x="58" y="114" width="684" height="44" rx="9" fill="#eef2ff" stroke="#c7d2fe"/>
+  <text x="74" y="132" font-size="12" font-weight="700" fill="#3730a3">接入</text>
+  <text x="74" y="149" font-size="11" fill="#475569">Traefik Ingress（k3s 自带）+ ServiceLB/MetalLB · 裸机 LoadBalancer IP · TLS 终止</text>
+
+  <!-- 无状态工作负载 -->
+  <text x="58" y="178" font-size="12" font-weight="700" fill="#1e40af">无状态工作负载（Deployment + Service · replicas 可调 · HPA/KEDA 自动扩缩）</text>
+  <g>
+    <rect x="58" y="186" width="128" height="80" rx="8" fill="#ffffff" stroke="#bfdbfe"/>
+    <text x="122" y="208" font-size="11.5" text-anchor="middle" font-weight="600" fill="#1e293b">C 端前端</text>
+    <text x="122" y="225" font-size="9.5" text-anchor="middle" fill="#64748b">Deployment</text>
+    <text x="122" y="239" font-size="9.5" text-anchor="middle" fill="#64748b">+ Service</text>
+    <text x="122" y="257" font-size="10" text-anchor="middle" fill="#2563eb">×1 → N</text>
+
+    <rect x="196" y="186" width="128" height="80" rx="8" fill="#ffffff" stroke="#bfdbfe"/>
+    <text x="260" y="208" font-size="11.5" text-anchor="middle" font-weight="600" fill="#1e293b">运营后台</text>
+    <text x="260" y="225" font-size="9.5" text-anchor="middle" fill="#64748b">Deployment</text>
+    <text x="260" y="239" font-size="9.5" text-anchor="middle" fill="#64748b">+ Service</text>
+    <text x="260" y="257" font-size="10" text-anchor="middle" fill="#2563eb">×1</text>
+
+    <rect x="334" y="186" width="128" height="80" rx="8" fill="#ffffff" stroke="#93c5fd"/>
+    <text x="398" y="208" font-size="11.5" text-anchor="middle" font-weight="700" fill="#1e293b">App API</text>
+    <text x="398" y="225" font-size="9.5" text-anchor="middle" fill="#64748b">ClusterIP Svc</text>
+    <text x="398" y="239" font-size="9.5" text-anchor="middle" fill="#64748b">钱的权威</text>
+    <text x="398" y="257" font-size="10" text-anchor="middle" fill="#16a34a">HPA</text>
+
+    <rect x="472" y="186" width="128" height="80" rx="8" fill="#eff6ff" stroke="#326ce5" stroke-width="1.5"/>
+    <text x="536" y="208" font-size="11.5" text-anchor="middle" font-weight="700" fill="#1e3a8a">Agent API</text>
+    <text x="536" y="225" font-size="9.5" text-anchor="middle" fill="#64748b">ClusterIP Svc</text>
+    <text x="536" y="239" font-size="9.5" text-anchor="middle" fill="#64748b">run / SSE</text>
+    <text x="536" y="257" font-size="10" text-anchor="middle" fill="#16a34a">HPA</text>
+
+    <rect x="610" y="186" width="132" height="80" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
+    <text x="676" y="208" font-size="11.5" text-anchor="middle" font-weight="700" fill="#5b21b6">Agent Worker</text>
+    <text x="676" y="225" font-size="9.5" text-anchor="middle" fill="#64748b">Deployment</text>
+    <text x="676" y="239" font-size="9.5" text-anchor="middle" fill="#64748b">队列消费</text>
+    <text x="676" y="257" font-size="10" text-anchor="middle" fill="#16a34a">KEDA(队列)</text>
+  </g>
+  <!-- App→Agent 箭头 -->
+  <line x1="462" y1="200" x2="472" y2="200" stroke="#326ce5" stroke-width="1.6" marker-end="url(#arr)"/>
+
+  <text x="58" y="286" font-size="11" fill="#1e40af">▶ App API → Agent API 走 <tspan font-weight="700">ClusterIP Service + kube-proxy 自动 LB</tspan>；kubectl scale → 自动纳入，无需 Nacos / 不改 upstream（Agent API 无状态，无需会话粘连）</text>
+
+  <!-- 平台能力 -->
+  <text x="58" y="308" font-size="12" font-weight="700" fill="#0f172a">平台能力（顶掉 Nacos）</text>
+  <g font-size="11">
+    <rect x="58" y="314" width="162" height="52" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <text x="139" y="335" text-anchor="middle" font-weight="600" fill="#1e293b">CoreDNS</text>
+    <text x="139" y="352" text-anchor="middle" font-size="10" fill="#64748b">服务发现</text>
+    <rect x="229" y="314" width="162" height="52" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <text x="310" y="335" text-anchor="middle" font-weight="600" fill="#1e293b">ConfigMap / Secret</text>
+    <text x="310" y="352" text-anchor="middle" font-size="10" fill="#64748b">配置中心</text>
+    <rect x="400" y="314" width="162" height="52" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <text x="481" y="335" text-anchor="middle" font-weight="600" fill="#1e293b">HPA / KEDA</text>
+    <text x="481" y="352" text-anchor="middle" font-size="10" fill="#64748b">自动扩缩</text>
+    <rect x="571" y="314" width="171" height="52" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <text x="656" y="335" text-anchor="middle" font-weight="600" fill="#1e293b">CronJob</text>
+    <text x="656" y="352" text-anchor="middle" font-size="10" fill="#64748b">代扣 / 对账（或 Redis 锁）</text>
+  </g>
+  <text x="58" y="392" font-size="10.5" fill="#475569">队列竞争消费 + ClusterIP 发现 → 起步无需独立注册中心；规模化按需再上 Nacos。</text>
+
+  <!-- 有状态层（集群外） -->
+  <rect x="40" y="428" width="720" height="132" rx="14" fill="#fff7ed" stroke="#fb923c" stroke-width="1.5"/>
+  <text x="58" y="452" font-size="13" font-weight="700" fill="#9a3412">中间件（有状态）· 固定单独裸机部署 · 不进 k3s（备份/调优/可控性最优）</text>
+  <rect x="58" y="462" width="216" height="58" rx="9" fill="#ffffff" stroke="#fed7aa"/>
+  <text x="166" y="484" font-size="11.5" text-anchor="middle" font-weight="600" fill="#1e293b">PostgreSQL + pgvector</text>
+  <text x="166" y="503" font-size="10" text-anchor="middle" fill="#64748b">4c/16g/200G SSD · 单实例起步→加备 HA</text>
+  <rect x="286" y="462" width="216" height="58" rx="9" fill="#ffffff" stroke="#fed7aa"/>
+  <text x="394" y="484" font-size="11.5" text-anchor="middle" font-weight="600" fill="#1e293b">Redis</text>
+  <text x="394" y="503" font-size="10" text-anchor="middle" fill="#64748b">2c/4g/20G · AOF · 队列+锁+pub/sub</text>
+  <rect x="514" y="462" width="216" height="58" rx="9" fill="#ffffff" stroke="#fed7aa"/>
+  <text x="622" y="484" font-size="11.5" text-anchor="middle" font-weight="600" fill="#9a3412">MinIO（S3）</text>
+  <text x="622" y="503" font-size="10" text-anchor="middle" fill="#64748b">2–4c/4–8g · 单节点→分布式纠删码</text>
+  <text x="58" y="540" font-size="10.5" fill="#9a3412">决策：中间件始终单独裸机（含规模化）；k3s 只跑无状态层，二者经集群内网/固定地址互通，互不耦合。</text>
+
+  <!-- 右列：外部 SaaS -->
+  <rect x="800" y="80" width="260" height="232" rx="12" fill="#ffffff" stroke="#94a3b8" stroke-width="1.3" filter="url(#sh)"/>
+  <text x="816" y="104" font-size="13" font-weight="700" fill="#334155">外部依赖（SaaS·不占资源）</text>
+  <rect x="816" y="116" width="228" height="52" rx="9" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="832" y="138" font-size="12" font-weight="600" fill="#1e293b">支付宝开放平台</text>
+  <text x="832" y="156" font-size="10.5" fill="#475569">单笔支付 + 周期代扣 / 自动续费</text>
+  <rect x="816" y="176" width="228" height="46" rx="9" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="832" y="196" font-size="12" font-weight="600" fill="#1e293b">阿里云短信</text>
+  <text x="832" y="213" font-size="10.5" fill="#475569">登录验证码 · 续费提醒</text>
+  <rect x="816" y="230" width="228" height="68" rx="9" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="832" y="250" font-size="12" font-weight="600" fill="#1e293b">国产大模型 API</text>
+  <text x="832" y="268" font-size="10.5" fill="#475569">DeepSeek / 通义千问 / 智谱</text>
+  <text x="832" y="285" font-size="10.5" fill="#475569">经 Model Gateway · 按 token 计费</text>
+
+  <!-- 右列：无需 Nacos -->
+  <rect x="800" y="326" width="260" height="120" rx="12" fill="#ecfdf5" stroke="#10b981" stroke-width="1.3"/>
+  <text x="816" y="350" font-size="13" font-weight="700" fill="#065f46">为何无需 Nacos</text>
+  <text x="816" y="372" font-size="11" fill="#475569">Service → 服务发现</text>
+  <text x="816" y="390" font-size="11" fill="#475569">kube-proxy → 负载均衡</text>
+  <text x="816" y="408" font-size="11" fill="#475569">ConfigMap/Secret → 配置中心</text>
+  <text x="816" y="430" font-size="11" font-weight="700" fill="#047857">起步不需独立注册中心</text>
+
+  <!-- 三档同源 -->
+  <rect x="40" y="576" width="1020" height="60" rx="12" fill="#ecfdf5" stroke="#10b981" stroke-width="1.3"/>
+  <text x="56" y="598" font-size="12.5" font-weight="700" fill="#065f46">三档同源（同一套 manifest，仅改 replicas + 加节点）</text>
+  <text x="56" y="618" font-size="11.5" fill="#047857">单副本 replicas:1（HPA 关·有状态留外）　→　起步生产 replicas:2–3 + HPA　→　扩节点 k3s agent join + KEDA/HPA + MinIO 分布式</text>
+
+  <!-- 底注 -->
+  <rect x="40" y="648" width="1020" height="52" rx="12" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="56" y="670" font-size="11.5" font-weight="700" fill="#92400e">一句话</text>
+  <text x="56" y="688" font-size="11.5" fill="#78350f">App→Agent 多节点负载 = ClusterIP Service + kube-proxy（kubectl scale 即自动，Agent API 无状态无需粘连）；Worker 扩并发 = 队列竞争消费 + KEDA。</text>
+</svg>

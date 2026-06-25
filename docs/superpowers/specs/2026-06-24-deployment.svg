@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="812" viewBox="0 0 1100 812" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', Helvetica, Arial, sans-serif">
+  <defs>
+    <filter id="sh" x="-4%" y="-4%" width="108%" height="120%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arr" markerWidth="10" markerHeight="10" refX="7" refY="5" orient="auto">
+      <path d="M0,0 L8,5 L0,10 Z" fill="#64748b"/>
+    </marker>
+    <marker id="arrv" markerWidth="10" markerHeight="10" refX="7" refY="5" orient="auto">
+      <path d="M0,0 L8,5 L0,10 Z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1100" height="812" fill="#f8fafc"/>
+
+  <!-- Title -->
+  <text x="40" y="40" font-size="24" font-weight="700" fill="#0f172a">生产部署架构 · 资源规划</text>
+  <text x="40" y="62" font-size="13" fill="#64748b">裸机 + Docker 部署（自托管 · Compose 编排，扩节点用 Swarm/Nginx）· 全链路 Scale-out · 起步生产规模　|　2026-06-24</text>
+
+  <!-- ===== 主列：四个区带 ===== -->
+
+  <!-- ① 接入层 -->
+  <rect x="40" y="80" width="720" height="96" rx="12" fill="#eef2ff" stroke="#6366f1" stroke-width="1.3"/>
+  <text x="56" y="102" font-size="13" font-weight="700" fill="#3730a3">① 接入层</text>
+  <rect x="56" y="112" width="330" height="52" rx="9" fill="#ffffff" stroke="#c7d2fe"/>
+  <text x="72" y="134" font-size="12.5" font-weight="600" fill="#1e293b">DNS · ICP 备案 · CDN / WAF（可选）</text>
+  <text x="72" y="152" font-size="11" fill="#475569">备案必备 · CDN/WAF 可托管，其余全自托管</text>
+  <rect x="400" y="112" width="344" height="52" rx="9" fill="#ffffff" stroke="#c7d2fe"/>
+  <text x="416" y="134" font-size="12.5" font-weight="600" fill="#1e293b">Nginx 反代 / LB ×2（裸机）</text>
+  <text x="416" y="152" font-size="11" fill="#475569">1 vCPU · 1 GB ×2 · TLS 终止 · keepalived VIP 双活</text>
+
+  <!-- ② 应用层 -->
+  <rect x="40" y="192" width="720" height="120" rx="12" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.3"/>
+  <text x="56" y="214" font-size="13" font-weight="700" fill="#1e40af">② 应用层 · 无状态（横向扩展）</text>
+  <text x="744" y="214" text-anchor="end" font-size="11" font-weight="700" fill="#059669">⤢ 加节点即扩容</text>
+  <rect x="56" y="224" width="216" height="76" rx="9" fill="#ffffff" stroke="#bfdbfe"/>
+  <text x="72" y="248" font-size="12.5" font-weight="600" fill="#1e293b">C 端前端 Next.js ×2</text>
+  <text x="72" y="268" font-size="11" fill="#475569">1 vCPU · 1 GB ×2</text>
+  <text x="72" y="285" font-size="11" fill="#475569">SSR · 复用原型</text>
+  <rect x="288" y="224" width="200" height="76" rx="9" fill="#ffffff" stroke="#bfdbfe"/>
+  <text x="304" y="248" font-size="12.5" font-weight="600" fill="#1e293b">运营后台 ×1</text>
+  <text x="304" y="268" font-size="11" fill="#475569">1 vCPU · 1 GB</text>
+  <text x="304" y="285" font-size="11" fill="#475569">内部低流量 · RBAC</text>
+  <rect x="504" y="224" width="240" height="76" rx="9" fill="#ffffff" stroke="#93c5fd"/>
+  <text x="520" y="248" font-size="12.5" font-weight="700" fill="#1e293b">App API · Hono+Bun ×3</text>
+  <text x="520" y="268" font-size="11" fill="#475569">2 vCPU · 2 GB ×3</text>
+  <text x="520" y="285" font-size="11" fill="#475569">钱的权威 · Redis 锁单例 Cron</text>
+
+  <!-- ③ 智能体层 -->
+  <rect x="40" y="332" width="720" height="110" rx="12" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.3"/>
+  <text x="56" y="354" font-size="13" font-weight="700" fill="#5b21b6">③ 智能体层 · Python</text>
+  <text x="744" y="354" text-anchor="end" font-size="11" font-weight="700" fill="#059669">⤢ Worker 加节点即扩并发</text>
+  <rect x="56" y="364" width="330" height="64" rx="9" fill="#ffffff" stroke="#ddd6fe"/>
+  <text x="72" y="388" font-size="12.5" font-weight="600" fill="#1e293b">Agent API · FastAPI ×2（run / SSE）</text>
+  <text x="72" y="408" font-size="11" fill="#475569">2 vCPU · 4 GB ×2 · 无状态</text>
+  <rect x="400" y="364" width="344" height="64" rx="9" fill="#ffffff" stroke="#c4b5fd"/>
+  <text x="416" y="388" font-size="12.5" font-weight="700" fill="#1e293b">Agent Worker ×2（解析 + deepagent 执行）</text>
+  <text x="416" y="408" font-size="11" fill="#475569">4 vCPU · 8 GB · 20 GB 临时盘 ×2 · CPU/内存重</text>
+
+  <!-- ④ 数据/存储层 -->
+  <rect x="40" y="462" width="720" height="166" rx="12" fill="#f1f5f9" stroke="#475569" stroke-width="1.3"/>
+  <text x="56" y="484" font-size="13" font-weight="700" fill="#0f172a">④ 数据 / 存储层 · 有状态（HA · 带磁盘）</text>
+  <text x="744" y="484" text-anchor="end" font-size="11" font-weight="700" fill="#059669">⤢ 副本/分片/加盘扩节点</text>
+  <rect x="56" y="494" width="330" height="58" rx="9" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="72" y="516" font-size="12.5" font-weight="600" fill="#1e293b">PostgreSQL + pgvector（主 + 备）</text>
+  <text x="72" y="535" font-size="11" fill="#475569">4 vCPU · 16 GB · 200 GB SSD ×2 · 流复制热备</text>
+  <rect x="56" y="562" width="330" height="54" rx="9" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="72" y="584" font-size="12.5" font-weight="600" fill="#1e293b">Redis（主 + 备）</text>
+  <text x="72" y="603" font-size="11" fill="#475569">2 vCPU · 4 GB · 20 GB SSD ×2 · AOF 持久化</text>
+  <rect x="400" y="494" width="344" height="122" rx="9" fill="#fff7ed" stroke="#fb923c"/>
+  <text x="416" y="516" font-size="12.5" font-weight="700" fill="#9a3412">MinIO 对象存储（S3 兼容）</text>
+  <text x="416" y="536" font-size="11" fill="#475569">2–4 vCPU · 4–8 GB</text>
+  <text x="416" y="558" font-size="12" font-weight="700" fill="#c2410c">💽 磁盘大头：2 TB+ 起步</text>
+  <text x="416" y="577" font-size="11" fill="#475569">→ 规模化转分布式纠删码 4 节点</text>
+  <text x="416" y="600" font-size="11" fill="#475569">文件：招标 / 标书 / PPT / 附件</text>
+
+  <!-- 主列纵向箭头 -->
+  <line x1="400" y1="176" x2="400" y2="190" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#arrv)"/>
+  <line x1="400" y1="312" x2="400" y2="330" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#arrv)"/>
+  <line x1="400" y1="442" x2="400" y2="460" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#arrv)"/>
+
+  <!-- ===== 右列：外部依赖 + 未来扩展 ===== -->
+  <rect x="800" y="80" width="260" height="232" rx="12" fill="#ffffff" stroke="#94a3b8" stroke-width="1.3" filter="url(#sh)"/>
+  <text x="816" y="104" font-size="13" font-weight="700" fill="#334155">外部依赖（SaaS·不占我方资源）</text>
+  <rect x="816" y="116" width="228" height="52" rx="9" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="832" y="138" font-size="12" font-weight="600" fill="#1e293b">支付宝开放平台</text>
+  <text x="832" y="156" font-size="10.5" fill="#475569">单笔支付 + 周期代扣 / 自动续费</text>
+  <rect x="816" y="176" width="228" height="46" rx="9" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="832" y="196" font-size="12" font-weight="600" fill="#1e293b">阿里云短信</text>
+  <text x="832" y="213" font-size="10.5" fill="#475569">登录验证码 · 续费提醒</text>
+  <rect x="816" y="230" width="228" height="68" rx="9" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="832" y="250" font-size="12" font-weight="600" fill="#1e293b">国产大模型 API</text>
+  <text x="832" y="268" font-size="10.5" fill="#475569">DeepSeek / 通义千问 / 智谱</text>
+  <text x="832" y="285" font-size="10.5" fill="#475569">经 Model Gateway · 按 token 计费</text>
+
+  <rect x="800" y="332" width="260" height="110" rx="12" fill="#faf5ff" stroke="#a78bfa" stroke-width="1.3" stroke-dasharray="5 4"/>
+  <text x="816" y="356" font-size="13" font-weight="700" fill="#6d28d9">未来扩展（按需）</text>
+  <rect x="816" y="366" width="228" height="62" rx="9" fill="#ffffff" stroke="#ddd6fe"/>
+  <text x="832" y="388" font-size="12" font-weight="600" fill="#1e293b">OpenSandbox 沙箱池</text>
+  <text x="832" y="406" font-size="10.5" fill="#475569">K8s + gVisor · 按 run 弹性起停</text>
+  <text x="832" y="422" font-size="10.5" fill="#475569">仅执行不可信代码时（§4.5）</text>
+
+  <!-- 右列连接（虚线） -->
+  <line x1="760" y1="262" x2="800" y2="150" stroke="#94a3b8" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#arrv)"/>
+  <text x="762" y="210" font-size="10.5" fill="#64748b">支付/短信</text>
+  <line x1="760" y1="396" x2="800" y2="262" stroke="#94a3b8" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#arrv)"/>
+  <text x="762" y="330" font-size="10.5" fill="#64748b">大模型 API</text>
+  <line x1="760" y1="410" x2="800" y2="398" stroke="#a78bfa" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#arrv)"/>
+
+  <!-- ===== 资源合计 ===== -->
+  <rect x="40" y="648" width="1020" height="68" rx="12" fill="#ecfdf5" stroke="#10b981" stroke-width="1.3"/>
+  <text x="56" y="672" font-size="13" font-weight="700" fill="#065f46">起步生产合计（不含外部 SaaS）</text>
+  <text x="56" y="694" font-size="12.5" font-weight="700" fill="#047857">≈ 40 vCPU　·　≈ 88 GB 内存　·　≈ 2.6 TB 磁盘（MinIO 为大头）</text>
+  <text x="56" y="710" font-size="11" fill="#475569">落地：裸机若干台，每台 Docker Compose 编排 —— 2–3 台应用/智能体节点（8c/16–32g）+ PG 主+备各 1 台（8c/32g/SSD）+ 1 台大盘 MinIO；Nginx 做 LB</text>
+
+  <!-- ===== 扩节点策略 ===== -->
+  <rect x="40" y="728" width="1020" height="72" rx="12" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="56" y="750" font-size="12.5" font-weight="700" fill="#92400e">扩节点策略（Scale-out · 全链路支持加节点）</text>
+  <text x="56" y="769" font-size="11" fill="#78350f">无状态层（前端 / App API / Agent API·Worker）：加一台裸机起 Docker → Nginx upstream 加一行（或 Docker Swarm join）即扩容（Cron 由 Redis 锁保证单实例，扩节点不重复跑）</text>
+  <text x="56" y="785" font-size="11" fill="#78350f">有状态层：PG 加只读副本扩读、再大走分库/Citus　·　Redis 主备→Cluster 分片扩节点　·　MinIO 加节点扩容量与吞吐（分布式纠删码）　·　OpenSandbox 池按 run 弹性</text>
+</svg>

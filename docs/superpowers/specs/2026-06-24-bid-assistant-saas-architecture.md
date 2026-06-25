@@ -1,0 +1,686 @@
+# 投标智能体 SaaS · 整体架构设计方案
+
+> 版本：v1.0　|　日期：2026-06-24　|　状态：架构基线（待逐子系统细化）
+> 范围：本文档为"整体架构方案"，定义服务边界、技术选型、数据模型与建设顺序。各子系统的详细设计（spec → plan → 实现）在后续单独迭代。
+
+---
+
+## 1. 背景与目标
+
+### 1.1 现状
+`Bid Assistant` 目录下是一个由 v0.app 生成的**纯前端原型**（Next.js 16 + React 19 + Tailwind v4 + shadcn/ui），无后端、无鉴权、全部 mock 数据。原型已把投标全流程的 UI、交互、文案、积分口径打磨成熟（详见 `docs/PRD.md`），但所有 AI 能力、账号、支付、数据持久化都是假的。品牌：「智启元 · 投标助手」。
+
+原型已实现页面（~5700 行）：
+- 公开区：`/` 落地页、`/login` 手机号+验证码登录
+- 智能编标：`/upload` 上传、`/read` 招标解读、`/outline` 提纲生成、`/content` 标书生成（三栏）、`/risk` 标书审查（废标风险+查重）、`/present` 述标演示
+- 我的：`/projects` 我的标书、`/library` 资料库、`/membership` 会员中心
+
+### 1.2 目标
+基于该原型开发一个**面向 C 端的投标智能体 SaaS**，包含：
+1. 账号与会员体系、订阅与支付（**含自动续费**）、积分计费
+2. 投标全流程的真实 AI 能力
+3. **智能体做成独立服务**：一个服务内按"智能体类型"注册多个 deepagent，投标是第一个；未来新增其它智能体只在该服务内扩展，不动骨架
+4. **运营管理后台（必建，原型未含，默认补齐）**：用户/会员/订单管理、积分账本审计、支付对账、套餐与积分口径配置、智能体/模型配置、工作流模板管理、数据看板、退款/客服处理。**没有它系统无法运营**——配置、对账、退款、风控都依赖后台，故列为第一级必建范围而非可选项。
+
+### 1.3 关键决策（已拍板）
+| 项 | 决策 |
+|---|---|
+| 部署/合规区域 | 中国大陆 + 云厂商（阿里云/腾讯云），ICP 备案、国内短信、国产大模型 |
+| 应用层技术栈 | **已选 A：Hono + Bun (TS) + Drizzle ORM**（与前端同栈、类型端到端、迭代快；原型已埋 hono）。备选 B/C/D 见 §2.4 |
+| 智能体层技术栈 | **Python + FastAPI + deepagents（LangGraph）** |
+| 智能体形态 | 单服务 + AgentRegistry，按 `agent_type` 注册多个 deepagent |
+| 支付 | 首版 **支付宝**（单笔 + 周期扣款/自动续费）；微信支付后续接入 |
+| 运营主体 | 已有企业主体（营业执照）→ 可申请支付宝周期扣款做自动续费 |
+| 交付节奏 | 先整体架构（本文档）→ 再逐子系统细化 |
+
+---
+
+## 2. 技术选型与调研结论
+
+### 2.1 选型总览
+```
+前端       Next.js 16 + React 19 + Tailwind v4 + shadcn/ui
+             · C 端用户前端（复用现有原型）
+             · 运营管理后台（新建·原型未含·RBAC 权限）★必建
+应用层     【已选 A】Hono + Bun + Drizzle ORM（TS）
+             备选见 §2.4：B.Java/Spring · C.Go/Gin · D.全 Python/FastAPI
+智能体层   Python + FastAPI + deepagents（LangGraph）
+产物渲染   docx（标书导出 Word，App 层 TS）· python-pptx（述标导出 .pptx，Agent Service Python 侧）
+数据       PostgreSQL（业务+账本）· Redis（会话/队列/限流）· MinIO（S3 兼容对象存储·文件）· pgvector（向量检索）
+支付       支付宝官方 SDK（首版）；微信支付后续
+基础设施   MinIO 自托管对象存储（文件，S3 API）· 阿里云：短信服务、国产大模型 API、容器部署
+模型       DeepSeek / 通义千问 / 智谱（经 Model Gateway 可切换）
+```
+
+> 架构边界与数据模型语言无关：无论应用层选 A/B/C，"钱只在 App API、智能体服务对业务无知、Payment Provider 抽象、积分账本模型"均不变；换语言只换应用层实现，前端与 Python 智能体层不受影响。下文涉及具体实现（如 §2.2 Bun 兼容性、数据模型示例 ORM）以默认方案 A 表述，选 B/C 时等价替换。
+
+> **对象存储用 MinIO（自托管，S3 兼容）**：文件数据自主可控、不出域；代码统一用 **S3 SDK + 预签名 URL（直传/直下）**，访问控制走 S3 STS/预签名，不绑定厂商。因 MinIO 与阿里云 OSS 均兼容 S3 API，未来若要换托管 OSS 仅改 endpoint/凭证，业务代码与数据模型不变。
+
+### 2.2 Bun 运行时兼容性调研结论（仅方案 A 相关，已验证，绿灯）
+> 本节仅在应用层选**方案 A（Hono+Bun）**时适用；选 B/C 不涉及。
+
+对"支付/短信 SDK 在 Bun 上的兼容性"做了专项调研，结论：**可以上 Bun + Hono，带工程纪律即可。**
+
+| 组件 | 结论 | 关键点 |
+|---|---|---|
+| 支付宝 `alipay-sdk`（官方） | ✅ 能用 | 整条依赖树纯 JS（含证书库 `@fidm/x509`）；SDK 内部用**大写** `RSA-SHA256`，天然绕开 Bun 唯一相关 crypto bug（#21354 仅影响小写算法名） |
+| 微信支付 `wechatpay-axios-plugin` | ✅ 可用，2 坑可规避 | (1) Bun 忽略 `oaepHash` 强制 SHA-1，而微信 V3 敏感字段加密本就用 SHA-1，良性；勿显式传 `sha256`。(2) `crypto.verify` 要求大写算法名，新版 Bun 已修 |
+| 阿里云短信 `@alicloud/dysmsapi20170525` | ✅ 风险很低 | 纯 JS，底层仅 `node:http` + HMAC-SHA |
+| Bun 生产成熟度 | ✅ 跑 HTTP/JSON API 已成熟 | 唯一系统性坑是 node-gyp 原生模块；本栈天然不碰。2025-12 Anthropic 收购 Bun，长期可持续性有强背书 |
+
+**工程纪律（必须遵守）**：
+1. 锁最新 Bun（≥1.2.16，建议 1.3.x），依赖版本锁死防上游引入 native 包
+2. 支付/短信链路上线前必做沙箱端到端冒烟（下单签名→回调验签、敏感字段 OAEP 加解密、短信真实发送）
+3. 主动避开 native 模块：密码哈希用 `Bun.password`，ORM 用 Drizzle（纯 JS），不碰 `bcrypt`/`sharp`/旧 `sqlite3`
+4. 部署走容器（官方 `oven/bun` 镜像），不用阿里云 FC 函数（serverless 适配器不走 Bun 运行时）
+5. 运行时兜底：Hono 运行时无关，万一某依赖在 Bun 崩，该服务可原样切回 Node，业务代码不改
+
+### 2.3 支付方案调研结论
+评估过用"收钱吧（Wosai）聚合支付"，结论 **不适合做会员订阅**：核对其官方公开 API 接口全集（doc.shouqianba.com / GitHub WoSai/shouqianba-doc），**只有单笔主动收款，无任何签约/委托代扣/周期扣款/自动续费接口**；且其预下单是"主动确认型"，结构上无法后台静默扣款；合规上聚合支付被定位为技术服务商不可清算资金。
+
+→ **自动续费只能直连官方**：支付宝周期扣款（`alipay.user.agreement.page.sign` 签约 + 代扣，最小周期 ≥7 天）/ 微信支付自动续费（需企业主体）。首版用支付宝。
+
+### 2.4 应用层技术栈方案对比（已选 A）
+> **决策：选定 A（Hono + Bun + TS + Drizzle）** —— 与前端同 TS、类型端到端打通、迭代快、多语言运维成本低；原型已埋 hono。下表 B/C/D 转为备选记录，不再是待定项。
+> 另有备选 **D. 全 Python（FastAPI）**：既然智能体层必为 Python，App 层也可收敛为单语言后端；本次未选（放弃与前端同栈）。
+应用层（App API）的各备选，架构边界完全一致，差异仅在实现语言/生态/团队成本。
+
+| 维度 | **A. Hono + Bun (TS)** | **B. Java + Spring Boot** | **C. Go + Gin/Echo** |
+|---|---|---|---|
+| 与前端同栈 | ✅ 同 TS，类型端到端打通 | ❌ 异语言 | ❌ 异语言 |
+| 开发迭代速度 | 快 | 慢（样板多、偏重） | 中 |
+| **支付/财务生态** ★ | 支付宝官方 Node SDK ✅；微信仅社区 | **最成熟**：支付宝/微信**官方 Java SDK**，财务/对账系统先例最多 | 微信**官方 Go SDK** ✅；支付宝靠社区 gopay |
+| 强类型 / 事务 / 并发 | 单线程事件循环，够用 | 最成熟（Spring Data/事务/Batch） | 强并发、低延迟 |
+| 性能 / 部署成本 | 轻快、镜像小 | 重、启动慢、吃内存 | **最优**：单二进制、低内存、云原生 |
+| 定时任务（代扣/对账） | 统一用 **Redis 分布式锁定时任务**（见 §6.4），语言无关，不再是差异项 | 同左 | 同左 |
+| 招聘面 | 中 | 最广 | 中 |
+| 团队心智成本 | 低（小团队友好） | 高 | 中 |
+| ORM | Drizzle（纯 JS） | MyBatis / JPA(Hibernate) | sqlc / GORM |
+
+**关键洞察**：支付宝与微信支付的**官方 SDK 都首选 Java**，国内财务/对账系统 Java 先例最多——若把"钱的正确性/长期稳健"放第一优先级，Java 在支付这层有客观优势；Go 在微信侧有官方 SDK、支付宝靠社区；TS 支付宝官方、微信社区（兼容性已在 §2.2 验证）。
+
+**推荐分场景**：
+- 迭代速度优先、小团队、想和前端同栈 → **A. Hono+Bun**（原型已埋 hono，默认推荐）
+- 财务稳健第一、有 Java 班底、追求长期稳 → **B. Java/Spring Boot**
+- 性能/成本/云原生优先、有 Go 班底 → **C. Go**
+
+> 决策建议：以"团队现有技术栈 + 是否把支付财务稳健性置于最高优先级"二者为主导因素。本文档其余章节以方案 A 表述，选 B/C 时按等价组件替换（Web 框架 / ORM / 定时任务 / 支付 SDK），架构与数据模型不变。
+
+---
+
+## 3. 整体架构与服务边界
+
+### 3.1 四层架构
+
+![投标智能体 SaaS 四层架构图](./2026-06-24-architecture.svg)
+
+> 上图为架构总览（SVG，可缩放）。下方 ASCII 图为等价文本版，便于在纯文本环境查看。
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  前端层 (Next.js 16) —— 两套前端                                │
+│  ① C 端用户前端(复用原型)：mock→真实 API、登录态、SSE、积分余额  │
+│  ② 运营管理后台(新建·原型未含)：用户/会员/订单/账本审计/对账      │
+│     /套餐&积分口径/模型&工作流模板配置/数据看板，RBAC+操作审计    │
+└───────┬───────────────────────────────────┬──────────────────┘
+        │ HTTPS / REST + SSE                │ Admin API (RBAC)
+┌───────▼───────────────────────────────────▼──────────────────┐
+│  App API · 应用与计费层 (Hono + Bun · TS，见 §2.4)            │
+│  ┌─ Auth        手机号+验证码、JWT/会话                        │
+│  ┌─ Billing     会员/订阅/积分账本/支付/自动续费 ← 计费唯一权威  │
+│  ┌─ Project     投标项目状态机、文件元数据、产物版本            │
+│  ┌─ File        MinIO/S3 预签名直传凭证、文件生命周期           │
+│  ┌─ Admin       运营后台接口：RBAC 鉴权 + 操作审计 ← 服务运营前端 │
+│  └─ Orchestr.   业务请求→智能体任务：预扣积分→建 run→结算       │
+└───────────────┬──────────────────────────────────────────────┘
+                │ 内部 REST（服务间鉴权）+ 任务回调
+┌───────────────▼──────────────────────────────────────────────┐
+│  Agent Service · 智能体层 (Python / FastAPI + deepagents)      │
+│  ┌─ AgentRegistry   按 agent_type 注册多个 deepagent ★可扩展核心 │
+│  ┌─ Runtime         统一 run API、异步执行、SSE 流式产出         │
+│  ┌─ Capabilities    文档解析(docx/pdf/xlsx)、RAG检索、HITL      │
+│  ┌─ Model Gateway   DeepSeek/通义/智谱 可切换、用量上报         │
+│  └─ 不碰钱：只上报 token/usage，计费回 App API                  │
+└───────────────┬──────────────────────────────────────────────┘
+                │
+┌───────────────▼──────────────────────────────────────────────┐
+│  数据层  PostgreSQL(业务+账本) · Redis(会话/队列/限流)          │
+│         · MinIO(S3兼容对象存储·文件) · pgvector(招标文件向量检索) │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 3.2 三条边界铁律
+1. **钱只有一个权威 = App API**。智能体服务永不扣积分、不碰支付，只在任务结束上报实际 usage，由 App API 完成"预扣→结算/退差"。计费逻辑集中、可审计。
+2. **智能体服务对业务无知**。它只认识"任务输入 + agent_type"，不知道"投标项目"概念。投标业务编排（哪步调哪个智能体、产物存哪）留在 App API。这是未来加新智能体能复用的前提。
+3. **长任务一律异步**。生成整本标书可能数分钟，走任务队列 + SSE 进度回传，不做同步 HTTP 等待。
+
+---
+
+## 4. 智能体服务详设（可扩展核心）
+
+形态：**一个 Python 服务，内部用 deepagents 框架，按 `agent_type` 注册多个深度智能体。**
+
+### 4.1 注册式架构 —— 新增智能体 = 注册一个新类型
+```python
+# 每个智能体类型 = 一份 deepagent 定义（系统提示 + 工具 + 子智能体 + 模型）
+AGENT_REGISTRY = {
+  "bidding": BiddingDeepAgent,        # 投标智能体（第一个）
+  # 未来扩展：只在这里加一行，服务骨架不动
+  # "contract_review": ContractDeepAgent,
+  # "proposal": ProposalDeepAgent,
+}
+```
+
+### 4.2 投标智能体的子能力（deepagents subagents）
+对应 PRD 全流程：
+
+| 子能力 | 对应页面 | 输入 → 产出 |
+|---|---|---|
+| 读标 `read` | `/read` | 招标文件 → 六大分类解读 + 废标风险点 |
+| 提纲 `outline` | `/outline` | 解读结果 → 技术标/商务标大纲 |
+| 正文 `content` | `/content` | 大纲+RAG → 逐章正文 + 章节级 AI 对话改写 |
+| 审查 `risk` | `/risk` | 招标+投标文件 → 废标风险体检 |
+| 查重 `dedup` | `/risk` | 多份投标文件 → 多维指纹相似度 |
+| 述标 `present` | `/present` | 标书 → **`DeckSpec`（结构化大纲+口播稿+问答）** → 渲染层产 **可下载 .pptx** |
+
+> deepagents 自带的**规划(todo)、虚拟文件系统、子智能体、人审(HITL)** 契合"写整本标书"的长程任务：主智能体规划章节、子智能体并行写、虚拟 FS 暂存草稿、关键节点回前端让用户确认。
+
+#### 4.2.1 述标 PPT 生成：「智能体产稿 + 渲染层产文件」两段式
+让 LLM 直接吐 PPT 二进制必然不稳。把生成拆成两层，职责清晰、结果可复现：
+
+```
+全流程标书 chapters
+   │
+   ▼
+① 述标智能体（deepagent，LLM）        ② PPT 渲染器（确定性代码，非 LLM）
+   · 评分点导向大纲                       · 套企业模板/母版/配色
+   · 每页要点 + 口播稿(notes)     ──→     · python-pptx 渲染
+   · 述标问答预演(QA)              DeckSpec  · 输出 .pptx
+   · 按时长裁剪(10/15/20 分钟)      (JSON)   │
+                                            ▼
+                                    上传对象存储(MinIO) → 返回下载凭证 → 前端预览+下载
+```
+
+设计要点：
+1. **智能体只产 `DeckSpec`（结构化 JSON，非文件）** —— 即现有 `lib/present.ts` 中 `Slide[]`/`QA[]` 结构的正式版；结果可单测、可复现。
+2. **渲染层确定性、归 Python 侧** —— 用 `python-pptx`，与文档解析（读标侧）同语言同服务；不引入 Bun 对 `pptxgenjs` 的额外兼容性验证。
+3. **套企业模板归渲染器，不归 LLM** —— 政企客户最在意"用自己的 PPT 模板"，属母版/占位符/排版工程问题，由渲染器处理。
+4. **前端零改造复用** —— 现有 `/present` 页本就吃 `Slide[]` 渲染网页预览；正式版让智能体回填同一结构，预览直接复用，仅多一个"下载 .pptx"按钮。
+5. **边界铁律不破** —— 智能体只产 `DeckSpec` + 上报 usage，不碰钱；积分预扣/结算仍由 App 层 Billing 管（述标在积分消耗表中本有一档）。
+
+### 4.3 统一对外契约（所有 agent_type 共用，复用接口层）
+```
+POST /agents/{agent_type}/runs    创建任务 → run_id（input + 文件引用 + 上下文）
+GET  /runs/{run_id}/stream        SSE 流式产出（进度、思考、增量正文）
+GET  /runs/{run_id}               查询状态/结果
+POST /runs/{run_id}/resume        HITL 恢复（用户确认后继续）
+回调 → App API：run 完成时上报 usage（token/时长）供结算
+```
+
+### 4.4 横切能力（所有智能体共享，不重复造）
+文档解析（docx/pdf/xlsx）、RAG 向量检索（招标文件入 pgvector）、Model Gateway（国产大模型可切换 + 故障转移）、用量埋点、限流。
+
+> 复用效果：未来做"合同审查""方案撰写"智能体，复用 Runtime + 横切能力 + 统一 API，只写新的 deepagent 定义和 App 层业务编排即可。
+
+### 4.5 执行后端（Backend）选型 —— 不给 agent 开 shell
+
+deepagents 把"执行能力"抽象成 **backend protocol**：`BaseSandbox` 只要求实现一个 `execute()`，框架就用 shell 命令 + Python 小脚本把 `ls/read/write/edit` 等文件工具「长」出来；只有 backend 实现了 `SandboxBackendProtocol`，`execute` 工具才真正可用，否则返回错误。优点是接入成本低（Modal/Daytona/Runloop 包一层 `execute()` 即可）、框架边界干净。**但 deepagents 只提供抽象层，不提供强制隔离（enforcement）**——隔离责任甩给 backend provider。`LocalShellBackend` 源码注释明确：unrestricted local shell，无 sandboxing / 无进程隔离 / 无资源限制，**仅本地开发**。
+
+**关键澄清：「部署到 Docker」≠「agent 执行隔离」。**
+
+| | 解决 | 不解决 |
+|---|---|---|
+| Docker 包整个服务 | 服务 ↔ 宿主机隔离（部署单元） | **租户 A 的 run ↔ 租户 B 的 run** |
+| per-run sandbox | 每次执行之间的隔离 | — |
+
+`LocalShellBackend` 是在**服务自己的容器内**开不受限 shell。本产品是 C 端多租户 SaaS，同一 Agent Service 容器同时跑大量用户 run，**共享文件系统与进程空间**：张三的 agent `cat` 就能读到李四上传的标书、`rm -rf`/fork 炸弹会拖垮所有人、逃逸即打内网。Docker 隔的是服务与宿主机，**不隔 run 与 run**。故 **`LocalShellBackend` 严禁上生产**。
+
+**本产品的正解：投标管线根本不需要 `execute()`。** 读标/提纲/正文/审查/查重/述标全是**确定性工具**（文档解析、RAG 检索、LLM 生成、`python-pptx` 渲染），无一处需执行 LLM 临场生成的代码。因此：
+
+```
+默认 backend = FilesystemBackend（state 内虚拟文件系统）+ 自定义工具
+  · 不挂 SandboxBackendProtocol → execute 工具按设计「不可用」
+  · agent 无 shell 执行面，攻击面仅剩自写工具代码
+  · 服务本身仍跑容器（纵深防御），但那是部署，不是 agent 隔离
+```
+
+**三条决策铁律**：
+1. **投标管线默认 `FilesystemBackend`（虚拟 FS）+ 自定义工具，关闭 `execute`**，不挂 sandbox backend。
+2. **`LocalShellBackend` 仅限本地开发，禁止上生产。**
+3. **架构预留 —— 选定 OpenSandbox 做每 run 一次性沙箱**：未来若有需执行不可信代码的智能体（典型：数据分析智能体跑用户上传表格），隔离粒度是**「每次 run」而非「整个服务一个容器」**，用完即焚。选定 **OpenSandbox**（阿里云开源，2026-03 开源、Apache 2.0、gVisor 内核级隔离、自托管 Docker(开发)/Kubernetes(生产)、多语言 SDK 含 Python），通过 `SandboxBackendProtocol` 接入，不污染现有管线。
+
+> 一句话：execution 隔离的粒度是「每次 run」，不是「整个服务一个容器」。本产品当前阶段连 execution 面都不开。
+
+#### 4.5.1 OpenSandbox 接入契约（未来需 execution 时启用）
+**为什么是它**：① gVisor 内核级隔离 + 每 sandbox 网络出口策略/资源限额，满足多租户「run 与 run 互隔」的硬要求；② Apache 2.0，商用无授权顾虑（对比 n8n Embed 需商业授权）；③ 自托管 K8s 部署，契合「数据不出境 + 自主可控」基线（与自托管 MinIO 同一思路）；④ 阿里云出品，与短信/大模型生态衔接顺。
+
+**接入方式**：deepagents 只要一个可靠的 `execute()`，把 OpenSandbox 的 `commands.run()` 包一层即成 `SandboxBackendProtocol` 实现——其 `Sandbox.create()/async with` 天然就是「每 run 创建、用完销毁」的生命周期。
+
+```python
+# 把 OpenSandbox 适配成 deepagents 的 sandbox backend（示意）
+class OpenSandboxBackend:                     # 实现 SandboxBackendProtocol
+    async def __aenter__(self):
+        self._sb = await Sandbox.create(IMAGE, timeout=timedelta(minutes=10))
+        await self._sb.__aenter__()           # per-run 生命周期：开
+        return self
+    async def execute(self, command: str):    # deepagents 用它长出 ls/read/write/edit
+        return await self._sb.commands.run(command)
+    async def __aexit__(self, *exc):
+        await self._sb.__aexit__(*exc)        # per-run 生命周期：用完即焚
+# 文件进出：sandbox.files.write_files() 喂输入、read_file() 取产物
+# 部署：生产用 OpenSandbox 的 Kubernetes runtime 调度，每 run 一个隔离沙箱
+```
+
+**仍不变的边界**：① 沙箱只在「确有不可信代码执行」的智能体启用，投标管线不挂；② 沙箱内仍只上报 usage，不碰钱（计费回 App API）；③ 沙箱镜像/网络出口走最小权限白名单。
+
+### 4.6 Agent API 与 Worker 拆分 —— 一仓两角色 + 一条缝
+
+deepagent 一次 run 是**分钟级、CPU/内存重**的长任务（解析 + 规划 + 子智能体）。结论：**同一代码库/镜像，跑成两个进程（API 角色 + Worker 角色），用队列 + pub/sub 解耦——不把 deepagent 执行塞进 API 进程。**
+
+**为什么不合进一个进程**：① 长执行阻塞同进程的大量 SSE 长连接，尾延迟爆炸；② API 按连接数扩、Worker 按队列深度扩，资源画像不同（部署图 API 2c/4g vs Worker 4c/8g），合一只能一种规格扩；③ 一个跑飞的 run（OOM/死循环）会连带打掉给所有人推流的 API。
+**为什么不拆两个代码库**：二者共享 `AgentRegistry`/deepagent 定义/工具/Model Gateway/文档解析，拆仓必漂移、重复维护。
+
+```
+一个 Agent Service 代码库/镜像
+  ├─ 入口 A：agent-api    (uvicorn)   建 run、查状态、SSE 推流   [无状态, 按连接扩]
+  └─ 入口 B：agent-worker (consumer)  真正跑 deepagent           [重计算, 按队列扩]
+       共享：AgentRegistry / deepagent 定义 / 工具 / Model Gateway / 文档解析
+
+缝（都在现有 Redis 上，零新组件）：
+  · 派发：API 建 run → 入队(Redis Stream/队列) → Worker 消费
+  · 回传：Worker 把增量产出/进度 publish 到 run:{id} 频道
+          → API 的 SSE handler 订阅该频道 → 转发前端
+  · 完成：Worker publish 完成事件 + 回调 App API 上报 usage（仍不碰钱，§3.2 铁律①）
+```
+
+**关键：这条缝（队列派发 + pub/sub 回传）从第一天就设计进去。** Phase 1 可把 API/Worker 跑同机甚至同进程快速验证；上生产拆开只是改启动命令 + 加副本，不重写编排代码。与部署图 ③ 智能体层 `Agent API ×2` + `Agent Worker ×2`、Worker 单独扩并发一致。
+
+---
+
+## 5. 计费与数据模型
+
+### 5.1 积分账本（Credits Ledger）—— append-only 事件账本
+不维护"可被随手改的余额数字"，而是**只追加的流水账**，余额 = 流水之和（+ 余额缓存做对账）。每笔 AI 操作走**预扣→结算**两段式。
+
+```
+credit_transactions（只追加，每行一笔变动）
+  ├─ type:  grant(会员/注册赠送) | purchase(充值) | hold(预扣)
+  │         | settle(结算) | release(退还) | expire(过期)
+  ├─ amount: +/- 积分
+  ├─ source_batch: 来源批次（用于过期：会员月度赠送有效期 ≠ 充值积分）
+  ├─ ref:    关联的 agent_run / 订单 / 套餐
+  └─ idempotency_key: 幂等键，防重复扣减
+
+一次「标书生成」的积分生命周期：
+  1. 校验余额够 → 写 hold(-80) 预扣        （余额冻结，防并发超扣）
+  2. 调智能体服务执行
+  3a. 成功 → 按实际 usage 写 settle，多退少补
+  3b. 失败 → 写 release(+80) 全额退还
+```
+
+**三条铁律**：① 钱只在 App API 动，智能体服务只上报 usage；② 所有扣减/回调带幂等键；③ 不同来源积分按"先过期先扣"消耗（FIFO by 过期时间）。
+
+积分消耗口径沿用 PRD 第 4.4 节（读标 20 / 提纲 30 / 短篇生成 40 / 长篇 80 / 重写 25 / 废标审查 60 / 查重 100 / 导出 20）。
+
+### 5.2 数据实体（六组）
+| 组 | 主要表 | 职责 |
+|---|---|---|
+| **账号** | `users`、`sessions` | 手机号、登录态 |
+| **运营后台** | `admin_users`、`admin_roles`、`admin_audit_logs` | 运营人员账号、RBAC 角色/权限、后台敏感操作审计（改套餐/调积分/退款均留痕） |
+| **会员订阅** | `plans`(套餐定义，映射 `lib/plans.ts`)、`subscriptions`(当前档位/周期/自动续费状态/支付宝签约号) | 档位与续费状态 |
+| **计费** | `credit_transactions`(账本)、`credit_balances`(余额缓存)、`payment_orders`(订单)、`payment_agreements`(代扣签约)、`refunds` | 积分 + 支付 |
+| **投标业务** | `projects`(状态机)、`project_files`(招标/附件→对象存储 MinIO/S3 引用)、`project_artifacts`(读标/提纲/正文/审查产物 + 版本) | 项目与产物 |
+| **智能体桥接** | `agent_runs`(run_id、agent_type、状态、usage、关联项目/积分事务) | App ↔ 智能体服务的纽带 |
+
+`agent_runs` 是关键桥接表：App 层发起一次 AI 操作就建一条 run，串起"项目 / 积分预扣事务 / 智能体执行 / 产物落库"。
+
+### 5.3 会员档位
+沿用现有代码的 C 端 3 档（`lib/plans.ts`：免费版 / 个人版 / 专业版），PRD 第 4.2 节列了更细的 5 档，最终档位以产品决策为准；本架构对档位数量无耦合（`plans` 表配置化）。会员中心的"渐进式套餐展示"（当前档+下一档）属前端展示逻辑，沿用原型。
+
+---
+
+## 6. 会员订阅与支付（含自动续费）★重点
+
+支付层设计为 **Payment Provider 抽象**，屏蔽通道差异：
+
+```
+Billing 模块
+ └─ PaymentProvider 接口（可插拔）
+     ├─ 单笔支付：下单 / 二维码 / H5 / 回调验签 / 退款       ← 积分充值、手动购买/续费
+     └─ 周期代扣：签约 / 解约 / 代扣 / 续费回调              ← 会员自动续费
+     实现：AlipayProvider（首版）；WechatPayProvider（后续）
+```
+
+### 6.1 单笔支付（积分充值 / 手动购买会员）
+1. 用户选充值包/套餐 → App API 创建 `payment_orders`（status=created，带幂等键）
+2. 调 `alipay.trade.precreate`（PC 扫码）或 `alipay.trade.wap.pay`（H5）→ 返回二维码/跳转链接
+3. 用户支付 → 支付宝异步通知 → App API 验签 → 订单置 paid → 写积分 `purchase` 流水 / 激活会员
+4. 前端轮询或 SSE 收到订单状态变更
+
+**幂等关键**：异步通知可能重复，按 `trade_no` + 订单状态机保证只入账一次。
+
+### 6.2 自动续费（支付宝周期扣款）★
+
+**前提**：已有企业主体；需在支付宝开通"周期扣款"产品，签约模板（周期/扣款金额上限/最小周期≥7天）。
+
+**(A) 签约流程**
+```
+用户在会员中心点「开通自动续费」
+  → App API 调 alipay.user.agreement.page.sign 生成签约页
+  → 用户在支付宝确认签约
+  → 支付宝回调 → App API 落 payment_agreements
+       (agreement_no、external_agreement_no、status=signed、
+        plan_id、period、next_deduct_at、扣款上限)
+  → subscriptions.auto_renew=true、关联 agreement_no
+```
+
+**(B) 周期代扣执行**（Redis 分布式定时任务驱动，机制见 §6.4）
+```
+定时任务（锁内）扫描 next_deduct_at <= now 且 auto_renew=true 的订阅：
+  1. 创建 payment_orders（type=auto_renew，幂等键=subscription_id+账单周期）
+  2. 调 alipay.trade.pay（scene=代扣，带 agreement_no，免用户确认）
+  3a. 扣款成功 → 续期会员、发放当期月度积分(grant)、推进 next_deduct_at
+  3b. 扣款失败 → 进入「续费重试」状态机：
+        - 按 T+1/T+3 重试（可配置）
+        - 多次失败 → 标记 past_due、推送提醒、降级为「到期提醒手动续费」
+        - 不无限重试，避免触发风控
+```
+
+**(C) 解约 / 退订**
+```
+用户点「关闭自动续费」
+  → App API 调 alipay.user.agreement.unsign 解约
+  → payment_agreements.status=unsigned、subscriptions.auto_renew=false
+  → 当前周期权益保留至到期，到期后降级为免费版
+```
+
+**(D) 状态机与边界**
+- `payment_agreements.status`: `signing → signed → unsigned`（含 `sign_failed`）
+- `subscriptions.status`: `active → past_due → expired`，`auto_renew` 独立布尔
+- 退款：会员可按平台规则退款；自动续费扣款后短期内退款走 `refunds` + 解约
+- 风控：扣款金额、频次须符合签约模板；失败重试有上限
+- **降级兜底**：自动续费不可用/失败时，统一回退到"到期前推送提醒 + 用户主动扫码续费"（单笔支付链路），保证收入不断档
+
+### 6.3 对账
+每日对账任务（Redis 分布式定时任务，机制见 §6.4）：拉支付宝账单 vs `payment_orders` + `credit_transactions`，差异告警。积分账本可独立审计（余额 = Σ流水）。
+
+### 6.4 定时任务调度机制（Redis 分布式单例 Cron）
+代扣与对账等周期任务统一用 **Redis 分布式锁实现"分布式单例 Cron"**，简单、稳、且语言无关（应用层 A/B/C 共用，不引入 Spring Batch/Quartz/独立调度器）。
+
+```
+每个 App 实例内置分钟级 tick（每种语言都有定时器）
+  → 执行前抢锁： SET lock:cron:<job> <instanceId> NX EX 300
+       抢到 → 执行该 job；没抢到 → 跳过
+       （保证集群内同一时刻只有一个实例在跑 = 分布式单例）
+  → Job 体以「DB 为准」查到期项，逐条幂等处理
+  → 完成后释放锁（Lua CAS 仅删自己持有的锁）；长任务用 watchdog 续租
+```
+
+**为什么这样最简单又稳**：
+1. DB 是"什么到期"的唯一真相，Redis 只保证"同一时刻单实例执行" → 不重复跑
+2. 业务幂等键兜底（代扣幂等键=订阅+周期）：即使锁异常/双触发也不会重复扣款
+3. 自愈：实例挂了锁 TTL 自动过期，下一 tick 自动接管
+4. Redis 数据层已在用，零额外组件
+
+> 进阶（当前不需要）：若代扣量极大、不想全表扫，可换 **Redis ZSET 延迟队列**（score=next_deduct_at，`ZRANGEBYSCORE` 弹出到期项）。当前会员量级"锁+扫表"足够，遵循"简单"原则。
+
+---
+
+## 7. 关键数据流示例
+
+**以「标书生成」为例（贯穿三层 + 计费 + 异步）：**
+```
+1. Web /content 点「AI 生成本章」
+2. App API：校验登录 → 校验积分余额 → 写 hold(-80) 预扣 → 建 agent_run → 入队
+3. App API → Agent Service：POST /agents/bidding/runs（input=章节+大纲+RAG上下文）
+4. Agent Service：deepagent 执行（解析→RAG检索→生成），SSE 流式吐增量正文
+5. 增量经 App API/SSE 回传 Web，实时渲染
+6. 完成 → Agent Service 上报 usage → App API：settle 结算积分（多退少补）
+        → project_artifacts 落库新版本 → agent_run 置 done
+7. 失败 → release(+80) 全额退还积分 → agent_run 置 failed
+```
+
+**以「述标出 PPT」为例（智能体产稿 + 渲染层产文件，见 §4.2.1）：**
+```
+1. Web /present 选时长(10/15/20)+企业模板 → 点「生成述标 PPT」
+2. App API：校验登录 → 校验/预扣积分 → 建 agent_run → 入队
+3. App API → Agent Service：POST /agents/bidding/runs（input=标书 chapters + 时长 + 模板id）
+4. Agent Service：述标子能力（LLM）产 DeckSpec（大纲+口播稿+问答，JSON）
+        → 渲染器（python-pptx，确定性）套模板渲染 .pptx → 上传对象存储(MinIO)
+5. SSE 回传 DeckSpec → 前端复用现有 /present 结构实时预览
+6. 完成 → 上报 usage → App API：settle 结算 → project_artifacts 落库(.pptx 版本)
+        → 返回下载凭证 → 前端「下载 .pptx」
+7. 失败 → release 退还积分 → agent_run 置 failed
+```
+
+---
+
+## 8. 子系统拆分与建设顺序
+
+MVP 优先：先把端到端价值跑通，计费最后接。
+
+```
+Phase 0 · 地基            账号鉴权(手机号验证码) + App API 骨架(应用层 A/B/C 选定后落地)
+                         + 前端接入登录 + MinIO/S3 直传 + 部署流水线(容器)
+                         ▶ 产出：能登录、能上传文件、能部署
+
+Phase 1 · 智能体跑通      智能体服务骨架 + AgentRegistry + 模型网关(DeepSeek/通义可切)
+   (核心价值验证)         + 文档解析 + 第一个能力「读标」+ run API/SSE 流式
+                         ▶ 产出：上传招标文件 → AI 读标，端到端打通 ★最关键里程碑
+
+Phase 2 · 全流程闭环      提纲 → 标书生成(三栏+章节AI对话) → 审查/查重 → 述标 → 导出
+                         + 项目状态机 + 资料库 + 异步任务/进度
+                         ▶ 产出：PRD 全流程可用（积分扣减用 stub 占位，不挡路）
+
+Phase 3 · 商业化          积分账本(预扣/结算) + 会员订阅 + 支付宝(单笔+周期代扣/自动续费)
+   + 运营后台(必建)        + 会员中心接真实数据 + 渐进式套餐展示
+                         + 【运营管理后台 MVP】RBAC 登录 + 用户/会员/订单管理
+                           + 积分账本审计 + 套餐&积分口径配置 + 退款处理 + 操作审计
+                         ▶ 产出：能付费、能续费、积分能扣，且后台能配置/对账/退款（可运营）
+
+Phase 4 · 加固            文件加密、对账、限流、监控告警、并行项目数限制、微信支付补充
+   + 运营后台增强          + 【后台增强】数据看板/经营报表 + 模型&工作流模板配置
+                           + 风控(异常用户/扣款) + 客服工单
+                         ▶ 产出：可对外开放注册
+```
+
+**关键设计决策**：Phase 1-2 就把"计费钩子"接口留好（预扣/结算用 stub 实现），Phase 3 再换真账本。全流程开发期间不被积分逻辑拖累，又不返工编排代码。
+
+> **运营后台的节奏**：后台 UI 集中在 Phase 3 建（商业化必须可运营：配置/对账/退款）。Phase 1-2 需要的套餐/积分口径/模型/工作流模板等配置，先以**种子配置（seed/配置文件 + DB 配置表）**落地，后台 UI 出来后接管同一批配置表，不返工。`plans`、模型路由、工作流模板从一开始就**配置化存库**，后台只是它们的可视化管理面。
+
+---
+
+## 9. 非功能性需求
+
+| 类别 | 要求 |
+|---|---|
+| 数据安全 | 文件加密传输与存储（MinIO 服务端加密 SSE-S3/KMS + 传输 HTTPS）；预签名 URL 短时效、仅本人可见；审查场景支持本地/不上传/阅后即焚（沿用 PRD） |
+| 合规 | ICP 备案；支付/代扣符合支付宝签约模板与央行代收规定；个人信息保护 |
+| 性能 | 上传秒级反馈；生成类长任务异步 + 进度反馈；SSE 流式输出降低等待感 |
+| 可用性 | Model Gateway 故障转移（一个大模型不可用切备用）；支付/代扣失败重试有上限 |
+| 可扩展 | 智能体服务注册式，新增智能体不动骨架；档位/积分口径配置化 |
+| 响应式 | 移动优先，自适应桌面三栏（沿用原型） |
+
+---
+
+## 10. 工作流编排与未来演进（架构预留）
+
+### 10.1 决策
+- **平台提供预制工作流**：投标全流程等由平台方（提供方）预先编排好，作为内置工作流模板交付。
+- **前期不对用户开放**可视化编排：因此**现在不需要**可视化编辑器、用户态工作流隔离、节点市场、按用户工作流计费。
+- 未来若开放给用户自建，作为**纯增量**演进，前期留好两点即不返工。
+
+### 10.2 deepagents 的两层编排模型（核实结论）
+deepagents 建在 LangGraph 上，`create_deep_agent()` 返回一个编译好的 `CompiledStateGraph`（Runnable）。编排分两层，性质不同：
+
+| 层 | 编排方式 | 用途 |
+|---|---|---|
+| **① deepagent 内部** | **动态、LLM 驱动**（`write_todos` 规划 + `task` 委派子智能体 + 虚拟文件系统），非静态 DAG | "写整章标书"等需 AI 临场规划的复杂能力 |
+| **② 跨 deepagent / 工作流层** | **平台预制的显式编排**：每个 deepagent 是 `CompiledStateGraph`，可作 LangGraph 节点/子智能体组合 | 投标全流程：读标→提纲→生成→审查 |
+
+> 官方支持组合：任意 `CompiledStateGraph` 可作为 subagent 传入；deepagent 本身即 `CompiledStateGraph`，故可作外层图节点。deepagents 自身**不含可视化编辑器**（图可视化由独立的 LangGraph Studio 提供，面向开发者调试，非 C 端拖拽编排）。
+
+**两条诚实的边界（实现时注意）**：
+1. "deepagent 当外层图节点 / 互相嵌套"靠类型契约成立，但**官方缺逐字示例**，这部分拼装需自行在 LangGraph 层实现。
+2. 已知 open issue（deepagents #1251）：主 agent 的 `config` 不传播到 subagent，可能影响子 agent 工具的注入参数；封装时需处理。
+
+### 10.3 架构预留（前期零成本，避免未来返工）
+| 预留点 | 现在怎么做 | 未来收益 |
+|---|---|---|
+| **工作流即数据** | 跨 agent 编排用"显式工作流定义"（代码/声明式），不把投标流程硬编码散落 | 未来可视化编辑器输出的就是同种定义，直喂执行引擎 |
+| **节点注册表** | 把 `AgentRegistry` 扩成 **Node Registry**：agent 节点 + 工具节点 + 控制节点（分支/并行/循环） | 编辑器的"可拖拽节点面板"= 这个注册表 |
+| 统一 run API | 工作流执行复用现有 run + SSE + 计费回调 | 内置与用户工作流同一执行/计费链路 |
+| 按节点计费 | usage 上报按"每节点一次可计费操作"累计 | 用户自定义工作流天然可计费 |
+
+### 10.4 分阶段
+```
+前期（现在）   平台方用代码/声明式定义预制工作流，deepagent/工具作节点
+              · 投标全流程 = 第一个预制工作流模板
+              · 只做预留 10.3 的 ①②；不碰可视化UI/用户隔离/工作流市场
+
+后期（若开放） 在同一套工作流定义上加：可视化编辑层 + 用户态隔离 + 计费
+              · 用户做的事 = 克隆平台模板、改/加节点；不返工
+```
+
+### 10.5 n8n 的定位
+不把 n8n 作为执行中枢（嵌入商用给 C 端需 n8n Embed 商业授权、多租户隔离不友好、与积分计费不一体、节点非 agent 原生）。**仅在"连接第三方系统"（企业微信/钉钉/邮箱/OA/网盘等触发与投递）场景，才将 n8n 或连接器框架作为外围一类节点集成**，不进核心。
+
+---
+
+## 11. 风险与未决事项
+
+| 项 | 说明 | 处置 |
+|---|---|---|
+| 支付宝周期扣款审批 | 需企业主体过审 + 签约模板配置 | Phase 3 前提早申请；未过审则首版先上单笔+手动续费 |
+| Bun + 支付 SDK 验签 | 公开资料无大量成功案例 | 上线前沙箱端到端冒烟（见 2.2 纪律2） |
+| 大模型成本与质量 | 国产大模型生成长标书的质量/成本需实测 | Phase 1 用读标场景验证；Model Gateway 支持切换比选 |
+| deepagents 框架成熟度 | LangGraph/deepagents 版本演进 | Phase 1 锁版本，封装在 Runtime 内，可替换 |
+| 档位最终方案 | 代码 3 档 vs PRD 5 档不一致 | 产品决策；`plans` 表配置化，不影响架构 |
+| 项目非 git 仓库 | 当前目录未 git init | 建议 `git init` 纳入版本管理（含本设计文档） |
+
+---
+
+## 12. 后续（逐子系统细化顺序）
+本文档为架构基线。建议按 Phase 顺序，每个子系统单独走 spec → plan → 实现：
+1. **地基**（账号鉴权 + App API 骨架 + 部署）← 建议先开
+2. **智能体服务 + 读标**（核心价值验证）
+3. **全流程闭环**
+4. **商业化**（积分账本 + 订阅 + 支付宝自动续费）
+5. **加固**
+
+---
+
+## 13. 生产部署架构与资源规划
+
+### 13.1 部署形态
+**全自托管裸机**。编排分两条线，按规模选：
+
+- **Docker Compose（极简起步）**：单机一份 compose 拉起无状态层，`Nginx` 反代。MVP/单副本（§13.5）够用，心智最低。
+- **k3s（多节点首选，§13.6）**：要多节点 + 自动负载 + 自动扩缩时上 k3s（轻量 K8s，单二进制）。**服务发现、负载均衡、扩缩、滚动更新全内建**——`App→Agent API` 走 ClusterIP Service + kube-proxy 自动 LB，`kubectl scale` 即扩，**无需 Nacos、无需手改 upstream**。CoreDNS/ConfigMap 顶掉注册中心与配置中心。
+
+> **中间件（有状态：PostgreSQL / Redis / MinIO）固定单独裸机部署，不进 k3s/Compose 集群**（含规模化阶段）——备份、调优、可控性最优；k3s 只跑无状态层，二者经内网固定地址互通、互不耦合。
+
+提供**三档同源演进**（同一套镜像/manifest，差异只在 `replicas` 与主备，**单服务规格不变**）：
+- **A. 起步推广档 / 单副本（§13.5）**：每个无状态服务 ×1、中间件单实例无主备、无 HA。**配置照旧**，不为冗余买单。推广初期省资源。
+- **B. 起步生产档（§13.2）**：无状态多副本 + 中间件主备 + 入口 LB。对外开放运营。
+- **C. 扩节点档（§13.4）**：k3s 加节点 + HPA/KEDA、中间件加备/分片、MinIO 分布式。
+
+> 三档靠预留的「缝」平滑切换——Redis 锁单例 Cron、Agent 队列+pub/sub、S3 抽象、Agent API 无状态——**升级=加副本/加主备/加节点，不改代码、不改单服务规格**。
+
+![生产部署架构与资源规划](./2026-06-24-deployment.svg)
+
+### 13.2 资源规划（起步生产基线）
+> 无状态层可任意加节点；有状态层按 HA 主备起步。下表为「起步生产」基线，按真实并发/存量逐步上调。
+
+| 层 | 组件 | 实例 | CPU | 内存 | 磁盘 | 说明 |
+|---|---|---|---|---|---|---|
+| 接入 | Nginx 反代/LB | ×2 | 1 vCPU | 1 GB | — | TLS 终止、keepalived VIP 双活 |
+| 应用 | C 端前端 Next.js | ×2 | 1 vCPU | 1 GB | — | SSR，无状态 |
+| 应用 | 运营后台 Next.js | ×1 | 1 vCPU | 1 GB | — | 内部低流量 |
+| 应用 | App API (Hono+Bun) | ×3 | 2 vCPU | 2 GB | — | 钱的权威；Redis 锁单例 Cron |
+| 智能体 | Agent API (FastAPI) | ×2 | 2 vCPU | 4 GB | — | run 管理 + SSE，无状态 |
+| 智能体 | Agent Worker | ×2 | 4 vCPU | 8 GB | 20 GB 临时盘 | 文档解析 + deepagent 执行（CPU/内存重） |
+| 数据 | PostgreSQL + pgvector | 主+备 | 4 vCPU | 16 GB | 200 GB SSD ×2 | 业务+账本+向量；流复制热备 |
+| 数据 | Redis | 主+备 | 2 vCPU | 4 GB | 20 GB SSD ×2 | 会话/队列/分布式锁；AOF 持久化 |
+| 存储 | MinIO（S3） | 起步 1 / HA 4 | 2–4 vCPU | 4–8 GB | **2 TB+ 起步** | 文件大头：招标/标书/PPT/附件 |
+
+**合计（起步生产，不含外部 SaaS）**：**≈ 40 vCPU · ≈ 88 GB 内存 · ≈ 2.6 TB 磁盘**（MinIO 为磁盘大头）。
+**裸机落地**：2–3 台应用/智能体节点（8c/16–32g）+ PG 主+备各 1 台（8c/32g/SSD）+ 1 台大盘 MinIO，每台 Docker Compose 编排。
+
+**外部依赖（SaaS，不占我方资源、按量计费）**：支付宝（支付/代扣）、阿里云短信、国产大模型 API（DeepSeek/通义/智谱，经 Model Gateway）。
+
+### 13.3 磁盘估算（MinIO 大头）
+按单项目文件量粗估：招标文件（PDF 几十 MB）+ 生成标书（docx）+ 述标（pptx）+ 附件 ≈ **50–150 MB/项目**。
+- 1 万活跃项目 ≈ 0.5–1.5 TB；叠加版本与冗余，**2 TB 起步**留足余量。
+- 增长后转 **MinIO 分布式纠删码（≥4 节点）**：加节点即扩容量与吞吐，纠删码替代多副本省空间。
+- PG/Redis 磁盘随业务行数与 AOF 增长，相对可控；冷数据（旧产物）可生命周期下沉。
+
+### 13.4 扩节点策略（Scale-out · 全链路支持加节点）
+以 **k3s（§13.6）**为例，加节点用 k8s 原语，不需注册中心：
+
+| 层 | 怎么扩节点（k3s 原语） |
+|---|---|
+| 无状态 · HTTP（前端/App API/**Agent API**） | `kubectl scale` 调 `replicas`（或 **HPA** 按 CPU 自动）；**ClusterIP Service + kube-proxy 自动 LB**，新 Pod 自动纳入端点。Agent API **无状态**（run 状态在 Redis/PG），任意 Pod 应答任意请求，**无需会话粘连** |
+| 无状态 · 执行（**Agent Worker**） | 调 `replicas`（或 **KEDA** 按 Redis Stream 队列长度自动扩）；**队列竞争消费**天然均摊，加 Pod 即多一个消费者 |
+| 整机算力 | `k3s agent join` 加 worker 节点，Pod 自动调度铺开 |
+| 定时任务（代扣/对账） | **k8s CronJob** 单次触发（或沿用 Redis 锁单例 Cron）；业务幂等兜底 |
+| PostgreSQL（裸机） | 读多 → 加只读副本扩读；再大 → 分库分表 / Citus 分片 |
+| Redis（裸机） | 主备 → Redis Cluster 分片 |
+| MinIO（裸机） | 加节点扩容量与吞吐（分布式纠删码 ≥4 节点） |
+| OpenSandbox（未来） | 沙箱池按 run 弹性起停（§4.5），独立扩 |
+
+> **Docker Compose 起步阶段**等价替代：无状态用 `Nginx`（least_conn + docker-gen 自动 upstream）做 LB，定时任务用 Redis 锁单例 Cron。多节点/自动负载是迁 k3s 的主要动机。
+> 长任务一律走异步队列（§3.2 铁律③），避免同步占用 Agent API；扩并发优先扩 Agent Worker。
+
+### 13.5 起步推广档 · 单副本（无冗余 / 无主备）
+**每个服务的规格照旧（§13.2 不变），只是去掉双节点与主备——每样跑 1 个。** 推广初期用户量小，不必一上来就双副本 + 主备，避免资源浪费。
+
+![起步推广部署 · 单副本](./2026-06-24-deployment-single.svg)
+
+| 层 | 组件 | 实例 | 单实例规格（不变） | 与生产档差异 |
+|---|---|---|---|---|
+| 接入 | Nginx | ×1 | 1 vCPU · 1 GB | 生产 ×2 + keepalived，这里 ×1 |
+| 应用 | C 端前端 / 运营后台 | 各 ×1 | 1 vCPU · 1 GB | 前端生产 ×2 → ×1 |
+| 应用 | App API (Hono+Bun) | ×1 | 2 vCPU · 2 GB | 生产 ×3 → ×1 |
+| 智能体 | Agent API (FastAPI) | ×1 | 2 vCPU · 4 GB | 生产 ×2 → ×1 |
+| 智能体 | Agent Worker | ×1 | 4 vCPU · 8 GB · 20 GB | 生产 ×2 → ×1 |
+| 数据 | PostgreSQL + pgvector | ×1 | 4 vCPU · 16 GB · 200 GB SSD | **去掉热备**（生产主+备） |
+| 数据 | Redis | ×1 | 2 vCPU · 4 GB · 20 GB SSD | **去掉副本** |
+| 存储 | MinIO（S3） | ×1 | 2–4 vCPU · 4–8 GB | 单节点；磁盘按存量起（**500 GB–1 TB 起步，按真实增长加盘**） |
+
+**合计**：**≈ 20 vCPU · ≈ 44 GB 内存 · ≈ 1 TB 磁盘起步**——约为起步生产档（§13.2）的一半：省掉的是冗余副本与 PG/Redis 主备，**单服务规格完全不变**。可单机承载，也可按服务散到 2–3 台小机；关键是「每样 1 个」，不是缩规格。
+
+**取舍（推广初期可接受）**：
+- ⚠ **单副本无 HA**：某服务/某机故障期间该能力短暂不可用；有状态层靠**定时快照**（`pg_dump` + MinIO 同步外部盘/异地）兜底，故障后重建。
+- ✓ **不浪费**：用户少时不为冗余买单。
+
+**升级路径（不改代码、不改单服务规格）**：用户量/SLA 上来 → 无状态副本 ×1→×N、PG/Redis 加主备、MinIO 转分布式纠删码 → 即 §13.2 起步生产档 → 再扩 §13.4。同一套镜像，只动 compose 的副本数/主备——因为 Redis 锁单例 Cron、Agent 队列+pub/sub、S3 抽象这些「缝」从一开始就预留好了。
+
+### 13.6 k3s 编排（多节点 / 自动负载 · 不引入 Nacos）
+要多节点 + 自动负载 + 自动扩缩时，用 **k3s**（轻量 K8s，单二进制控制面）。它把前面纠结的服务发现/负载/扩缩**原生解决**，无需 Nacos / Swarm / 手改 Nginx upstream。
+
+![k3s 部署架构](./2026-06-24-deployment-k3s.svg)
+
+**边界：无状态进集群，中间件留裸机。** k3s 只跑前端/App API/Agent API/Agent Worker（无状态）；PostgreSQL/Redis/MinIO **固定单独裸机**（§13.1 决策），经内网固定地址被集群内服务访问。
+
+**之前的难点逐一接掉**：
+
+| 难点 | k3s 原生解 |
+|---|---|
+| **App → Agent API 多节点 LB** | **ClusterIP Service + kube-proxy** 自动负载；App 调 `http://agent-api:8000`（Service DNS），自动轮询所有 Pod |
+| **加节点自动纳入** | `kubectl scale deploy/agent-api --replicas=N` → 新 Pod 自动进 Service 端点；`k3s agent join` 加机器自动调度 |
+| **服务发现 / 配置中心（本想用 Nacos）** | **CoreDNS**（发现）+ **ConfigMap/Secret**（配置）顶替，起步够用 |
+| **Agent Worker 扩并发** | `replicas` 或 **KEDA**（按 Redis Stream 队列长度自动扩）；队列竞争消费真正均摊 |
+| **无状态自动扩缩** | **HPA**（按 CPU/内存） |
+| **南北向入口** | k3s 自带 **Traefik Ingress** + **ServiceLB(klipper)/MetalLB** 给裸机分配外部 IP |
+| **定时任务（代扣/对账）** | **k8s CronJob**（或沿用 Redis 锁单例 Cron） |
+
+**关键前提**：`Agent API` 无状态（run 状态在 Redis/PG）——所以 LB 纯轮询、**无需会话粘连**；给它 `/healthz` 就绪探针，k3s 据此摘除坏 Pod。
+
+**为何此阶段不需要 Nacos**：`Service=服务发现`、`kube-proxy=负载均衡`、`ConfigMap/Secret=配置中心`，三者已覆盖 Nacos 的核心职责；待将来拆成**多个独立智能体服务**或需要统一动态配置中心时，再按需引入 Nacos（与阿里云/国产生态契合，§4.7 演进）。
+
+**三档同源**：同一套 manifest，单副本 `replicas:1`（HPA 关）→ 起步生产 `replicas:2–3 + HPA` → 扩节点 `k3s agent join + KEDA/HPA + MinIO 分布式`，**只改 replicas、不改代码、不改单服务规格**。
+
+---
+
+*本方案基于现有原型与 `docs/PRD.md` 整理，作为工程实现的架构基线。*

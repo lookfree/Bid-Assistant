@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="852" viewBox="0 0 960 852" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#7c3aed"/>
+    </linearGradient>
+    <filter id="shadow" x="-4%" y="-4%" width="108%" height="120%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="7" refY="5" orient="auto">
+      <path d="M0,0 L8,5 L0,10 Z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="960" height="852" fill="#f8fafc"/>
+
+  <!-- Title -->
+  <text x="40" y="40" font-size="24" font-weight="700" fill="#0f172a">投标智能体 SaaS · 四层架构</text>
+  <text x="40" y="62" font-size="13" fill="#64748b">C 端前端 + 运营后台 · Hono+Bun 应用层 · Python+deepagents 智能体层 · 数据层　|　2026-06-24</text>
+
+  <!-- ① 前端层（两套前端） -->
+  <rect x="40" y="80" width="880" height="132" rx="14" fill="#ffffff" stroke="#6366f1" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="40" y="80" width="6" height="132" rx="3" fill="#6366f1"/>
+  <text x="62" y="108" font-size="18" font-weight="700" fill="#0f172a">① 前端层 · 两套前端</text>
+  <text x="240" y="108" font-size="12.5" fill="#64748b">Next.js 16 · React 19 · Tailwind · shadcn/ui</text>
+  <!-- C 端用户前端 -->
+  <rect x="62" y="120" width="408" height="80" rx="9" fill="#eef2ff"/>
+  <text x="78" y="146" font-size="14" font-weight="700" fill="#3730a3">C 端用户前端</text>
+  <text x="196" y="146" font-size="11" fill="#6366f1">复用现有原型</text>
+  <text x="78" y="170" font-size="11.5" fill="#475569">登录/注册 · 投标全流程工具页（读标→…→述标）</text>
+  <text x="78" y="190" font-size="11.5" fill="#475569">SSE 进度流 · 积分余额 · 会员中心 / 订阅</text>
+  <!-- 运营管理后台 -->
+  <rect x="484" y="120" width="408" height="80" rx="9" fill="#f5f3ff"/>
+  <text x="500" y="146" font-size="14" font-weight="700" fill="#5b21b6">运营管理后台</text>
+  <text x="618" y="146" font-size="11" fill="#7c3aed">新建·原型未含·RBAC</text>
+  <text x="500" y="170" font-size="11.5" fill="#475569">用户/会员/订单 · 积分账本审计 · 支付对账</text>
+  <text x="500" y="190" font-size="11.5" fill="#475569">套餐/积分口径 · 模型&amp;工作流模板配置 · 数据看板</text>
+
+  <!-- arrows 1 -->
+  <line x1="266" y1="212" x2="266" y2="246" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="688" y1="212" x2="688" y2="246" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <rect x="330" y="216" width="300" height="20" rx="10" fill="#e2e8f0"/>
+  <text x="480" y="230" text-anchor="middle" font-size="12" fill="#334155">HTTPS · REST + SSE　|　Admin API · RBAC</text>
+
+  <!-- ② App API -->
+  <rect x="40" y="248" width="880" height="160" rx="14" fill="#ffffff" stroke="#2563eb" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="40" y="248" width="6" height="160" rx="3" fill="#2563eb"/>
+  <text x="62" y="278" font-size="18" font-weight="700" fill="#0f172a">② App API · 应用与计费层</text>
+  <text x="340" y="278" font-size="12.5" fill="#2563eb" font-weight="600">Hono + Bun (TS) · Drizzle —— 钱的唯一权威</text>
+  <g font-size="13">
+    <rect x="62" y="294" width="128" height="42" rx="9" fill="#dbeafe"/><text x="126" y="320" text-anchor="middle" fill="#1e3a8a">Auth 鉴权</text>
+    <rect x="202" y="294" width="128" height="42" rx="9" fill="#bfdbfe"/><text x="266" y="314" text-anchor="middle" fill="#1e3a8a" font-weight="700">Billing ★</text><text x="266" y="328" text-anchor="middle" fill="#1e40af" font-size="10.5">计费唯一权威</text>
+    <rect x="342" y="294" width="128" height="42" rx="9" fill="#dbeafe"/><text x="406" y="320" text-anchor="middle" fill="#1e3a8a">Project 状态机</text>
+    <rect x="482" y="294" width="128" height="42" rx="9" fill="#dbeafe"/><text x="546" y="320" text-anchor="middle" fill="#1e3a8a">File / OSS</text>
+    <rect x="622" y="294" width="128" height="42" rx="9" fill="#c7d2fe"/><text x="686" y="314" text-anchor="middle" fill="#1e3a8a" font-weight="700">Admin 运营接口</text><text x="686" y="328" text-anchor="middle" fill="#1e40af" font-size="10.5">RBAC + 审计</text>
+    <rect x="762" y="294" width="128" height="42" rx="9" fill="#dbeafe"/><text x="826" y="320" text-anchor="middle" fill="#1e3a8a">Orchestration</text>
+  </g>
+  <text x="62" y="362" font-size="11.5" fill="#475569">Billing = 会员/订阅/积分账本(预扣→结算)/支付宝(单笔+周期代扣·自动续费)/对账</text>
+  <text x="62" y="381" font-size="11.5" fill="#475569">Admin = 运营后台接口(RBAC + 操作审计)　·　Orchestration = 预扣积分→建 run→结算　·　定时任务 = Redis 分布式锁单例 Cron(§6.4)</text>
+
+  <!-- arrow 2 -->
+  <line x1="480" y1="408" x2="480" y2="442" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <rect x="320" y="416" width="320" height="20" rx="10" fill="#e2e8f0"/>
+  <text x="480" y="430" text-anchor="middle" font-size="12" fill="#334155">内部 REST（服务间鉴权）+ 任务回调（usage 上报）</text>
+
+  <!-- ③ Agent Service -->
+  <rect x="40" y="444" width="880" height="156" rx="14" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="40" y="444" width="6" height="156" rx="3" fill="#7c3aed"/>
+  <text x="62" y="474" font-size="18" font-weight="700" fill="#0f172a">③ Agent Service · 智能体层</text>
+  <text x="340" y="474" font-size="12.5" fill="#7c3aed" font-weight="600">Python · FastAPI · deepagents（LangGraph）—— 对业务无知</text>
+  <g font-size="13">
+    <rect x="62" y="490" width="198" height="42" rx="9" fill="#ede9fe"/><text x="161" y="516" text-anchor="middle" fill="#5b21b6" font-weight="700">AgentRegistry ★</text>
+    <rect x="274" y="490" width="198" height="42" rx="9" fill="#f3e8ff"/><text x="373" y="516" text-anchor="middle" fill="#5b21b6">Runtime（run·SSE·HITL）</text>
+    <rect x="486" y="490" width="198" height="42" rx="9" fill="#f3e8ff"/><text x="585" y="516" text-anchor="middle" fill="#5b21b6">Capabilities（解析·RAG）</text>
+    <rect x="698" y="490" width="184" height="42" rx="9" fill="#f3e8ff"/><text x="790" y="516" text-anchor="middle" fill="#5b21b6">Model Gateway</text>
+  </g>
+  <text x="62" y="552" font-size="11.5" fill="#475569">AgentRegistry 按 agent_type 注册多个 deepagent；投标=第一个（读标/提纲/正文/审查/查重/述标→DeckSpec→python-pptx）</text>
+  <text x="62" y="571" font-size="11.5" fill="#475569">默认 FilesystemBackend 虚拟FS + 自定义工具，不开 execute；需跑不可信代码时按 run 起 OpenSandbox 沙箱（§4.5）</text>
+
+  <!-- arrow 3 -->
+  <line x1="480" y1="600" x2="480" y2="634" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <rect x="416" y="608" width="128" height="20" rx="10" fill="#e2e8f0"/>
+  <text x="480" y="622" text-anchor="middle" font-size="12" fill="#334155">数据访问</text>
+
+  <!-- ④ 数据层 -->
+  <rect x="40" y="636" width="880" height="100" rx="14" fill="#ffffff" stroke="#475569" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="40" y="636" width="6" height="100" rx="3" fill="#475569"/>
+  <text x="62" y="666" font-size="18" font-weight="700" fill="#0f172a">④ 数据层</text>
+  <g font-size="12.5" fill="#1e293b">
+    <rect x="62" y="682" width="196" height="40" rx="9" fill="#e2e8f0"/><text x="160" y="707" text-anchor="middle">PostgreSQL（业务+账本）</text>
+    <rect x="270" y="682" width="196" height="40" rx="9" fill="#e2e8f0"/><text x="368" y="707" text-anchor="middle">Redis（会话/队列/分布式锁）</text>
+    <rect x="478" y="682" width="196" height="40" rx="9" fill="#e2e8f0"/><text x="576" y="707" text-anchor="middle">MinIO（S3 兼容存储）</text>
+    <rect x="686" y="682" width="196" height="40" rx="9" fill="#e2e8f0"/><text x="784" y="707" text-anchor="middle">pgvector（向量检索）</text>
+  </g>
+
+  <!-- 边界铁律 footer -->
+  <rect x="40" y="760" width="880" height="68" rx="12" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="62" y="784" font-size="13" font-weight="700" fill="#92400e">三条边界铁律</text>
+  <g font-size="12" fill="#78350f">
+    <text x="62" y="804">①　钱只有一个权威 = App API；智能体服务只上报 usage，不扣积分、不碰支付</text>
+    <text x="62" y="820">②　智能体服务对业务无知（只认 input + agent_type）→ 未来加新智能体可复用　　③　长任务一律异步 + SSE 进度回传</text>
+  </g>
+</svg>

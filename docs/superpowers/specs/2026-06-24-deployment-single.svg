@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="788" viewBox="0 0 1100 788" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', Helvetica, Arial, sans-serif">
+  <defs>
+    <filter id="sh" x="-4%" y="-4%" width="108%" height="120%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrv" markerWidth="10" markerHeight="10" refX="7" refY="5" orient="auto">
+      <path d="M0,0 L8,5 L0,10 Z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1100" height="788" fill="#f8fafc"/>
+
+  <!-- Title -->
+  <text x="40" y="40" font-size="24" font-weight="700" fill="#0f172a">起步推广部署 · 单副本（无冗余 / 无主备）</text>
+  <text x="40" y="62" font-size="13" fill="#64748b">每服务配置不变，仅去掉双节点/主备 · 用户量小不浪费资源 · 需要时加副本即升生产档（§13.2）　|　2026-06-24</text>
+
+  <!-- ① 接入层 -->
+  <rect x="40" y="80" width="720" height="84" rx="12" fill="#eef2ff" stroke="#6366f1" stroke-width="1.3"/>
+  <text x="56" y="102" font-size="13" font-weight="700" fill="#3730a3">① 接入层</text>
+  <text x="744" y="102" text-anchor="end" font-size="11" font-weight="700" fill="#0891b2">现 ×1</text>
+  <rect x="56" y="110" width="330" height="44" rx="9" fill="#ffffff" stroke="#c7d2fe"/>
+  <text x="72" y="130" font-size="12.5" font-weight="600" fill="#1e293b">DNS · ICP 备案 · CDN/WAF（可选）</text>
+  <text x="72" y="147" font-size="11" fill="#475569">备案必备 · 其余自托管</text>
+  <rect x="400" y="110" width="344" height="44" rx="9" fill="#ffffff" stroke="#c7d2fe"/>
+  <text x="416" y="130" font-size="12.5" font-weight="600" fill="#1e293b">Nginx 反代 / LB ×1</text>
+  <text x="416" y="147" font-size="11" fill="#475569">1 vCPU · 1 GB · TLS 终止（暂不做 VIP 双活）</text>
+
+  <!-- ② 应用层 -->
+  <rect x="40" y="180" width="720" height="112" rx="12" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.3"/>
+  <text x="56" y="202" font-size="13" font-weight="700" fill="#1e40af">② 应用层 · 无状态</text>
+  <text x="744" y="202" text-anchor="end" font-size="11" font-weight="700" fill="#0891b2">现 ×1 · 规格不变</text>
+  <rect x="56" y="210" width="216" height="72" rx="9" fill="#ffffff" stroke="#bfdbfe"/>
+  <text x="72" y="234" font-size="12.5" font-weight="600" fill="#1e293b">C 端前端 Next.js ×1</text>
+  <text x="72" y="254" font-size="11" fill="#475569">1 vCPU · 1 GB</text>
+  <text x="72" y="271" font-size="11" fill="#475569">SSR · 复用原型</text>
+  <rect x="288" y="210" width="200" height="72" rx="9" fill="#ffffff" stroke="#bfdbfe"/>
+  <text x="304" y="234" font-size="12.5" font-weight="600" fill="#1e293b">运营后台 ×1</text>
+  <text x="304" y="254" font-size="11" fill="#475569">1 vCPU · 1 GB</text>
+  <text x="304" y="271" font-size="11" fill="#475569">内部 · RBAC</text>
+  <rect x="504" y="210" width="240" height="72" rx="9" fill="#ffffff" stroke="#93c5fd"/>
+  <text x="520" y="234" font-size="12.5" font-weight="700" fill="#1e293b">App API · Hono+Bun ×1</text>
+  <text x="520" y="254" font-size="11" fill="#475569">2 vCPU · 2 GB</text>
+  <text x="520" y="271" font-size="11" fill="#475569">钱的权威 · Redis 锁 Cron</text>
+
+  <!-- ③ 智能体层 -->
+  <rect x="40" y="308" width="720" height="100" rx="12" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.3"/>
+  <text x="56" y="330" font-size="13" font-weight="700" fill="#5b21b6">③ 智能体层 · Python</text>
+  <text x="744" y="330" text-anchor="end" font-size="11" font-weight="700" fill="#0891b2">现 ×1 · 规格不变</text>
+  <rect x="56" y="338" width="330" height="58" rx="9" fill="#ffffff" stroke="#ddd6fe"/>
+  <text x="72" y="362" font-size="12.5" font-weight="600" fill="#1e293b">Agent API · FastAPI ×1（run/SSE）</text>
+  <text x="72" y="382" font-size="11" fill="#475569">2 vCPU · 4 GB</text>
+  <rect x="400" y="338" width="344" height="58" rx="9" fill="#ffffff" stroke="#c4b5fd"/>
+  <text x="416" y="362" font-size="12.5" font-weight="700" fill="#1e293b">Agent Worker ×1（解析 + deepagent）</text>
+  <text x="416" y="382" font-size="11" fill="#475569">4 vCPU · 8 GB · 20 GB 临时盘</text>
+
+  <!-- ④ 数据/存储层 -->
+  <rect x="40" y="424" width="720" height="160" rx="12" fill="#f1f5f9" stroke="#475569" stroke-width="1.3"/>
+  <text x="56" y="446" font-size="13" font-weight="700" fill="#0f172a">④ 数据 / 存储层 · 有状态</text>
+  <text x="744" y="446" text-anchor="end" font-size="11" font-weight="700" fill="#0891b2">现单实例 · 无主备</text>
+  <rect x="56" y="454" width="330" height="56" rx="9" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="72" y="476" font-size="12.5" font-weight="600" fill="#1e293b">PostgreSQL + pgvector ×1</text>
+  <text x="72" y="495" font-size="11" fill="#475569">4 vCPU · 16 GB · 200 GB SSD（单实例，无备）</text>
+  <rect x="56" y="518" width="330" height="52" rx="9" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="72" y="540" font-size="12.5" font-weight="600" fill="#1e293b">Redis ×1</text>
+  <text x="72" y="559" font-size="11" fill="#475569">2 vCPU · 4 GB · 20 GB SSD · AOF（无副本）</text>
+  <rect x="400" y="454" width="344" height="116" rx="9" fill="#fff7ed" stroke="#fb923c"/>
+  <text x="416" y="476" font-size="12.5" font-weight="700" fill="#9a3412">MinIO 对象存储 ×1（S3 兼容）</text>
+  <text x="416" y="496" font-size="11" fill="#475569">2–4 vCPU · 4–8 GB · 单节点</text>
+  <text x="416" y="518" font-size="12" font-weight="700" fill="#c2410c">💽 磁盘按存量起：500 GB–1 TB 起步</text>
+  <text x="416" y="537" font-size="11" fill="#475569">文件：招标 / 标书 / PPT / 附件</text>
+  <text x="416" y="558" font-size="11" fill="#475569">不浪费：按真实增长加盘</text>
+
+  <!-- 纵向箭头 -->
+  <line x1="400" y1="164" x2="400" y2="178" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#arrv)"/>
+  <line x1="400" y1="292" x2="400" y2="306" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#arrv)"/>
+  <line x1="400" y1="408" x2="400" y2="422" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#arrv)"/>
+
+  <!-- 右列：外部依赖 -->
+  <rect x="800" y="80" width="260" height="232" rx="12" fill="#ffffff" stroke="#94a3b8" stroke-width="1.3" filter="url(#sh)"/>
+  <text x="816" y="104" font-size="13" font-weight="700" fill="#334155">外部依赖（SaaS·不占资源）</text>
+  <rect x="816" y="116" width="228" height="52" rx="9" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="832" y="138" font-size="12" font-weight="600" fill="#1e293b">支付宝开放平台</text>
+  <text x="832" y="156" font-size="10.5" fill="#475569">单笔支付 + 周期代扣 / 自动续费</text>
+  <rect x="816" y="176" width="228" height="46" rx="9" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="832" y="196" font-size="12" font-weight="600" fill="#1e293b">阿里云短信</text>
+  <text x="832" y="213" font-size="10.5" fill="#475569">登录验证码 · 续费提醒</text>
+  <rect x="816" y="230" width="228" height="68" rx="9" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="832" y="250" font-size="12" font-weight="600" fill="#1e293b">国产大模型 API</text>
+  <text x="832" y="268" font-size="10.5" fill="#475569">DeepSeek / 通义千问 / 智谱</text>
+  <text x="832" y="285" font-size="10.5" fill="#475569">经 Model Gateway · 按 token 计费</text>
+
+  <!-- 右列：升级提示 -->
+  <rect x="800" y="332" width="260" height="100" rx="12" fill="#ecfdf5" stroke="#10b981" stroke-width="1.3"/>
+  <text x="816" y="356" font-size="13" font-weight="700" fill="#065f46">用户量上来 → 升生产档</text>
+  <text x="816" y="376" font-size="10.5" fill="#475569">无状态：副本 ×1 → ×N（加节点）</text>
+  <text x="816" y="393" font-size="10.5" fill="#475569">PG/Redis：加主备热备</text>
+  <text x="816" y="410" font-size="10.5" fill="#475569">MinIO：转分布式纠删码</text>
+  <text x="816" y="427" font-size="10.5" fill="#047857">配置不变，只加副本/主备 → §13.2</text>
+
+  <!-- 资源合计 -->
+  <rect x="40" y="600" width="1020" height="68" rx="12" fill="#ecfdf5" stroke="#10b981" stroke-width="1.3"/>
+  <text x="56" y="624" font-size="13" font-weight="700" fill="#065f46">起步推广合计（单副本，不含外部 SaaS）</text>
+  <text x="56" y="646" font-size="12.5" font-weight="700" fill="#047857">≈ 20 vCPU　·　≈ 44 GB 内存　·　≈ 1 TB 磁盘起步（按存量加盘）</text>
+  <text x="56" y="662" font-size="11" fill="#475569">约为起步生产档（§13.2）的一半：去掉前端/App API/Agent 的冗余副本 + 去掉 PG/Redis 主备；单服务规格完全不变</text>
+
+  <!-- 取舍 -->
+  <rect x="40" y="684" width="1020" height="80" rx="12" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="56" y="706" font-size="12.5" font-weight="700" fill="#92400e">取舍（推广初期可接受）</text>
+  <text x="56" y="725" font-size="11.5" fill="#78350f">⚠ 单副本无 HA：某服务/某机故障期间该能力短暂不可用；有状态层靠定时快照（pg_dump + MinIO 同步外部盘）兜底，故障后重建。</text>
+  <text x="56" y="743" font-size="11.5" fill="#78350f">✓ 不浪费：用户少时不为冗余买单；并发/SLA 要求上来，按上表「升生产档」加副本与主备即可，同一套镜像、不改代码。</text>
+  <text x="56" y="759" font-size="10.5" fill="#92400e">注：可单机承载，也可按服务散到 2–3 台小机；关键是「每样 1 个」，不是缩规格。</text>
+</svg>
