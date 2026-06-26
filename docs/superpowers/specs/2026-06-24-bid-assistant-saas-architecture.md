@@ -27,7 +27,7 @@
 |---|---|
 | 部署/合规区域 | 中国大陆 + 云厂商（阿里云/腾讯云），ICP 备案、国内短信、国产大模型 |
 | 应用层技术栈 | **已选 A：Hono + Bun (TS) + Drizzle ORM**（与前端同栈、类型端到端、迭代快；原型已埋 hono）。备选 B/C/D 见 §2.4 |
-| 智能体层技术栈 | **Python + FastAPI + deepagents（LangGraph）** |
+| 智能体层技术栈 | **Python + FastAPI + LangGraph（骨架）+ deepagents（正文等开放式节点）** |
 | 智能体形态 | 单服务 + AgentRegistry，按 `agent_type` 注册多个 deepagent |
 | 支付 | 首版 **支付宝**（单笔 + 周期扣款/自动续费）；微信支付后续接入 |
 | 运营主体 | 已有企业主体（营业执照）→ 可申请支付宝周期扣款做自动续费 |
@@ -158,32 +158,37 @@
 
 ## 4. 智能体服务详设（可扩展核心）
 
-形态：**一个 Python 服务，内部用 deepagents 框架，按 `agent_type` 注册多个深度智能体。**
+形态：**一个 Python 服务，以 LangGraph 为骨架按 `agent_type` 注册多条工作流；节点按需用 `create_agent` / deepagent / 普通服务（异构）。** 即 **LangGraph + deepagents 混合**：LangGraph 管确定性骨架，deepagents 管开放式节点（正文生成）。
 
 ### 4.1 注册式架构 —— 新增智能体 = 注册一个新类型
+每个 `agent_type` 对外是一个 **`CompiledStateGraph`**（LangGraph 的编译图）；它**可以是一条显式 LangGraph 工作流，也可以整体是一个 deepagent**——对 App 都是统一 run 契约（§4.3），App 无感。
+
 ```python
-# 每个智能体类型 = 一份 deepagent 定义（系统提示 + 工具 + 子智能体 + 模型）
+# agent_type → CompiledStateGraph（LangGraph 工作流 / deepagent，统一对外）
 AGENT_REGISTRY = {
-  "bidding": BiddingDeepAgent,        # 投标智能体（第一个）
-  # 未来扩展：只在这里加一行，服务骨架不动
-  # "contract_review": ContractDeepAgent,
-  # "proposal": ProposalDeepAgent,
+  "bidding": build_bidding_workflow(),   # 投标 = LangGraph 显式工作流，节点异构（见 §4.2）
+  # 未来扩展：加一行即可，服务骨架不动
+  # "contract_review": build_contract_workflow(),
+  # "proposal": build_proposal_workflow(),
 }
 ```
 
-### 4.2 投标智能体的子能力（deepagents subagents）
-对应 PRD 全流程：
+> **为什么投标是"工作流"而非"一个大 deepagent"**：投标流程已知且固定、平台预制（§10）、要按步计费与可观测——骨架交给**显式 LangGraph** 更可控、低风险；只在确需开放式规划的节点（正文生成）才用 deepagent。详见 §4.2 的逐节点框架选型与 §10.2 两层编排。
 
-| 子能力 | 对应页面 | 输入 → 产出 |
-|---|---|---|
-| 读标 `read` | `/read` | 招标文件 → 六大分类解读 + 废标风险点 |
-| 提纲 `outline` | `/outline` | 解读结果 → 技术标/商务标大纲 |
-| 正文 `content` | `/content` | 大纲+RAG → 逐章正文 + 章节级 AI 对话改写 |
-| 审查 `risk` | `/risk` | 招标+投标文件 → 废标风险体检 |
-| 查重 `dedup` | `/risk` | 多份投标文件 → 多维指纹相似度 |
-| 述标 `present` | `/present` | 标书 → **`DeckSpec`（结构化大纲+口播稿+问答）** → 渲染层产 **可下载 .pptx** |
+### 4.2 投标工作流的节点（异构：create_agent / deepagent / 普通服务）
+`bidding` 是一条 **LangGraph 显式工作流**，节点对应 PRD 全流程；**每个节点按性质选最合适的框架**——不强行都用 deepagent：
 
-> deepagents 自带的**规划(todo)、虚拟文件系统、子智能体、人审(HITL)** 契合"写整本标书"的长程任务：主智能体规划章节、子智能体并行写、虚拟 FS 暂存草稿、关键节点回前端让用户确认。
+| 节点 | 页面 | 输入 → 产出 | 框架选型 | 为何 |
+|---|---|---|---|---|
+| 读标 `read` | `/read` | 招标文件 → 六大分类解读 + 废标风险点 | **LangGraph `create_agent`** + 工具 | 结构化抽取/分类，确定性强 |
+| 提纲 `outline` | `/outline` | 解读结果 → 技术标/商务标大纲 | **LangGraph `create_agent`** | 结构化生成，可加轻量规划 |
+| **正文 `content`** | `/content` | 大纲+RAG → 逐章正文 + 章节级 AI 对话改写 | **deepagent** | 长文/多章/需规划+子agent+草稿，开放式（deepagents 甜点） |
+| 审查 `risk` | `/risk` | 招标+投标文件 → 废标风险体检 | **LangGraph**（规则+RAG 比对） | 要可解释、流程别飘 |
+| 查重 `dedup` | `/risk` | 多份投标文件 → 多维指纹相似度 | **普通服务** + 少量 LLM 辅助 | 指纹/相似度算法，基本非 LLM agent |
+| 述标 `present` | `/present` | 标书 → **`DeckSpec`（大纲+口播稿+问答）** → 渲染层产 **.pptx** | **LangGraph `create_agent`** | 产结构化 DeckSpec；要多轮打磨再上 deepagent |
+
+> **deepagent 只在「正文生成」节点用**：它自带的规划(todo)/虚拟文件系统/子智能体/HITL 契合"写整本标书"——主 agent 规划章节、子 agent 并行写、虚拟 FS 暂存草稿、关键处回审；配虚拟 FS 还能随 checkpoint 续跑（§4.7）。其余节点用更确定的 `create_agent` / 普通服务，便于**按步计费**与**可解释**。
+> **关键**：`deepagents = create_agent + middleware(Filesystem/SubAgent/TodoList)`，所以骨架统一 LangGraph，哪个节点真需要就叠 deepagent 的 middleware——**一个节点一个决定，可增量、可回退**；deepagents 的不确定性与版本风险（#573/#1251，§4.7）**关在单个节点内**，对 App 的统一 run 契约不变。
 
 #### 4.2.1 述标 PPT 生成：「智能体产稿 + 渲染层产文件」两段式
 让 LLM 直接吐 PPT 二进制必然不稳。把生成拆成两层，职责清晰、结果可复现：
@@ -294,6 +299,33 @@ deepagent 一次 run 是**分钟级、CPU/内存重**的长任务（解析 + 规
 ```
 
 **关键：这条缝（队列派发 + pub/sub 回传）从第一天就设计进去。** Phase 1 可把 API/Worker 跑同机甚至同进程快速验证；上生产拆开只是改启动命令 + 加副本，不重写编排代码。与部署图 ③ 智能体层 `Agent API ×2` + `Agent Worker ×2`、Worker 单独扩并发一致。
+
+### 4.7 状态持久化 · LangGraph Checkpointer（配 deepagents）
+LangGraph 用 **checkpointer（`BaseCheckpointSaver`）**在每个 super-step 存盘图状态——这是「Agent 无状态 + 任意 Worker 续跑 + HITL 恢复」的底座。deepagents 建在 LangGraph 上，**checkpointer 直接传给 `create_deep_agent`**。
+
+**选型**：用 **`PostgresSaver`**（`langgraph-checkpoint-postgres`），落在已有中间件 PG（裸机）的**单独 schema/库**，归 Agent Service 自管。
+```python
+from langgraph.checkpoint.postgres import PostgresSaver
+agent = create_deep_agent(..., checkpointer=PostgresSaver(...))   # deepagents 直接吃
+# 每次执行带 thread_id：
+agent.invoke(input, config={"configurable": {"thread_id": run_id}})
+```
+
+**带来什么（对应已设计的能力）**：
+1. **HITL interrupt/resume** —— §4.3 的 `POST /runs/{run_id}/resume` 就靠它：节点 `interrupt` → 用户确认 → 从 checkpoint 续跑（**HITL 必须有 checkpointer**）。
+2. **崩溃恢复（durable execution）** —— Worker 跑一半挂了，换个 Worker 从最近 checkpoint 接着跑（§4.6 队列接管的前提）。
+3. **Agent 无状态** —— §13 说的「run 状态在 PG」具体就是 PostgresSaver 的 checkpoint，状态不在进程内，故 k3s 纯轮询不用粘连。
+4. **time-travel** —— 回放某步状态，调长流程。
+
+**deepagents 专属要点（必须讲清）**：
+- **`thread_id` = 我们的 `run_id`**（按 run 开 thread，天然隔离）；通过 `config.configurable.thread_id` 传。
+- **虚拟文件系统会被一起 checkpoint**：我们用 §4.5 的 **`FilesystemBackend`（state 内虚拟 FS）**，所以 deepagents 的**虚拟文件 + 规划 todos + 消息历史全在图 state 里 → 全部进 checkpoint → 可完整续跑**。⚠ 反之若用 sandbox/外部 backend，文件落在 state 之外、**不进 checkpoint**——这是选 backend 时的隐藏差异，我们选虚拟 FS 正好规避。
+- **⚠ 子智能体的 checkpoint 短板（deepagents #573，已修但版本相关）**：历史上**主 agent 有 checkpointer、子 agent 编译时没传**，导致：① 子 agent 中间过程（工具调用/推理）不被持久化，只把**最终文本**回传主 agent；② 崩溃时只能从主 agent 的「派子任务前/后」最近 checkpoint 恢复，**不能从子 agent 执行中途续跑**。落地时**锁定 deepagents 版本并验证该修复是否生效**；若用到受影响版本，按官方建议「先建 checkpointer 再建 agent / 给子 agent 显式传 checkpointer」处理（与之前记录的 config 不向子 agent 传播是同源问题）。
+
+**两层状态别混**（把 §13 措辞说精确）：
+- **进度/增量产出 → Redis pub/sub**（易失，仅推流 SSE 用，§4.6）。
+- **可靠执行状态 → PG checkpointer**（持久，续跑/HITL 用）。
+- checkpointer 表是「智能体执行状态」，与 App 的 `agent_runs`（业务桥接：run_id/usage/积分关联）**分两处**，守边界②。
 
 ---
 
@@ -515,10 +547,12 @@ deepagents 建在 LangGraph 上，`create_deep_agent()` 返回一个编译好的
 
 | 层 | 编排方式 | 用途 |
 |---|---|---|
-| **① deepagent 内部** | **动态、LLM 驱动**（`write_todos` 规划 + `task` 委派子智能体 + 虚拟文件系统），非静态 DAG | "写整章标书"等需 AI 临场规划的复杂能力 |
-| **② 跨 deepagent / 工作流层** | **平台预制的显式编排**：每个 deepagent 是 `CompiledStateGraph`，可作 LangGraph 节点/子智能体组合 | 投标全流程：读标→提纲→生成→审查 |
+| **② 工作流层（外层 · 骨架）** | **平台预制的显式 LangGraph 编排**：节点异构（`create_agent` / deepagent / 普通服务），按已知流程串接 | 投标全流程：读标→提纲→正文→审查→查重→述标 |
+| **① 节点内部（内层 · 仅开放式节点）** | **动态、LLM 驱动**（`write_todos` 规划 + `task` 子智能体 + 虚拟 FS），非静态 DAG | **只有「正文生成」**这类需 AI 临场规划的节点用 deepagent |
 
-> 官方支持组合：任意 `CompiledStateGraph` 可作为 subagent 传入；deepagent 本身即 `CompiledStateGraph`，故可作外层图节点。deepagents 自身**不含可视化编辑器**（图可视化由独立的 LangGraph Studio 提供，面向开发者调试，非 C 端拖拽编排）。
+> **逐节点框架选型（§4.2）**：读标/提纲/述标 = `create_agent`；正文 = deepagent；审查 = LangGraph（可解释）；查重 = 普通服务。外层始终是显式 LangGraph 工作流——**确定性、按步计费、可观测、低风险都靠它**；deepagent 的动态性只关在正文节点内。
+
+> 官方支持组合：任意 `CompiledStateGraph` 可作为 subagent/节点；`create_agent` 与 deepagent 产出的都是 `CompiledStateGraph`，故可在同一外层 LangGraph 图里**混插异构节点**。deepagents 自身**不含可视化编辑器**（图可视化由独立的 LangGraph Studio 提供，面向开发者调试，非 C 端拖拽编排）。
 
 **两条诚实的边界（实现时注意）**：
 1. "deepagent 当外层图节点 / 互相嵌套"靠类型契约成立，但**官方缺逐字示例**，这部分拼装需自行在 LangGraph 层实现。
@@ -620,7 +654,7 @@ deepagents 建在 LangGraph 上，`create_deep_agent()` 返回一个编译好的
 
 | 层 | 怎么扩节点（k3s 原语） |
 |---|---|
-| 无状态 · HTTP（前端/App API/**Agent API**） | `kubectl scale` 调 `replicas`（或 **HPA** 按 CPU 自动）；**ClusterIP Service + kube-proxy 自动 LB**，新 Pod 自动纳入端点。Agent API **无状态**（run 状态在 Redis/PG），任意 Pod 应答任意请求，**无需会话粘连** |
+| 无状态 · HTTP（前端/App API/**Agent API**） | `kubectl scale` 调 `replicas`（或 **HPA** 按 CPU 自动）；**ClusterIP Service + kube-proxy 自动 LB**，新 Pod 自动纳入端点。Agent API **无状态**（run 状态在 PG checkpointer，§4.7），任意 Pod 应答任意请求，**无需会话粘连** |
 | 无状态 · 执行（**Agent Worker**） | 调 `replicas`（或 **KEDA** 按 Redis Stream 队列长度自动扩）；**队列竞争消费**天然均摊，加 Pod 即多一个消费者 |
 | 整机算力 | `k3s agent join` 加 worker 节点，Pod 自动调度铺开 |
 | 定时任务（代扣/对账） | **k8s CronJob** 单次触发（或沿用 Redis 锁单例 Cron）；业务幂等兜底 |
@@ -675,9 +709,9 @@ deepagents 建在 LangGraph 上，`create_deep_agent()` 返回一个编译好的
 | **南北向入口** | k3s 自带 **Traefik Ingress** + **ServiceLB(klipper)/MetalLB** 给裸机分配外部 IP |
 | **定时任务（代扣/对账）** | **k8s CronJob**（或沿用 Redis 锁单例 Cron） |
 
-**关键前提**：`Agent API` 无状态（run 状态在 Redis/PG）——所以 LB 纯轮询、**无需会话粘连**；给它 `/healthz` 就绪探针，k3s 据此摘除坏 Pod。
+**关键前提**：`Agent API` 无状态（run 状态在 PG checkpointer，§4.7；进度走 Redis pub/sub）——所以 LB 纯轮询、**无需会话粘连**；给它 `/healthz` 就绪探针，k3s 据此摘除坏 Pod。
 
-**为何此阶段不需要 Nacos**：`Service=服务发现`、`kube-proxy=负载均衡`、`ConfigMap/Secret=配置中心`，三者已覆盖 Nacos 的核心职责；待将来拆成**多个独立智能体服务**或需要统一动态配置中心时，再按需引入 Nacos（与阿里云/国产生态契合，§4.7 演进）。
+**为何此阶段不需要 Nacos**：`Service=服务发现`、`kube-proxy=负载均衡`、`ConfigMap/Secret=配置中心`，三者已覆盖 Nacos 的核心职责；待将来拆成**多个独立智能体服务**或需要统一动态配置中心时，再按需引入 Nacos（与阿里云/国产生态契合）。
 
 **三档同源**：同一套 manifest，单副本 `replicas:1`（HPA 关）→ 起步生产 `replicas:2–3 + HPA` → 扩节点 `k3s agent join + KEDA/HPA + MinIO 分布式`，**只改 replicas、不改代码、不改单服务规格**。
 
