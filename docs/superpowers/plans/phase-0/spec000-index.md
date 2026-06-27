@@ -11,7 +11,8 @@
 | **spec001** | Monorepo 重构 + 工具链 | Bun workspaces；现有 C 端原型→`apps/web`、admin-front→`apps/admin`；根 tsconfig/lint/format/test 就位；`bun install` 通过、两端仍能构建 | — |
 | **spec002** | App API 骨架（Hono+Bun） | `apps/api` 起服务；`GET /healthz` 200；env(Zod) 校验；Drizzle 连通 PG16 `bidsaas`；`GET /readyz` 探活 DB | spec001 |
 | **spec003** | 鉴权数据模型 + 迁移 | `users`(账号本体) + `user_identities`(可插拔身份·为微信等预留) + `sessions`；迁移到 bidsaas；用户/身份/会话仓储 | spec002 |
-| **spec004** | 手机号验证码鉴权 | 阿里云短信发码/校验、会话签发（JWT+sessions）、`/auth/*` 接口 + 鉴权中间件 | spec003 |
+| **spec004** | 手机号验证码鉴权 | 阿里云短信发码/校验、不透明 Bearer 令牌（落 `sessions` 可撤销）、`/auth/*` + 鉴权中间件；**防刷：滑块默认开（开发 DevPass/生产 fail-closed）+ 限频四层默认关可逐开** | spec003 |
+| **spec004.1** | 滑块验证码落地 | 真实阿里云验证码2.0 校验器（`@alicloud/captcha20230305`）+ 前端滑块组件；待验证码凭据就绪写 | spec004、spec005 |
 | **spec005** | 前端接入登录 | `apps/web` `/login` 接真实 `/auth/*`，登录态持久化 + 路由守卫，端到端登录 | spec004 |
 | **spec006** | 文件直传（MinIO/S3） | File 模块预签名直传/直下（bucket `bidsaas`）、`project_files` 元数据、接 `/upload` | spec004 |
 | **spec007** | 容器化与部署 | `oven/bun` Dockerfile、本地 compose、部署到服务器、基础 CI、**反代双子域路由**（`app.`/`admin.` → web/admin，§3.3） | spec002–006 |
@@ -29,7 +30,7 @@
 **App API 技术栈**
 - Web 框架 **Hono `4.12.25`**（与原型 `package.json` overrides 锁定一致，运行时无关）。
 - ORM **Drizzle**（纯 JS）+ 驱动 `postgres`（postgres-js，纯 JS）。
-- 校验 **Zod**。鉴权 JWT（`hono/jwt`）+ DB `sessions` 双轨。
+- 校验 **Zod**。鉴权：**不透明 Bearer 令牌**（随机串，DB 只存 sha256 哈希）+ DB `sessions`（可撤销）；如后续需无状态校验（如智能体服务免查库）再叠 JWT 接入层。
 
 **数据与中间件（已就绪，详见架构 §14；真实值在仓库根 `.env.bidsaas.local`，已 gitignore）**
 - PostgreSQL **16.1 + pgvector**，库 `bidsaas`，schema `public`(业务+账本) / `langgraph`(后续 checkpointer)。
