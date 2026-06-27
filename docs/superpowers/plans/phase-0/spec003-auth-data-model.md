@@ -54,7 +54,7 @@ apps/api/
   - 用户/身份仓储 `repos/users.ts`：
     - `getUserById(id: string): Promise<User | null>`
     - `findUserByIdentity(provider: IdentityProvider, identifier: string): Promise<User | null>`
-    - `createUserWithIdentity(input: { provider: IdentityProvider; identifier: string; verifiedAt?: Date; nickname?: string }): Promise<User>`（事务内建 user + identity）
+    - `createUserWithIdentity(input: { provider: IdentityProvider; identifier: string; verifiedAt?: Date; nickname?: string; termsAgreedAt?: Date }): Promise<User>`（事务内建 user + identity）
     - `addIdentity(userId: string, provider: IdentityProvider, identifier: string, verifiedAt?: Date): Promise<void>`（账号绑定）
   - 会话仓储 `repos/sessions.ts`：
     - `createSession(input: { userId: string; tokenHash: string; expiresAt: Date; userAgent?: string; ip?: string }): Promise<Session>`
@@ -90,6 +90,7 @@ export const users = pgTable("users", {
   status: userStatus("status").notNull().default("active"),
   nickname: text("nickname"),
   avatarUrl: text("avatar_url"),
+  termsAgreedAt: timestamp("terms_agreed_at", { withTimezone: true }), // 注册即同意协议的时间（合规留痕）
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 })
@@ -333,9 +334,13 @@ export async function createUserWithIdentity(input: {
   identifier: string
   verifiedAt?: Date
   nickname?: string
+  termsAgreedAt?: Date
 }): Promise<User> {
   return db.transaction(async (tx) => {
-    const [u] = await tx.insert(users).values({ nickname: input.nickname ?? null }).returning()
+    const [u] = await tx
+      .insert(users)
+      .values({ nickname: input.nickname ?? null, termsAgreedAt: input.termsAgreedAt ?? null })
+      .returning()
     await tx.insert(userIdentities).values({
       userId: u!.id,
       provider: input.provider,

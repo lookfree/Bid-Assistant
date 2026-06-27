@@ -49,7 +49,7 @@ apps/api/
   - 类型 `SmsCodeService = { request(input: { phone: string; ip?: string }): Promise<{ ok: true } | { ok: false; reason: "cooldown" | "rate_limited"; retryAfter?: number }>; verify(phone: string, code: string): Promise<boolean> }`（多层防刷见 Task 3）
   - HTTP 契约（`apps/web` spec005 调用）：
     - `POST /auth/sms/send` body `{ phone, captchaToken? }` → `200 { ok: true }` / `429 { error:"too_many_requests", retryAfter? }`（冷却或限频）/ `403 { error:"captcha_required" }`（开启人机验证且未过）/ `400 { error }`
-    - `POST /auth/sms/verify` body `{ phone, code }` → `200 { token, user: { id, nickname } }` / `401 { error:"invalid_code" }`
+    - `POST /auth/sms/verify` body `{ phone, code, agreedToTerms? }` → `200 { token, isNew, user: { id, nickname } }` / `401 { error:"invalid_code" }` / `400 { error:"terms_required" }`（未注册手机号自动建号，**首次需 `agreedToTerms:true`**；`isNew` 标识是否首次建号）
     - `GET /auth/me`（Bearer）→ `200 { id, nickname, status }` / `401`
     - `POST /auth/logout`（Bearer）→ `200 { ok: true }`
   - `authMiddleware`（Hono）：校验 `Authorization: Bearer <token>`，成功把 `User` 放入 `c.var.user`，否则 401。
@@ -487,19 +487,35 @@ export function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex")
 }
 
+/** 未注册手机号需先同意协议才会自动建号；否则拒绝。 */
+export class TermsRequiredError extends Error {
+  constructor() {
+    super("terms_required")
+  }
+}
+
 export async function loginWithPhone(
   phone: string,
-  meta: { userAgent?: string; ip?: string },
+  meta: { userAgent?: string; ip?: string; agreedToTerms?: boolean },
   ttlDays: number,
-): Promise<{ token: string; user: User }> {
+): Promise<{ token: string; user: User; isNew: boolean }> {
   let user = await findUserByIdentity("phone", phone)
+  let isNew = false
   if (!user) {
-    user = await createUserWithIdentity({ provider: "phone", identifier: phone, verifiedAt: new Date() })
+    // 验证码登录即注册：首次必须带协议同意
+    if (!meta.agreedToTerms) throw new TermsRequiredError()
+    user = await createUserWithIdentity({
+      provider: "phone",
+      identifier: phone,
+      verifiedAt: new Date(),
+      termsAgreedAt: new Date(),
+    })
+    isNew = true
   }
   const token = randomBytes(32).toString("hex")
   const expiresAt = new Date(Date.now() + ttlDays * 86_400_000)
   await createSession({ userId: user.id, tokenHash: hashToken(token), expiresAt, userAgent: meta.userAgent, ip: meta.ip })
-  return { token, user }
+  return { token, user, isNew }
 }
 
 export async function resolveUserFromToken(token: string): Promise<User | null> {
@@ -582,12 +598,16 @@ export function createCaptchaVerifier(env: Env): CaptchaVerifier {
 import { Hono } from "hono"
 import { z } from "zod"
 import { authMiddleware } from "../middleware/auth"
-import { loginWithPhone, logout } from "../services/auth"
+import { loginWithPhone, logout, TermsRequiredError } from "../services/auth"
 import type { SmsCodeService } from "../services/sms-code"
 
 const phoneRe = /^\+?\d{6,15}$/
 const sendSchema = z.object({ phone: z.string().regex(phoneRe), captchaToken: z.string().optional() })
-const verifySchema = z.object({ phone: z.string().regex(phoneRe), code: z.string().regex(/^\d{6}$/) })
+const verifySchema = z.object({
+  phone: z.string().regex(phoneRe),
+  code: z.string().regex(/^\d{6}$/),
+  agreedToTerms: z.boolean().optional(), // 首次注册必须为 true
+})
 
 export type AuthRouteDeps = {
   smsCode: SmsCodeService
@@ -617,12 +637,17 @@ export function authRoutes(deps: AuthRouteDeps) {
     const ok = await deps.smsCode.verify(body.data.phone, body.data.code)
     if (!ok) return c.json({ error: "invalid_code" }, 401)
     const ip = c.req.header("X-Forwarded-For")?.split(",")[0]?.trim() || c.req.header("X-Real-IP")
-    const { token, user } = await loginWithPhone(
-      body.data.phone,
-      { userAgent: c.req.header("User-Agent"), ip },
-      deps.sessionTtlDays,
-    )
-    return c.json({ token, user: { id: user.id, nickname: user.nickname } })
+    try {
+      const { token, user, isNew } = await loginWithPhone(
+        body.data.phone,
+        { userAgent: c.req.header("User-Agent"), ip, agreedToTerms: body.data.agreedToTerms },
+        deps.sessionTtlDays,
+      )
+      return c.json({ token, isNew, user: { id: user.id, nickname: user.nickname } })
+    } catch (e) {
+      if (e instanceof TermsRequiredError) return c.json({ error: "terms_required" }, 400)
+      throw e
+    }
   })
 
   r.get("/me", authMiddleware, (c) => {
@@ -686,6 +711,7 @@ import { users } from "../../src/db/schema"
 import { eq } from "drizzle-orm"
 
 const phone = `+8613${Date.now().toString().slice(-9)}`
+const freshPhone = `+8613${(Date.now() + 7).toString().slice(-9)}` // 用于 terms_required（不建号）
 const FIXED = "123456"
 
 // 假验证码服务：固定码 123456，便于路由测试不依赖 Redis
@@ -695,8 +721,10 @@ const fakeSms: SmsCodeService = {
 }
 
 afterAll(async () => {
-  const u = await findUserByIdentity("phone", phone)
-  if (u) await db.delete(users).where(eq(users.id, u.id))
+  for (const p of [phone, freshPhone]) {
+    const u = await findUserByIdentity("phone", p)
+    if (u) await db.delete(users).where(eq(users.id, u.id))
+  }
 })
 
 describe("/auth flow", () => {
@@ -716,13 +744,24 @@ describe("/auth flow", () => {
     expect(res.status).toBe(401)
   })
 
-  it("verify -> token; /me with token -> user; /me without -> 401", async () => {
+  it("新号未同意协议 -> 400 terms_required", async () => {
+    const res = await app.request("/auth/sms/verify", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ phone: freshPhone, code: FIXED }), // 无 agreedToTerms
+    })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toBe("terms_required")
+  })
+
+  it("verify(同意协议) -> token + isNew; /me with token -> user; /me without -> 401", async () => {
     const vr = await app.request("/auth/sms/verify", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ phone, code: FIXED }),
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ phone, code: FIXED, agreedToTerms: true }),
     })
     expect(vr.status).toBe(200)
-    const { token } = (await vr.json()) as { token: string }
+    const { token, isNew } = (await vr.json()) as { token: string; isNew: boolean }
     expect(token).toMatch(/^[0-9a-f]{64}$/)
+    expect(isNew).toBe(true) // 首次自动建号
 
     const me = await app.request("/auth/me", { headers: { Authorization: `Bearer ${token}` } })
     expect(me.status).toBe(200)
