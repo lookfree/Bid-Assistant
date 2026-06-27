@@ -378,8 +378,8 @@ credit_transactions（只追加，每行一笔变动）
 
 | 组 | 主要表 | 职责 |
 |---|---|---|
-| **账号** | `users`、`sessions` | 手机号、登录态 |
-| **运营后台** | `admin_users`、`admin_roles`(superadmin/ops/finance/support)、`admin_audit_logs` | 运营人员账号、RBAC 角色/权限、敏感操作审计（改套餐/调积分/退款/封禁均留前后值） |
+| **账号** | `users`(账号本体)、`user_identities`(可插拔登录身份)、`sessions` | 一个账号可绑多种登录方式、登录态（见下注） |
+| **运营后台** | `admin_users`、`admin_roles`(superadmin/ops/finance/support)、`admin_audit_logs` | 运营人员账号、RBAC 角色/权限、敏感操作审计（改套餐/调积分/退款/封禁均留前后值）。**与 C 端 `users` 完全分离**（独立身份/会话/子域，§3.3），Phase 3 建 |
 | **会员订阅** | `plans`(套餐定义·数值全配置注入)、`subscriptions`(档位/周期/auto_renew/agreement_no) | 档位与续费状态 |
 | **计费** | `credit_transactions`(账本·含 referral_reward)、`credit_balances`(余额缓存)、`payment_orders`、`payment_agreements`(代扣签约)、`refunds` | 积分 + 支付 |
 | **推荐与配置** | `referrals`(邀请关系·reward_state pending/unlocked/capped)、`billing_configs`(键值：积分口径/充值包/汇率/有效期/推荐规则/代扣重试，§6.6) | 邀请奖励 + 全参数配置 |
@@ -387,6 +387,21 @@ credit_transactions（只追加，每行一笔变动）
 | **智能体桥接** | `agent_runs`(run_id、agent_type、状态、usage、关联项目/积分事务) | App ↔ 智能体服务的纽带 |
 
 `agent_runs` 是关键桥接表：App 层发起一次 AI 操作就建一条 run，串起"项目 / 积分预扣事务 / 智能体执行 / 产物落库"。
+
+**账号身份模型（C 端，可插拔 · 为第三方登录预留）**：`users` 只存账号本体（id/status/昵称/头像/时间戳），登录方式拆到 `user_identities`：
+```
+user_identities
+  user_id → users.id (cascade)
+  provider     'phone' | 'wechat' | 'alipay' | ...   ← 枚举可扩展，零 schema 改动加新登录
+  identifier   手机号 / 微信 unionid / ...
+  credential   预留(密码哈希等；phone/oauth 不用)
+  verified_at, created_at
+  UNIQUE(provider, identifier)
+```
+- 手机号登录 = `identity(phone, 手机号)`，短信验证通过写 `verified_at`。
+- 第三方登录（微信/支付宝，后续）= 加一条 `identity(wechat, unionid)` + 一个登录路由，不改表。
+- **账号绑定**：已登录用户给自己 `user_id` 再加一条身份 = 把微信绑到现有账号；一个微信-only 用户可暂无手机号、后补绑。
+- Phase 0 仅实现 `phone` provider（spec003/spec004）。
 
 ### 5.3 会员档位
 沿用现有代码的 C 端 3 档（`lib/plans.ts`：免费版 / 个人版 / 专业版），PRD 第 4.2 节列了更细的 5 档，最终档位以产品决策为准；本架构对档位数量无耦合（`plans` 表配置化）。会员中心的"渐进式套餐展示"（当前档+下一档）属前端展示逻辑，沿用原型。

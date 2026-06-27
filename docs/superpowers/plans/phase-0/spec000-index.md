@@ -10,7 +10,7 @@
 |---|---|---|---|
 | **spec001** | Monorepo 重构 + 工具链 | Bun workspaces；现有 C 端原型→`apps/web`、admin-front→`apps/admin`；根 tsconfig/lint/format/test 就位；`bun install` 通过、两端仍能构建 | — |
 | **spec002** | App API 骨架（Hono+Bun） | `apps/api` 起服务；`GET /healthz` 200；env(Zod) 校验；Drizzle 连通 PG16 `bidsaas`；`GET /readyz` 探活 DB | spec001 |
-| **spec003** | 鉴权数据模型 + 迁移 | `users`/`sessions` 表（Drizzle 迁移）；迁移可前进/回滚；种子脚本 | spec002 |
+| **spec003** | 鉴权数据模型 + 迁移 | `users`(账号本体) + `user_identities`(可插拔身份·为微信等预留) + `sessions`；迁移到 bidsaas；用户/身份/会话仓储 | spec002 |
 | **spec004** | 手机号验证码鉴权 | 阿里云短信发码/校验、会话签发（JWT+sessions）、`/auth/*` 接口 + 鉴权中间件 | spec003 |
 | **spec005** | 前端接入登录 | `apps/web` `/login` 接真实 `/auth/*`，登录态持久化 + 路由守卫，端到端登录 | spec004 |
 | **spec006** | 文件直传（MinIO/S3） | File 模块预签名直传/直下（bucket `bidsaas`）、`project_files` 元数据、接 `/upload` | spec004 |
