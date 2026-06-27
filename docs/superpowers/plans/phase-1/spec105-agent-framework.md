@@ -51,6 +51,7 @@ services/agent/tests/framework/
   - `make_compressor_node(gateway, *, max_tokens, keep_recent) -> node`。
   - `BaseAgent`（create_agent 式）：子类设 `agent_type` + 实现 `build(ctx)`（给提示词/工具/钩子）；框架提供 `astream(input, ctx)`、`aresume(value, ctx)`，并在 `__init_subclass__` 自动 `register`。
   - `DeepAgent(BaseAgent)`（deepagent 式）：子类实现 `deep_build(ctx)`（给 instructions/tools/subagents）；框架用动态规划(todos) + 子智能体(task) + 虚拟 FS 编译成图，复用同一 `astream`/registry/观测/HITL。
+  - `build_create_agent(prompt: str, tools: list, ctx) -> CompiledStateGraph`（`framework/create_agent.py`）：把「提示词 + 工具」编成一个**可 `ainvoke` 的 create_agent 子图**（含 agent_node + resilient_tool_node 循环、走 ctx 的 gateway/recorder，不含 checkpointer/interrupt）。供 **Phase 2 工作流节点**（提纲/审查/述标等，spec202/204/205）在图节点内部跑确定性子 agent 用；也是 `BaseAgent._compile_single_loop` 的底层。
 
 ---
 
@@ -572,11 +573,13 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ## Task 7: BaseAgent 组装 + 示例 agent 端到端（base_agent.py）
 
-**Files:** Create `framework/base_agent.py`、`tests/framework/test_base_agent.py`
+**Files:** Create `framework/create_agent.py`、`framework/base_agent.py`、`tests/framework/test_base_agent.py`
 
 **Interfaces:**
 - Consumes: spec104 `RunContext`/`register`/`get_checkpointer`；本 spec 各原语。
-- Produces: `BaseAgent`（子类化 = 新 agent_type）。
+- Produces: `BaseAgent`（子类化 = 新 agent_type）；`build_create_agent(prompt, tools, ctx) -> CompiledStateGraph`（可 `ainvoke` 的确定性子图）。
+
+> **先抽出 `framework/create_agent.py` 的 `build_create_agent(prompt, tools, ctx)`**：用 `StateGraph` 接 `agent_node`（`run_turn` 跑 Hook + `ctx.gateway` LLM）+ `resilient_tool_node(tools)` + `tools_condition` 成环，`compile()`（**不带 checkpointer/interrupt**），返回可 `ainvoke({"messages":[...]})` 的子图。`BaseAgent._compile_single_loop` 复用它（再叠 checkpointer）；Phase 2 工作流节点（spec202/204/205）在节点内直接调它跑确定性子 agent。下面 Step 1 的建图逻辑即据此拆分。
 
 - [ ] **Step 1: 实现 `framework/base_agent.py`**
 

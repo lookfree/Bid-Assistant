@@ -184,7 +184,7 @@ C 端前端与运营后台是**两个独立部署的 Next.js 应用**（`apps/we
 ```python
 # agent_type → CompiledStateGraph（LangGraph 工作流 / deepagent，统一对外）
 AGENT_REGISTRY = {
-  "bidding": build_bidding_workflow(),   # 投标 = LangGraph 显式工作流，节点异构（见 §4.2）
+  "bidding_agent": build_bidding_workflow(),   # 投标 = LangGraph 显式工作流，节点异构（见 §4.2）
   # 未来扩展：加一行即可，服务骨架不动
   # "contract_review": build_contract_workflow(),
   # "proposal": build_proposal_workflow(),
@@ -194,7 +194,7 @@ AGENT_REGISTRY = {
 > **为什么投标是"工作流"而非"一个大 deepagent"**：投标流程已知且固定、平台预制（§10）、要按步计费与可观测——骨架交给**显式 LangGraph** 更可控、低风险；只在确需开放式规划的节点（正文生成）才用 deepagent。详见 §4.2 的逐节点框架选型与 §10.2 两层编排。
 
 ### 4.2 投标工作流的节点（异构：create_agent / deepagent / 普通服务）
-`bidding` 是一条 **LangGraph 显式工作流**，节点对应 PRD 全流程；**每个节点按性质选最合适的框架**——不强行都用 deepagent：
+`bidding_agent` 是一条 **LangGraph 显式工作流**，节点对应 PRD 全流程；**每个节点按性质选最合适的框架**——不强行都用 deepagent：
 
 | 节点 | 页面 | 输入 → 产出 | 框架选型 | 为何 |
 |---|---|---|---|---|
@@ -528,7 +528,7 @@ Billing 模块
 ```
 1. Web /content 点「AI 生成本章」
 2. App API：校验登录 → 校验积分余额 → 写 hold(-80) 预扣 → 建 agent_run → 入队
-3. App API → Agent Service：POST /agents/bidding/runs（input=章节+大纲+RAG上下文）
+3. App API → Agent Service：POST /agents/bidding_agent/runs（input=章节+大纲+RAG上下文）
 4. Agent Service：deepagent 执行（解析→RAG检索→生成），SSE 流式吐增量正文
 5. 增量经 App API/SSE 回传 Web，实时渲染
 6. 完成 → Agent Service 上报 usage → App API：settle 结算积分（多退少补）
@@ -540,7 +540,7 @@ Billing 模块
 ```
 1. Web /present 选时长(10/15/20)+企业模板 → 点「生成述标 PPT」
 2. App API：校验登录 → 校验/预扣积分 → 建 agent_run → 入队
-3. App API → Agent Service：POST /agents/bidding/runs（input=标书 chapters + 时长 + 模板id）
+3. App API → Agent Service：POST /agents/bidding_agent/runs（input=标书 chapters + 时长 + 模板id）
 4. Agent Service：述标子能力（LLM）产 DeckSpec（大纲+口播稿+问答，JSON）
         → 渲染器（python-pptx，确定性）套模板渲染 .pptx → 上传对象存储(MinIO)
 5. SSE 回传 DeckSpec → 前端复用现有 /present 结构实时预览

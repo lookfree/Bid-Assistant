@@ -243,7 +243,7 @@ def test_full_run_records_and_usage_summary():
     rec = Recorder(pool)
     run_id = str(uuid.uuid4())
     thread_id = str(uuid.uuid4())  # 会话键（与 run_id 不同，体现"会话含多 run"）
-    agent_type = "bidding"
+    agent_type = "bidding_agent"
     try:
         rec.start_run(run_id, agent_type, thread_id=thread_id, file_refs=["uploads/x/y.pdf"])
         rec.log_event(run_id, agent_type, "node.start", node="read", thread_id=thread_id,

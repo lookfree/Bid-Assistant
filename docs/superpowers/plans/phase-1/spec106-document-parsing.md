@@ -48,6 +48,7 @@ services/agent/
   - `read_bytes(key: str) -> bytes`（MinIO）。
   - `read_and_parse(key: str) -> ParsedDoc`。
   - `parse_document_tool` / `make_parse_tool()`（LangChain 工具：入参 key → 返回文本）。
+  - `storage`（异步 facade 单例）：`await storage.read_bytes(key)`、`await storage.put_bytes(key, data, content_type=...)`——供 **Phase 2 产物回写**（spec205 `.pptx` / spec206 `.docx`）。
 
 ---
 
@@ -122,12 +123,28 @@ def read_bytes(key: str) -> bytes:
 
 
 def _put_bytes(key: str, data: bytes, content_type: str = "application/octet-stream") -> None:
-    """仅测试/工具用：上传字节。"""
+    """仅测试/工具用：上传字节（同步）。"""
     _s3().put_object(Bucket=settings.minio_bucket, Key=key, Body=data, ContentType=content_type)
 
 
 def _delete(key: str) -> None:
     _s3().delete_object(Bucket=settings.minio_bucket, Key=key)
+
+
+class _Storage:
+    """异步存储 facade（boto3 同步，用 to_thread 包成 async）。
+    供 Phase 2 渲染产物回写用：述标 .pptx（spec205）、完整标书 .docx（spec206）。"""
+    async def read_bytes(self, key: str) -> bytes:
+        import asyncio
+        return await asyncio.to_thread(read_bytes, key)
+
+    async def put_bytes(self, key: str, data: bytes,
+                        content_type: str = "application/octet-stream") -> None:
+        import asyncio
+        await asyncio.to_thread(_put_bytes, key, data, content_type)
+
+
+storage = _Storage()   # 单例：from agent.parsing.storage_read import storage
 ```
 
 - [ ] **Step 5: 冒烟（真 MinIO 读写）+ 提交**

@@ -237,7 +237,7 @@ def test_invoke_failover_to_second_provider(monkeypatch):
 
     monkeypatch.setattr(gw, "get_chat", fake_get_chat)
     rec = _Rec()
-    resp = gw.invoke([("user", "hi")], recorder=rec, run_id="r1", agent_type="bidding", node="read")
+    resp = gw.invoke([("user", "hi")], recorder=rec, run_id="r1", agent_type="bidding_agent", node="read")
     assert resp.usage_metadata["input_tokens"] == 100   # 来自回退的 qwen
     assert len(rec.usages) == 1                          # 成功那次记了用量
     assert len(rec.events) >= 1                          # deepseek 失败记了 model.error
@@ -248,7 +248,7 @@ def test_invoke_all_fail_raises(monkeypatch):
     monkeypatch.setattr(gw, "get_chat", lambda *a, **k: SimpleNamespace(
         model_name="m", invoke=lambda _m: (_ for _ in ()).throw(RuntimeError("boom"))))
     with pytest.raises(RuntimeError):
-        gw.invoke([("user", "x")], recorder=_Rec(), run_id="r2", agent_type="bidding")
+        gw.invoke([("user", "x")], recorder=_Rec(), run_id="r2", agent_type="bidding_agent")
 ```
 
 - [ ] **Step 2: 运行确认失败**
