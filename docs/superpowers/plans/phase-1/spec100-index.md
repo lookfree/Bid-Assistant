@@ -6,17 +6,21 @@
 
 ## spec 清单与依赖顺序
 
+> **框架优先**：本服务做成**可复用的智能体框架**，投标=框架上的**第一个 `agent_type`**；后续"合同审查/方案撰写"等只写一个 `BaseAgent` 子类 + 注册，复用全部框架层。框架同时支持两类节点：**create_agent 式**（确定性，如读标/审查）与 **deepagent 式**（动态规划 + 子智能体 + 虚拟 FS，如正文生成）。
+
 | spec | 主题 | 交付物（可测） | 依赖 |
 |---|---|---|---|
 | **spec101** | Agent Service 骨架 | `services/agent` Python(uv)+FastAPI；`/healthz`/`/readyz`；env(Pydantic)；api/worker 双角色脚手架；连 bidsaas | Phase 0 中间件 |
-| **spec102** | 观测与埋点（横切，§4.4） | **`agent` schema** 三表 `agent_request`/`agent_event_log`/`agent_token_usage`（+可选 `agent_tool_call`），**每表带 `agent_type`**，token 记 **input/output/cached**；`Recorder` 埋点器 | spec101 |
-| **spec103** | 模型网关 Model Gateway | DeepSeek/通义/智谱 OpenAI 兼容接入、按配置切换 + 故障转移；统一 ChatModel；每次调用经 `Recorder.record_usage`（input/output/cached） | spec101、102 |
-| **spec104** | Run 运行时 + 统一契约 | `AGENT_REGISTRY`、`POST /agents/{type}/runs`、`GET /runs/{id}/stream`(SSE)、`GET /runs/{id}`；队列派发 + Worker（§4.6）；**PostgresSaver checkpointer + `setup()` 建 `langgraph` 四表**（§4.7）；事件经 `Recorder` 落库；usage 回调；dummy agent 端到端 | spec101、102 |
-| **spec105** | 文档解析 | docx/pdf/xlsx → 纯文本/结构（横切，§4.4） | spec101 |
-| **spec106** | 读标能力 | 读标 LangGraph 节点（`create_agent`，§4.2）：招标文件 → 六大分类解读 + 废标风险点；SSE 流式；埋点 | spec103、104、105 |
-| **spec107** | App 编排接入（★里程碑） | App API：`agent_runs` 表 + 编排（预扣 stub → 建 run → 调 agent → SSE 中继）+ settle stub（消费 `agent_token_usage` 汇总）+ 接 C 端 `/read` | spec104、106、Phase 0 App API |
+| **spec102** | 观测与埋点（横切，§4.4） | **`agent` schema** 四表，**每表带 `agent_type`**，token 记 input/output/cached/reasoning + ttft/latency；`Recorder` 埋点器 | spec101 |
+| **spec103** | 模型网关 Model Gateway | DeepSeek/通义/智谱 OpenAI 兼容、切换 + 故障转移；每次调用经 `Recorder.record_usage` | spec101、102 |
+| **spec104** | Run 运行时 + 注册 + 契约 | `AGENT_REGISTRY`、`/agents/{type}/runs`、`/runs/{id}`(+SSE)；队列派发 + Worker（§4.6）；**PostgresSaver checkpointer**（§4.7）；事件埋点；usage 回调；dummy 端到端 | spec101、102 |
+| **spec105** | **智能体编写框架** | `BaseAgent` 基类 + **Hook/中间件管线**（上下文注入/输出契约/丢畸形 tool call/工具强制）+ **可插拔 Backend 协议**（in-state/DB/MinIO + `create_backend_tools`）+ **健壮性层**（resilient tool node/幻觉守卫）+ **上下文压缩节点** + **结构化输出 submit-tool** + **`hitl.py` 人机交互** + **deepagent 式节点支持**（动态规划/子智能体/虚拟 FS，配正文生成） | spec103、104 |
+| **spec106** | 文档解析 | docx/pdf/xlsx → 纯文本/结构（横切，§4.4） | spec101 |
+| **spec107** | 读标 = 第一个 agent_type | **建在 spec105 框架上**的 `BaseAgent` 子类：招标文件 → 六大分类解读 + 废标风险点；SSE 流式；埋点 | spec105、106、103 |
+| **spec108** | App 编排接入（★里程碑） | App API：`agent_runs` 表 + 编排（预扣 stub → 建 run → 调 agent → SSE 中继）+ settle stub（消费 `agent_token_usage` 汇总）+ 接 C 端 `/read` | spec104、107、Phase 0 App API |
 
-> 关键路径：101→102→(103/104/105 并行)→106→107。107 把 Phase 0 的 App/前端与 Phase 1 的智能体接通，达成里程碑。
+> 关键路径：101→102→(103/104) →**105 框架**→(106 并行)→**107 第一个智能体**→108 里程碑。
+> **框架层 = 101–105**（与具体智能体无关，可复用）；**第一个智能体 = 107**（投标读标，建在框架上）。
 
 ---
 

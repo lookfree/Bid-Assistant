@@ -243,7 +243,15 @@ POST /runs/{run_id}/resume        HITL 恢复（用户确认后继续）
 ### 4.4 横切能力（所有智能体共享，不重复造）
 文档解析（docx/pdf/xlsx）、RAG 向量检索（招标文件入 pgvector）、Model Gateway（国产大模型可切换 + 故障转移）、用量埋点、限流。
 
-> 复用效果：未来做"合同审查""方案撰写"智能体，复用 Runtime + 横切能力 + 统一 API，只写新的 deepagent 定义和 App 层业务编排即可。
+**智能体编写框架**：把智能体服务做成**可复用框架**，新增智能体 = 写一个 `BaseAgent` 子类 + 注册，复用以下框架层：
+- **BaseAgent 基类** + agent_type 注册 + 统一 `astream` 契约（§4.3）。
+- **Hook/中间件管线**：上下文注入、输出契约校验、丢弃畸形 tool call、工具强制（force tool_choice）、可扩展插点。
+- **可插拔 Backend 协议**（`create_backend_tools` 长出文件工具）：in-state 虚拟 FS（§4.5）/ DB / MinIO 持久后端三选。
+- **健壮性层**：resilient tool node（工具重试）、幻觉守卫、错误自救路由。
+- **上下文压缩节点**（token 窗口管理，长标书生成必需）。
+- **结构化输出 submit-tool**（Pydantic 强约束 schema → 前端事件 / DeckSpec / 标书章节）。
+
+> 复用效果：未来做"合同审查""方案撰写"智能体，复用 Runtime + 上述框架层 + 横切能力 + 统一 API，只写新 agent_type 的 `BaseAgent` 子类 + 节点定义 + App 层业务编排即可。框架与具体智能体解耦。
 
 ### 4.5 执行后端（Backend）选型 —— 不给 agent 开 shell
 
