@@ -56,7 +56,8 @@ services/agent/
   - HTTP 契约（§4.3）：
     - `POST /agents/{agent_type}/runs` body `{ input, thread_id?, file_refs? }` → `200 { run_id }`
     - `GET /runs/{run_id}` → `200 { run_id, status, agent_type, tokens:{...}, duration_ms, result? }`
-    - `GET /runs/{run_id}/stream` → `text/event-stream`（事件：`run.start`/`chunk`/`...`/`run.end`）
+    - `GET /runs/{run_id}/stream` → `text/event-stream`（事件：`run.start`/`chunk`/`hitl.required`/`run.end`）
+    - `POST /runs/{run_id}/resume` body `{ value }` → `200 { run_id }`（HITL：把人审结果回灌、从 checkpoint 续跑，§4.3/§4.7）
 
 ---
 
@@ -514,6 +515,12 @@ async def stream(run_id: str):
 ```
 
 > SSE 用 Redis pub/sub 中继：worker 在另一进程 publish，api 进程订阅转发。生产多副本下，订阅任意 api 实例都能收到（pub/sub 广播）。
+
+**HITL `/runs/{id}/resume`（本 spec 出端点 + 派发，完整实现/测试在 spec105）**：
+- `POST /runs/{id}/resume {value}` → `dispatch.create_resume(run_id, value)`：把 `{type:"resume", run_id, value}` `XADD` 进同一 Stream（worker 据 `type` 分流）。
+- worker 对 resume 任务：用 LangGraph `Command(resume=value)` 在**同一 `thread_id`** 上续跑图（从 checkpoint 恢复），继续 astream + publish。
+- agent 侧用 spec105 `hitl.py::request_human_input()`（封装 `interrupt()`）触发暂停：executor 检测到 `__interrupt__` → 置 `agent_request.status='interrupted'` + publish `hitl.required`（带 prompt/schema）+ 本次 stream 结束。
+- ⚠ **dummy agent 非 LangGraph 图、不能 interrupt**，故本 spec 只落端点 + 派发管线；真正的 interrupt 检测 + 续跑 + HITL 端到端测试随 spec105 的可中断图一起做。
 
 - [ ] **Step 2: `app.py` 挂 runs 路由**
 
