@@ -32,7 +32,7 @@
   <!-- 运营管理后台 -->
   <rect x="484" y="120" width="408" height="80" rx="9" fill="#f5f3ff"/>
   <text x="500" y="146" font-size="14" font-weight="700" fill="#5b21b6">运营管理后台</text>
-  <text x="618" y="146" font-size="11" fill="#7c3aed">新建·原型未含·RBAC</text>
+  <text x="600" y="146" font-size="11" fill="#7c3aed">基于 admin-front 原型·RBAC</text>
   <text x="500" y="170" font-size="11.5" fill="#475569">用户/会员/订单 · 积分账本审计 · 支付对账</text>
   <text x="500" y="190" font-size="11.5" fill="#475569">套餐/积分口径 · 模型&amp;工作流模板配置 · 数据看板</text>
 
