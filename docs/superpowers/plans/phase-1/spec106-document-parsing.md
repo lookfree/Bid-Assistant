@@ -6,6 +6,8 @@
 
 **Architecture:** `parsers` 按类型解析字节流 → `ParsedDoc`；`storage_read` 用 boto3（S3 兼容）从 MinIO 按 key 取字节；`read_and_parse(key)` = 取 + 解析。纯 Python 解析库（python-docx/pypdf/openpyxl）。扫描件 OCR 不在 Phase 1 范围（留加固）。
 
+**稳定条款 id（供读标/提纲定位）：** 解析时按「节内段落」切出稳定条款 id，对齐原型 `withClauseIds` 的 `${secId}-cN` 体系（`secId` 为章节 id 如 `sec-qualification`、`cN` 为节内段序）。`ParsedDoc` 除整段 `text` 外，增 `clauses: list[{id, text}]`，让读标（spec107）/提纲（spec202）可引用这些 id 作 `clause_ids`（snake，前端定位用）。Phase 1 用简单的「按章节标题分节 + 节内非空段落顺序编号」启发式切分即可，不实现 OCR/精排版。
+
 **Tech Stack:** python-docx、pypdf、openpyxl、boto3、pytest（+fpdf2 仅测试生成 PDF）。
 
 ## Global Constraints
@@ -43,7 +45,7 @@ services/agent/
 ## Interfaces（本 spec 对外产出，供 spec107 依赖）
 
 - Produces：
-  - `ParsedDoc`：`{ text: str, kind: str, pages: int|None, tables: list[list[list[str]]], meta: dict }`。
+  - `ParsedDoc`：`{ text: str, kind: str, pages: int|None, tables: list[list[list[str]]], clauses: list[{id: str, text: str}], meta: dict }`。`clauses` 为按「节内段落」切出的稳定条款（`id` 形如 `${secId}-cN`，对齐原型 `withClauseIds`），供读标/提纲引用作 `clause_ids` 定位。
   - `parse_bytes(data: bytes, filename: str) -> ParsedDoc`（按扩展名分发；不支持类型抛 `UnsupportedDocument`）。
   - `read_bytes(key: str) -> bytes`（MinIO）。
   - `read_and_parse(key: str) -> ParsedDoc`。
@@ -91,6 +93,7 @@ class ParsedDoc:
     kind: str                                  # docx/pdf/xlsx
     pages: int | None = None
     tables: list[list[list[str]]] = field(default_factory=list)
+    clauses: list[dict] = field(default_factory=list)  # [{id: "${secId}-cN", text}] 稳定条款 id，供读标/提纲定位
     meta: dict = field(default_factory=dict)
 ```
 
@@ -281,16 +284,20 @@ def parse_bytes(data: bytes, filename: str) -> ParsedDoc:
     return fn(data)
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [ ] **Step 4: 切稳定条款 id（`clauses`，供读标/提纲定位）**
+
+在 `parsers.py` 加一个轻量切分函数：按「章节标题」分节（识别如 `第N章`/`一、`/明显的标题段），节内非空段落顺序编号 `c1/c2/...`，组合成 `${secId}-cN`（`secId` 对齐原型如 `sec-qualification`，无法识别章节名时退化为 `sec-N`）。`parse_docx`/`parse_pdf`/`parse_xlsx` 产出的 `ParsedDoc.clauses` 填入 `[{id, text}]`。给读标/提纲可定位的条款 id 即可，不必精排版、不做 OCR。补一条断言：`parse_bytes(...).clauses[0]["id"]` 形如 `sec-...-c1`。
+
+- [ ] **Step 5: 运行确认通过**
 
 Run: `cd services/agent && uv run pytest tests/parsing/test_parsers.py -q`
 Expected: 4 passed（docx/xlsx/pdf/不支持类型）。
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 6: 提交**
 
 ```bash
 git add services/agent/src/agent/parsing/parsers.py services/agent/tests/parsing/test_parsers.py
-git commit -m "feat(spec106): docx/pdf/xlsx 解析器 + 分发 + 单测
+git commit -m "feat(spec106): docx/pdf/xlsx 解析器 + 条款 id 切分 + 单测
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
@@ -381,6 +388,7 @@ git push origin main
 ## 验收清单（spec106 完成判据）
 
 - [ ] `parse_bytes` 正确解析 docx（段落+表格）/pdf（文本+页数）/xlsx（文本+表格）；不支持类型抛 `UnsupportedDocument`。
+- [ ] `ParsedDoc.clauses` 产出稳定条款 id（`${secId}-cN`，对齐原型 `withClauseIds`），供读标/提纲引用作 `clause_ids` 定位。
 - [ ] `read_bytes(key)` 从 MinIO（bidsaas 桶）取字节；`read_and_parse(key)` 端到端可用。
 - [ ] `parse_document` 工具可挂给智能体（入参 key → 文本）。
 - [ ] 文件只按 key 读、不传二进制；横切、不碰钱。

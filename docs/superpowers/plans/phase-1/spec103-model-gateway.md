@@ -44,7 +44,7 @@ services/agent/
   - `PROVIDERS: dict[str, {base_url, default_model}]`（deepseek/qwen/glm）。
   - `extract_usage(msg) -> {input, output, cached, reasoning, total, finish_reason}`。
   - `ModelGateway(settings)`：
-    - `get_chat(provider, model=None, **kw) -> ChatOpenAI`
+    - `get_chat(provider=None, model=None, **kw) -> ChatOpenAI`（provider=None 回退 `model_default_provider`）
     - `invoke(messages, provider=None, model=None, *, recorder=None, run_id=None, agent_type=None, node=None, thread_id=None) -> AIMessage`（首选→回退链，自动埋点）
 
 ---
@@ -279,7 +279,8 @@ class ModelGateway:
             raise RuntimeError(f"模型 provider '{provider}' 缺少 API Key（{KEY_FIELD[provider].upper()}）")
         return key
 
-    def get_chat(self, provider: str, model: str | None = None, **kw: Any) -> ChatOpenAI:
+    def get_chat(self, provider: str | None = None, model: str | None = None, **kw: Any) -> ChatOpenAI:
+        provider = provider or self.s.model_default_provider   # 容忍 provider=None，回退默认家
         p = PROVIDERS[provider]
         return ChatOpenAI(
             model=model or p["default_model"],

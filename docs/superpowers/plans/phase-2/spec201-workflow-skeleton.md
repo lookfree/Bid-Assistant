@@ -6,6 +6,9 @@
 
 **Architecture:** `BaseAgent` 加一个**可选钩子 `build_graph(ctx)`**：返回 `CompiledStateGraph` 则 `astream` 驱动它，否则退回 Phase 1 的单 create_agent 循环（`build()`）。`BiddingAgent.build_graph` 返回 `build_bidding_workflow(ctx)`——一张带 checkpointer + `interrupt_after=<每个节点>` 的图。`astream` 按 thread_id 检测 checkpoint：无则用 `input` 播种从 read 起，有则以 `None` 续跑；每次只推进到下一个断点，把该节点产出作为 run 结果产出。
 
+> **read 输入口径**：read 节点统一用 `state['file_key']`（由 run input 的 `file_key` 播种），不再依赖 `text`。
+> **替换旧 astream**：spec107 的旧 `BiddingAgent.astream`（单循环产 `node.end`）**被本 spec 的编译图驱动 astream 完全替换**——实现时直接覆盖旧方法，不要保留旧 astream，否则会双产出。
+
 **Tech Stack:** LangGraph（StateGraph/interrupt/PostgresSaver）、spec104 RunContext/checkpointer、spec105 BaseAgent、Pydantic、pytest。
 
 ## Global Constraints
@@ -70,6 +73,10 @@ from typing import Annotated, Any, TypedDict
 from langgraph.graph.message import add_messages
 
 
+def _merge_dict(a: dict | None, b: dict | None) -> dict:
+    return {**(a or {}), **(b or {})}
+
+
 class BiddingState(TypedDict, total=False):
     """投标工作流贯穿状态：一本标书一个 thread_id，靠 checkpointer 续（§4.7）。"""
     messages: Annotated[list, add_messages]
@@ -79,9 +86,11 @@ class BiddingState(TypedDict, total=False):
     chapters: dict[str, str]       # {chapter_id: body_html}      ← content（spec203）
     risk: dict[str, Any]           # RiskReport.model_dump()      ← review（spec204）
     deck: dict[str, Any]           # DeckSpec.model_dump()        ← present（spec205）
-    artifacts: dict[str, str]      # {"docx": key, "pptx": key}   ← export/present（spec205/206）
+    artifacts: Annotated[dict[str, str], _merge_dict]  # {"docx": key, "pptx": key} ← export/present（spec205/206）；合并 reducer 让二者并存
     step: str                      # 当前/目标节点（App 按步驱动）
 ```
+
+> `artifacts` 用合并 reducer（`_merge_dict`）：present 写 `{"pptx": key}`、export 写 `{"docx": key}`，默认 last-write-wins 会互相覆盖；reducer 让二者并存。此 reducer **只在本 state.py 定义一次**，下游 spec205/206 直接依赖、不再重复定义。
 
 - [ ] **Step 3: 改 `framework/base_agent.py`（加可选钩子）**
 
@@ -276,8 +285,8 @@ class BiddingAgent(BaseAgent):
         snap = await graph.aget_state(config)
         if snap.values:                              # 已有状态 → 续跑下一节点
             payload = None
-        else:                                        # 新标书 → 从 read 起
-            payload = {"file_key": input.get("file_key") or input.get("text", ""),
+        else:                                        # 新标书 → 从 read 起（read 节点用 state['file_key']）
+            payload = {"file_key": input.get("file_key", ""),
                        "messages": []}
         async for ev in graph.astream(payload, config=config, stream_mode="updates"):
             for node, delta in ev.items():
@@ -286,8 +295,11 @@ class BiddingAgent(BaseAgent):
         snap2 = await graph.aget_state(config)
         done = _last_done_node(snap2)
         if done:
+            # 带 artifacts 快照：present 步的 _RESULT_KEY 是 deck（不含 artifacts），
+            # 否则 App 永远拿不到 pptx/docx key。
             yield {"type": "step.done", "node": done,
-                   "data": {"result": snap2.values.get(_RESULT_KEY[done])}}
+                   "data": {"result": snap2.values.get(_RESULT_KEY[done]),
+                            "artifacts": snap2.values.get("artifacts", {})}}
 
 
 _RESULT_KEY = {"read": "read", "outline": "outline", "content": "chapters",
@@ -406,10 +418,10 @@ git push origin main
 
 ## 验收清单（spec201 完成判据）
 
-- [ ] `BiddingState` 含全流程字段（read/outline/chapters/risk/deck/artifacts/step）。
+- [ ] `BiddingState` 含全流程字段（read/outline/chapters/risk/deck/artifacts/step）；`artifacts` 带合并 reducer（`_merge_dict`，**只在本 state.py 定义一次**），pptx/docx 并存不互相覆盖。
 - [ ] `BaseAgent.build_graph(ctx)` 钩子加好；不覆盖时 Phase 1 单循环行为不变。
-- [ ] `build_bidding_workflow(ctx)` 编出 6 节点图 + 步骤间 `interrupt_after`；read 真实、其余 stub。
-- [ ] `BiddingAgent` 用编译图驱动；**一个 run 推进到下一个断点即止**，产出 `step.done{node,result}`。
+- [ ] `build_bidding_workflow(ctx)` 编出 6 节点图 + 步骤间 `interrupt_after`；read 真实、其余 stub；read 节点用 `state['file_key']`。
+- [ ] `BiddingAgent` 用编译图驱动（完全替换 spec107 旧单循环 astream，无双产出）；**一个 run 推进到下一个断点即止**，产出 `step.done{node,result,artifacts}`（带 artifacts 快照）。
 - [ ] 同 `thread_id` 第二个 run 经 checkpointer 续状态、推进到下一节点（fake 测试覆盖）。
 - [ ] 真实 PostgresSaver 路径走查通过；`pytest` + `ruff` 全绿。
 - [ ] 全程只动 `agents/bidding_agent/` + 一处 `base_agent.py`；`bidding_agent` 仍唯一 agent_type。

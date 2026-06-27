@@ -83,6 +83,23 @@ cd apps/api && bun add @aws-sdk/client-s3 @aws-sdk/s3-request-presigner
   FILE_PRESIGN_TTL_SECONDS: z.coerce.number().int().positive().default(600),
 ```
 
+- [ ] **Step 2.5: 同步更新 spec002 的 `env.test.ts`（必填 env 回归）**
+
+新增的 `MINIO_ENDPOINT/MINIO_ACCESS_KEY/MINIO_SECRET_KEY` 是**必填**（无 default），会打挂 spec002 `apps/api/test/env.test.ts` 里「解析合法 env」那条只传 `DATABASE_URL` 的用例。**不要把 MINIO_* 改 optional**，改测试：给该用例的最小合法集补全 MINIO_* 占位值。
+
+```ts
+// apps/api/test/env.test.ts —— "parses valid env with defaults" 分支补 MINIO_* 占位
+const env = parseEnv({
+  DATABASE_URL: "postgresql://u:p@h:5432/d",
+  MINIO_ENDPOINT: "http://localhost:9000",
+  MINIO_ACCESS_KEY: "test-access-key",
+  MINIO_SECRET_KEY: "test-secret-key",
+})
+```
+
+Run: `cd apps/api && bun test test/env.test.ts`
+Expected: PASS（含新必填字段后 env.test 仍全绿）。
+
 - [ ] **Step 3: 写 `apps/api/src/storage/s3.ts`**
 
 ```ts
@@ -577,6 +594,7 @@ git push origin main
 ## 验收清单（spec006 完成判据）
 
 - [ ] S3 客户端指向 MinIO（forcePathStyle），presign PUT/GET/HEAD 真往返通过。
+- [ ] MINIO_* 必填后已同步更新 spec002 `env.test.ts` 最小合法集；`bun test` 含 env.test 全绿。
 - [ ] `project_files` 迁移到 bidsaas；上传 pending→uploaded（size/etag 落库）。
 - [ ] `/files/presign-upload`、`/:id/complete`、`/:id/download-url` 全 Bearer 保护；非本人文件 404/拒绝。
 - [ ] 文件二进制**不经过 App**（直传/直下 MinIO）；超限返回 `file_too_large`。

@@ -13,6 +13,7 @@
 | **spec003** | 鉴权数据模型 + 迁移 | `users`(账号本体) + `user_identities`(可插拔身份·为微信等预留) + `sessions`；迁移到 bidsaas；用户/身份/会话仓储 | spec002 |
 | **spec004** | 手机号验证码鉴权 | 阿里云短信发码/校验、不透明 Bearer 令牌（落 `sessions` 可撤销）、`/auth/*` + 鉴权中间件；**未注册手机号验证通过即自动建号（需协议同意，返回 isNew）**；**防刷：滑块默认开 + 限频四层默认关可逐开** | spec003 |
 | **spec004.1** | 滑块验证码落地 | 真实阿里云验证码2.0 校验器（`@alicloud/captcha20230305`）+ 前端滑块组件；待验证码凭据就绪写 | spec004、spec005 |
+> **注：spec004.1（滑块验证码落地）** ——独立文件待写（验证码凭据就绪后补），当前已并入 **spec004 的「防刷：滑块默认开」章节**作为占位实现；此处仅登记，消除悬空引用。
 | **spec004.2** | 微信扫码登录 | 微信开放平台 OAuth（unionid 找/建账号、复用 `user_identities(wechat)` 零 schema 改动）、`/auth/wechat/*` + 前端二维码/回调页；开发期伪客户端可联调 | spec003、spec005 |
 | **spec005** | 前端接入登录 | `apps/web` `/login` 接真实 `/auth/*`，登录态持久化 + 路由守卫，端到端登录 | spec004 |
 | **spec006** | 文件直传（MinIO/S3） | File 模块预签名直传/直下（bucket `bidsaas`）、`project_files` 元数据、接 `/upload` | spec004 |

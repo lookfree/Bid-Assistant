@@ -323,11 +323,13 @@ from agent.config import settings
 from agent.db import pool
 from agent.redis_client import get_redis
 from agent.telemetry.recorder import Recorder
+from agent.models.gateway import ModelGateway
 from agent.runtime.channels import run_channel, runmeta_key, result_key
 from agent.runtime.registry import get_agent, RunContext
 import agent.runtime.dummy_agent  # noqa: F401 确保 dummy 注册
 
 _recorder = Recorder(pool)
+_gateway = ModelGateway(settings)
 
 
 def _publish(r, run_id: str, event: dict) -> None:
@@ -343,7 +345,8 @@ async def process_run(run_id: str) -> None:
     _recorder.log_event(run_id, agent_type, "run.start", thread_id=thread_id)
     _publish(r, run_id, {"type": "run.start"})
 
-    ctx = RunContext(run_id=run_id, agent_type=agent_type, thread_id=thread_id, recorder=_recorder, redis=r)
+    ctx = RunContext(run_id=run_id, agent_type=agent_type, thread_id=thread_id,
+                     recorder=_recorder, gateway=_gateway, redis=r)
     result = None
     nodes = set()
     try:

@@ -237,6 +237,7 @@ Run: `cd apps/api && bun test test/env.test.ts`
 Expected: PASS（2 项）。
 
 > 注意：`env.test.ts` 调用 `parseEnv` 时传入显式对象，不依赖进程环境；而模块底部的 `export const env = parseEnv()` 在 import 时执行——测试只 import `parseEnv` 不 import `env`，避免无 DATABASE_URL 时崩。spec 后续代码从 `env` 取值。
+> **回归提示**：后续 spec（spec004 加 SMS/REDIS、spec006 加 MINIO_*）给 env schema 新增**必填**字段时，需同步更新本测试用例「解析合法 env」分支的最小合法集（补齐新必填字段的占位值），否则本用例会因缺字段而误挂。
 
 - [ ] **Step 5: 写入口 `apps/api/src/index.ts`**
 

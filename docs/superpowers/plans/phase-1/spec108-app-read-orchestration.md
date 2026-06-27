@@ -23,6 +23,7 @@
 ```
 apps/api/src/
 ├── db/schema/agent-runs.ts        # 新：agent_runs 通用桥接表
+├── db/schema/observability.ts     # 新：agent.agent_token_usage 只读映射（settle 汇总用，对齐 spec102）
 ├── services/agent-client.ts       # 新：createRun / relayStream / getRun（Agent Service run 契约）
 ├── services/billing-stub.ts       # 新：preDeduct(step)/settle(runId,hold)（占位 + 汇总 usage）
 ├── routes/read.ts                 # 新：POST /api/read（编排）+ GET /api/runs/:id
@@ -97,7 +98,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ## Task 2: agent-client + billing-stub
 
-**Files:** Create `apps/api/src/services/agent-client.ts`、`apps/api/src/services/billing-stub.ts`、`apps/api/test/billing-stub.test.ts`
+**Files:** Create `apps/api/src/services/agent-client.ts`、`apps/api/src/db/schema/observability.ts`、`apps/api/src/services/billing-stub.ts`、`apps/api/test/billing-stub.test.ts`
 
 - [ ] **Step 1: 写 `services/agent-client.ts`**
 
@@ -130,6 +131,25 @@ export async function getRun(runId: string) {
 }
 ```
 
+- [ ] **Step 1.5: 写 `db/schema/observability.ts`（只读映射 agent.agent_token_usage）**
+
+billing-stub 的 `settle` 要汇总该 run 的 token 用量，需 import `agentTokenUsage`。该表是 Agent 侧 spec102 在 `agent` schema 下建的，App 这里只做 **drizzle 只读映射**（不建表、不迁移），列名对齐 spec102，仅声明 settle 汇总用到的列。
+
+```typescript
+import { pgSchema, uuid, bigint, timestamp } from "drizzle-orm/pg-core";
+
+// agent.* 由 Agent 侧（spec102）建表/迁移；App 仅只读映射，列名对齐 spec102
+const agent = pgSchema("agent");
+
+export const agentTokenUsage = agent.table("agent_token_usage", {
+  runId: uuid("run_id").notNull(),                    // 关联 Agent Service run_id
+  totalTokens: bigint("total_tokens", { mode: "number" }).notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  // 只声明 settle 汇总用到的列；其余列（prompt/completion 等）按需补，命名对齐 spec102
+});
+```
+> 若 `run_id` 在 spec102 实际为 `text` 而非 `uuid`，以 spec102 列定义为准对齐类型；本映射只读，不参与迁移。
+
 - [ ] **Step 2: 写 `services/billing-stub.ts`**
 
 ```typescript
@@ -157,7 +177,7 @@ export async function settle(runId: string, hold: number): Promise<number> {
 }
 ```
 
-> `agentTokenUsage` schema 引用 spec102 已建的 `agent.agent_token_usage`（drizzle 只读映射）。若 App 侧未映射该表，settle 先跳过汇总仅返回 hold，并加注 TODO。
+> `agentTokenUsage` 来自上面 Step 1.5 的 `db/schema/observability.ts`（drizzle 只读映射 spec102 已建的 `agent.agent_token_usage`）。settle 汇总仅做计量日志，积分换算 Phase 3 接真账本，此处按 hold 结算。
 
 - [ ] **Step 3: 失败测试 `test/billing-stub.test.ts`**
 
@@ -167,7 +187,7 @@ export async function settle(runId: string, hold: number): Promise<number> {
 
 ```bash
 cd apps/api && bun test test/billing-stub.test.ts
-git add apps/api/src/services/agent-client.ts apps/api/src/services/billing-stub.ts apps/api/test/billing-stub.test.ts
+git add apps/api/src/services/agent-client.ts apps/api/src/db/schema/observability.ts apps/api/src/services/billing-stub.ts apps/api/test/billing-stub.test.ts
 git commit -m "feat(spec108): agent-client(run 契约) + billing-stub(预扣/结算占位+汇总usage)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
@@ -204,7 +224,8 @@ read.post("/", async (c) => {
 
   const { run_id } = await createRun({
     agentType: "bidding_agent", threadId,
-    input: { file_key: fileKey, step: "read" },
+    // 契约统一 { text, file_key, step }：text 为按步指令，避免 agent 端 input.get("text") 落空
+    input: { text: `请对招标文件读标，key=${fileKey}`, file_key: fileKey, step: "read" },
   });
   await db.insert(agentRuns).values({ userId, agentType: "bidding_agent", runId: run_id, threadId, status: "running" });
 
@@ -232,7 +253,7 @@ read.get("/runs/:id", async (c) => {
 
 要点断言：
 - `POST /api/read {fileKey}` → `preDeduct("read")` 调一次；
-- `createRun` 收到 `{ agentType: "bidding_agent", threadId, input:{file_key, step:"read"} }`；
+- `createRun` 收到 `{ agentType: "bidding_agent", threadId, input:{text:`请对招标文件读标，key=…`, file_key, step:"read"} }`（契约统一含 text）；
 - 结束后 `agent_runs.status==="done"`、`result` 落库、`costPoints===10`；
 - SSE 末尾发 `event: done`。
 

@@ -30,6 +30,7 @@ services/agent/src/agent/framework/
 ├── compressor.py       # 上下文压缩节点(保近 + 摘中)
 ├── structured.py       # make_submit_tool(Pydantic 强约束输出)
 ├── hitl.py             # human_review/interrupt 封装 + review 类型 + resume 协议
+├── create_agent.py     # build_create_agent:prompt+tools→可 ainvoke 子图
 ├── base_agent.py       # BaseAgent:建图 + agent_node + astream/aresume + 注册（create_agent 式）
 └── deepagent.py        # DeepAgent:deepagent 式节点（动态规划 + 子智能体 + 虚拟 FS）
 services/agent/tests/framework/
@@ -514,7 +515,7 @@ class _FakeGateway:
 
 
 def test_compressor_keeps_recent_and_summarizes_when_over():
-    node = make_compressor_node(_FakeGateway(), max_chars=20, keep_recent=2)
+    node = make_compressor_node(_FakeGateway(), max_tokens=20, keep_recent=2)
     msgs = [HumanMessage(content="x" * 50), AIMessage(content="a"), HumanMessage(content="b"), AIMessage(content="c")]
     out = asyncio.run(node({"messages": msgs}))
     new = out["messages"]
@@ -524,7 +525,7 @@ def test_compressor_keeps_recent_and_summarizes_when_over():
 
 
 def test_compressor_noop_when_under():
-    node = make_compressor_node(_FakeGateway(), max_chars=10_000, keep_recent=2)
+    node = make_compressor_node(_FakeGateway(), max_tokens=10_000, keep_recent=2)
     msgs = [HumanMessage(content="hi")]
     out = asyncio.run(node({"messages": msgs}))
     assert out == {} or out.get("messages") in (None, msgs)  # 未超阈值不改
@@ -543,12 +544,12 @@ def _size(messages: list) -> int:
     return sum(len(str(getattr(m, "content", "") or "")) for m in messages)
 
 
-def make_compressor_node(gateway: Any, *, max_chars: int = 60_000, keep_recent: int = 6):
+def make_compressor_node(gateway: Any, *, max_tokens: int = 60_000, keep_recent: int = 6):
     """超阈值时：保留最近 keep_recent 条，把更早的摘要成一条 SystemMessage 放最前。
-    Phase 1 用字符数近似 token；后续可换真实 tokenizer。"""
+    Phase 1 用字符数近似 token（阈值名 max_tokens 与调用方 spec203 对齐）；后续可换真实 tokenizer。"""
     async def _node(state: dict) -> dict:
         msgs = list(state.get("messages") or [])
-        if _size(msgs) <= max_chars or len(msgs) <= keep_recent:
+        if _size(msgs) <= max_tokens or len(msgs) <= keep_recent:
             return {}
         head, recent = msgs[:-keep_recent], msgs[-keep_recent:]
         summary = gateway.invoke(
@@ -596,6 +597,7 @@ from typing import Annotated, TypedDict
 from agent.framework.hooks import AgentHook, run_turn, BuildMessagesHook, DropMalformedToolCallsHook
 from agent.framework.resilient import resilient_tool_node
 from agent.runtime.registry import register, RunContext
+from agent.models.usage import extract_usage
 
 
 class GraphState(TypedDict):
@@ -630,6 +632,20 @@ class BaseAgent:
 
         async def agent_node(state, config=None):
             turn = await run_turn(hooks, llm_with_tools, state, config)
+            # 框架统一埋点：agent_node 走 get_chat(...).ainvoke 绕过了 gateway.invoke，
+            # 这里补记 token 用量，否则真实 run 不上报、spec108 settle 永远汇总 0。
+            if ctx.recorder is not None and ctx.run_id:
+                u = extract_usage(turn.result)
+                _s = getattr(ctx.gateway, "s", None) if ctx.gateway else None
+                ctx.recorder.record_usage(
+                    ctx.run_id, ctx.agent_type,
+                    provider=getattr(_s, "model_default_provider", None),
+                    model=getattr(llm, "model_name", None),
+                    input_tokens=u["input"], output_tokens=u["output"], cached_tokens=u["cached"],
+                    reasoning_tokens=u["reasoning"], total_tokens=u["total"], node="agent",
+                    ttft_ms=None,                         # 流式接入后填
+                    finish_reason=u["finish_reason"], thread_id=ctx.thread_id,
+                )
             return {"messages": [turn.result]}
 
         g = StateGraph(GraphState)
@@ -686,6 +702,8 @@ def _final_text(val: Any) -> Any:
 ```
 
 > `astream(input, ctx)` 与 spec104 `AgentProtocol` 对齐，executor 直接驱动；`aresume` 供 spec104 worker 的 resume 分支调用。
+
+> **框架统一埋点（已含在上面 `agent_node`）**：`agent_node` 经 `run_turn` 走 `get_chat(...).ainvoke`，绕过了唯一会 `record_usage` 的 `gateway.invoke`。所以在拿到 LLM 响应后用 `extract_usage(turn.result)` 取用量并 `ctx.recorder.record_usage(... node="agent", ttft_ms=None ...)`（字段对齐 spec102 `agent_token_usage`：input/output/cached/reasoning/total + ttft_ms/latency_ms；ttft 待流式接入后填）。否则真实 run 不上报 token、spec108 settle 永远汇总 0。
 
 - [ ] **Step 2: 写示例 agent 端到端测试 `tests/framework/test_base_agent.py`（fake gateway + 真 checkpointer）**
 

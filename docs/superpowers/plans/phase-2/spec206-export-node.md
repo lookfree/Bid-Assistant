@@ -180,12 +180,12 @@ def make_export_node(ctx):
         key = f"artifacts/{ctx.thread_id}/bid.docx"
         await storage.put_bytes(key, data,
                                 content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-        # 合并而非覆盖 artifacts（present 可能已写 pptx）——交由 state reducer/调用方 merge
+        # 合并而非覆盖 artifacts（present 可能已写 pptx）——由 spec201 state.py 的 artifacts 合并 reducer 保证
         return {"artifacts": {"docx": key}}
     return export_node
 ```
 
-> `state['artifacts']` 的合并：present（pptx）与 export（docx）都写 `artifacts`。spec201 的 `BiddingState.artifacts` 若用默认覆盖语义，需在 graph 中给 `artifacts` 配 dict-merge reducer（`Annotated[dict, _merge_dict]`）；本 spec Task 3 加该 reducer。
+> `state['artifacts']` 的合并：present（pptx）与 export（docx）都写 `artifacts`。合并语义由 **spec201 的 `BiddingState.artifacts` 合并 reducer（`Annotated[dict, _merge_dict]`，已在 spec201 state.py 定义一次）** 保证；**本 spec 不再改 state、不重复定义 reducer**。
 
 - [ ] **Step 2: 失败测试 `tests/agents/bidding_agent/test_export_node.py`**
 
@@ -230,22 +230,15 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 3: artifacts 合并 reducer + 串联回归 + 合并
+## Task 3: 依赖 spec201 artifacts reducer + 串联回归 + 合并
 
-**Files:** Modify `agents/bidding_agent/state.py`（给 `artifacts` 配 dict-merge reducer）
+**Files:**（无新增；**本 spec 不改 state.py**）
 
-- [ ] **Step 1: 改 `state.py`——`artifacts` 用合并 reducer**
+- [ ] **Step 1: 依赖 spec201 已定义的 artifacts 合并 reducer（不重复定义）**
 
-```python
-from typing import Annotated
+`state['artifacts']` 的合并 reducer（`_merge_dict`，`Annotated[dict[str, str], _merge_dict]`）**已在 spec201 的 state.py 定义一次**，本 spec **不再改 state、不重复加 reducer**。export_node 只返回增量 `{"docx": key}`，与 present 的 `{"pptx": key}` 由该 reducer 合并并存。
 
-def _merge_dict(a: dict | None, b: dict | None) -> dict:
-    return {**(a or {}), **(b or {})}
-
-# 在 BiddingState 中：
-#   artifacts: Annotated[dict[str, str], _merge_dict]
-```
-> 使 present（pptx）与 export（docx）的 `artifacts` 增量在状态里**合并**而非互相覆盖。
+> 串联回归时确认：present 步与 export 步分别写入后，`state['artifacts']` 中 pptx/docx 并存、互不覆盖。
 
 - [ ] **Step 2: 回归** `cd services/agent && uv run pytest tests/agents/bidding_agent/ -q && uv run ruff check src` → 全 passed
 - [ ] **Step 3: 合并**
@@ -263,5 +256,5 @@ git push origin main
 - [ ] `render_docx` 用 python-docx 按 outline 顺序拼章、HTML→docx 最小映射、缺正文出占位；产合法 `.docx`。
 - [ ] 封面（项目名/采购人/编号）+ 目录占位 + 技术标/商务标各章 + 签章页齐全。
 - [ ] `make_export_node` 落 `.docx` 到 MinIO，key 入 `state['artifacts']['docx']`。
-- [ ] `artifacts` 合并 reducer 生效：pptx 与 docx 并存不互相覆盖。
+- [ ] 依赖 spec201 的 `artifacts` 合并 reducer（本 spec 不改 state、不重复定义）：pptx 与 docx 并存不互相覆盖。
 - [ ] 串入 spec201 图通过；`pytest`+`ruff` 全绿。
