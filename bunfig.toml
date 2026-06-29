@@ -1,0 +1,4 @@
+[install]
+# 锁注册表，加速国内安装（可按需替换）
+registry = "https://registry.npmmirror.com"
+exact = false

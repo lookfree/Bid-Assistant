@@ -16,3 +16,8 @@ node_modules
 # 凭据文件(阿里云 AccessKey 等导出 CSV), 勿入库
 AccessKey*.csv
 **/AccessKey*.csv
+
+# bun / monorepo
+.turbo/
+*.tsbuildinfo
+apps/*/.next/
