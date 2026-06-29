@@ -123,7 +123,7 @@ import { users } from "./users";
 export const creditTransactions = pgTable("credit_transactions", {
   id: uuid("id").defaultRandom().primaryKey(),
   userId: uuid("user_id").notNull().references(() => users.id),
-  // grant(赠送) | purchase(充值) | hold(预扣) | settle(结算) | release(退还) | expire(过期) | referral_reward(推荐奖励)
+  // grant(赠送) | purchase(充值) | hold(预扣) | settle(结算) | release(退还) | expire(过期) | referral_reward(推荐奖励) | refund_clawback(退款注销已入账积分，负向)
   type: text("type").notNull(),
   amount: integer("amount").notNull(),                         // ± 积分
   sourceBatch: text("source_batch"),                          // 来源批次（FIFO 过期用）
@@ -254,7 +254,7 @@ export const referrals = pgTable("referrals", {
   inviterId: uuid("inviter_id").notNull().references(() => users.id),
   inviteeId: uuid("invitee_id").references(() => users.id),    // 注册即建关系
   code: text("code").notNull(),                               // 邀请码（绑邀请人）
-  status: text("status").notNull().default("pending"),        // pending/bound
+  status: text("status").notNull().default("pending"),        // pending/bound/frozen（frozen=风控冻结）
   rewardState: text("reward_state").notNull().default("pending"), // pending/unlocked/capped
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (t) => ({
@@ -296,11 +296,11 @@ export const BILLING_SEED: Record<string, unknown> = {
   // 各操作积分口径（占位统一 10；真实口径见 PRD 4.4）
   "credit_cost.read": 10, "credit_cost.outline": 10, "credit_cost.content": 10,
   "credit_cost.review": 10, "credit_cost.present": 10, "credit_cost.export": 10,
-  // 充值包（金额分 → 到账积分）
-  "recharge_packs": [{ amountCents: 100, credits: 100 }, { amountCents: 1000, credits: 1100 }],
+  // 充值包（金额分 → 到账积分）；每项带稳定 id；充值到账以 pack.credits 为准（含赠送），credit_rate 仅用于无包任意金额充值
+  "recharge_packs": [{ id: "pack_100", amountCents: 100, credits: 100 }, { id: "pack_1000", amountCents: 1000, credits: 1100 }],
   "credit_rate": { cny_cents_per_credit: 1 },                 // 汇率：1 分 = 1 积分（占位）
   "grant_expire_days": 30, "reward_expire_days": 30,          // 赠送/奖励积分有效期
-  "referral_rules": { inviterReward: 50, inviteeReward: 50, unlockOn: "invitee_first_paid", capPerUser: 500 },
+  "referral_rules": { inviterReward: 50, inviteeReward: 50, unlockOn: "invitee_first_paid", capPerUser: 500, riskMaxPerIpPerHour: 20 },  // riskMaxPerIpPerHour 占位，spec307 风控阈值不写死
   "deduct_retry": { intervalsDays: [1, 3], maxAttempts: 3 },  // 代扣重试策略
 };
 ```
@@ -376,6 +376,8 @@ git push origin main
 ---
 
 ## 验收清单（spec301）
+
+> **增量说明（note）：** 本 spec 是建表基线；`referrals` 后续由 spec307 ALTER 加 `device_hash/signup_ip/frozen_reason` 列、status 增 frozen；`plans` 由 spec308 加稳定 `tier`/`code` 列；新增表 `reconcile_diffs`(spec306)/`referral_codes`/`referral_risk_audits`(spec307)由对应 spec 增量建，不在本 spec 9 表内，非漏建。
 
 - [ ] 9 张表建好（plans/subscriptions/credit_transactions/credit_balances/payment_orders/payment_agreements/refunds/referrals/billing_configs），字段对齐规格文档第四节。
 - [ ] `credit_transactions` append-only + `idempotency_key` 唯一约束；`payment_orders` 幂等键唯一；`referrals` invitee 唯一。

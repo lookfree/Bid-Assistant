@@ -14,7 +14,7 @@
 - 余额=Σ流水；`credit_balances` 仅缓存。所有扣减带幂等键（spec301 已建唯一约束）。
 - 预扣→结算两段式；N 取自 `billing_configs`（`getConfig("credit_cost.<op>")`，spec301）。
 - FIFO by `expire_at`（先过期先扣）。
-- 余额校验 + 写 hold 必须在**同一事务 + 行级锁**内，防并发超扣。
+- 余额校验 + 写 hold 必须在**同一事务**内，并以**锁用户行**（`credit_balances` 该 userId 行 `FOR UPDATE`，行不存在先 upsert 兜底）作串行化点防并发超扣——**不可锁裸流水行**（新用户/首扣无行可锁，谓词锁缺口会超扣）。
 - TDD；`main` 上先开分支。
 
 ---
@@ -138,7 +138,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 import { getConfig } from "./config";
 import { InsufficientCreditsError } from "./credits-errors";
 
-/** 预扣：N=credit_cost.<op>；事务内行锁校验余额≥N，写 hold(-N)。返回 holdId(=该 tx id)。 */
+/** 预扣：N=credit_cost.<op>；事务内**锁用户行**校验余额≥N，写 hold(-N)。返回 holdId(=该 tx id)。 */
 export async function hold(
   userId: string, op: string, opts: { ref?: string; idempotencyKey: string },
 ): Promise<{ holdId: string; amount: number }> {
@@ -148,8 +148,14 @@ export async function hold(
     const [exist] = await tx.select().from(creditTransactions)
       .where(eq(creditTransactions.idempotencyKey, opts.idempotencyKey));
     if (exist) return { holdId: exist.id, amount: -exist.amount };
-    // 行锁锁定该用户流水后算余额（防并发超扣）
-    await tx.execute(sql`SELECT 1 FROM ${creditTransactions} WHERE ${creditTransactions.userId} = ${userId} FOR UPDATE`);
+    // —— 并发超扣串行化点 ——
+    // 不能锁裸流水行：新用户/首扣时 credit_transactions 无行可锁（谓词锁缺口），并发首扣会同时
+    // 读到余额、各自插 hold → 超扣。改为**锁该用户在 credit_balances 的行**作串行化点：
+    // 先 upsert 兜底建行（保证有行可锁），再 SELECT ... FOR UPDATE 串行化同一 userId 的并发 hold。
+    await tx.insert(creditBalances).values({ userId, balance: 0 })
+      .onConflictDoNothing({ target: creditBalances.userId });
+    await tx.execute(sql`SELECT 1 FROM ${creditBalances} WHERE ${creditBalances.userId} = ${userId} FOR UPDATE`);
+    // 持锁后再算余额、校验、插 hold —— 同 userId 的并发 hold 在此串行排队，杜绝超扣。
     const [row] = await tx.select({ total: sql<number>`coalesce(sum(${creditTransactions.amount}),0)` })
       .from(creditTransactions).where(eq(creditTransactions.userId, userId));
     const available = Number(row?.total ?? 0);
@@ -194,6 +200,20 @@ test("余额不足抛 InsufficientCreditsError", async () => {
   await seedConfigs();
   await grant(userId, 5, { idempotencyKey: "g1" });
   await expect(hold(userId, "read", { idempotencyKey: "hold:x" })).rejects.toBeInstanceOf(InsufficientCreditsError);
+});
+
+test("并发首扣不超扣（锁 credit_balances 用户行作串行化点）", async () => {
+  // 新用户首扣场景：余额恰够 1 次 hold，10 个并发请求只能成功 1 个，其余抛 InsufficientCreditsError。
+  // 验证锁的是用户行（即便 credit_transactions 尚无可锁行），不会并发各自读余额后一起超扣。
+  const userId = await makeTestUser();
+  await seedConfigs();                                        // credit_cost.read = 10
+  await grant(userId, 10, { idempotencyKey: "g1" });
+  const results = await Promise.allSettled(
+    Array.from({ length: 10 }, (_, i) =>
+      hold(userId, "read", { idempotencyKey: `hold:c${i}` })),
+  );
+  expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+  expect(await getBalance(userId)).toBe(0);                   // 只扣了一次，绝不为负
 });
 ```
 
@@ -261,8 +281,9 @@ git commit -m "feat(spec302): settle 结算(多退少补, 净消耗=实际用量
 import { and, lte, isNotNull } from "drizzle-orm";
 
 /** 过期：扫 expire_at<=now 的入账批次，把其「未被消耗的余量」写 expire 注销。
- *  简化 FIFO：按 expire_at 升序累计入账(grant/purchase/referral_reward)与已消耗(Σ负流水)，
- *  到期批次中尚未被更早消耗覆盖的部分 → 写 expire(-余量)。 */
+ *  严格 FIFO 台账：消耗只计**已落地**部分（settle 的净消耗 + 既往 expire + refund_clawback），
+ *  **排除未结算的在途 hold**（hold 有对应 settle/release 才算落地，否则不计入消耗）。
+ *  按 grant 批次 expire_at 升序从最早起分配消耗，到期批次的剩余 → 写 expire(-剩余)。 */
 export async function expireDue(now: Date): Promise<number> {
   // 取该用户所有正入账(带 expire_at)按到期升序 + 总已消耗，逐批分配消耗，剩余且已到期者过期。
   // 实现要点：用户维度分组；consumedRemaining 从最早到期批次起抵扣；到期批次剩余记 expire。
@@ -280,13 +301,21 @@ async function _expireUser(userId: string, now: Date): Promise<number> {
     const grants = await tx.select().from(creditTransactions)
       .where(and(eq(creditTransactions.userId, userId), isNotNull(creditTransactions.expireAt)))
       .orderBy(creditTransactions.expireAt);                 // 先过期的在前
-    // 总消耗 = Σ 所有负流水（hold/settle/release/expire 的净额里负的部分）——用净消耗近似
-    const [c] = await tx.select({ neg: sql<number>`coalesce(-sum(case when ${creditTransactions.amount}<0 then ${creditTransactions.amount} else 0 end),0)` })
-      .from(creditTransactions).where(eq(creditTransactions.userId, userId));
+    // 已落地消耗 = settle/expire/refund_clawback 的负净额（取绝对值累计）。
+    // **排除在途 hold**：hold(-N) 只有配上 settle(+差额)/release(+N) 才落地——
+    //   - settle 行的 amount = N-actualCost：hold(-N)+settle 合计 = -actualCost（净消耗已落地）；
+    //   - release 行的 amount = -h.amount = N（见 release）：hold(-N)+release(+N) 合计 = 0（无消耗）；
+    //   - 未结算的裸 hold(-N) 不在下列 type 中 → 不计入 consumed，绝不高估消耗。
+    // expire/refund_clawback 均为已落地负向消耗，按普通负流水累计即可。
+    const [c] = await tx.select({
+      neg: sql<number>`coalesce(-sum(case
+        when ${creditTransactions.type} in ('settle','expire','refund_clawback') and ${creditTransactions.amount}<0
+        then ${creditTransactions.amount} else 0 end),0)`,
+    }).from(creditTransactions).where(eq(creditTransactions.userId, userId));
     let consumed = Number(c?.neg ?? 0);
     let expired = 0;
     for (const g of grants) {
-      const live = Math.max(0, g.amount - Math.min(consumed, g.amount));  // 该批被消耗后剩余
+      const live = Math.max(0, g.amount - Math.min(consumed, g.amount));  // 该批被已落地消耗抵扣后剩余
       consumed = Math.max(0, consumed - g.amount);
       const alreadyExpired = false;                          // 简化：靠幂等键防重复过期
       if (g.expireAt && g.expireAt <= now && live > 0 && !alreadyExpired) {
@@ -302,7 +331,7 @@ async function _expireUser(userId: string, now: Date): Promise<number> {
 }
 ```
 
-> FIFO 关键：消耗从**最早到期**批次起抵扣，使后到期批次承担过期 → "先过期先扣"。`idempotencyKey=expire:<grantId>` 保证同批不重复过期。
+> FIFO 关键：消耗（**仅已落地：settle 净消耗 + 既往 expire + refund_clawback，排除在途 hold**）从**最早到期**批次起抵扣，使后到期批次承担过期 → "先过期先扣"。在途 hold 不计入消耗，否则会高估消耗、漏过期。`idempotencyKey=expire:<grantId>` 保证同批不重复过期。
 
 - [ ] **Step 2: 失败测试 `test/credits-expire.test.ts`**
 
@@ -319,6 +348,21 @@ test("FIFO 过期：先过期批次未消耗部分被注销", async () => {
   const expired = await expireDue(new Date());
   expect(expired).toBe(50);                                  // 早批次全过期
   expect(await getBalance(userId)).toBe(50);                 // 仅留晚批次
+});
+
+test("在途 hold 不计入消耗：过期不被高估（漏过期回归）", async () => {
+  // 早批次 50 已过期；有一个在途 hold(-10) 未结算。
+  // BUG 行为：Σ负流水把 hold 当消耗 → 误以为早批次已消耗 10 → 只过期 40。
+  // 正确行为：在途 hold 不算消耗 → 早批次未被任何已落地消耗抵扣 → 全额过期 50。
+  const userId = await makeTestUser();
+  await seedConfigs();                                        // credit_cost.read = 10
+  const past = new Date(Date.now() - 86400_000);
+  const future = new Date(Date.now() + 86400_000);
+  await grant(userId, 50, { idempotencyKey: "early", expireAt: past });
+  await grant(userId, 50, { idempotencyKey: "late", expireAt: future });
+  await hold(userId, "read", { ref: "run1", idempotencyKey: "hold:run1" });  // 在途，未 settle/release
+  const expired = await expireDue(new Date());
+  expect(expired).toBe(50);                                  // 早批次仍全额过期，不被在途 hold 抵消
 });
 ```
 

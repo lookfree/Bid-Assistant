@@ -64,7 +64,8 @@ apps/api/test/
   - spec303 `registerCron(name, everyMs, jobFn, opts?)` / `withCronLock(name, fn, opts?)` / `startCronRunner(jobs)`（代扣定时任务用；job 体以 DB 为准、逐条幂等）。
   - spec304 `getPaymentProvider("alipay")` + `__setProviderForTest`（测试注入）；`PaymentProvider` 代扣三方法 `sign(opts)→{signUrl}`、`unsign(agreementNo)→{ok}`、`deduct(opts)→CallbackResult`（本 spec 填充 `AlipayProvider`，spec304 已声明占位）。
   - spec304 订单服务 `createOrder({ userId, type:"auto_renew", amountCents, idempotencyKey })`（建单幂等）、`getOrder(id)`。
-  - config（spec301 `getConfig`）：`deduct_retry`（`{ intervalsDays:[1,3], maxAttempts:3 }`）、`plans.grant_credits_per_cycle`（plan 表字段）、`grant_expire_days`（赠送积分有效期）。
+  - config（spec301 `getConfig`）：`deduct_retry`（`{ intervalsDays:[1,3], maxAttempts:3 }`）、`grant_expire_days`（赠送积分有效期）。
+  - plans 表字段：`plans.grant_credits_per_cycle`（当期赠送积分数，非 config key）。
 - **Produces（供 spec308 会员中心 / spec306 对账依赖）**：
   - `signAgreement(provider, userId, planId) -> Promise<{ signPageUrl, agreementNo }>`。
   - `handleSignCallback(payload) -> Promise<void>`（agreement=signed + auto_renew=true + 关联 agreement_no）。
@@ -181,7 +182,7 @@ async sign(opts: SignInput): Promise<{ signUrl: string }> {
       external_agreement_no: opts.externalAgreementNo,
       access_params: { channel: "ALIPAYAPP" },
       period_rule_params: {
-        period_type: opts.period === "month" ? "MONTH" : opts.period === "year" ? "MONTH" : "DAY",
+        period_type: "MONTH",                                  // 统一按月基数：月=1/季=3/年=12 个月
         period: opts.period === "year" ? 12 : opts.period === "quarter" ? 3 : 1,
         single_amount: centsToYuan(opts.deductLimitCents),     // 单次扣款上限（元）
       },
@@ -552,8 +553,8 @@ export async function deductOne(
     await tx.update(paymentAgreements).set({ nextDeductAt: newEnd })
       .where(eq(paymentAgreements.id, ag.id));
   });
-  // 发当期赠送积分（幂等键 = 周期键，重复不重发）
-  const expireAt = new Date(now); expireAt.setDate(expireAt.getDate() + (await getGrantExpireDays()));
+  // 发当期赠送积分（幂等键 = 周期键，重复不重发）；有效期基准 = 新周期起点 periodStart，与计费周期对齐
+  const expireAt = new Date(periodStart); expireAt.setDate(expireAt.getDate() + (await getGrantExpireDays()));
   await grant(sub.userId, plan.grantCreditsPerCycle, {
     type: "grant", expireAt, ref: theOrder.id, idempotencyKey: `${idemKey}:grant`,
   });

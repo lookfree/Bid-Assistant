@@ -57,7 +57,7 @@ apps/api/test/
 - **Produces（本 spec 对外产出，供 spec304/305/308/310 依赖）：** `referral` 服务：
   - `getMyCode(userId) -> Promise<string>`（无则生成并持久化，幂等：每用户唯一一个码）。
   - `bindByCode(opts: { code: string; inviteeId: string; phone?: string; deviceHash?: string; ip?: string }) -> Promise<{ referralId: string; rewarded: boolean }>`（注册时调；建关系 + 风控 + 立即发放分支）。
-  - `onInviteeFirstPaid(inviteeId: string) -> Promise<void>`（**导出钩子**：被邀请人首次付费时由 spec304/会员激活处调用 → 延迟解锁发奖）。
+  - `onInviteeFirstPaid(inviteeId: string) -> Promise<void>`（**导出钩子**：由 spec304 `markPaid` 充值成功分支 + spec308 会员激活成功处调用（幂等）→ 延迟解锁发奖；本 spec 只导出钩子，不接线）。
   - `listReferrals(inviterId) -> Promise<Array<{ inviteeId: string|null; status: string; rewardState: string; createdAt: Date }>>`。
   - 错误：`DuplicateInviteeError`、`SelfReferralError`、`ReferralFrozenError`。
   - 路由：`GET /api/referral/code`、`GET /api/referral/list`（挂到 app router）。
@@ -85,6 +85,8 @@ import { users } from "./users";
 // 这里补风控落点字段（建关系时记录，供风控判定/审计）：
 // deviceHash / signupIp 用于异常邀请识别；frozenReason 记冻结原因。
 // 用一条迁移 ALTER TABLE 加列：device_hash text, signup_ip text, frozen_reason text。
+// 并 ALTER referrals.status 枚举注释为 pending/bound/frozen（spec301 已登记 frozen=风控冻结，
+// 本 spec Task 5 风控写入 status="frozen"）——同迁移更新列注释，不引入新 CHECK。
 
 // 每用户唯一一个邀请码（生成即持久化）
 export const referralCodes = pgTable("referral_codes", {
@@ -200,6 +202,10 @@ export async function bindByCode(opts: {
   const [dup] = await db.select().from(referrals).where(eq(referrals.inviteeId, opts.inviteeId));
   if (dup) throw new DuplicateInviteeError(opts.inviteeId);
 
+  // 注意：下面这个 INSERT 是本 Task 的临时版（恒写 status="bound"）。
+  // 它在 Task 5 接风控后改写为带 device_hash/signup_ip + frozen 判定的最终版
+  // （status 由 verdict.frozen 决定 bound/frozen，并写 frozenReason）——届时以 Task 5 为准，
+  // 不要两处并存重复 INSERT。
   const [ins] = await db.insert(referrals).values({
     inviterId, inviteeId: opts.inviteeId, code: opts.code,
     status: "bound", rewardState: "pending",
@@ -269,6 +275,7 @@ type ReferralRules = {
   inviterReward: number; inviteeReward: number;
   unlockOn: string;        // "" 立即发；"invitee_first_paid" 延迟解锁
   capPerUser: number;
+  riskMaxPerIpPerHour: number;   // 同 IP 段每小时绑定阈值（spec301 种子已占位，风控读配置不写死）
 };
 
 async function getRules(): Promise<ReferralRules> {
@@ -295,9 +302,10 @@ async function grantReward(opts: {
   if (opts.amount <= 0) return false;
   const already = await rewardedSoFar(opts.userId);
   if (already + opts.amount > opts.cap) {
-    // 封顶：标记该用户作为 inviter 的所有关系 reward_state=capped
+    // 封顶：只标当前这一条 referral 为 capped（按 referralId，绝不批量刷该 inviter 名下
+    // 全部关系——否则会把已 unlocked 的旧关系误刷成 capped）。
     await db.update(referrals).set({ rewardState: "capped" })
-      .where(eq(referrals.inviterId, opts.userId));
+      .where(eq(referrals.id, opts.referralId));
     return false;
   }
   const expireAt = new Date(Date.now() + opts.expireDays * 86400_000);
@@ -316,12 +324,14 @@ async function unlockAndReward(referralId: string): Promise<void> {
   if (!r || r.rewardState === "capped") return;
   if (!r.inviteeId) return;
 
-  await grantReward({ userId: r.inviterId, amount: rules.inviterReward, referralId, role: "inviter", cap: rules.capPerUser, expireDays });
-  await grantReward({ userId: r.inviteeId, amount: rules.inviteeReward, referralId, role: "invitee", cap: rules.capPerUser, expireDays });
+  // 按本关系两方各自的发放结果判定状态（grantReward 返回是否实际发了）。
+  // 注意：grantReward 封顶时只标当前这一条 referral=capped（按 referralId），不批量刷。
+  const inviterPaid = await grantReward({ userId: r.inviterId, amount: rules.inviterReward, referralId, role: "inviter", cap: rules.capPerUser, expireDays });
+  const inviteePaid = await grantReward({ userId: r.inviteeId, amount: rules.inviteeReward, referralId, role: "invitee", cap: rules.capPerUser, expireDays });
 
-  // 至少一方发了/未被封顶 → 推进状态（capped 由 grantReward 内部已置位时不覆盖）
-  const [after] = await db.select().from(referrals).where(eq(referrals.id, referralId));
-  if (after && after.rewardState !== "capped") {
+  // 本关系任一方发放成功 → 置 unlocked（即便另一方因封顶把本条标了 capped，也以"发出去了"为准推进）。
+  // 两方都没发出（全 0 额度 / 全封顶）→ 不动状态（封顶时 grantReward 内部已按 referralId 置 capped）。
+  if (inviterPaid || inviteePaid) {
     await db.update(referrals).set({ rewardState: "unlocked" }).where(eq(referrals.id, referralId));
   }
 }
@@ -422,8 +432,10 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ```typescript
 /** 被邀请人首次付费触发：仅当配置 unlockOn==="invitee_first_paid" 且该被邀请人有 pending 关系时解锁发奖。
- *  幂等：reward_state 已 unlocked/capped → 直接返回（grant 幂等键再兜底）。
- *  由 spec304 支付成功 / 会员激活处调用，传被邀请人 userId。 */
+ *  接线：由 spec304 markPaid 充值成功分支 + spec308 会员激活成功处调用（两处均幂等触发）；
+ *        本 spec 只导出钩子，不自行接线到支付/激活流程。
+ *  幂等：同一 referral 重复触发不重发——靠 reward_state（已 unlocked/capped → 直接返回）
+ *        + credits.grant 幂等键（referral:<id>:inviter / :invitee）双重兜底。 */
 export async function onInviteeFirstPaid(inviteeId: string): Promise<void> {
   const rules = await getRules();
   if (rules.unlockOn !== "invitee_first_paid") return;     // 配置非该触发条件 → 不处理
@@ -483,7 +495,7 @@ export type RiskVerdict = { frozen: boolean; reason?: string };
  *  - 手机号唯一：同手机已绑过 → 冻结。
  *  - 设备唯一：同 deviceHash 已绑过 → 冻结。
  *  - 同 IP 段集中时段：最近 1 小时同 signup_ip 绑定数超阈值 → 冻结。
- *  阈值来自配置（referral_rules.riskMaxPerIpPerHour，缺省给保守值，不写死业务数值口径）。 */
+ *  阈值由调用方从配置读出后注入（referral_rules.riskMaxPerIpPerHour，spec301 种子已含该键，不写死）。 */
 export async function assessRisk(opts: {
   inviteeId: string; phone?: string; deviceHash?: string; ip?: string; maxPerIpPerHour: number;
 }): Promise<RiskVerdict> {
@@ -520,11 +532,12 @@ export async function freezeAndAudit(opts: {
 import { assessRisk, freezeAndAudit } from "./referral-risk";
 import { ReferralFrozenError } from "./referral-errors";
 
-// 在建 referrals 之前/之后接入：
+// 这是 referrals INSERT 的最终版（替换 Task 2 的临时 INSERT，单处收敛）：
+// 先风控判定，再据 verdict.frozen 决定 status=bound|frozen。
 const rules = await getRules();
 const verdict = await assessRisk({
   inviteeId: opts.inviteeId, phone: opts.phone, deviceHash: opts.deviceHash, ip: opts.ip,
-  maxPerIpPerHour: Number((rules as any).riskMaxPerIpPerHour ?? 20),   // 阈值来自配置
+  maxPerIpPerHour: rules.riskMaxPerIpPerHour,                // 阈值读配置（spec301 种子已含该键）
 });
 
 const [ins] = await db.insert(referrals).values({

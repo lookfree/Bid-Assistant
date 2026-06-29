@@ -73,8 +73,8 @@ apps/admin/                           # 新：运营后台前端骨架（Next.js
   - 表对象：`adminUsers`、`adminRoles`、`adminSessions`、`adminAuditLogs`；类型 `AdminUser = typeof adminUsers.$inferSelect`、`AdminRole = "superadmin" | "ops" | "finance" | "support"`。
   - 仓储 `repos/admin-users.ts`：`findAdminByUsername(username) -> AdminUser | null`、`getAdminById(id)`、`createAdmin({username, passwordHash, role}) -> AdminUser`、`setAdminStatus(id, status)`。
   - 仓储 `repos/admin-sessions.ts`：`createAdminSession({adminId, tokenHash, expiresAt})`、`findValidAdminSession(tokenHash, now?)`、`revokeAdminSession(id)`。
-  - 服务 `services/admin-auth.ts`：`loginAdmin(username, password) -> { token, admin } | null`、`resolveAdminFromToken(token) -> AdminUser | null`、`logoutAdmin(token)`。
-  - 服务 `services/rbac.ts`：`ROLE_PERMISSIONS: Record<AdminRole, Permission[]>`、`hasPermission(role, perm) -> boolean`；`Permission` 枚举（`user.read`/`user.write`/`order.read`/`refund.write`/`plan.write`/`credit.adjust`/`config.write`/`audit.read` 等）。
+  - 服务 `services/admin-auth.ts`：`hashPassword(plain) -> Promise<string>`（建运营账号用，Bun.password 哈希；spec310 系统页 createAdmin 调）、`loginAdmin(username, password) -> { token, admin } | null`、`resolveAdminFromToken(token) -> AdminUser | null`、`logoutAdmin(token)`。
+  - 服务 `services/rbac.ts`：`ROLE_PERMISSIONS: Record<AdminRole, Permission[]>`、`hasPermission(role, perm) -> boolean`；`Permission` 枚举（`user.read`/`user.write`/`order.read`/`refund.write`/`plan.write`/`credit.adjust`/`config.write`/`audit.read`/`admin.manage` 等，其中 `admin.manage` 仅 superadmin 拥有，供 spec310 系统/账号管理页守卫）。
   - 服务 `services/audit.ts`：`writeAudit(input: { operator: string; action: string; target?: string; before?: unknown; after?: unknown }) -> Promise<void>`。
   - 中间件 `middleware/admin-auth.ts`：`requireAdmin(...roles: AdminRole[])`（roles 为空＝任意已认证 admin）、`requirePermission(perm: Permission)`；二者把 `AdminUser` 注入 `c.var.admin`。
   - 路由：`POST /admin-api/login`（`{username, password}` → `{token, admin}` / 401）、`POST /admin-api/logout`（需鉴权 → 204）、`GET /admin-api/me`（需鉴权 → `{admin}`）。
@@ -417,6 +417,13 @@ describe("rbac", () => {
     expect(hasPermission("support", "credit.adjust")).toBe(false)
   })
 
+  it("admin.manage 仅 superadmin 拥有（系统/账号管理，spec310 用）", () => {
+    expect(hasPermission("superadmin", "admin.manage")).toBe(true)
+    expect(hasPermission("ops", "admin.manage")).toBe(false)
+    expect(hasPermission("finance", "admin.manage")).toBe(false)
+    expect(hasPermission("support", "admin.manage")).toBe(false)
+  })
+
   it("每个角色都有权限集定义", () => {
     for (const role of ["superadmin", "ops", "finance", "support"] as const) {
       expect(Array.isArray(ROLE_PERMISSIONS[role])).toBe(true)
@@ -445,10 +452,11 @@ export const PERMISSIONS = [
   "config.write",                      // billing_configs 配置
   "referral.write",                    // 手动发邀请奖励
   "audit.read",                        // 审计查看
+  "admin.manage",                      // 系统/账号管理（仅 superadmin；spec310 账号管理页）
 ] as const
 export type Permission = (typeof PERMISSIONS)[number]
 
-// superadmin 全权；其余按职责裁剪（架构 §3.3 / §5.2）
+// superadmin 全权（含 admin.manage）；其余角色一律不含 admin.manage（仅 superadmin 可做系统/账号管理）（架构 §3.3 / §5.2）
 export const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
   superadmin: [...PERMISSIONS],
   finance: ["order.read", "refund.write", "ledger.read", "audit.read"],
