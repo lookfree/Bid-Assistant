@@ -1,5 +1,4 @@
 import { drizzle } from "drizzle-orm/postgres-js"
-import { sql } from "drizzle-orm"
 import postgres from "postgres"
 import { getEnv } from "../config/env"
 
@@ -8,15 +7,17 @@ import { getEnv } from "../config/env"
 let client: ReturnType<typeof postgres> | undefined
 let database: ReturnType<typeof drizzle> | undefined
 
+function getClient() {
+  return (client ??= postgres(getEnv().DATABASE_URL, { max: 10 }))
+}
+
 export function getDb() {
-  if (!client) client = postgres(getEnv().DATABASE_URL, { max: 10 })
-  if (!database) database = drizzle(client)
-  return database
+  return (database ??= drizzle(getClient()))
 }
 
 export async function pingDb(): Promise<boolean> {
   try {
-    await getDb().execute(sql`select 1`)
+    await getClient()`select 1` // 走原生 client，跳过 drizzle 查询层
     return true
   } catch {
     return false
