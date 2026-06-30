@@ -11,8 +11,11 @@
     "db:migrate": "bun --env-file=../../.env.bidsaas.local run drizzle-kit migrate"
   },
   "dependencies": {
-    "hono": "4.12.25",
+    "@alicloud/dysmsapi20170525": "^4.5.1",
+    "@alicloud/openapi-client": "^0.4.15",
     "drizzle-orm": "^0.36.0",
+    "hono": "4.12.25",
+    "ioredis": "^5.11.1",
     "postgres": "^3.4.5",
     "zod": "^3.23.8"
   },
