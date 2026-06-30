@@ -10,8 +10,7 @@ export async function createSession(input: {
   ip?: string
 }): Promise<Session> {
   const [row] = await getDb().insert(sessions).values(input).returning()
-  if (!row) throw new Error("创建会话失败")
-  return row
+  return row! // insert ... returning 成功必返一行
 }
 
 // 有效会话判定（鉴权关键）：token 命中 且 未撤销(revoked_at IS NULL) 且 未过期(expires_at > now)，

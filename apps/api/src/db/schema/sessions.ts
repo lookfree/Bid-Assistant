@@ -1,19 +1,20 @@
-import { pgTable, uuid, text, timestamp, index, unique } from "drizzle-orm/pg-core"
+import { pgTable, uuid, text, index, unique } from "drizzle-orm/pg-core"
+import { id, tz, createdAt } from "./columns"
 import { users } from "./users"
 
 export const sessions = pgTable(
   "sessions",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
+    id: id(),
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     tokenHash: text("token_hash").notNull(),
     userAgent: text("user_agent"),
     ip: text("ip"),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    revokedAt: timestamp("revoked_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: tz("expires_at").notNull(),
+    revokedAt: tz("revoked_at"),
+    createdAt: createdAt(),
   },
   (t) => ({
     byUser: index("sessions_user_id_idx").on(t.userId),

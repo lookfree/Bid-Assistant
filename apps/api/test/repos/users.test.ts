@@ -6,18 +6,15 @@ import {
   addIdentity,
 } from "../../src/repos/users"
 import { IdentityAlreadyBoundError } from "../../src/repos/errors"
-import { getDb } from "../../src/db/client"
-import { users } from "../../src/db/schema"
-import { eq } from "drizzle-orm"
+import { TEST_TIMEOUT_MS, uniquePhone, deleteTestUser } from "./helpers"
 
-// 集成测试连远程 bidsaas（公网往返较慢），放宽默认超时。
-setDefaultTimeout(20000)
+setDefaultTimeout(TEST_TIMEOUT_MS)
 
-const phone = `+8613${Date.now().toString().slice(-9)}`
+const phone = uniquePhone()
 let createdId = ""
 
 afterAll(async () => {
-  if (createdId) await getDb().delete(users).where(eq(users.id, createdId)) // 级联删 identities
+  if (createdId) await deleteTestUser(createdId) // 级联删 identities
 })
 
 describe("users repo", () => {
