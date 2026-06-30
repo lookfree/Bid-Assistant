@@ -1,5 +1,5 @@
 {
-  "extends": "../../tsconfig.base.json",
+  "extends": "../../tsconfig.bun.json",
   "compilerOptions": { "jsx": "react-jsx", "jsxImportSource": "hono/jsx" },
   "include": ["src", "test", "drizzle.config.ts"]
 }
