@@ -7,7 +7,7 @@
     "start": "bun run src/index.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "db:generate": "drizzle-kit generate",
+    "db:generate": "bun --env-file=../../.env.bidsaas.local run drizzle-kit generate",
     "db:migrate": "bun --env-file=../../.env.bidsaas.local run drizzle-kit migrate"
   },
   "dependencies": {
