@@ -24,4 +24,3 @@ export const userIdentities = pgTable(
 )
 
 export type UserIdentity = typeof userIdentities.$inferSelect
-export type NewUserIdentity = typeof userIdentities.$inferInsert

@@ -706,7 +706,7 @@ import { describe, it, expect, afterAll } from "bun:test"
 import { createApp } from "../../src/app"
 import type { SmsCodeService } from "../../src/services/sms-code"
 import { findUserByIdentity } from "../../src/repos/users"
-import { db } from "../../src/db/client"
+import { getDb } from "../../src/db/client"
 import { users } from "../../src/db/schema"
 import { eq } from "drizzle-orm"
 
@@ -723,7 +723,7 @@ const fakeSms: SmsCodeService = {
 afterAll(async () => {
   for (const p of [phone, freshPhone]) {
     const u = await findUserByIdentity("phone", p)
-    if (u) await db.delete(users).where(eq(users.id, u.id))
+    if (u) await getDb().delete(users).where(eq(users.id, u.id))
   }
 })
 
@@ -852,7 +852,7 @@ curl -s -XPOST localhost:8080/auth/sms/send -H 'content-type: application/json' 
 kill %1
 ```
 Expected: send 返回 `{"ok":true}` 且控制台打印验证码；用该码 verify 返回 `{token, user}`。
-> 冒烟产生的测试用户可手动清理：`bun --env-file=../../.env.bidsaas.local -e "import('./src/repos/users').then(async m=>{const u=await m.findUserByIdentity('phone','+8613900000000'); if(u){const {db}=await import('./src/db/client');const {users}=await import('./src/db/schema');const {eq}=await import('drizzle-orm'); await db.delete(users).where(eq(users.id,u.id))}})"`
+> 冒烟产生的测试用户可手动清理：`bun --env-file=../../.env.bidsaas.local -e "import('./src/repos/users').then(async m=>{const u=await m.findUserByIdentity('phone','+8613900000000'); if(u){const {getDb}=await import('./src/db/client');const {users}=await import('./src/db/schema');const {eq}=await import('drizzle-orm'); await getDb().delete(users).where(eq(users.id,u.id))}})"`
 
 - [ ] **Step 3: 全量测试 + 类型检查**
 

@@ -5,6 +5,7 @@ import {
   createUserWithIdentity,
   addIdentity,
 } from "../../src/repos/users"
+import { IdentityAlreadyBoundError } from "../../src/repos/errors"
 import { getDb } from "../../src/db/client"
 import { users } from "../../src/db/schema"
 import { eq } from "drizzle-orm"
@@ -42,5 +43,12 @@ describe("users repo", () => {
     await addIdentity(createdId, "wechat", `wx_${phone}`)
     const viaWechat = await findUserByIdentity("wechat", `wx_${phone}`)
     expect(viaWechat?.id).toBe(createdId)
+  })
+
+  it("addIdentity throws IdentityAlreadyBoundError on a taken identity", async () => {
+    // 重复绑定同一 (wechat, wx_phone) → 命中 UNIQUE → 领域错误而非裸 500
+    await expect(addIdentity(createdId, "wechat", `wx_${phone}`)).rejects.toBeInstanceOf(
+      IdentityAlreadyBoundError,
+    )
   })
 })

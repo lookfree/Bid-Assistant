@@ -8,6 +8,13 @@
       "when": 1782784643551,
       "tag": "0000_heavy_punisher",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1782790957638,
+      "tag": "0001_mean_caretaker",
+      "breakpoints": true
     }
   ]
 }
