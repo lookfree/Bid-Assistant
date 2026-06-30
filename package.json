@@ -8,6 +8,7 @@
   "scripts": {
     "web": "bun --filter @bid/web dev",
     "admin": "bun --filter @bid/admin dev",
+    "api": "bun --filter @bid/api dev",
     "build": "bun --filter '*' build",
     "format": "prettier --write .",
     "typecheck": "bun --filter '*' typecheck"
