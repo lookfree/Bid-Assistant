@@ -14,6 +14,8 @@ export async function createSession(input: {
   return row
 }
 
+// 有效会话判定（鉴权关键）：token 命中 且 未撤销(revoked_at IS NULL) 且 未过期(expires_at > now)，
+// 三者同时成立才算有效——撤销或过期任一即失效。
 export async function findValidSession(
   tokenHash: string,
   now: Date = new Date(),
