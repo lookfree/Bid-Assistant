@@ -1,22 +1,17 @@
 import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bun:test"
 import { createSession, findValidSession, revokeSession } from "../../src/repos/sessions"
-import { createUserWithIdentity } from "../../src/repos/users"
-import { getDb } from "../../src/db/client"
-import { users } from "../../src/db/schema"
-import { eq } from "drizzle-orm"
+import { TEST_TIMEOUT_MS, uniquePhone, createTestUser, deleteTestUser } from "./helpers"
 
-// 集成测试连远程 bidsaas（公网往返较慢），放宽默认超时。
-setDefaultTimeout(20000)
+setDefaultTimeout(TEST_TIMEOUT_MS)
 
-const phone = `+8613${Date.now().toString().slice(-9)}`
+const phone = uniquePhone()
 let userId = ""
 
 beforeAll(async () => {
-  const u = await createUserWithIdentity({ provider: "phone", identifier: phone, verifiedAt: new Date() })
-  userId = u.id
+  userId = (await createTestUser(phone)).id
 })
 afterAll(async () => {
-  await getDb().delete(users).where(eq(users.id, userId)) // 级联删 sessions/identities
+  await deleteTestUser(userId) // 级联删 sessions/identities
 })
 
 describe("sessions repo", () => {

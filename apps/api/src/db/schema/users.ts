@@ -1,16 +1,17 @@
-import { pgTable, uuid, text, timestamp, pgEnum } from "drizzle-orm/pg-core"
+import { pgTable, text, pgEnum } from "drizzle-orm/pg-core"
+import { id, tz, createdAt } from "./columns"
 
 export const userStatus = pgEnum("user_status", ["active", "banned"])
 
 export const users = pgTable("users", {
-  id: uuid("id").primaryKey().defaultRandom(),
+  id: id(),
   status: userStatus("status").notNull().default("active"),
   nickname: text("nickname"),
   avatarUrl: text("avatar_url"),
-  termsAgreedAt: timestamp("terms_agreed_at", { withTimezone: true }), // 注册即同意协议的时间（合规留痕）
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  // $onUpdate：经 Drizzle 的任何 update 都自动刷新，避免 updated_at 永远等于 created_at。
-  updatedAt: timestamp("updated_at", { withTimezone: true })
+  termsAgreedAt: tz("terms_agreed_at"), // 注册即同意协议的时间（合规留痕）
+  createdAt: createdAt(),
+  // $onUpdate 只对经 Drizzle 的写入生效；裸 SQL/外部直写不会刷新 updated_at（届时需加 DB 触发器）。
+  updatedAt: tz("updated_at")
     .notNull()
     .defaultNow()
     .$onUpdate(() => new Date()),
