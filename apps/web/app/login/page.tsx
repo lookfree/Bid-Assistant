@@ -6,6 +6,9 @@ import { useState, useEffect, Suspense } from "react"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Phone, ShieldCheck, Sparkles, ArrowRight, FileSearch, PenLine, Download } from "lucide-react"
+import { api, captchaEnabled } from "@/lib/api"
+import { ApiError } from "@/lib/api-client"
+import { useAuth } from "@/components/auth/auth-provider"
 
 const benefits = [
   { icon: FileSearch, text: "免费解析招标文件" },
@@ -19,10 +22,13 @@ function LoginContent() {
   const redirect = searchParams.get("redirect") || "/upload"
   const reason = searchParams.get("reason")
 
+  const { login } = useAuth()
   const [phone, setPhone] = useState("")
   const [code, setCode] = useState("")
   const [countdown, setCountdown] = useState(0)
   const [agreed, setAgreed] = useState(false)
+  const [msg, setMsg] = useState("")
+  const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     if (countdown <= 0) return
@@ -34,15 +40,36 @@ function LoginContent() {
   const canSend = phoneValid && countdown === 0
   const canSubmit = phoneValid && code.length === 6 && agreed
 
-  function handleSendCode() {
+  // 手机号为纯 11 位（+86 由后端 normalizePhone 补全）；滑块关闭时不带 captchaToken，后端 DevPass 放行。
+  async function handleSendCode() {
     if (!canSend) return
-    setCountdown(60)
+    setMsg("")
+    try {
+      await api.authApi.sendSmsCode(phone, captchaEnabled ? "" : undefined)
+      setCountdown(60)
+      setMsg("验证码已发送")
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 429) setMsg(`操作过于频繁，请 ${e.retryAfter ?? 60}s 后重试`)
+      else setMsg("发送失败，请稍后重试")
+    }
   }
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!canSubmit) return
-    router.push(redirect)
+    if (!canSubmit || busy) return
+    setBusy(true)
+    setMsg("")
+    try {
+      const { token, user } = await api.authApi.verifySmsCode(phone, code, agreed)
+      login(token, user)
+      router.push(redirect)
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) setMsg("验证码错误或已过期")
+      else if (e instanceof ApiError && e.status === 400) setMsg("请先同意《用户协议》和《隐私政策》后再登录")
+      else setMsg("登录失败，请稍后重试")
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -65,6 +92,12 @@ function LoginContent() {
               <div className="mb-6 flex items-start gap-2.5 rounded-xl border border-primary/20 bg-primary/5 p-3.5">
                 <Sparkles className="mt-0.5 size-4 shrink-0 text-primary" />
                 <p className="text-sm leading-relaxed text-foreground">{reason}</p>
+              </div>
+            )}
+
+            {msg && (
+              <div className="mb-6 rounded-xl border border-border bg-muted/50 p-3.5">
+                <p className="text-sm leading-relaxed text-foreground">{msg}</p>
               </div>
             )}
 
@@ -122,10 +155,10 @@ function LoginContent() {
 
               <button
                 type="submit"
-                disabled={!canSubmit}
+                disabled={!canSubmit || busy}
                 className="mt-2 inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-6 py-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                登录 / 注册
+                {busy ? "登录中…" : "登录 / 注册"}
                 <ArrowRight className="size-4" />
               </button>
 

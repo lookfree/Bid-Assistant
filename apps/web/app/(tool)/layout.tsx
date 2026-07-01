@@ -4,6 +4,7 @@ import { Sparkles, LogIn, User } from "lucide-react"
 import { AppSidebar } from "@/components/tool/app-sidebar"
 import { MobileNav } from "@/components/tool/mobile-nav"
 import { PaywallProvider } from "@/components/paywall"
+import { RequireAuth } from "@/components/auth/require-auth"
 
 export default function ToolLayout({
   children,
@@ -48,7 +49,9 @@ export default function ToolLayout({
             </div>
           </header>
 
-          <main className="flex-1">{children}</main>
+          <main className="flex-1">
+            <RequireAuth>{children}</RequireAuth>
+          </main>
         </div>
       </div>
     </PaywallProvider>

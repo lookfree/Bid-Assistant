@@ -30,6 +30,7 @@ const app = createApp({
   sessionTtlDays: env.AUTH_SESSION_TTL_DAYS,
   captchaEnabled: env.CAPTCHA_ENABLED,
   verifyCaptcha: (t) => captcha.verify(t),
+  webOrigins: env.WEB_ORIGINS.split(",").map((s) => s.trim()),
 })
 
 // 优雅关闭：归还 DB 连接池与 Redis 连接，避免重启/热重载泄漏。
