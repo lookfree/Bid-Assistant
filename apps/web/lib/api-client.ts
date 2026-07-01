@@ -12,6 +12,8 @@ export type ApiClientOptions = {
   baseUrl: string
   getToken: () => string | null
   fetchImpl?: typeof fetch
+  // 任意请求返回 401 时回调（令牌失效）——上层用它清令牌 / 复位登录态。
+  onUnauthorized?: () => void
 }
 
 export function createApiClient(opts: ApiClientOptions) {
@@ -25,6 +27,7 @@ export function createApiClient(opts: ApiClientOptions) {
     const res = await doFetch(`${opts.baseUrl}${path}`, { ...init, headers })
     const raw: unknown = await res.json().catch(() => ({}))
     if (!res.ok) {
+      if (res.status === 401) opts.onUnauthorized?.()
       const err = (raw ?? {}) as { error?: string; retryAfter?: number }
       throw new ApiError(res.status, err.error, err.retryAfter)
     }
