@@ -36,4 +36,15 @@
 | A3 | `services/wechat-auth.ts` | `getdel` 在换码前消费 state,换码瞬时失败会烧掉 state（需重扫） | 低 | wontfix | CSRF state 本就一次性,失败重扫即可;若要可重试,改为换码成功后再消费（放开 replay 窗口需权衡）。 |
 
 > R1（会话签发重复）、R2（找/建+竞态重复）、S1（`getJson<T>` 抽取）、Alt3（`lib/wechat-login.ts` typed wrapper）已在 /simplify 一轮修掉:抽 `createOrGetOnConflict`（repos/users）+ `mintSession`（auth）供 phone/wechat 共用,竞态与会话逻辑各归一处。
+
+## spec006 · 文件直传（review 于 2026-07）
+
+本轮"全修"修了 correctness #1–#3 + 复用 R1/R2/R3（confirmUpload 复验真实大小、headObject 只对 404 返 null、Content-Disposition RFC 5987、`closeS3()` 接 SIGINT、文件错误改类型化 + 路由 `instanceof`）。以下属需后台/基建层，超出代码修范围,记录待做：
+
+| # | 文件 | 问题 | 严重度 | 状态 | 建议修法 |
+|---|---|---|---|---|---|
+| Alt3 | `services/files.ts` `presignUpload` | `pending` 行建了但客户端不调 `/complete`（关页/失败/刷 presign）就**永久堆积**;无 reaper/cron/MinIO lifecycle | 中（运维） | deferred | MinIO 对 `uploads/` 前缀设 lifecycle 过期规则（清对象）+ 定期 reaper 删超 presign TTL 的 `pending` 行；等 Phase 后台任务层落地。 |
+| A1深 | `storage/s3.ts` `presignPut` | 大小上限现为"确认时复验后删"（detection-after-the-fact），非入口拦截 | 低 | deferred | 用预签名 **POST + `content-length-range` 策略**让 MinIO 入口就拒超大 body（prevention），替代先存后删。 |
+
+> 说明:oversize 复验的集成测试需 >50MB 上传或改 env 缓存,成本过高暂缺;修复已由 typecheck + 正常路径用例覆盖。
 > 修复时把对应行从表里移走或标 `done`。
