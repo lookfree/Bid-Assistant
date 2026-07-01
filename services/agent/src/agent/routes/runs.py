@@ -9,9 +9,17 @@ from pydantic import BaseModel
 from agent.db import get_pool
 from agent.redis_client import get_redis
 from agent.runtime.dispatch import create_run
-from agent.runtime.channels import run_channel, result_key
+from agent.runtime.channels import progress_stream, result_key
 
 router = APIRouter()
+
+_TERMINAL = {"succeeded", "failed", "interrupted", "canceled"}
+
+
+def _is_terminal(run_id: str) -> bool:
+    with get_pool().connection() as conn:
+        row = conn.execute("select status from agent.agent_request where run_id=%s", (run_id,)).fetchone()
+    return bool(row) and row[0] in _TERMINAL
 
 
 class CreateRunBody(BaseModel):
@@ -45,18 +53,24 @@ async def get_run(run_id: str):
 @router.get("/runs/{run_id}/stream")
 async def stream(run_id: str):
     async def gen():
-        ps = get_redis().pubsub()
-        ps.subscribe(run_channel(run_id))
-        try:
-            while True:
-                m = ps.get_message(timeout=1.0)
-                if m and m["type"] == "message":
-                    ev = json.loads(m["data"])
-                    yield {"event": ev["type"], "data": m["data"]}
+        key = progress_stream(run_id)
+        last_id = "0"  # 从头读：晚订阅/断线重连也能回放全过程（Stream 持久，pub/sub 做不到）
+        r = get_redis()
+        while True:
+            # 阻塞读丢线程池，别卡事件循环（否则并发 SSE 客户端会串行）。
+            resp = await asyncio.to_thread(r.xread, {key: last_id}, count=100, block=1000)
+            if not resp:
+                # 无新事件：若 run 已终态且流里没有更多 → 结束，避免永挂
+                if await asyncio.to_thread(_is_terminal, run_id):
+                    break
+                continue
+            for _k, entries in resp:
+                for entry_id, fields in entries:
+                    last_id = entry_id
+                    data = fields["event"]
+                    ev = json.loads(data)
+                    yield {"event": ev["type"], "data": data}
                     if ev["type"] == "run.end":
-                        break
-                await asyncio.sleep(0)
-        finally:
-            ps.close()
+                        return
 
     return EventSourceResponse(gen())

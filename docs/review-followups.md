@@ -65,3 +65,14 @@
 | # | 文件 | 问题 | 严重度 | 状态 | 建议修法 |
 |---|---|---|---|---|---|
 | A3 | `models/gateway.py` `get_chat`/`_chain` | 回退链里 provider 拼错（如 `qwem:...`）→ `PROVIDERS[x]` 抛裸 KeyError，被故障转移当普通 `model.error` 吞掉，配置错永久静默、拼错的回退永不生效 | 低 | deferred | `get_chat`/`_chain` 里 provider 不在 `PROVIDERS` 时抛清晰 `ValueError("unknown provider ...")`，或在 `_chain` 构建时校验并对未知 provider 记一条可辨认的 warn；等 spec104 接线时定。 |
+
+## spec104 · Run 运行时（review 于 2026-07）
+
+修了 correctness #1–#4：#1 **进度通道 pub/sub → 每 run 一条 Redis Stream**（晚订阅/断线重连可从头回放，SSE 订阅已结束 run 不再永挂）、#2 SSE 阻塞 XREAD 丢 `asyncio.to_thread`（不卡事件循环）、#3 process_run 缺 runmeta 即标 failed（不再 NOT NULL 孤儿）、#4 finish_run 先于落 result。以下未修：
+
+| # | 文件 | 问题 | 严重度 | 状态 | 建议修法 |
+|---|---|---|---|---|---|
+| A3 | `runtime/dispatch.py` `create_run` | DB insert(queued)→SET→XADD 三步非原子；进程在 commit 后、XADD 前崩溃 → run 永 queued 且无入队，无对账 | 中 | deferred | spec107 加固：事务化 outbox（DB 记待派发、后台补投）或定期 reaper 扫描超时 `queued` 行重新入队/标失败。 |
+| A5 | `main_worker.py` `run_loop` | `XREAD $` 只读新消息 + 无 XACK：worker 停机期间入队的 run 永不消费；崩溃中的 in-flight run 无 redelivery | 中 | deferred | spec107：改 **consumer group（XREADGROUP + XACK）**，宕机不丢、可水平扩（§4.6 竞争消费）；spec 已声明本 spec 先简化。 |
+| A7 | `checkpointer.py` `get_checkpointer` | `_saver` 单例绑定首个事件循环，跨 `asyncio.run()`（不同 loop）复用会 "attached to a different loop"；`_cm` 从不 `__aexit__`（进程级常驻，非泄漏但无优雅关闭） | 中 | deferred | spec106 真实图在 worker 单事件循环下会真正用到 checkpointer——届时验证单循环下 OK；若多循环场景需按 loop 建 saver 或用 `async with` 生命周期管理。 |
+| tok | `routes/runs.py` `GET /runs/{id}` | dummy run 的 tokens 恒 0（dummy 不调 record_usage） | 低 | wontfix | 有意：dummy 是管线夹具；真 agent（spec107 读标经 ModelGateway）才记 usage，届时非 0。 |
