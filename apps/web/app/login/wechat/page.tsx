@@ -1,5 +1,5 @@
 "use client"
-import { Suspense, useEffect, useState } from "react"
+import { Suspense, useEffect, useRef, useState } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { api } from "@/lib/api"
 import { authErrorMessage } from "@/lib/auth-errors"
@@ -11,14 +11,17 @@ function WechatCallbackContent() {
   const router = useRouter()
   const { login } = useAuth()
   const [msg, setMsg] = useState("正在登录…")
+  const done = useRef(false) // 只换一次：state 是一次性的，StrictMode/重渲染二次触发会撞 invalid_state
 
   useEffect(() => {
+    if (done.current) return
     const code = params.get("code")
     const state = params.get("state")
     if (!code || !state) {
       setMsg("缺少授权参数")
       return
     }
+    done.current = true
     api.authApi
       .wechatLogin(code, state)
       .then(({ token, user, isNew }) => {

@@ -97,6 +97,8 @@ function LoginContent() {
         return
       }
       await loadWxLoginScript()
+      const mount = document.getElementById("wx-qr")
+      if (mount) mount.innerHTML = "" // 清掉上一次的二维码 iframe，避免叠加多个不同 state 的码
       // @ts-expect-error 微信注入的全局
       new window.WxLogin({ id: "wx-qr", appid: appId, scope, redirect_uri: encodeURIComponent(redirectUri), state })
     } catch (e) {
