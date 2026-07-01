@@ -7,8 +7,8 @@ def stream_key() -> str:
     return f"{settings.redis_prefix}runs"                       # Redis Stream：待执行 run
 
 
-def run_channel(run_id: str) -> str:
-    return f"{settings.redis_prefix}run:{run_id}"               # pub/sub：进度
+def progress_stream(run_id: str) -> str:
+    return f"{settings.redis_prefix}run:{run_id}"               # Redis Stream：进度事件（可回放）
 
 
 def runmeta_key(run_id: str) -> str:

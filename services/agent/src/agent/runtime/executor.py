@@ -9,7 +9,7 @@ from agent.db import get_pool
 from agent.redis_client import get_redis
 from agent.telemetry.recorder import Recorder
 from agent.models.gateway import ModelGateway
-from agent.runtime.channels import run_channel, runmeta_key, result_key
+from agent.runtime.channels import progress_stream, runmeta_key, result_key
 from agent.runtime.registry import get_agent, RunContext
 import agent.runtime.dummy_agent  # noqa: F401 确保 dummy 注册
 
@@ -25,14 +25,25 @@ def _rec() -> Recorder:
 
 
 def _publish(r, run_id: str, event: dict) -> None:
-    r.publish(run_channel(run_id), json.dumps(event))
+    # 进度落 Redis Stream（持久、可回放）：晚订阅/断线重连的 SSE 客户端能从头 XREAD 拿全过程。
+    key = progress_stream(run_id)
+    r.xadd(key, {"event": json.dumps(event)})
+    r.expire(key, 86400)  # 随 result 一起 24h 过期，避免进度流堆积
 
 
 async def process_run(run_id: str) -> None:
+    """执行单个 run：跑 agent 的 astream → 逐事件埋点 + 推进度流 → 结果落 Redis → finish + 用量回调。
+    事件契约 {type,data,node?}：node.start/node.end/error 落 event_log，node.end.data.result 即最终结果。"""
     r = get_redis()
     rec = _rec()
     meta = json.loads(r.get(runmeta_key(run_id)) or "{}")
     agent_type, thread_id, input = meta.get("agent_type"), meta.get("thread_id", run_id), meta.get("input", {})
+
+    if not agent_type:
+        # runmeta 丢失/过期（>24h 积压等）：直接标失败，别让 NOT NULL agent_type 崩在 start_run 而留孤儿。
+        rec.finish_run(run_id, status="failed", error="runmeta missing or expired", error_type="MetaMissing")
+        _publish(r, run_id, {"type": "run.end", "data": {"status": "failed", "error": "runmeta missing or expired"}})
+        return
 
     rec.start_run(run_id, agent_type, thread_id)
     rec.log_event(run_id, agent_type, "run.start", thread_id=thread_id)
@@ -54,8 +65,9 @@ async def process_run(run_id: str) -> None:
                 result = ev["data"]["result"]
             _publish(r, run_id, ev)  # 全部事件推 SSE
 
-        r.set(result_key(run_id), json.dumps(result), ex=86400)
+        # finish 先行：finish_run 成功后再落 result，避免 finish 抛错时留下"结果在、状态却不是 succeeded"。
         rec.finish_run(run_id, status="succeeded", node_count=len(nodes))
+        r.set(result_key(run_id), json.dumps(result), ex=86400)
         _publish(r, run_id, {"type": "run.end", "data": {"status": "succeeded"}})
         await _callback(run_id, agent_type, "succeeded")
     except Exception as e:  # noqa: BLE001
