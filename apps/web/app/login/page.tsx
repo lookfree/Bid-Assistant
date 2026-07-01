@@ -8,6 +8,7 @@ import { useRouter, useSearchParams } from "next/navigation"
 import { Phone, ShieldCheck, Sparkles, ArrowRight, FileSearch, PenLine, Download, QrCode } from "lucide-react"
 import { api, captchaEnabled } from "@/lib/api"
 import { authErrorMessage } from "@/lib/auth-errors"
+import { renderWxLogin } from "@/lib/wechat-login"
 import { useAuth } from "@/components/auth/auth-provider"
 
 const benefits = [
@@ -15,19 +16,6 @@ const benefits = [
   { icon: PenLine, text: "AI 生成目录与正文" },
   { icon: Download, text: "一键导出投标文件" },
 ]
-
-// 按需加载微信网站应用 wxLogin.js（仅生产、配了真实 appId 时才会走到）。
-function loadWxLoginScript(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    // @ts-expect-error 微信注入的全局
-    if (typeof window !== "undefined" && window.WxLogin) return resolve()
-    const s = document.createElement("script")
-    s.src = "https://res.wx.qq.com/connect/zh_CN/htmledition/js/wxLogin.js"
-    s.onload = () => resolve()
-    s.onerror = () => reject(new Error("wxLogin.js 加载失败"))
-    document.head.appendChild(s)
-  })
-}
 
 function LoginContent() {
   const router = useRouter()
@@ -96,14 +84,15 @@ function LoginContent() {
         setMsg("开发期未配置微信凭据，二维码暂不可用（真实凭据就绪后自动生效）")
         return
       }
-      await loadWxLoginScript()
-      const mount = document.getElementById("wx-qr")
-      if (mount) mount.innerHTML = "" // 清掉上一次的二维码 iframe，避免叠加多个不同 state 的码
-      // @ts-expect-error 微信注入的全局
-      new window.WxLogin({ id: "wx-qr", appid: appId, scope, redirect_uri: encodeURIComponent(redirectUri), state })
+      await renderWxLogin({ id: "wx-qr", appid: appId, scope, redirect_uri: encodeURIComponent(redirectUri), state })
     } catch (e) {
       setMsg(authErrorMessage(e, "生成二维码失败，请重试"))
     }
+  }
+
+  const switchTab = (t: "phone" | "wechat") => {
+    setTab(t)
+    setMsg("")
   }
 
   return (
@@ -142,10 +131,7 @@ function LoginContent() {
             <div className="mt-6 flex gap-1 rounded-lg bg-secondary/60 p-1">
               <button
                 type="button"
-                onClick={() => {
-                  setTab("phone")
-                  setMsg("")
-                }}
+                onClick={() => switchTab("phone")}
                 className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-colors ${tab === "phone" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
               >
                 <Phone className="size-4" />
@@ -153,10 +139,7 @@ function LoginContent() {
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setTab("wechat")
-                  setMsg("")
-                }}
+                onClick={() => switchTab("wechat")}
                 className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-colors ${tab === "wechat" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
               >
                 <QrCode className="size-4" />

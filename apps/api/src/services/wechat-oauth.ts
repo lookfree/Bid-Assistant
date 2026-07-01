@@ -23,11 +23,15 @@ export class RealWechatOAuthClient implements WechatOAuthClient {
     private fetchImpl: typeof fetch = fetch,
   ) {}
 
+  private async getJson<T>(url: string): Promise<T> {
+    return (await (await this.fetchImpl(url)).json()) as T
+  }
+
   async exchangeCode(code: string): Promise<WechatProfile> {
     const tokUrl =
       `https://api.weixin.qq.com/sns/oauth2/access_token?appid=${this.cfg.appId}` +
       `&secret=${this.cfg.appSecret}&code=${encodeURIComponent(code)}&grant_type=authorization_code`
-    const tok = (await (await this.fetchImpl(tokUrl)).json()) as WxTokenResp
+    const tok = await this.getJson<WxTokenResp>(tokUrl)
     if (tok.errcode || !tok.access_token || !tok.openid) {
       throw new Error(`wechat oauth token: ${tok.errcode ?? "no_token"} ${tok.errmsg ?? ""}`)
     }
@@ -35,11 +39,9 @@ export class RealWechatOAuthClient implements WechatOAuthClient {
     let avatar: string | undefined
     let unionid: string | undefined = tok.unionid
     try {
-      const ui = (await (
-        await this.fetchImpl(
-          `https://api.weixin.qq.com/sns/userinfo?access_token=${tok.access_token}&openid=${tok.openid}`,
-        )
-      ).json()) as WxUserInfoResp
+      const ui = await this.getJson<WxUserInfoResp>(
+        `https://api.weixin.qq.com/sns/userinfo?access_token=${tok.access_token}&openid=${tok.openid}`,
+      )
       if (!ui.errcode) {
         nickname = ui.nickname
         avatar = ui.headimgurl

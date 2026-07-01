@@ -34,7 +34,6 @@
 |---|---|---|---|---|---|
 | A2 | `services/wechat-auth.ts` | `identifier = unionid ?? openid` 跨次可能不稳:token 无 unionid 且 userinfo 失败时以 openid 建号,日后拿到 unionid 会 miss → 建**重复账号** | 中（真实凭据期） | deferred（凭据就绪） | 开放平台绑定使 unionid 恒有;或首登同时 `addIdentity` 落 openid+unionid 两身份,任一命中即同一人。 |
 | A3 | `services/wechat-auth.ts` | `getdel` 在换码前消费 state,换码瞬时失败会烧掉 state（需重扫） | 低 | wontfix | CSRF state 本就一次性,失败重扫即可;若要可重试,改为换码成功后再消费（放开 replay 窗口需权衡）。 |
-| R1 | `services/wechat-auth.ts`、`services/auth.ts` | 签发会话块（`randomBytes(32)`→`hashToken`→`createSession`）在 phone/wechat 两处逐字重复 | 低（复用） | deferred | 抽 `issueSession(user, meta, ttlDays)` 到 `auth.ts`,两处调用。 |
-| S1/Alt3 | `services/wechat-oauth.ts`、`app/login/page.tsx` | Real 客户端双层 `await (await fetch()).json()` ×2;WxLogin 全局 + `@ts-expect-error` 内联在页面 | 低（简化） | deferred | 抽类内 `getJson<T>(url)`;抽 `lib/wechat-login.ts` typed wrapper 收掉两处 `@ts-expect-error`。 |
 
+> R1（会话签发重复）、R2（找/建+竞态重复）、S1（`getJson<T>` 抽取）、Alt3（`lib/wechat-login.ts` typed wrapper）已在 /simplify 一轮修掉:抽 `createOrGetOnConflict`（repos/users）+ `mintSession`（auth）供 phone/wechat 共用,竞态与会话逻辑各归一处。
 > 修复时把对应行从表里移走或标 `done`。
