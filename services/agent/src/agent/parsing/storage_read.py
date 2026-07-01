@@ -12,6 +12,9 @@ _client = None
 def _s3():
     global _client
     if _client is None:
+        if not settings.minio_endpoint:
+            # 缺 endpoint 时 boto3 会静默回退到 AWS S3 默认端点 —— 明确报错，别打错目标。
+            raise RuntimeError("MINIO_ENDPOINT 未配置：拒绝回退到 AWS 默认端点")
         _client = boto3.client(
             "s3",
             endpoint_url=settings.minio_endpoint,
@@ -23,6 +26,7 @@ def _s3():
 
 
 def read_bytes(key: str) -> bytes:
+    """从 MinIO(bidsaas 桶)按 key 取对象字节。"""
     obj = _s3().get_object(Bucket=settings.minio_bucket, Key=key)
     return obj["Body"].read()
 

@@ -26,5 +26,7 @@ class BiddingAgent(BaseAgent):
                 continue
             yield ev
         result = self._get_result()
-        if result is not None:
-            yield {"type": "node.end", "node": "read", "data": {"result": result.model_dump()}}
+        # 无论模型是否 submit 都发 read node.end：submit 了给结构化结果，否则 result=None
+        # （避免模型没提交时静默留空结果、run 却 succeeded 的假成功）。
+        yield {"type": "node.end", "node": "read",
+               "data": {"result": result.model_dump() if result is not None else None}}
