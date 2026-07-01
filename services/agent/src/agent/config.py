@@ -2,14 +2,23 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# 仓库根的 .env.bidsaas.local，按本文件位置定位（不依赖进程 CWD，从任何目录/容器都稳）。
-# 缺失时 pydantic-settings 会忽略该文件，改从进程环境变量读（Docker 由 compose 注入 env）。
-_ENV_FILE = Path(__file__).resolve().parents[4] / ".env.bidsaas.local"
+# 从本文件向上找仓库根的 .env.bidsaas.local（不依赖进程 CWD，也不硬编码目录层数——
+# 容器里源码在 /app/src/agent，层数比主机浅）。找不到就返回 None，pydantic-settings
+# 改从进程环境变量读（Docker 由 compose 注入 env）。
+def _find_env_file() -> str | None:
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / ".env.bidsaas.local"
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+_ENV_FILE = _find_env_file()
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=str(_ENV_FILE),  # 复用仓库根中间件密钥
+        env_file=_ENV_FILE,  # 复用仓库根中间件密钥；None 时改读进程环境变量
         env_file_encoding="utf-8",
         extra="ignore",
     )
