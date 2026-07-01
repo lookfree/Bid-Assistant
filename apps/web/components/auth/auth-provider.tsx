@@ -1,6 +1,6 @@
 "use client"
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react"
-import { api } from "@/lib/api"
+import { api, AUTH_EXPIRED_EVENT } from "@/lib/api"
 import { tokenStore } from "@/lib/token-store"
 
 type User = { id: string; nickname: string | null; status?: string }
@@ -36,6 +36,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
   useEffect(() => {
     void refresh()
+  }, [])
+
+  // 后台请求 401（令牌过期/撤销）时立即复位登录态，交由守卫跳登录，不必等下次刷新。
+  useEffect(() => {
+    const onExpired = () => setUser(null)
+    window.addEventListener(AUTH_EXPIRED_EVENT, onExpired)
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired)
   }, [])
 
   const login = (token: string, u: User) => {

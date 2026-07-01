@@ -15,12 +15,12 @@ export type AppDeps = {
 
 export function createApp(deps: AppDeps) {
   const app = new Hono()
-  // 跨域：仅放行白名单 Origin（未命中回退首个白名单，不回显任意来源）。env 由 index.ts 注入。
+  // 跨域：白名单数组交给 hono/cors 匹配——命中回显该 Origin，未命中不发 ACAO（不回显任意来源）。env 由 index.ts 注入。
   const allow = deps.webOrigins?.length ? deps.webOrigins : ["http://localhost:3000", "http://localhost:3001"]
   app.use(
     "*",
     cors({
-      origin: (o) => (allow.includes(o) ? o : allow[0]!),
+      origin: allow,
       allowMethods: ["GET", "POST", "OPTIONS"],
       allowHeaders: ["Content-Type", "Authorization"],
       credentials: true,

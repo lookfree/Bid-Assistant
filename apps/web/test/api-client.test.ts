@@ -38,6 +38,24 @@ describe("api-client", () => {
     expect(auth).toBe("Bearer tok-9")
   })
 
+  it("401 触发 onUnauthorized 回调（令牌失效）", async () => {
+    let called = 0
+    const client = createApiClient({
+      baseUrl: "http://api.test",
+      getToken: () => "tok",
+      onUnauthorized: () => {
+        called++
+      },
+      fetchImpl: fakeFetch(() => ({ status: 401, body: { error: "invalid_code" } })),
+    })
+    try {
+      await client.authApi.me()
+    } catch {
+      // 预期抛 ApiError
+    }
+    expect(called).toBe(1)
+  })
+
   it("非 2xx 抛 ApiError（含 status / code / retryAfter）", async () => {
     const client = createApiClient({
       baseUrl: "http://api.test",

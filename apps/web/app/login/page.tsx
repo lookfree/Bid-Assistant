@@ -16,6 +16,26 @@ const benefits = [
   { icon: Download, text: "一键导出投标文件" },
 ]
 
+// 后端 error code → 用户文案（ApiError.code = 响应体 error 字段）。按 code 区分，避免同一 HTTP 状态多义时误导。
+const AUTH_ERROR_MESSAGES: Record<string, string> = {
+  invalid_phone: "手机号格式不正确",
+  captcha_required: "请先完成人机验证",
+  terms_required: "请先同意《用户协议》和《隐私政策》后再登录",
+  invalid_input: "手机号或验证码格式有误",
+  invalid_code: "验证码错误或已过期",
+}
+
+function authErrorMessage(e: unknown, fallback: string): string {
+  if (e instanceof ApiError) {
+    if (e.status === 429) return `操作过于频繁，请 ${e.retryAfter ?? 60}s 后重试`
+    if (e.code) {
+      const msg = AUTH_ERROR_MESSAGES[e.code]
+      if (msg) return msg
+    }
+  }
+  return fallback
+}
+
 function LoginContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -49,8 +69,7 @@ function LoginContent() {
       setCountdown(60)
       setMsg("验证码已发送")
     } catch (e) {
-      if (e instanceof ApiError && e.status === 429) setMsg(`操作过于频繁，请 ${e.retryAfter ?? 60}s 后重试`)
-      else setMsg("发送失败，请稍后重试")
+      setMsg(authErrorMessage(e, "发送失败，请稍后重试"))
     }
   }
 
@@ -64,9 +83,7 @@ function LoginContent() {
       login(token, user)
       router.push(redirect)
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) setMsg("验证码错误或已过期")
-      else if (e instanceof ApiError && e.status === 400) setMsg("请先同意《用户协议》和《隐私政策》后再登录")
-      else setMsg("登录失败，请稍后重试")
+      setMsg(authErrorMessage(e, "登录失败，请稍后重试"))
     } finally {
       setBusy(false)
     }
