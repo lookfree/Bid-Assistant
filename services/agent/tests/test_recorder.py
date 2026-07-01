@@ -95,12 +95,12 @@ def test_edge_cases_empty_payload_resume_and_none_provider():
             ).fetchone()[0]
         assert second_started == first[0]
 
-        # provider/model=None 不丢用量，兜底 'unknown'
-        rec.record_usage(run_id, at, provider=None, model=None, input_tokens=10, output_tokens=5)
+        # agent_type/provider/model=None 不丢用量，兜底 'unknown'
+        rec.record_usage(run_id, None, provider=None, model=None, input_tokens=10, output_tokens=5)
         with get_pool().connection() as conn:
             u = conn.execute(
-                "select provider, model, total_tokens from agent.agent_token_usage where run_id=%s", (run_id,)
+                "select agent_type, provider, model, total_tokens from agent.agent_token_usage where run_id=%s", (run_id,)
             ).fetchone()
-        assert u == ("unknown", "unknown", 15)
+        assert u == ("unknown", "unknown", "unknown", 15)
     finally:
         _cleanup(run_id)
