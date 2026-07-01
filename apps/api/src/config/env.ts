@@ -64,6 +64,9 @@ const schema = z.object({
   SMS_MAX_PER_IP_DAY: z.coerce.number().int().positive().default(50),
   SMS_ATTEMPT_LIMIT_ENABLED: envBool(false),
   SMS_MAX_VERIFY_ATTEMPTS: z.coerce.number().int().positive().default(5),
+
+  // —— Agent Service（内部 REST，App 编排读标/后续全流程调它）——
+  AGENT_BASE_URL: z.string().url().default("http://localhost:8090"),
 })
 
 export type Env = z.infer<typeof schema>
