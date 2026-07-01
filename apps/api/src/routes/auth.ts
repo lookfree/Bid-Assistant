@@ -1,7 +1,8 @@
 import { Hono } from "hono"
 import { z } from "zod"
 import { authMiddleware } from "../middleware/auth"
-import { loginWithPhone, logout, TermsRequiredError } from "../services/auth"
+import { loginWithPhone, logout, TermsRequiredError, InvalidCodeError } from "../services/auth"
+import { normalizePhone } from "../util/phone"
 import type { SmsCodeService } from "../services/sms-code"
 
 const phoneRe = /^\+?\d{6,15}$/
@@ -19,6 +20,7 @@ export type AuthRouteDeps = {
   verifyCaptcha: (token?: string) => Promise<boolean>
 }
 
+// 注：X-Forwarded-For 由客户端可伪造，生产应配可信代理感知取 IP（见 docs/review-followups.md #6）。
 const clientIp = (h: (name: string) => string | undefined): string | undefined =>
   h("X-Forwarded-For")?.split(",")[0]?.trim() || h("X-Real-IP")
 
@@ -31,8 +33,9 @@ export function authRoutes(deps: AuthRouteDeps) {
     if (deps.captchaEnabled && !(await deps.verifyCaptcha(body.data.captchaToken))) {
       return c.json({ error: "captcha_required" }, 403)
     }
+    const phone = normalizePhone(body.data.phone)
     const ip = clientIp((n) => c.req.header(n))
-    const res = await deps.smsCode.request({ phone: body.data.phone, ip })
+    const res = await deps.smsCode.request({ phone, ip })
     if (!res.ok) {
       return c.json({ error: "too_many_requests", reason: res.reason, retryAfter: res.retryAfter }, 429)
     }
@@ -42,18 +45,20 @@ export function authRoutes(deps: AuthRouteDeps) {
   r.post("/sms/verify", async (c) => {
     const body = verifySchema.safeParse(await c.req.json().catch(() => ({})))
     if (!body.success) return c.json({ error: "invalid_input" }, 400)
-    const ok = await deps.smsCode.verify(body.data.phone, body.data.code)
-    if (!ok) return c.json({ error: "invalid_code" }, 401)
+    const phone = normalizePhone(body.data.phone)
     const ip = clientIp((n) => c.req.header(n))
     try {
+      // 验证码消费在 loginWithPhone 内、协议判定之后 → terms_required 不会烧掉码。
       const { token, user, isNew } = await loginWithPhone(
-        body.data.phone,
+        phone,
         { userAgent: c.req.header("User-Agent"), ip, agreedToTerms: body.data.agreedToTerms },
         deps.sessionTtlDays,
+        () => deps.smsCode.verify(phone, body.data.code),
       )
       return c.json({ token, isNew, user: { id: user.id, nickname: user.nickname } })
     } catch (e) {
       if (e instanceof TermsRequiredError) return c.json({ error: "terms_required" }, 400)
+      if (e instanceof InvalidCodeError) return c.json({ error: "invalid_code" }, 401)
       throw e
     }
   })

@@ -42,10 +42,11 @@ describe("/auth flow", () => {
   })
 
   it("verify with wrong code -> 401", async () => {
+    // 带 agreedToTerms 以越过“先判协议”，真正测错码（terms-first：未同意协议不会消费码）
     const res = await app.request("/auth/sms/verify", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ phone, code: "000000" }),
+      body: JSON.stringify({ phone, code: "000000", agreedToTerms: true }),
     })
     expect(res.status).toBe(401)
   })
