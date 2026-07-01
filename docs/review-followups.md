@@ -48,3 +48,12 @@
 
 > 说明:oversize 复验的集成测试需 >50MB 上传或改 env 缓存,成本过高暂缺;修复已由 typecheck + 正常路径用例覆盖。
 > 修复时把对应行从表里移走或标 `done`。
+
+## spec102 · 观测与埋点（review 于 2026-07）
+
+全修了 correctness #1–#3（falsy-empty payload 存 NULL、start_run resume 冲掉 started_at、record_usage None provider/model 丢用量）+ SE1（`_exec` 助手去重）+ SE2（finish_run 单次聚合扫描）。以下未修：
+
+| # | 文件 | 问题 | 严重度 | 状态 | 建议修法 |
+|---|---|---|---|---|---|
+| seq | `telemetry/schema.py` `agent_event_log` | `seq=max+1` 无 `unique(run_id,seq)`；并发/异步流式回调/重试写同 run 会产生重复 seq | 低 | deferred | 由"单 worker 串行写"设计兜底（代码注释已声明）。加 `UNIQUE(run_id,seq)` 需在幂等 DDL 里替换既有非唯一索引（drop+create unique），等 spec104 运行时确定单/多 worker 写入模型后再定；届时若并发写则改用 run 级 DB sequence。 |
+| FK | `telemetry/schema.py` 子表 | 子表 `run_id` 无外键到 `agent_request`，可孤儿 | 低 | wontfix | 埋点有意 best-effort：加 FK 会因写入顺序/start_run 失败而硬丢事件，与"尽量记全"目标相悖。 |

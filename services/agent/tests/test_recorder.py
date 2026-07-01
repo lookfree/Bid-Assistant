@@ -71,3 +71,36 @@ def test_full_run_records_and_usage_summary():
         assert s["total"] == 1500 and s["calls"] == 1  # total 缺省 = input+output
     finally:
         _cleanup(run_id)
+
+
+def test_edge_cases_empty_payload_resume_and_none_provider():
+    rec = Recorder(get_pool())
+    run_id = str(uuid.uuid4())
+    thread_id = str(uuid.uuid4())
+    at = "bidding_agent"
+    try:
+        # 空 file_refs=[] 应落成 []（非 NULL）——"空"与"缺失"要可区分
+        rec.start_run(run_id, at, thread_id=thread_id, file_refs=[])
+        with get_pool().connection() as conn:
+            first = conn.execute(
+                "select started_at, file_refs from agent.agent_request where run_id=%s", (run_id,)
+            ).fetchone()
+        assert first[1] == []
+
+        # resume：再次 start_run 保留首次 started_at（不被冲掉）
+        rec.start_run(run_id, at, thread_id=thread_id)
+        with get_pool().connection() as conn:
+            second_started = conn.execute(
+                "select started_at from agent.agent_request where run_id=%s", (run_id,)
+            ).fetchone()[0]
+        assert second_started == first[0]
+
+        # provider/model=None 不丢用量，兜底 'unknown'
+        rec.record_usage(run_id, at, provider=None, model=None, input_tokens=10, output_tokens=5)
+        with get_pool().connection() as conn:
+            u = conn.execute(
+                "select provider, model, total_tokens from agent.agent_token_usage where run_id=%s", (run_id,)
+            ).fetchone()
+        assert u == ("unknown", "unknown", 15)
+    finally:
+        _cleanup(run_id)
