@@ -33,5 +33,14 @@ class Settings(BaseSettings):
     redis_db: int = 3
     redis_prefix: str = "bid:agent:"  # 智能体服务自有命名空间（区别于 App 的 bid:）
 
+    # 模型 Key（OpenAI 兼容；凭据就绪时填，当前可能缺失）
+    deepseek_api_key: str | None = None
+    dashscope_api_key: str | None = None      # 通义千问（DashScope）
+    zhipu_api_key: str | None = None           # 智谱 GLM
+    # 默认与回退链
+    model_default_provider: str = "deepseek"
+    model_default_model: str | None = None     # None 则用 provider 默认模型
+    model_fallbacks: str = ""                   # "qwen:qwen-plus,glm:glm-4-flash"
+
 
 settings = Settings()  # 实例化即校验
