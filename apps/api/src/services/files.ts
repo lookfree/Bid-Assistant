@@ -1,0 +1,71 @@
+import { randomUUID } from "node:crypto"
+import { and, eq } from "drizzle-orm"
+import { getDb } from "../db/client"
+import { projectFiles, type ProjectFile } from "../db/schema"
+import { bucket, presignPut, presignGet, headObject } from "../storage/s3"
+import { getEnv } from "../config/env"
+
+// 文件名清洗：仅留字母数字下划线点连字符与中文，截断到 120，避免 key 注入/超长。
+function sanitize(name: string): string {
+  return name.replace(/[^\w.\-一-龥]/g, "_").slice(0, 120)
+}
+
+// 建 pending 元数据行 + 返回预签名 PUT；浏览器凭 uploadUrl 直传到 MinIO。
+export async function presignUpload(input: {
+  userId: string
+  filename: string
+  contentType: string
+  size: number
+}): Promise<{ fileId: string; key: string; uploadUrl: string }> {
+  const env = getEnv()
+  if (input.size > env.FILE_MAX_SIZE_MB * 1024 * 1024) throw new Error("file_too_large")
+  const key = `uploads/${input.userId}/${randomUUID()}/${sanitize(input.filename)}`
+  const [row] = await getDb()
+    .insert(projectFiles)
+    .values({
+      userId: input.userId,
+      bucket: bucket(),
+      key,
+      filename: input.filename,
+      contentType: input.contentType,
+      size: input.size,
+      status: "pending",
+    })
+    .returning()
+  const uploadUrl = await presignPut(key, input.contentType, env.FILE_PRESIGN_TTL_SECONDS)
+  return { fileId: row!.id, key, uploadUrl }
+}
+
+// 取属于本人的文件行（仅本人可见，§9）；不存在抛 not_found。
+async function ownFile(fileId: string, userId: string): Promise<ProjectFile> {
+  const [row] = await getDb()
+    .select()
+    .from(projectFiles)
+    .where(and(eq(projectFiles.id, fileId), eq(projectFiles.userId, userId)))
+    .limit(1)
+  if (!row) throw new Error("not_found")
+  return row
+}
+
+// 确认上传：HEAD 校验对象真存在，落 uploaded + size/etag；对象缺失抛 object_missing。
+export async function confirmUpload(fileId: string, userId: string): Promise<ProjectFile> {
+  const file = await ownFile(fileId, userId)
+  const head = await headObject(file.key)
+  if (!head) throw new Error("object_missing")
+  const [updated] = await getDb()
+    .update(projectFiles)
+    .set({ status: "uploaded", size: head.size, etag: head.etag })
+    .where(eq(projectFiles.id, fileId))
+    .returning()
+  return updated!
+}
+
+// 预签名下载：仅本人；附件名用原始 filename。
+export async function presignDownload(
+  fileId: string,
+  userId: string,
+): Promise<{ url: string; filename: string }> {
+  const file = await ownFile(fileId, userId)
+  const url = await presignGet(file.key, getEnv().FILE_PRESIGN_TTL_SECONDS, file.filename)
+  return { url, filename: file.filename }
+}

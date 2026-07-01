@@ -2,6 +2,7 @@
 
 import { useState, useRef } from "react"
 import { useRouter } from "next/navigation"
+import { api } from "@/lib/api"
 import {
   UploadCloud,
   FileText,
@@ -20,7 +21,7 @@ import {
   PlayCircle,
 } from "lucide-react"
 
-type FileStatus = "uploading" | "done"
+type FileStatus = "uploading" | "done" | "error"
 
 type UploadFile = {
   id: string
@@ -28,6 +29,7 @@ type UploadFile = {
   size: number
   progress: number
   status: FileStatus
+  fileId?: string
 }
 
 function formatSize(bytes: number) {
@@ -36,39 +38,54 @@ function formatSize(bytes: number) {
   return `${bytes} B`
 }
 
+// 直传 PUT 到 MinIO（预签名 URL），用 XHR 拿真实上传进度。
+function putWithProgress(url: string, file: File, onProgress: (pct: number) => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open("PUT", url)
+    xhr.setRequestHeader("content-type", file.type || "application/octet-stream")
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100))
+    }
+    xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error("upload failed")))
+    xhr.onerror = () => reject(new Error("upload failed"))
+    xhr.send(file)
+  })
+}
+
 export default function UploadPage() {
   const router = useRouter()
   const inputRef = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
   const [files, setFiles] = useState<UploadFile[]>([])
 
-  function startUpload(file: UploadFile) {
-    const timer = setInterval(() => {
-      setFiles((prev) =>
-        prev.map((f) => {
-          if (f.id !== file.id) return f
-          if (f.progress >= 100) {
-            clearInterval(timer)
-            return { ...f, progress: 100, status: "done" }
-          }
-          const next = Math.min(f.progress + 20, 100)
-          return { ...f, progress: next, status: next >= 100 ? "done" : "uploading" }
+  // 三段直传：presign（建元数据+签 URL）→ 浏览器 PUT 直传 MinIO → complete（HEAD 校验落 uploaded）。
+  async function startUpload(id: string, file: File) {
+    const patch = (u: Partial<UploadFile>) => setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, ...u } : f)))
+    try {
+      const { fileId, uploadUrl } = await api.request<{ fileId: string; uploadUrl: string }>("/files/presign-upload", {
+        method: "POST",
+        body: JSON.stringify({
+          filename: file.name,
+          contentType: file.type || "application/octet-stream",
+          size: file.size,
         }),
-      )
-    }, 150)
+      })
+      await putWithProgress(uploadUrl, file, (pct) => patch({ progress: pct }))
+      await api.request(`/files/${fileId}/complete`, { method: "POST" })
+      patch({ progress: 100, status: "done", fileId })
+    } catch {
+      patch({ status: "error" })
+    }
   }
 
   function handleFiles(fileList: FileList | null) {
     if (!fileList || fileList.length === 0) return
-    const incoming: UploadFile[] = Array.from(fileList).map((f) => ({
-      id: `${f.name}-${f.size}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      name: f.name,
-      size: f.size,
-      progress: 0,
-      status: "uploading" as FileStatus,
-    }))
-    setFiles((prev) => [...prev, ...incoming])
-    incoming.forEach(startUpload)
+    for (const file of Array.from(fileList)) {
+      const id = `${file.name}-${file.size}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      setFiles((prev) => [...prev, { id, name: file.name, size: file.size, progress: 0, status: "uploading" }])
+      void startUpload(id, file)
+    }
     if (inputRef.current) inputRef.current.value = ""
   }
 
@@ -212,7 +229,11 @@ export default function UploadPage() {
                   <div className="flex items-center gap-3">
                     <span
                       className={`flex size-10 shrink-0 items-center justify-center rounded-lg ${
-                        f.status === "done" ? "bg-success/10 text-success" : "bg-primary/10 text-primary"
+                        f.status === "done"
+                          ? "bg-success/10 text-success"
+                          : f.status === "error"
+                            ? "bg-destructive/10 text-destructive"
+                            : "bg-primary/10 text-primary"
                       }`}
                     >
                       {f.status === "done" ? <FileCheck2 className="size-5" /> : <FileText className="size-5" />}
@@ -223,6 +244,8 @@ export default function UploadPage() {
                         {formatSize(f.size)}
                         {f.status === "done" ? (
                           <span className="ml-1.5 text-success">· 已就绪</span>
+                        ) : f.status === "error" ? (
+                          <span className="ml-1.5 text-destructive">· 上传失败，请移除后重试</span>
                         ) : (
                           <span className="ml-1.5">· 上传中 {f.progress}%</span>
                         )}
