@@ -44,5 +44,12 @@ class Settings(BaseSettings):
 
     app_callback_url: str | None = None         # App 的用量回调端点；None 则跳过（dummy/dev）
 
+    # MinIO（招标文件按 key 读取；凭据从 env）
+    minio_endpoint: str | None = None           # 来自 MINIO_ENDPOINT
+    minio_access_key: str | None = None
+    minio_secret_key: str | None = None
+    minio_bucket: str = "bidsaas"
+    minio_region: str = "us-east-1"
+
 
 settings = Settings()  # 实例化即校验
