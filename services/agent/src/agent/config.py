@@ -42,5 +42,7 @@ class Settings(BaseSettings):
     model_default_model: str | None = None     # None 则用 provider 默认模型
     model_fallbacks: str = ""                   # "qwen:qwen-plus,glm:glm-4-flash"
 
+    app_callback_url: str | None = None         # App 的用量回调端点；None 则跳过（dummy/dev）
+
 
 settings = Settings()  # 实例化即校验

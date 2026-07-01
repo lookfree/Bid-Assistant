@@ -4,6 +4,7 @@ from fastapi import FastAPI
 
 from agent import db, redis_client
 from agent.routes.health import router as health_router
+from agent.routes.runs import router as runs_router
 
 
 @asynccontextmanager
@@ -18,4 +19,5 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title="bid-agent", lifespan=lifespan)
     app.include_router(health_router)
+    app.include_router(runs_router)
     return app
