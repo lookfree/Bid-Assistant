@@ -3,6 +3,7 @@ import { cors } from "hono/cors"
 import { healthRoutes } from "./routes/health"
 import { authRoutes } from "./routes/auth"
 import { wechatRoutes } from "./routes/wechat"
+import { fileRoutes } from "./routes/files"
 import type { SmsCodeService } from "./services/sms-code"
 import type { makeWechatAuth } from "./services/wechat-auth"
 
@@ -51,5 +52,6 @@ export function createApp(deps: AppDeps) {
       }),
     )
   }
+  app.route("/files", fileRoutes()) // 自带 authMiddleware，无需额外 deps
   return app
 }
