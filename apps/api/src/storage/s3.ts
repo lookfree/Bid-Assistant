@@ -64,9 +64,9 @@ export async function headObject(key: string): Promise<{ size: number; etag?: st
     const r = await getS3().send(new HeadObjectCommand({ Bucket: bucket(), Key: key }))
     return { size: Number(r.ContentLength ?? 0), etag: r.ETag?.replaceAll('"', "") }
   } catch (e) {
+    // S3 HEAD 对缺失对象返回空体 404，故 httpStatusCode 是权威判据；JS SDK 另会给 name="NotFound"。
     const status = (e as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode
-    const name = (e as { name?: string }).name
-    if (status === 404 || name === "NotFound" || name === "NotFoundException") return null
+    if (status === 404 || (e as { name?: string }).name === "NotFound") return null
     throw e
   }
 }
