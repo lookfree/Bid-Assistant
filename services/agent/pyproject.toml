@@ -15,10 +15,19 @@ dependencies = [
   "langgraph-checkpoint-postgres>=3.1.0",
   "sse-starlette>=3.4.5",
   "deepagents>=0.6.12",
+  "python-docx>=1.2.0",
+  "pypdf>=6.14.2",
+  "openpyxl>=3.1.5",
+  "boto3>=1.43.38",
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.7"]
+dev = [
+    "fpdf2>=2.8.7",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
