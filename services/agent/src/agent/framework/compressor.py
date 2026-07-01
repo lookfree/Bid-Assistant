@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from langchain_core.messages import SystemMessage
 
@@ -16,8 +17,10 @@ def make_compressor_node(gateway: Any, *, max_tokens: int = 60_000, keep_recent:
         if _size(msgs) <= max_tokens or len(msgs) <= keep_recent:
             return {}
         head, recent = msgs[:-keep_recent], msgs[-keep_recent:]
-        summary = gateway.invoke(
-            [SystemMessage(content="把以下对话压成要点摘要，保留关键事实/决定："), *head]
+        # gateway.invoke 是同步阻塞（chat.invoke），丢线程池，别卡 async 事件循环。
+        summary = await asyncio.to_thread(
+            gateway.invoke,
+            [SystemMessage(content="把以下对话压成要点摘要，保留关键事实/决定："), *head],
         )
         compacted = [SystemMessage(content=f"[历史摘要] {summary.content}"), *recent]
         return {"messages": compacted}

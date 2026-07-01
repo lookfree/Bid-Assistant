@@ -39,3 +39,21 @@ def test_framework_agent_streams_via_graph(cleanup_run):
     evs = asyncio.run(run())
     chunks = [e for e in evs if e["type"] == "chunk"]
     assert any("示例 agent" in (c["data"]["delta"] or "") for c in chunks)
+
+
+def test_agent_node_usage_recording_is_best_effort():
+    """agent_node 里 record_usage 抛错（DB 抖动）不能拖垮已成功的这一轮流式。"""
+    class _BoomRec:
+        def record_usage(self, *a, **k):
+            raise RuntimeError("db down")
+
+    agent = get_agent("echo_fw")
+    ctx = RunContext(run_id=str(uuid.uuid4()), agent_type="echo_fw", thread_id=str(uuid.uuid4()),
+                     recorder=_BoomRec(), gateway=_FakeGateway())
+
+    async def run():
+        return [ev async for ev in agent.astream({"text": "hi"}, ctx)]
+
+    evs = asyncio.run(run())
+    chunks = [e for e in evs if e["type"] == "chunk"]
+    assert any("示例 agent" in (c["data"]["delta"] or "") for c in chunks)   # 埋点炸了仍正常流出

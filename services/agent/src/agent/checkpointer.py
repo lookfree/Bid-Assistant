@@ -17,6 +17,11 @@ async def get_checkpointer() -> AsyncPostgresSaver:
     cur = asyncio.get_running_loop()
     # 当前 loop 变了（多次 asyncio.run：迁移/各测试各一个 loop）就重建，否则跨 loop 用会 "attached to a different loop"。
     if _saver is None or _loop is not cur:
+        if _cm is not None:
+            try:
+                await _cm.__aexit__(None, None, None)  # best-effort 释放旧连接池，别每次切 loop 都漏
+            except Exception:  # noqa: BLE001 旧 loop 多已关闭，关不掉就交给 GC
+                pass
         _cm = AsyncPostgresSaver.from_conn_string(_CONNINFO)
         _saver = await _cm.__aenter__()  # 进入 CM 得到真正的 saver（建立连接池）
         _loop = cur
