@@ -5,6 +5,8 @@ import { getRedis, closeRedis } from "./redis/client"
 import { createSmsSender } from "./services/sms-sender"
 import { makeSmsCodeService, type SmsLimits } from "./services/sms-code"
 import { createCaptchaVerifier } from "./services/captcha"
+import { createWechatOAuthClient } from "./services/wechat-oauth"
+import { makeWechatAuth } from "./services/wechat-auth"
 
 const env = getEnv()
 
@@ -23,6 +25,7 @@ const limits: SmsLimits = {
 }
 const smsCode = makeSmsCodeService(getRedis(), createSmsSender(env), limits)
 const captcha = createCaptchaVerifier(env)
+const wechatService = makeWechatAuth(getRedis(), createWechatOAuthClient(env), env.AUTH_SESSION_TTL_DAYS)
 
 const app = createApp({
   pingDb,
@@ -31,6 +34,11 @@ const app = createApp({
   captchaEnabled: env.CAPTCHA_ENABLED,
   verifyCaptcha: (t) => captcha.verify(t),
   webOrigins: env.WEB_ORIGINS.split(",").map((s) => s.trim()),
+  wechat: {
+    service: wechatService,
+    appId: env.WECHAT_APP_ID ?? "",
+    redirectUri: env.WECHAT_REDIRECT_URI,
+  },
 })
 
 // 优雅关闭：归还 DB 连接池与 Redis 连接，避免重启/热重载泄漏。

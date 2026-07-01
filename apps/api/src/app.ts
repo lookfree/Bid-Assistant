@@ -2,7 +2,9 @@ import { Hono } from "hono"
 import { cors } from "hono/cors"
 import { healthRoutes } from "./routes/health"
 import { authRoutes } from "./routes/auth"
+import { wechatRoutes } from "./routes/wechat"
 import type { SmsCodeService } from "./services/sms-code"
+import type { makeWechatAuth } from "./services/wechat-auth"
 
 export type AppDeps = {
   pingDb: () => Promise<boolean>
@@ -11,6 +13,7 @@ export type AppDeps = {
   captchaEnabled?: boolean
   verifyCaptcha?: (token?: string) => Promise<boolean>
   webOrigins?: string[]
+  wechat?: { service: ReturnType<typeof makeWechatAuth>; appId: string; redirectUri: string }
 }
 
 export function createApp(deps: AppDeps) {
@@ -35,6 +38,16 @@ export function createApp(deps: AppDeps) {
         sessionTtlDays: deps.sessionTtlDays ?? 30,
         captchaEnabled: deps.captchaEnabled ?? false,
         verifyCaptcha: deps.verifyCaptcha ?? (async () => true),
+      }),
+    )
+  }
+  if (deps.wechat) {
+    app.route(
+      "/auth/wechat",
+      wechatRoutes({
+        wechat: deps.wechat.service,
+        appId: deps.wechat.appId,
+        redirectUri: deps.wechat.redirectUri,
       }),
     )
   }

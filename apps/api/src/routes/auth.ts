@@ -21,7 +21,7 @@ export type AuthRouteDeps = {
 }
 
 // 注：X-Forwarded-For 由客户端可伪造，生产应配可信代理感知取 IP（见 docs/review-followups.md #6）。
-const clientIp = (h: (name: string) => string | undefined): string | undefined =>
+export const clientIp = (h: (name: string) => string | undefined): string | undefined =>
   h("X-Forwarded-For")?.split(",")[0]?.trim() || h("X-Real-IP")
 
 export function authRoutes(deps: AuthRouteDeps) {
