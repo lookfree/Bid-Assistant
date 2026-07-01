@@ -11,7 +11,6 @@ export function RequireAuth({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!loading && !user) router.replace(`/login?redirect=${encodeURIComponent(pathname)}`)
   }, [loading, user, router, pathname])
-  if (loading) return null
-  if (!user) return null
+  if (loading || !user) return null
   return <>{children}</>
 }

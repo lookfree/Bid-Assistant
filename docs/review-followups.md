@@ -23,7 +23,6 @@
 |---|---|---|---|---|---|
 | 7 | `components/auth/require-auth.tsx`、`app/(tool)/layout.tsx` | 鉴权是**客户端-only**:受保护页会先挂载、子 effect 可能在 `/auth/me` 返回并 `router.replace` 之前触发;未登录访客还会整棵渲染 sidebar/nav/paywall 再跳。非请求边界的安全门。 | 中（altitude） | deferred | `middleware.ts` 服务端 gate `(tool)/*`(登录前就拦、不下发受保护代码），配 cookie 会话——正好衔接 spec 里 deferred 的 **BFF httpOnly** 方案;RequireAuth 降级为 UX 兜底。 |
 | — | `lib/api.ts` vs `config/env.ts` | 前端 `NEXT_PUBLIC_CAPTCHA_ENABLED`(默认 false）与后端 `CAPTCHA_ENABLED`(默认 true）**默认值相反**,现靠 dev DevPass 掩盖,真滑块一接即 403。 | 中（配置耦合） | deferred（spec004.1） | 接真实滑块时对齐两侧开关(同一来源/部署校验),前端收集真实 token,不再发 `""`。 |
-| 8 | `components/auth/require-auth.tsx` | 两个相邻 `if (loading) return null` / `if (!user) return null` 体相同 | 低（清理） | deferred | 合成 `if (loading || !user) return null`。 |
-| 9 | `lib/token-store.ts` | 内存兜底实现与 `test/token-store.test.ts` 的 `memStorage()` 重复 | 低（清理） | deferred | 导出共享 `createMemStorage()`,兜底与测试共用,避免漂移。 |
 
+> #8（合并两个 `return null`）、#9（抽 `memoryStorage()` 供兜底+测试复用）已在 /simplify 一轮修掉。
 > 修复时把对应行从表里移走或标 `done`。
