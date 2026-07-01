@@ -4,6 +4,7 @@ import { healthRoutes } from "./routes/health"
 import { authRoutes } from "./routes/auth"
 import { wechatRoutes } from "./routes/wechat"
 import { fileRoutes } from "./routes/files"
+import { readRoutes } from "./routes/read"
 import type { SmsCodeService } from "./services/sms-code"
 import type { makeWechatAuth } from "./services/wechat-auth"
 
@@ -53,5 +54,6 @@ export function createApp(deps: AppDeps) {
     )
   }
   app.route("/files", fileRoutes()) // 自带 authMiddleware，无需额外 deps
+  app.route("/api/read", readRoutes()) // 读标编排（预扣→建run→SSE中继→存结果→settle），自带 authMiddleware
   return app
 }
