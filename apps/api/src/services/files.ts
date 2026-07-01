@@ -27,6 +27,9 @@ export class ObjectMissingError extends Error {
   }
 }
 
+// 大小上限（字节）：MB→B 换算收一处，预签名与确认两处校验共用，边界不会各自漂移。
+const fileMaxBytes = () => getEnv().FILE_MAX_SIZE_MB * 1024 * 1024
+
 // 文件名清洗：仅留字母数字下划线点连字符与中文，截断到 120，避免 key 注入/超长。
 function sanitize(name: string): string {
   return name.replace(/[^\w.\-一-龥]/g, "_").slice(0, 120)
@@ -40,7 +43,7 @@ export async function presignUpload(input: {
   size: number
 }): Promise<{ fileId: string; key: string; uploadUrl: string }> {
   const env = getEnv()
-  if (input.size > env.FILE_MAX_SIZE_MB * 1024 * 1024) throw new FileTooLargeError()
+  if (input.size > fileMaxBytes()) throw new FileTooLargeError()
   const key = `uploads/${input.userId}/${randomUUID()}/${sanitize(input.filename)}`
   const [row] = await getDb()
     .insert(projectFiles)
@@ -75,7 +78,7 @@ export async function confirmUpload(fileId: string, userId: string): Promise<Pro
   const file = await ownFile(fileId, userId)
   const head = await headObject(file.key)
   if (!head) throw new ObjectMissingError()
-  if (head.size > getEnv().FILE_MAX_SIZE_MB * 1024 * 1024) {
+  if (head.size > fileMaxBytes()) {
     await deleteObject(file.key).catch(() => {})
     throw new FileTooLargeError()
   }

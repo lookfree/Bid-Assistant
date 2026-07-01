@@ -1,11 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bun:test"
 import { eq } from "drizzle-orm"
-import { DeleteObjectCommand } from "@aws-sdk/client-s3"
 import { presignUpload, confirmUpload, presignDownload } from "../../src/services/files"
 import { createUserWithIdentity } from "../../src/repos/users"
 import { getDb, closeDb } from "../../src/db/client"
 import { users, projectFiles } from "../../src/db/schema"
-import { getS3, bucket } from "../../src/storage/s3"
+import { deleteObject } from "../../src/storage/s3"
 import { uniquePhone, TEST_TIMEOUT_MS } from "../repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB + MinIO
@@ -17,11 +16,7 @@ beforeAll(async () => {
 })
 afterAll(async () => {
   const rows = await getDb().select().from(projectFiles).where(eq(projectFiles.userId, userId))
-  for (const r of rows) {
-    await getS3()
-      .send(new DeleteObjectCommand({ Bucket: bucket(), Key: r.key }))
-      .catch(() => {})
-  }
+  for (const r of rows) await deleteObject(r.key).catch(() => {})
   await getDb().delete(users).where(eq(users.id, userId)) // 级联删 project_files
   await closeDb()
 })
