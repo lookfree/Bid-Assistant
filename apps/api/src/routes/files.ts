@@ -1,7 +1,14 @@
 import { Hono } from "hono"
 import { z } from "zod"
 import { authMiddleware } from "../middleware/auth"
-import { presignUpload, confirmUpload, presignDownload } from "../services/files"
+import {
+  presignUpload,
+  confirmUpload,
+  presignDownload,
+  FileTooLargeError,
+  FileNotFoundError,
+  ObjectMissingError,
+} from "../services/files"
 import type { User } from "../db/schema"
 
 const presignSchema = z.object({
@@ -21,7 +28,7 @@ export function fileRoutes() {
       const out = await presignUpload({ userId: c.get("user").id, ...body.data })
       return c.json(out)
     } catch (e) {
-      if ((e as Error).message === "file_too_large") return c.json({ error: "file_too_large" }, 400)
+      if (e instanceof FileTooLargeError) return c.json({ error: "file_too_large" }, 400)
       throw e
     }
   })
@@ -31,9 +38,9 @@ export function fileRoutes() {
       const file = await confirmUpload(c.req.param("id"), c.get("user").id)
       return c.json({ file })
     } catch (e) {
-      const m = (e as Error).message
-      if (m === "not_found") return c.json({ error: "not_found" }, 404)
-      if (m === "object_missing") return c.json({ error: "object_missing" }, 409)
+      if (e instanceof FileNotFoundError) return c.json({ error: "not_found" }, 404)
+      if (e instanceof ObjectMissingError) return c.json({ error: "object_missing" }, 409)
+      if (e instanceof FileTooLargeError) return c.json({ error: "file_too_large" }, 400)
       throw e
     }
   })
@@ -42,7 +49,7 @@ export function fileRoutes() {
     try {
       return c.json(await presignDownload(c.req.param("id"), c.get("user").id))
     } catch (e) {
-      if ((e as Error).message === "not_found") return c.json({ error: "not_found" }, 404)
+      if (e instanceof FileNotFoundError) return c.json({ error: "not_found" }, 404)
       throw e
     }
   })

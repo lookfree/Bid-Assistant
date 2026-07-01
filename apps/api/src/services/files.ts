@@ -2,8 +2,30 @@ import { randomUUID } from "node:crypto"
 import { and, eq } from "drizzle-orm"
 import { getDb } from "../db/client"
 import { projectFiles, type ProjectFile } from "../db/schema"
-import { bucket, presignPut, presignGet, headObject } from "../storage/s3"
+import { bucket, presignPut, presignGet, headObject, deleteObject } from "../storage/s3"
 import { getEnv } from "../config/env"
+
+/** 超过大小上限（预签名时按声明值、确认时按真实对象大小复验）。 */
+export class FileTooLargeError extends Error {
+  constructor() {
+    super("file_too_large")
+    this.name = "FileTooLargeError"
+  }
+}
+/** 文件不存在或不属于当前用户。 */
+export class FileNotFoundError extends Error {
+  constructor() {
+    super("not_found")
+    this.name = "FileNotFoundError"
+  }
+}
+/** 元数据存在但 MinIO 上对象未落（客户端未真正上传即调 complete）。 */
+export class ObjectMissingError extends Error {
+  constructor() {
+    super("object_missing")
+    this.name = "ObjectMissingError"
+  }
+}
 
 // 文件名清洗：仅留字母数字下划线点连字符与中文，截断到 120，避免 key 注入/超长。
 function sanitize(name: string): string {
@@ -18,7 +40,7 @@ export async function presignUpload(input: {
   size: number
 }): Promise<{ fileId: string; key: string; uploadUrl: string }> {
   const env = getEnv()
-  if (input.size > env.FILE_MAX_SIZE_MB * 1024 * 1024) throw new Error("file_too_large")
+  if (input.size > env.FILE_MAX_SIZE_MB * 1024 * 1024) throw new FileTooLargeError()
   const key = `uploads/${input.userId}/${randomUUID()}/${sanitize(input.filename)}`
   const [row] = await getDb()
     .insert(projectFiles)
@@ -43,15 +65,20 @@ async function ownFile(fileId: string, userId: string): Promise<ProjectFile> {
     .from(projectFiles)
     .where(and(eq(projectFiles.id, fileId), eq(projectFiles.userId, userId)))
     .limit(1)
-  if (!row) throw new Error("not_found")
+  if (!row) throw new FileNotFoundError()
   return row
 }
 
-// 确认上传：HEAD 校验对象真存在，落 uploaded + size/etag；对象缺失抛 object_missing。
+// 确认上传：HEAD 校验对象真存在，并按真实大小复验上限（预签名 PUT 无长度约束，客户端可少报 size
+// 后上传超大对象），超限则删对象+拒绝；否则落 uploaded + size/etag。
 export async function confirmUpload(fileId: string, userId: string): Promise<ProjectFile> {
   const file = await ownFile(fileId, userId)
   const head = await headObject(file.key)
-  if (!head) throw new Error("object_missing")
+  if (!head) throw new ObjectMissingError()
+  if (head.size > getEnv().FILE_MAX_SIZE_MB * 1024 * 1024) {
+    await deleteObject(file.key).catch(() => {})
+    throw new FileTooLargeError()
+  }
   const [updated] = await getDb()
     .update(projectFiles)
     .set({ status: "uploaded", size: head.size, etag: head.etag })
