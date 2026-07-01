@@ -1,8 +1,21 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
+
+from agent import db, redis_client
 from agent.routes.health import router as health_router
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 启动预热连接池；关闭时优雅释放（对齐 apps/api 的 closeDb/closeRedis 接 SIGINT）。
+    db.get_pool()
+    yield
+    db.close_pool()
+    redis_client.close_redis()
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="bid-agent")
+    app = FastAPI(title="bid-agent", lifespan=lifespan)
     app.include_router(health_router)
     return app

@@ -1,13 +1,36 @@
+import logging
+
 from psycopg_pool import ConnectionPool
+
 from agent.config import settings
 
-pool = ConnectionPool(conninfo=settings.database_url, min_size=1, max_size=10, open=True)
+logger = logging.getLogger(__name__)
+
+# 惰性单例：首次使用才建/开连接池（import 无副作用，对齐 apps/api 的 getDb）。
+_pool: ConnectionPool | None = None
+
+
+def get_pool() -> ConnectionPool:
+    global _pool
+    if _pool is None:
+        # open=False + 显式 open()：避免构造参数 open=True 的弃用告警。
+        _pool = ConnectionPool(conninfo=settings.database_url, min_size=1, max_size=10, open=False)
+        _pool.open()
+    return _pool
+
+
+def close_pool() -> None:
+    global _pool
+    if _pool is not None:
+        _pool.close()
+        _pool = None
 
 
 def ping() -> bool:
     try:
-        with pool.connection() as conn:
+        with get_pool().connection() as conn:
             conn.execute("select 1")
         return True
     except Exception:
+        logger.warning("db ping failed", exc_info=True)  # 记因由，别把配置错当临时不可达
         return False
