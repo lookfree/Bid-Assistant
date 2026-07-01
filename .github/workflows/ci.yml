@@ -1,0 +1,52 @@
+name: ci
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env: { POSTGRES_USER: bidsaas, POSTGRES_PASSWORD: ci, POSTGRES_DB: bidsaas }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U bidsaas" --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+      minio:
+        image: minio/minio:latest
+        env: { MINIO_ROOT_USER: ci, MINIO_ROOT_PASSWORD: ci-secret12 }
+        ports: ["9000:9000"]
+        options: --health-cmd "mc ready local || exit 0" # minio 容器无 mc，宽松健康检查
+    env:
+      DATABASE_URL: postgresql://bidsaas:ci@localhost:5432/bidsaas
+      REDIS_HOST: localhost
+      REDIS_PORT: "6379"
+      REDIS_DB: "3"
+      REDIS_KEY_PREFIX: "bid:"
+      MINIO_ENDPOINT: http://localhost:9000
+      MINIO_ACCESS_KEY: ci
+      MINIO_SECRET_KEY: ci-secret12
+      MINIO_BUCKET: bidsaas
+      CAPTCHA_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: 1.3.14 }
+      - run: bun install --frozen-lockfile
+      - name: 建 MinIO 测试桶
+        run: |
+          curl -sSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc && chmod +x /usr/local/bin/mc
+          mc alias set ci http://localhost:9000 ci ci-secret12
+          mc mb --ignore-existing ci/bidsaas
+      - name: 迁移
+        run: cd apps/api && bun run drizzle-kit migrate
+      - name: 类型检查
+        run: bun --filter '*' typecheck
+      - name: 测试
+        run: cd apps/api && bun test
+      - name: 前端构建
+        run: bun --filter @bid/web run build && bun --filter @bid/admin run build
