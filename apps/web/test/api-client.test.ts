@@ -56,6 +56,24 @@ describe("api-client", () => {
     expect(called).toBe(1)
   })
 
+  it("未带令牌的 401（登录失败）不触发 onUnauthorized", async () => {
+    let called = 0
+    const client = createApiClient({
+      baseUrl: "http://api.test",
+      getToken: () => null,
+      onUnauthorized: () => {
+        called++
+      },
+      fetchImpl: fakeFetch(() => ({ status: 401, body: { error: "invalid_code" } })),
+    })
+    try {
+      await client.authApi.verifySmsCode("+8613900000000", "000000")
+    } catch {
+      // 预期抛 ApiError
+    }
+    expect(called).toBe(0)
+  })
+
   it("非 2xx 抛 ApiError（含 status / code / retryAfter）", async () => {
     const client = createApiClient({
       baseUrl: "http://api.test",

@@ -27,7 +27,8 @@ export function createApiClient(opts: ApiClientOptions) {
     const res = await doFetch(`${opts.baseUrl}${path}`, { ...init, headers })
     const raw: unknown = await res.json().catch(() => ({}))
     if (!res.ok) {
-      if (res.status === 401) opts.onUnauthorized?.()
+      // 仅当请求确实带了令牌时，401 才代表“会话失效”；登录端点（未带令牌）的 401 是登录失败，不该清会话。
+      if (res.status === 401 && token) opts.onUnauthorized?.()
       const err = (raw ?? {}) as { error?: string; retryAfter?: number }
       throw new ApiError(res.status, err.error, err.retryAfter)
     }
