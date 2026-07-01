@@ -49,6 +49,28 @@ def test_invoke_failover_to_second_provider(monkeypatch):
     assert len(rec.events) >= 1                          # deepseek 失败记了 model.error
 
 
+def test_telemetry_failure_does_not_failover_or_lose_response(monkeypatch):
+    """埋点/DB 写失败绝不能丢已成功的响应、也不能触发（重复计费的）故障转移。"""
+    gw = ModelGateway(_settings())
+    calls = {"n": 0}
+
+    def fake_get_chat(provider, model=None, **kw):
+        def invoke(_messages):
+            calls["n"] += 1
+            return _fake_msg(50, 10)
+        return SimpleNamespace(model_name=model or "m", invoke=invoke)
+
+    monkeypatch.setattr(gw, "get_chat", fake_get_chat)
+
+    class _BoomRec:  # 埋点全炸
+        def record_usage(self, *a, **k): raise RuntimeError("db down")
+        def log_event(self, *a, **k): raise RuntimeError("db down")
+
+    resp = gw.invoke([("user", "hi")], recorder=_BoomRec(), run_id="r", agent_type="bidding_agent")
+    assert resp.usage_metadata["input_tokens"] == 50   # 成功响应照常返回
+    assert calls["n"] == 1                              # 只调一次 LLM：埋点炸了没触发转移/重复调用
+
+
 def test_invoke_all_fail_raises(monkeypatch):
     gw = ModelGateway(_settings())
     monkeypatch.setattr(gw, "get_chat", lambda *a, **k: SimpleNamespace(

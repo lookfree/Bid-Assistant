@@ -62,13 +62,13 @@ class Recorder:
         finish_reason: str | None = None, thread_id: str | None = None,
     ) -> None:
         total = total_tokens if total_tokens is not None else input_tokens + output_tokens
-        # provider/model 是 NOT NULL 列且用量喂结算：缺失时兜底 'unknown'，绝不因空值丢用量。
+        # agent_type/provider/model 是 NOT NULL 列且用量喂结算：缺失时兜底 'unknown'，绝不因空值丢用量。
         self._exec(
             """insert into agent.agent_token_usage
                  (run_id, thread_id, agent_type, provider, model, node,
                   input_tokens, output_tokens, cached_tokens, reasoning_tokens, total_tokens, ttft_ms, latency_ms, finish_reason)
                values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-            (run_id, thread_id, agent_type, provider or "unknown", model or "unknown", node,
+            (run_id, thread_id, agent_type or "unknown", provider or "unknown", model or "unknown", node,
              input_tokens, output_tokens, cached_tokens, reasoning_tokens, total, ttft_ms, latency_ms, finish_reason),
         )
 

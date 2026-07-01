@@ -57,3 +57,11 @@
 |---|---|---|---|---|---|
 | seq | `telemetry/schema.py` `agent_event_log` | `seq=max+1` 无 `unique(run_id,seq)`；并发/异步流式回调/重试写同 run 会产生重复 seq | 低 | deferred | 由"单 worker 串行写"设计兜底（代码注释已声明）。加 `UNIQUE(run_id,seq)` 需在幂等 DDL 里替换既有非唯一索引（drop+create unique），等 spec104 运行时确定单/多 worker 写入模型后再定；届时若并发写则改用 run 级 DB sequence。 |
 | FK | `telemetry/schema.py` 子表 | 子表 `run_id` 无外键到 `agent_request`，可孤儿 | 低 | wontfix | 埋点有意 best-effort：加 FK 会因写入顺序/start_run 失败而硬丢事件，与"尽量记全"目标相悖。 |
+
+## spec103 · 模型网关（review 于 2026-07）
+
+只修了 correctness #1（埋点写在守护 LLM 的 try 内 → 埋点失败触发重复计费的故障转移 + 丢已成功响应；改成 best-effort）、#2（record_usage 的 agent_type NOT NULL 无兜底；改 `agent_type or 'unknown'`）。以下未修：
+
+| # | 文件 | 问题 | 严重度 | 状态 | 建议修法 |
+|---|---|---|---|---|---|
+| A3 | `models/gateway.py` `get_chat`/`_chain` | 回退链里 provider 拼错（如 `qwem:...`）→ `PROVIDERS[x]` 抛裸 KeyError，被故障转移当普通 `model.error` 吞掉，配置错永久静默、拼错的回退永不生效 | 低 | deferred | `get_chat`/`_chain` 里 provider 不在 `PROVIDERS` 时抛清晰 `ValueError("unknown provider ...")`，或在 `_chain` 构建时校验并对未知 provider 记一条可辨认的 warn；等 spec104 接线时定。 |
