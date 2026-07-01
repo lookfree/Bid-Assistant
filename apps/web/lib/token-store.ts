@@ -14,6 +14,16 @@ export function createTokenStore(storage: SimpleStorage) {
   }
 }
 
+// 内存实现的 SimpleStorage（SSR/localStorage 不可用时的兜底；测试亦可复用，避免各自另写一份）。
+export function memoryStorage(): SimpleStorage {
+  const m = new Map<string, string>()
+  return {
+    getItem: (k) => m.get(k) ?? null,
+    setItem: (k, v) => void m.set(k, v),
+    removeItem: (k) => void m.delete(k),
+  }
+}
+
 // 浏览器用 localStorage；SSR/缺失/被禁用时退化为内存（避免 import 期崩）。
 // 注意：隐私模式/沙箱 iframe 下 window.localStorage 存在但读写会抛 SecurityError，故用探测确认可用。
 function safeStorage(): SimpleStorage {
@@ -27,12 +37,7 @@ function safeStorage(): SimpleStorage {
   } catch {
     // localStorage 存在但访问抛错 → 落到内存实现
   }
-  const m = new Map<string, string>()
-  return {
-    getItem: (k) => m.get(k) ?? null,
-    setItem: (k, v) => void m.set(k, v),
-    removeItem: (k) => void m.delete(k),
-  }
+  return memoryStorage()
 }
 
 export const tokenStore = createTokenStore(safeStorage())

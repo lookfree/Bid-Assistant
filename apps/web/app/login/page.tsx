@@ -7,7 +7,7 @@ import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Phone, ShieldCheck, Sparkles, ArrowRight, FileSearch, PenLine, Download } from "lucide-react"
 import { api, captchaEnabled } from "@/lib/api"
-import { ApiError } from "@/lib/api-client"
+import { authErrorMessage } from "@/lib/auth-errors"
 import { useAuth } from "@/components/auth/auth-provider"
 
 const benefits = [
@@ -15,26 +15,6 @@ const benefits = [
   { icon: PenLine, text: "AI 生成目录与正文" },
   { icon: Download, text: "一键导出投标文件" },
 ]
-
-// 后端 error code → 用户文案（ApiError.code = 响应体 error 字段）。按 code 区分，避免同一 HTTP 状态多义时误导。
-const AUTH_ERROR_MESSAGES: Record<string, string> = {
-  invalid_phone: "手机号格式不正确",
-  captcha_required: "请先完成人机验证",
-  terms_required: "请先同意《用户协议》和《隐私政策》后再登录",
-  invalid_input: "手机号或验证码格式有误",
-  invalid_code: "验证码错误或已过期",
-}
-
-function authErrorMessage(e: unknown, fallback: string): string {
-  if (e instanceof ApiError) {
-    if (e.status === 429) return `操作过于频繁，请 ${e.retryAfter ?? 60}s 后重试`
-    if (e.code) {
-      const msg = AUTH_ERROR_MESSAGES[e.code]
-      if (msg) return msg
-    }
-  }
-  return fallback
-}
 
 function LoginContent() {
   const router = useRouter()
