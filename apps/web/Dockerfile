@@ -1,0 +1,13 @@
+FROM oven/bun:1.3-alpine
+WORKDIR /app
+COPY . .
+RUN bun install --frozen-lockfile
+# NEXT_PUBLIC_* 构建期注入（同源 API 用相对路径时可省）
+ARG NEXT_PUBLIC_API_BASE_URL
+ARG NEXT_PUBLIC_CAPTCHA_ENABLED=false
+ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL NEXT_PUBLIC_CAPTCHA_ENABLED=$NEXT_PUBLIC_CAPTCHA_ENABLED
+RUN bun --filter @bid/web run build
+WORKDIR /app/apps/web
+ENV NODE_ENV=production PORT=3000
+EXPOSE 3000
+CMD ["bun", "run", "start"]
