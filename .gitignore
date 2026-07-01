@@ -21,3 +21,6 @@ AccessKey*.csv
 .turbo/
 *.tsbuildinfo
 apps/*/.next/
+
+# 本地测试助手(在 mbp 上跑集成测试, 环境专属, 勿入库)
+/test-on-mbp.sh
