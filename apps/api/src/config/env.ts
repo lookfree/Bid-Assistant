@@ -29,6 +29,9 @@ const schema = z.object({
 
   AUTH_SESSION_TTL_DAYS: z.coerce.number().int().positive().default(30),
 
+  // —— 前端跨域白名单（逗号分隔的允许 Origin；CORS 用）——
+  WEB_ORIGINS: z.string().default("http://localhost:3000,http://localhost:3001"),
+
   // —— 人机验证（滑块）：默认开启 ——
   CAPTCHA_ENABLED: envBool(true),
   ALIYUN_CAPTCHA_ACCESS_KEY_ID: z.string().optional(),
