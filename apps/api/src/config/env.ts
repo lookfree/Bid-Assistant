@@ -37,6 +37,15 @@ const schema = z.object({
   WECHAT_APP_SECRET: z.string().optional(),
   WECHAT_REDIRECT_URI: z.string().default("http://localhost:3000/login/wechat"),
 
+  // —— 对象存储（S3 API / MinIO）：文件直传直下，二进制不经过 App ——
+  MINIO_ENDPOINT: z.string().url(),
+  MINIO_ACCESS_KEY: z.string(),
+  MINIO_SECRET_KEY: z.string(),
+  MINIO_BUCKET: z.string().default("bidsaas"),
+  MINIO_REGION: z.string().default("us-east-1"),
+  FILE_MAX_SIZE_MB: z.coerce.number().int().positive().default(50),
+  FILE_PRESIGN_TTL_SECONDS: z.coerce.number().int().positive().default(600),
+
   // —— 人机验证（滑块）：默认开启 ——
   CAPTCHA_ENABLED: envBool(true),
   ALIYUN_CAPTCHA_ACCESS_KEY_ID: z.string().optional(),
