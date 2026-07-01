@@ -1,9 +1,7 @@
 import { randomBytes } from "node:crypto"
 import type { Redis } from "ioredis"
-import { findUserByIdentity, createUserWithIdentity } from "../repos/users"
-import { createSession } from "../repos/sessions"
-import { IdentityAlreadyBoundError } from "../repos/errors"
-import { hashToken, TermsRequiredError } from "./auth"
+import { findUserByIdentity, createOrGetOnConflict } from "../repos/users"
+import { mintSession, TermsRequiredError } from "./auth"
 import type { WechatOAuthClient } from "./wechat-oauth"
 import type { User } from "../db/schema"
 
@@ -41,33 +39,17 @@ export function makeWechatAuth(redis: Redis, oauth: WechatOAuthClient, ttlDays: 
       let isNew = false
       if (!user) {
         if (!agreedToTerms) throw new TermsRequiredError()
-        try {
-          user = await createUserWithIdentity({
-            provider: "wechat",
-            identifier,
-            verifiedAt: new Date(),
-            nickname: profile.nickname,
-            termsAgreedAt: new Date(),
-          })
-          isNew = true
-        } catch (e) {
-          // 并发首登竞态：两个回调都过了 null 检查、都建号；输者撞 UNIQUE → 取胜者已建的行。
-          if (e instanceof IdentityAlreadyBoundError) {
-            user = await findUserByIdentity("wechat", identifier)
-            if (!user) throw e
-          } else {
-            throw e
-          }
-        }
+        const created = await createOrGetOnConflict({
+          provider: "wechat",
+          identifier,
+          verifiedAt: new Date(),
+          nickname: profile.nickname,
+          termsAgreedAt: new Date(),
+        })
+        user = created.user
+        isNew = created.isNew
       }
-      const token = randomBytes(32).toString("hex")
-      await createSession({
-        userId: user.id,
-        tokenHash: hashToken(token),
-        expiresAt: new Date(Date.now() + ttlDays * 86_400_000),
-        userAgent: meta.userAgent,
-        ip: meta.ip,
-      })
+      const token = await mintSession(user.id, meta, ttlDays)
       return { token, user, isNew }
     },
   }

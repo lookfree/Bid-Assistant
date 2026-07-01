@@ -1,13 +1,29 @@
 import { randomBytes, createHash } from "node:crypto"
-import { findUserByIdentity, createUserWithIdentity, getUserById } from "../repos/users"
+import { findUserByIdentity, createOrGetOnConflict, getUserById } from "../repos/users"
 import { createSession, findValidSession, revokeSession } from "../repos/sessions"
-import { IdentityAlreadyBoundError } from "../repos/errors"
 import type { User } from "../db/schema"
 
 // 会话令牌只以 sha256 哈希入库（sessions.token_hash）；原始不透明令牌只发给客户端，DB 不留明文。
 // createSession 与 findValidSession 两侧必须用同一哈希。
 export function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex")
+}
+
+/** 签发 32 字节不透明令牌，DB 只存其 sha256 哈希；落 sessions（可撤销）。手机号/微信等各登录方式共用。 */
+export async function mintSession(
+  userId: string,
+  meta: { userAgent?: string; ip?: string },
+  ttlDays: number,
+): Promise<string> {
+  const token = randomBytes(32).toString("hex")
+  await createSession({
+    userId,
+    tokenHash: hashToken(token),
+    expiresAt: new Date(Date.now() + ttlDays * 86_400_000),
+    userAgent: meta.userAgent,
+    ip: meta.ip,
+  })
+  return token
 }
 
 /** 未注册手机号需先同意协议才会自动建号；否则拒绝（注册即登录）。 */
@@ -44,33 +60,16 @@ export async function loginWithPhone(
   if (!(await consumeCode())) throw new InvalidCodeError()
   let isNew = false
   if (!user) {
-    try {
-      user = await createUserWithIdentity({
-        provider: "phone",
-        identifier: phone,
-        verifiedAt: new Date(),
-        termsAgreedAt: new Date(),
-      })
-      isNew = true
-    } catch (e) {
-      // 并发首登竞态：两个请求都过了 null 检查、都建号；输者撞 UNIQUE → 取胜者已建的行。
-      if (e instanceof IdentityAlreadyBoundError) {
-        user = await findUserByIdentity("phone", phone)
-        if (!user) throw e
-      } else {
-        throw e
-      }
-    }
+    const created = await createOrGetOnConflict({
+      provider: "phone",
+      identifier: phone,
+      verifiedAt: new Date(),
+      termsAgreedAt: new Date(),
+    })
+    user = created.user
+    isNew = created.isNew
   }
-  const token = randomBytes(32).toString("hex")
-  const expiresAt = new Date(Date.now() + ttlDays * 86_400_000)
-  await createSession({
-    userId: user.id,
-    tokenHash: hashToken(token),
-    expiresAt,
-    userAgent: meta.userAgent,
-    ip: meta.ip,
-  })
+  const token = await mintSession(user.id, meta, ttlDays)
   return { token, user, isNew }
 }
 
