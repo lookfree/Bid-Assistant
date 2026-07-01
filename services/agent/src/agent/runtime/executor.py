@@ -12,6 +12,7 @@ from agent.models.gateway import ModelGateway
 from agent.runtime.channels import progress_stream, runmeta_key, result_key
 from agent.runtime.registry import get_agent, RunContext
 import agent.runtime.dummy_agent  # noqa: F401 确保 dummy 注册
+import agent.agents.bidding_agent  # noqa: F401 注册 agent_type="bidding_agent"
 
 _gateway = ModelGateway(settings)          # 无副作用
 _recorder: Recorder | None = None           # 惰性：import 期不连库
