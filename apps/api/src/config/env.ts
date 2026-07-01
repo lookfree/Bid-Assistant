@@ -32,6 +32,11 @@ const schema = z.object({
   // —— 前端跨域白名单（逗号分隔的允许 Origin；CORS 用）——
   WEB_ORIGINS: z.string().default("http://localhost:3000,http://localhost:3001"),
 
+  // —— 微信开放平台「网站应用」OAuth（凭据当前可能缺失，缺失时开发走伪实现、生产 fail-closed）——
+  WECHAT_APP_ID: z.string().optional(),
+  WECHAT_APP_SECRET: z.string().optional(),
+  WECHAT_REDIRECT_URI: z.string().default("http://localhost:3000/login/wechat"),
+
   // —— 人机验证（滑块）：默认开启 ——
   CAPTCHA_ENABLED: envBool(true),
   ALIYUN_CAPTCHA_ACCESS_KEY_ID: z.string().optional(),

@@ -47,6 +47,15 @@ export function createApiClient(opts: ApiClientOptions) {
       ),
     me: () => request<{ id: string; nickname: string | null; status: string }>("/auth/me"),
     logout: () => post<{ ok: true }>("/auth/logout", {}).then(() => undefined),
+    wechatAuthUrl: (agreedToTerms: boolean) =>
+      post<{ state: string; appId: string; scope: string; redirectUri: string }>("/auth/wechat/url", {
+        agreedToTerms,
+      }),
+    wechatLogin: (code: string, state: string) =>
+      post<{ token: string; isNew: boolean; user: { id: string; nickname: string | null } }>(
+        "/auth/wechat/login",
+        { code, state },
+      ),
   }
 
   return { request, authApi }

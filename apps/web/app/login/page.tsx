@@ -5,7 +5,7 @@ import type React from "react"
 import { useState, useEffect, Suspense } from "react"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
-import { Phone, ShieldCheck, Sparkles, ArrowRight, FileSearch, PenLine, Download } from "lucide-react"
+import { Phone, ShieldCheck, Sparkles, ArrowRight, FileSearch, PenLine, Download, QrCode } from "lucide-react"
 import { api, captchaEnabled } from "@/lib/api"
 import { authErrorMessage } from "@/lib/auth-errors"
 import { useAuth } from "@/components/auth/auth-provider"
@@ -16,6 +16,19 @@ const benefits = [
   { icon: Download, text: "一键导出投标文件" },
 ]
 
+// 按需加载微信网站应用 wxLogin.js（仅生产、配了真实 appId 时才会走到）。
+function loadWxLoginScript(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    // @ts-expect-error 微信注入的全局
+    if (typeof window !== "undefined" && window.WxLogin) return resolve()
+    const s = document.createElement("script")
+    s.src = "https://res.wx.qq.com/connect/zh_CN/htmledition/js/wxLogin.js"
+    s.onload = () => resolve()
+    s.onerror = () => reject(new Error("wxLogin.js 加载失败"))
+    document.head.appendChild(s)
+  })
+}
+
 function LoginContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -23,6 +36,7 @@ function LoginContent() {
   const reason = searchParams.get("reason")
 
   const { login } = useAuth()
+  const [tab, setTab] = useState<"phone" | "wechat">("phone")
   const [phone, setPhone] = useState("")
   const [code, setCode] = useState("")
   const [countdown, setCountdown] = useState(0)
@@ -69,6 +83,27 @@ function LoginContent() {
     }
   }
 
+  // 微信登录：先建 state（含协议同意位）→ 有真实 appId 则渲染官方二维码；开发期无凭据给出提示。
+  async function handleWechatQr() {
+    if (!agreed) {
+      setMsg("请先同意《用户协议》和《隐私政策》")
+      return
+    }
+    setMsg("")
+    try {
+      const { state, appId, scope, redirectUri } = await api.authApi.wechatAuthUrl(agreed)
+      if (!appId) {
+        setMsg("开发期未配置微信凭据，二维码暂不可用（真实凭据就绪后自动生效）")
+        return
+      }
+      await loadWxLoginScript()
+      // @ts-expect-error 微信注入的全局
+      new window.WxLogin({ id: "wx-qr", appid: appId, scope, redirect_uri: encodeURIComponent(redirectUri), state })
+    } catch (e) {
+      setMsg(authErrorMessage(e, "生成二维码失败，请重试"))
+    }
+  }
+
   return (
     <div className="flex min-h-screen flex-col bg-secondary/40">
       {/* 顶部品牌 */}
@@ -101,7 +136,34 @@ function LoginContent() {
             <h1 className="text-2xl font-bold tracking-tight text-foreground">登录 / 注册</h1>
             <p className="mt-2 text-sm text-muted-foreground">未注册的手机号将自动创建账号</p>
 
-            <form onSubmit={handleSubmit} className="mt-7 flex flex-col gap-4">
+            {/* 登录方式切换 */}
+            <div className="mt-6 flex gap-1 rounded-lg bg-secondary/60 p-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setTab("phone")
+                  setMsg("")
+                }}
+                className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-colors ${tab === "phone" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+              >
+                <Phone className="size-4" />
+                手机号登录
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setTab("wechat")
+                  setMsg("")
+                }}
+                className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-colors ${tab === "wechat" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+              >
+                <QrCode className="size-4" />
+                微信登录
+              </button>
+            </div>
+
+            {tab === "phone" ? (
+            <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-4">
               <div>
                 <label htmlFor="phone" className="mb-1.5 block text-sm font-medium text-foreground">
                   手机号
@@ -158,26 +220,48 @@ function LoginContent() {
                 {busy ? "登录中…" : "登录 / 注册"}
                 <ArrowRight className="size-4" />
               </button>
-
-              <label className="flex cursor-pointer items-start gap-2 text-xs leading-relaxed text-muted-foreground">
-                <input
-                  type="checkbox"
-                  checked={agreed}
-                  onChange={(e) => setAgreed(e.target.checked)}
-                  className="mt-0.5 size-3.5 shrink-0 rounded border-input accent-primary"
-                />
-                <span>
-                  我已阅读并同意
-                  <a href="#" className="text-primary hover:underline">
-                    《用户协议》
-                  </a>
-                  与
-                  <a href="#" className="text-primary hover:underline">
-                    《隐私政策》
-                  </a>
-                </span>
-              </label>
             </form>
+            ) : (
+              <div className="mt-6 flex flex-col items-center gap-4">
+                <div
+                  id="wx-qr"
+                  className="flex min-h-[208px] w-full items-center justify-center rounded-lg border border-dashed border-input bg-background"
+                >
+                  <span className="px-6 text-center text-sm text-muted-foreground">
+                    点击下方按钮生成微信登录二维码
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleWechatQr}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-6 py-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                >
+                  <QrCode className="size-4" />
+                  生成二维码
+                </button>
+                <p className="text-xs text-muted-foreground">微信扫码授权后将自动登录 / 注册</p>
+              </div>
+            )}
+
+            {/* 协议同意（手机号 / 微信 两种方式共用） */}
+            <label className="mt-4 flex cursor-pointer items-start gap-2 text-xs leading-relaxed text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={agreed}
+                onChange={(e) => setAgreed(e.target.checked)}
+                className="mt-0.5 size-3.5 shrink-0 rounded border-input accent-primary"
+              />
+              <span>
+                我已阅读并同意
+                <a href="#" className="text-primary hover:underline">
+                  《用户协议》
+                </a>
+                与
+                <a href="#" className="text-primary hover:underline">
+                  《隐私政策》
+                </a>
+              </span>
+            </label>
           </div>
 
           {/* 价值点 */}
