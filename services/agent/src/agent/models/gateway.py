@@ -7,7 +7,7 @@ from langchain_openai import ChatOpenAI
 
 from agent.config import Settings
 from agent.models.providers import PROVIDERS, KEY_FIELD
-from agent.models.usage import extract_usage
+from agent.models.usage import record_llm_usage
 
 
 class ModelGateway:
@@ -72,17 +72,9 @@ class ModelGateway:
                 continue
             # LLM 已成功：埋点必须 best-effort——记录失败绝不能丢这次响应或触发（重复计费的）转移。
             latency = int((time.monotonic() - t0) * 1000)
-            if recorder is not None and run_id:
-                try:
-                    u = extract_usage(resp)
-                    recorder.record_usage(
-                        run_id, agent_type, provider=prov, model=getattr(chat, "model_name", mdl) or mdl,
-                        input_tokens=u["input"], output_tokens=u["output"], cached_tokens=u["cached"],
-                        reasoning_tokens=u["reasoning"], total_tokens=u["total"], node=node,
-                        latency_ms=latency, finish_reason=u["finish_reason"], thread_id=thread_id,
-                    )
-                except Exception:  # noqa: BLE001 埋点失败不影响已成功的调用
-                    pass
+            record_llm_usage(recorder, run_id=run_id, agent_type=agent_type, provider=prov,
+                             model=getattr(chat, "model_name", mdl) or mdl, msg=resp,
+                             node=node, thread_id=thread_id, latency_ms=latency)
             return resp
         assert last_err is not None
         raise last_err

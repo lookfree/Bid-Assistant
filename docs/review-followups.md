@@ -86,3 +86,15 @@
 | create_agent | `framework/create_agent.py` `build_create_agent(prompt,tools,ctx)` | File Structure/Interfaces 列了它（可 ainvoke 的确定性子图，不带 checkpointer），但 spec 只给了 base_agent.py 代码、未给它的实现，验收清单也不含；**Phase 1 的 106/107/108 都不用它**，它是 Phase 2 工作流节点（spec202/204/205 提纲/审查/述标）的依赖 | deferred | Phase 2 spec202 真正需要时实现 + 测试 |
 
 > 另：spec 里 `create_deep_agent(instructions=...)` 在装到的 deepagents 0.6.12 已改名 `system_prompt=`；`resilient_tool_node` 未用 langgraph `ToolNode`（该版 ToolNode 需图运行时注入、无法脱图单测），改为自执行 tool_calls。
+
+## spec105 · code-review（review 于 2026-07）
+
+全修了 correctness #1–#5：#1 astream 只流 AIMessage（工具消息不当 agent 文本吐前端）、#2 agent_node 用量埋点抽 `record_llm_usage` 共享助手且 best-effort（与 gateway.invoke 复用，DB 抖动不拖垮已成功一轮）、#3 aresume 与 astream 共用 `_decode_stream`（resume 段有 node.end/result + 二次 interrupt）、#4 compressor `gateway.invoke` 丢 `asyncio.to_thread`、#5 checkpointer 换 loop 前 best-effort 关旧 `_cm`。以下未修：
+
+| # | 文件 | 问题 | 严重度 | 状态 | 建议修法 |
+|---|---|---|---|---|---|
+| C1 | `framework/deepagent.py` | DeepAgent 覆盖 `_compile` 走 deepagents 自己的图、绕过 agent_node → **不记 token 用量**（settle 汇总 0） | 中 | deferred | Phase 2 spec203 deep agent 真跑时：在其 astream 流上聚合各节点 AIMessage 的 usage_metadata，run 末调一次 record_usage。需先真跑 deepagents 看事件形状（现有 DeepSeek key 可做）。 |
+| C2 | `framework/base_agent.py` `_decode_stream` | messages chunk 的 node 硬编码 `"agent"`，解不了 deepagents 多节点/子智能体图 | 低 | deferred | 用 `meta.langgraph_node` 取真实节点名；随 C1 一起在 deep agent 真跑时定。 |
+| C4 | `framework/base_agent.py` `_decode_stream` | 只发 node.end、不发 node.start（观测缺一半，executor 容忍不崩） | 低 | deferred | langgraph updates 是节点完成后才产出，补 node.start 需换驱动方式（debug 流或首见推断）；观测增强，Phase 2 视需要。 |
+
+> 另：resilient_tool_node 未用 langgraph ToolNode（该版需图运行时注入、无法脱图单测）；create_agent.py/build_create_agent 仍 defer Phase 2（见上一条 spec105 条目）。
