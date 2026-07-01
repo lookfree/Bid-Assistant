@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
+
 from agent import db, redis_client
 
 router = APIRouter()
@@ -10,8 +11,9 @@ async def healthz():
     return {"status": "ok"}
 
 
+# 同步 def：FastAPI 把非 async 处理器丢线程池跑，阻塞的 db/redis ping 不会卡事件循环。
 @router.get("/readyz")
-async def readyz():
+def readyz():
     pg = db.ping()
     rds = redis_client.ping()
     ok = pg and rds
