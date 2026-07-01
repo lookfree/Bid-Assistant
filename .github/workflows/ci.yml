@@ -49,4 +49,4 @@ jobs:
       - name: 测试
         run: cd apps/api && bun test
       - name: 前端构建
-        run: bun --filter @bid/web run build && bun --filter @bid/admin run build
+        run: bun --filter @bid/web build && bun --filter @bid/admin build
