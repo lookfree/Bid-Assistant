@@ -14,6 +14,7 @@ dependencies = [
   "langgraph>=1.2.7",
   "langgraph-checkpoint-postgres>=3.1.0",
   "sse-starlette>=3.4.5",
+  "deepagents>=0.6.12",
 ]
 
 [dependency-groups]
