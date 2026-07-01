@@ -26,9 +26,12 @@ def _rec() -> Recorder:
 
 def _publish(r, run_id: str, event: dict) -> None:
     # 进度落 Redis Stream（持久、可回放）：晚订阅/断线重连的 SSE 客户端能从头 XREAD 拿全过程。
+    # xadd + expire(24h，随 result 过期防堆积) 用 pipeline 合成一次往返。
     key = progress_stream(run_id)
-    r.xadd(key, {"event": json.dumps(event)})
-    r.expire(key, 86400)  # 随 result 一起 24h 过期，避免进度流堆积
+    pipe = r.pipeline()
+    pipe.xadd(key, {"event": json.dumps(event)})
+    pipe.expire(key, 86400)
+    pipe.execute()
 
 
 async def process_run(run_id: str) -> None:

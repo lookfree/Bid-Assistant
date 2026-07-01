@@ -56,14 +56,17 @@ async def stream(run_id: str):
         key = progress_stream(run_id)
         last_id = "0"  # 从头读：晚订阅/断线重连也能回放全过程（Stream 持久，pub/sub 做不到）
         r = get_redis()
+        idle = 0
         while True:
             # 阻塞读丢线程池，别卡事件循环（否则并发 SSE 客户端会串行）。
             resp = await asyncio.to_thread(r.xread, {key: last_id}, count=100, block=1000)
             if not resp:
-                # 无新事件：若 run 已终态且流里没有更多 → 结束，避免永挂
-                if await asyncio.to_thread(_is_terminal, run_id):
+                # 无新事件：每 ~5s 才查一次 DB 终态（兜底 run.end 缺失，如 worker 硬崩），别每秒打 PG。
+                idle += 1
+                if idle >= 5 and await asyncio.to_thread(_is_terminal, run_id):
                     break
                 continue
+            idle = 0
             for _k, entries in resp:
                 for entry_id, fields in entries:
                     last_id = entry_id
