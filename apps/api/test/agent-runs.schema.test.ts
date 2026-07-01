@@ -26,6 +26,7 @@ describe("agent_runs 桥接表", () => {
       .insert(agentRuns)
       .values({ userId, agentType: "bidding_agent", runId, threadId: `proj-${crypto.randomUUID()}` })
     const [row] = await getDb().select().from(agentRuns).where(eq(agentRuns.runId, runId))
+    if (!row) throw new Error("agent_run 未查回")
     expect(row.agentType).toBe("bidding_agent")
     expect(row.status).toBe("running")
     expect(row.costPoints).toBe(0)
