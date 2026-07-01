@@ -24,3 +24,10 @@ apps/*/.next/
 
 # 本地测试助手(在 mbp 上跑集成测试, 环境专属, 勿入库)
 /test-on-mbp.sh
+
+# Python (services/agent) —— 虚拟环境/缓存不入库；uv.lock 入库
+.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+*.pyc
