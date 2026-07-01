@@ -38,6 +38,7 @@ def _split_clauses(lines: list[str]) -> list[dict]:
 
 
 def parse_docx(data: bytes) -> ParsedDoc:
+    """解析 .docx 字节 → 段落文本 + 表格 + 条款 id。"""
     from docx import Document
     d = Document(io.BytesIO(data))
     para_texts = [p.text for p in d.paragraphs if p.text.strip()]
@@ -53,6 +54,7 @@ def parse_docx(data: bytes) -> ParsedDoc:
 
 
 def parse_pdf(data: bytes) -> ParsedDoc:
+    """解析 .pdf 字节 → 逐页文本(拼接) + 页数 + 条款 id。扫描件 OCR 不在 Phase 1 范围。"""
     from pypdf import PdfReader
     reader = PdfReader(io.BytesIO(data))
     pages = [(pg.extract_text() or "") for pg in reader.pages]
@@ -62,6 +64,7 @@ def parse_pdf(data: bytes) -> ParsedDoc:
 
 
 def parse_xlsx(data: bytes) -> ParsedDoc:
+    """解析 .xlsx 字节 → 各表非空行文本 + 表格结构 + 条款 id。"""
     from openpyxl import load_workbook
     wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     tables: list[list[list[str]]] = []
@@ -83,6 +86,7 @@ _DISPATCH = {"docx": parse_docx, "pdf": parse_pdf, "xlsx": parse_xlsx}
 
 
 def parse_bytes(data: bytes, filename: str) -> ParsedDoc:
+    """按文件扩展名分发到对应解析器；不支持的类型抛 UnsupportedDocument。"""
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     fn = _DISPATCH.get(ext)
     if not fn:

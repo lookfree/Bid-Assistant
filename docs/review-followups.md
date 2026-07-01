@@ -98,3 +98,12 @@
 | C4 | `framework/base_agent.py` `_decode_stream` | 只发 node.end、不发 node.start（观测缺一半，executor 容忍不崩） | 低 | deferred | langgraph updates 是节点完成后才产出，补 node.start 需换驱动方式（debug 流或首见推断）；观测增强，Phase 2 视需要。 |
 
 > 另：resilient_tool_node 未用 langgraph ToolNode（该版需图运行时注入、无法脱图单测）；create_agent.py/build_create_agent 仍 defer Phase 2（见上一条 spec105 条目）。
+
+## spec106+107 · code-review（review 于 2026-07，5 个只读 Explore 角度）
+
+全修了 correctness：#1 parse_document 内联条款 id（模型可产出真实 clause_ids）、#2 minio_endpoint 缺失即报错（不静默回退 AWS）、#3 BiddingAgent.astream 总发 read node.end（模型没 submit 也发 result=None，避免假成功）。+ parsers docstrings + parsing 测试生成器抽 conftest docgen fixture。以下未修：
+
+| # | 文件 | 问题 | 严重度 | 状态 | 何时做 |
+|---|---|---|---|---|---|
+| RA2 | `framework/base_agent.py` + `bidding_agent/agent.py` | BiddingAgent.astream 靠"丢 node.end 再重发结构化结果"这个 workaround；更干净是给 `AgentBuild` 加 `result_extractor` 回调，BaseAgent 统一处理 | 低 | deferred | Phase 2 装配多节点工作流图时一并重构（对外契约不变） |
+| C1 | `bidding_agent/agent.py` | node.end 丢弃使 executor 的 node_count 只计到 agent/read，中间 tools 节点没计入（观测偏低，不影响结果） | 低 | deferred | 与 spec105 C4（node.start 缺失）一起在 Phase 2 增强观测 |
