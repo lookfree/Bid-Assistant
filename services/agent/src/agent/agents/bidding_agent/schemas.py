@@ -37,3 +37,31 @@ class ReadResult(BaseModel):
     categories: list[ReadCategory]
     scoring: list[ScoringRow] = Field(default_factory=list)
     risk_summary: list[str] = Field(default_factory=list)   # 废标红线汇总
+
+
+class OutlineItem(BaseModel):
+    id: str
+    label: str                                    # 如 "1.1 项目背景与需求理解"
+    clause_ids: list[str] = Field(default_factory=list)  # 招标依据条款 id（${secId}-cN，对齐原型 clauseIds）
+    is_new: bool = False                          # 提纲新增（招标无直接来源）
+
+
+class OutlineChapter(BaseModel):
+    id: str                                       # t1..t5 / b1..b5
+    no: str                                       # 第一章…
+    title: str
+    group: Literal["tech", "business"]
+    sourced: bool = True                          # 能否在招标文件索引到来源
+    items: list[OutlineItem] = Field(default_factory=list)
+
+
+class Outline(BaseModel):
+    chapters: list[OutlineChapter]
+
+    @property
+    def tech(self) -> list[OutlineChapter]:
+        return [c for c in self.chapters if c.group == "tech"]
+
+    @property
+    def business(self) -> list[OutlineChapter]:
+        return [c for c in self.chapters if c.group == "business"]
