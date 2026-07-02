@@ -65,3 +65,23 @@ class Outline(BaseModel):
     @property
     def business(self) -> list[OutlineChapter]:
         return [c for c in self.chapters if c.group == "business"]
+
+
+class RiskFinding(BaseModel):
+    level: str                                    # 高风险 / 中风险
+    tone: Literal["destructive", "warning"]
+    title: str
+    chapter_title: str = ""                       # 对应标书章节标题
+    tender_ref: str = ""                          # 对应招标条款（"对应：第X章…★…"）
+    advice: str = ""                              # 整改建议
+    target_tab: Literal["tech", "business"]
+    target_id: str                                # 章节 id（点击定位）
+
+
+class RiskReport(BaseModel):
+    score: int                                    # 体检分 0–100
+    high: int = 0                                 # 高风险数
+    mid: int = 0                                  # 中风险数
+    passed: int = 0                               # 通过项数
+    items: list[RiskFinding] = Field(default_factory=list)
+    passed_items: list[str] = Field(default_factory=list)
