@@ -133,3 +133,13 @@
 | S1 | `apps/api`（spec207） | agent 产出 snake_case（clause_ids/is_new），前端原型用 camelCase；App 层 toCamel 桥尚未实现 | deferred | 属 spec207 App 编排（已有 spec108 web 缺口条目，桥一并做） |
 | S2 | `schemas.py` OutlineChapter | review 提出缺 `body/demoBody`（对齐 TS BidChapter） | refuted | 设计即分离：正文在 `state['chapters']`（spec203），`demoBody` 是原型演示填充，不属 agent 契约 |
 | S3 | `framework/structured.py` | double-submit 后写覆盖前写（last-write-wins） | deferred | 提示词已约束"一次性提交"；如真实跑发现多次提交，再加首写胜/计数告警 |
+
+## spec203 · code-review（review 于 2026-07，8 角度 Explore + 自验）
+
+全修①–④ + 删孤儿⑤：① `_collect_chapters` content 改 `.get`（deepagents 自身按可缺处理）+ 跳过空稿（全空仍 fail-loud）；② 抽 `record_ctx_usage` 统一 make_agent_node 与 UsageCallback 两条埋点路径；③ `on_llm_end` 补 docstring + `LLMResult` 类型；④ `rewrite_chapter` docstring 注明 state 传 `snapshot.values`（spec207 契约）；⑤ 删 spec105 遗留孤儿 `framework/deepagent.py`（DeepAgent/DeepBuild）与 `framework/backend.py`（InStateBackend/create_backend_tools）及其测试——spec203 定案用 deepagents 内建（StateBackend 虚拟 FS + summarization middleware），`compressor.py` 保留（`AgentBuild.compressor` 钩子在用）。以下跳过留档：
+
+| # | 位置 | 问题 | 状态 | 说明 |
+|---|---|---|---|---|
+| C1 | `nodes/content.py` `_collect_chapters` | 模型写嵌套路径（chapters/t1/x.html）会产生含 `/` 的 cid，与 outline 章 id 对不上 | deferred | 收稿宽容优于丢稿重试（重试烧真钱）；App 端按 outline id 匹配、多余 key 可忽略。真实运行观察到再收紧 |
+| C2 | `nodes/content.py` | content 提示词保留 `source_quote`（outline 已裁） | wontfix | 子写手需原文证据写「可核查」正文；质量优先于 token，content 是质量关键节点 |
+| C3 | `nodes/content.py` + `prompts/content.py` | `chapters/<id>.html` 约定在代码常量 + 两条提示词共三处 | deferred | 提示词字面量可读性优先；若约定变更需三处同改（grep `chapters/` 即全中） |

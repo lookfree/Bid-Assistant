@@ -18,7 +18,10 @@ def _collect_chapters(files: dict | None) -> dict[str, str]:
         if not norm.startswith(_CHAPTER_PREFIX):
             continue
         cid = norm[len(_CHAPTER_PREFIX):].removesuffix(".html")
-        chapters[cid] = data["content"] if isinstance(data, dict) else str(data)
+        # content 允许缺省（deepagents 自身也按可缺处理）；空稿跳过——全空最终触发 fail-loud
+        content = data.get("content", "") if isinstance(data, dict) else str(data)
+        if content:
+            chapters[cid] = content
     return chapters
 
 
@@ -49,7 +52,8 @@ def make_content_node(ctx):
 
 
 async def rewrite_chapter(ctx, chapter_id: str, instruction: str, state: dict) -> str:
-    """单章改写（/content 右栏 AI 对话）：原章 HTML + 用户指令 → 新 HTML。走轻量 create_agent，不重规划全本。"""
+    """单章改写（/content 右栏 AI 对话）：原章 HTML + 用户指令 → 新 HTML。走轻量 create_agent，不重规划全本。
+    state 传工作流状态**值 dict**（如 `(await graph.aget_state(cfg)).values`），不是 StateSnapshot 本身。"""
     old = state.get("chapters", {}).get(chapter_id, "")
     sub = build_create_agent(REWRITE_PROMPT, [], ctx)
     msg = f"原章 HTML：\n{old}\n\n改写指令：{instruction}"

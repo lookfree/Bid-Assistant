@@ -1,6 +1,7 @@
 from typing import Any
 
 from langchain_core.callbacks import AsyncCallbackHandler
+from langchain_core.outputs import LLMResult
 
 
 def extract_usage(msg: Any) -> dict[str, Any]:
@@ -40,6 +41,16 @@ def record_llm_usage(recorder: Any, *, run_id: str | None, agent_type: str | Non
         pass
 
 
+def record_ctx_usage(ctx: Any, msg: Any, *, node: str | None, model: str | None = None) -> None:
+    """按 RunContext 记一条 LLM 用量（best-effort）。make_agent_node 与 UsageCallback 共用，
+    provider/run 维度参数只在这里拼一次，避免两条埋点路径漂移。"""
+    _s = getattr(ctx.gateway, "s", None) if ctx.gateway else None
+    record_llm_usage(ctx.recorder, run_id=ctx.run_id, agent_type=ctx.agent_type,
+                     provider=getattr(_s, "model_default_provider", None),
+                     model=model or (getattr(msg, "response_metadata", None) or {}).get("model_name"),
+                     msg=msg, node=node, thread_id=ctx.thread_id)
+
+
 class UsageCallback(AsyncCallbackHandler):
     """langchain 回调式埋点：deepagent 等「直驱模型、不经 make_agent_node」的路径
     挂到 config.callbacks 上记 token 用量（content 节点是最大消费者，绕过即漏计费）。"""
@@ -48,13 +59,10 @@ class UsageCallback(AsyncCallbackHandler):
         self.ctx = ctx
         self.node = node
 
-    async def on_llm_end(self, response: Any, **kwargs: Any) -> None:
+    async def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
+        """每次 LLM 调用结束触发：从 ChatGeneration.message 抽 usage_metadata 记账。"""
         try:
             msg = response.generations[0][0].message
         except (IndexError, AttributeError):
-            return
-        _s = getattr(self.ctx.gateway, "s", None) if self.ctx.gateway else None
-        record_llm_usage(self.ctx.recorder, run_id=self.ctx.run_id, agent_type=self.ctx.agent_type,
-                         provider=getattr(_s, "model_default_provider", None),
-                         model=(getattr(msg, "response_metadata", None) or {}).get("model_name"),
-                         msg=msg, node=self.node, thread_id=self.ctx.thread_id)
+            return                       # 非 chat 型结果（无 .message）不记
+        record_ctx_usage(self.ctx, msg, node=self.node)
