@@ -1,5 +1,17 @@
+from __future__ import annotations
+from agent.agents.bidding_agent.render.docx import render_docx
+from agent.parsing.storage_read import storage      # spec106 MinIO 封装
+
+
 def make_export_node(ctx):
-    """graph 节点占位：spec206 替换为普通服务节点（chapters + 提纲 → .docx，无 LLM）。"""
+    """graph 节点：读 outline+chapters → 渲染完整标书 .docx → 落 MinIO → 写 artifacts['docx']。
+    普通服务节点：确定性、无 LLM、不碰钱。与 present 的 pptx 由 state.artifacts 合并 reducer 并存。"""
     async def export_node(state):
-        return {"artifacts": {"docx": "_stub"}}
+        meta = (state.get("read") or {}).get("project_meta", {})
+        data = render_docx(state.get("outline") or {}, state.get("chapters") or {}, meta=meta)
+        key = f"artifacts/{ctx.thread_id}/bid.docx"
+        await storage.put_bytes(
+            key, data,
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        return {"artifacts": {"docx": key}}
     return export_node
