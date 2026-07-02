@@ -19,6 +19,7 @@ dependencies = [
   "pypdf>=6.14.2",
   "openpyxl>=3.1.5",
   "boto3>=1.43.38",
+  "python-pptx>=1.0.2",
 ]
 
 [dependency-groups]
