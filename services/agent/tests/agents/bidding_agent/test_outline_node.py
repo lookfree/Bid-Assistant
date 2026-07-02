@@ -1,5 +1,6 @@
 import asyncio
-from langchain_core.messages import AIMessage
+import pytest
+from agent.runtime.registry import RunContext
 from agent.agents.bidding_agent.nodes.outline import make_outline_node
 
 
@@ -11,35 +12,19 @@ _OUTLINE_ARGS = {"chapters": [
 ]}
 
 
-class _OutlineChat:
-    def __init__(self):
-        self.n = 0
-
-    def bind_tools(self, tools):
-        return self
-
-    async def ainvoke(self, messages):
-        self.n += 1
-        if self.n == 1:
-            return AIMessage(content="", tool_calls=[{"name": "submit_outline", "args": _OUTLINE_ARGS, "id": "o1"}])
-        return AIMessage(content="提纲完成")
-
-
-class _GW:
-    def get_chat(self, **kw):
-        return _OutlineChat()
-
-
-class _Ctx:
-    gateway = _GW()
-
-    def __getattr__(self, k):
-        return None
-
-
-def test_outline_node_reads_read_produces_outline():
-    node = make_outline_node(_Ctx())
+def test_outline_node_reads_read_produces_outline(submit_gateway):
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t",
+                     gateway=submit_gateway({"submit_outline": _OUTLINE_ARGS}))
+    node = make_outline_node(ctx)
     out = asyncio.run(node({"read": {"risk_summary": ["缺 ISO27001"]}}))
-    assert "outline" in out
     ids = [c["id"] for c in out["outline"]["chapters"]]
     assert ids == ["t1", "b1"]
+
+
+def test_outline_node_fails_loud_when_model_never_submits(submit_gateway):
+    """模型不调用 submit_outline → 节点抛错（run 落 failed 可重试），不产假空提纲。"""
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t",
+                     gateway=submit_gateway({}))
+    node = make_outline_node(ctx)
+    with pytest.raises(RuntimeError, match="submit_outline"):
+        asyncio.run(node({"read": {}}))

@@ -6,6 +6,7 @@ from langgraph.prebuilt import tools_condition
 from langgraph.graph.message import add_messages
 from agent.framework.hooks import run_turn, BuildMessagesHook, DropMalformedToolCallsHook
 from agent.framework.resilient import resilient_tool_node
+from agent.framework.structured import make_submit_tool
 from agent.models.usage import record_llm_usage
 
 
@@ -52,3 +53,17 @@ def build_create_agent(prompt: str, tools: list, ctx):
     g.add_edge(START, "agent")
     add_tools_loop(g, tools)
     return g.compile()   # 无 checkpointer/interrupt：确定性子图
+
+
+async def run_submit_agent(ctx, prompt: str, user_msg: str,
+                           tool_name: str, schema, desc: str, extra_tools: list | None = None):
+    """跑一个「必须用 submit 工具提交 schema 结构化结果」的子 agent，返回校验后的实例。
+    模型没提交（含提交但校验失败）就抛错 → run 落 failed 而非把空结果当成功；
+    checkpoint 停在节点前，客户端重发 run 即重试本节点。工作流各 submit 节点共用。"""
+    submit, get_result = make_submit_tool(tool_name, schema, desc)
+    sub = build_create_agent(prompt, [*(extra_tools or []), submit], ctx)
+    await sub.ainvoke({"messages": [{"role": "user", "content": user_msg}]})
+    result = get_result()
+    if result is None:
+        raise RuntimeError(f"模型未通过 {tool_name} 提交结构化结果")
+    return result

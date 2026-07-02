@@ -123,3 +123,13 @@
 | # | 位置 | 问题 | 严重度 | 状态 | 何时做 |
 |---|---|---|---|---|---|
 | A5(altitude) | `bidding_agent/agent.py` | 工作流式 astream（seed-vs-resume + 记录 ran_node + step.done + `_RESULT_KEY`）是任意「interrupt 工作流 agent」通用逻辑，现落在 bidding 专有类；第二个图 agent（contract_review）会复制粘贴 | 中 | deferred | **YAGNI**：当前仅 1 个图 agent，此时上提到 BaseAgent 属投机抽象（CLAUDE.md「不做投机性设计」）。待 contract_review 落地、有第二处复用时，再把通用部分上提 BaseAgent（`_RESULT_KEY` 作子类钩子/类属性）。 |
+
+## spec202 · code-review（review 于 2026-07，8 角度 Explore + 自验）
+
+全修：M1 「模型没 submit → 静默空结果假成功」——新增 `framework/create_agent.run_submit_agent`（未提交/校验失败即抛错 → run failed，checkpoint 停节点前可重试），read/outline 节点统一走它（read 原 `{}`、outline 原 `{"chapters": []}` 的发散 fallback 一并消除）；M2 三份 submit-then-done 测试 fake 去重为 `tests/agents/bidding_agent/conftest.py::SubmitChat/SubmitGateway`；M3 outline 提示词裁掉 `source_quote`（token 大头）；M4 强化 schema 捕获断言为原样往返 + 补「未提交即失败」契约测试。以下未修/驳回：
+
+| # | 位置 | 问题 | 状态 | 说明 |
+|---|---|---|---|---|
+| S1 | `apps/api`（spec207） | agent 产出 snake_case（clause_ids/is_new），前端原型用 camelCase；App 层 toCamel 桥尚未实现 | deferred | 属 spec207 App 编排（已有 spec108 web 缺口条目，桥一并做） |
+| S2 | `schemas.py` OutlineChapter | review 提出缺 `body/demoBody`（对齐 TS BidChapter） | refuted | 设计即分离：正文在 `state['chapters']`（spec203），`demoBody` 是原型演示填充，不属 agent 契约 |
+| S3 | `framework/structured.py` | double-submit 后写覆盖前写（last-write-wins） | deferred | 提示词已约束"一次性提交"；如真实跑发现多次提交，再加首写胜/计数告警 |

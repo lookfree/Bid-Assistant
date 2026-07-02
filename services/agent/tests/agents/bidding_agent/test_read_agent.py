@@ -2,7 +2,6 @@ import asyncio
 import os
 import uuid
 import pytest
-from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
 from agent.runtime.registry import get_agent, RunContext
 from agent.telemetry.recorder import Recorder
@@ -17,30 +16,11 @@ _RESULT_ARGS = {
 }
 
 
-class _ToolThenDoneChat:
-    """第 1 次回 submit_read_result 的 tool_call，第 2 次回结束语。"""
-    def __init__(self):
-        self.n = 0
-
-    def bind_tools(self, tools):
-        return self
-
-    async def ainvoke(self, messages):
-        self.n += 1
-        if self.n == 1:
-            return AIMessage(content="", tool_calls=[{"name": "submit_read_result", "args": _RESULT_ARGS, "id": "c1"}])
-        return AIMessage(content="读标完成")
-
-
-class _GW:
-    def get_chat(self, provider=None, model=None, **kw):
-        return _ToolThenDoneChat()
-
-
-def test_read_agent_captures_structured_result(cleanup_run):
+def test_read_agent_captures_structured_result(cleanup_run, submit_gateway):
     agent = get_agent("bidding_agent")                      # BiddingAgent 已注册
     ctx = RunContext(run_id=cleanup_run(str(uuid.uuid4())), agent_type="bidding_agent",
-                     thread_id=str(uuid.uuid4()), recorder=Recorder(get_pool()), gateway=_GW(),
+                     thread_id=str(uuid.uuid4()), recorder=Recorder(get_pool()),
+                     gateway=submit_gateway({"submit_read_result": _RESULT_ARGS}),
                      checkpointer=MemorySaver())
 
     async def run():

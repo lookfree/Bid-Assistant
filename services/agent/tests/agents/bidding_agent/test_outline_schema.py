@@ -21,4 +21,4 @@ def test_outline_groups():
 def test_submit_outline_captures():
     tool, get = make_submit_tool("submit_outline", Outline, "提交提纲")
     asyncio.run(tool.ainvoke(_SAMPLE))
-    assert len(get().chapters) == 2
+    assert get().model_dump() == Outline(**_SAMPLE).model_dump()   # 捕获即原样往返
