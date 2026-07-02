@@ -1,0 +1,63 @@
+from __future__ import annotations
+import io
+from bs4 import BeautifulSoup
+from docx import Document
+
+
+def _emit_html(doc: Document, html: str) -> None:
+    """HTML 最小映射到 docx：h1–h4→Heading2、p→段落、ul/li→项目符号、table→表格。
+    复杂样式（嵌套/富文本行内样式）为后续加固项。"""
+    soup = BeautifulSoup(html or "", "html.parser")
+    for el in soup.children:
+        name = getattr(el, "name", None)
+        if name in ("h1", "h2", "h3", "h4"):
+            doc.add_heading(el.get_text(strip=True), level=2)
+        elif name == "p":
+            doc.add_paragraph(el.get_text(strip=True))
+        elif name == "ul":
+            for li in el.find_all("li", recursive=False):
+                doc.add_paragraph(li.get_text(strip=True), style="List Bullet")
+        elif name == "table":
+            rows = el.find_all("tr")
+            if rows:
+                cols = rows[0].find_all(["td", "th"])
+                t = doc.add_table(rows=len(rows), cols=len(cols))
+                for i, r in enumerate(rows):
+                    for j, c in enumerate(r.find_all(["td", "th"])):
+                        t.rows[i].cells[j].text = c.get_text(strip=True)
+        elif el.get_text(strip=True):
+            doc.add_paragraph(el.get_text(strip=True))
+
+
+def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None) -> bytes:
+    """完整标书 .docx：封面 + 目录占位 + 按 outline 顺序各章正文 + 签章页。确定性，无 LLM。"""
+    meta = meta or {}
+    doc = Document()
+    # 封面
+    doc.add_heading(meta.get("name", "投标文件"), level=0)
+    if meta.get("buyer"):
+        doc.add_paragraph(f"采购人：{meta['buyer']}")
+    if meta.get("code"):
+        doc.add_paragraph(f"招标编号：{meta['code']}")
+    doc.add_paragraph("投标人：____________________（盖章）")
+    doc.add_page_break()
+    # 目录占位
+    doc.add_heading("目录", level=1)
+    doc.add_paragraph("（请在 Word 中更新域以生成目录）")
+    doc.add_page_break()
+    # 章节正文：按 outline 顺序（缺正文出占位，不报错）
+    for ch in outline.get("chapters", []):
+        group = "技术标" if ch.get("group") == "tech" else "商务标"
+        doc.add_heading(f"{ch.get('no', '')} {ch.get('title', '')}（{group}）", level=1)
+        body = chapters.get(ch.get("id", ""), "")
+        if body:
+            _emit_html(doc, body)
+        else:
+            doc.add_paragraph("（本章正文待生成）")
+    # 签章页
+    doc.add_page_break()
+    doc.add_heading("投标人承诺与签章", level=1)
+    doc.add_paragraph("法定代表人/授权代表（签字）：____________   日期：__________")
+    out = io.BytesIO()
+    doc.save(out)
+    return out.getvalue()
