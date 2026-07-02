@@ -18,6 +18,7 @@ def test_review_node_flags_iso_high_risk(submit_gateway):
     node = make_review_node(ctx)
     out = asyncio.run(node({
         "read": {"risk_summary": ["缺 ISO27001 即废标"]},
+        "outline": {"chapters": [{"id": "b4", "no": "第四章", "title": "企业资质", "group": "business"}]},
         "chapters": {"b4": "<h3>4.1 营业执照与体系认证</h3><p>已通过 ISO9001…</p>"},
     }))
     risk = out["risk"]

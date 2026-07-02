@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 CategoryKey = Literal["overview", "qualification", "commercial", "technical", "scoring", "format"]
 
@@ -68,7 +68,7 @@ class Outline(BaseModel):
 
 
 class RiskFinding(BaseModel):
-    level: str                                    # 高风险 / 中风险
+    level: Literal["高风险", "中风险"]              # 前端按此渲染，收紧取值
     tone: Literal["destructive", "warning"]
     title: str
     chapter_title: str = ""                       # 对应标书章节标题
@@ -79,9 +79,17 @@ class RiskFinding(BaseModel):
 
 
 class RiskReport(BaseModel):
-    score: int                                    # 体检分 0–100
-    high: int = 0                                 # 高风险数
-    mid: int = 0                                  # 中风险数
-    passed: int = 0                               # 通过项数
+    score: int = Field(ge=0, le=100)              # 体检分 0–100
+    high: int = 0                                 # 高风险数（按 items 推导，见下）
+    mid: int = 0                                  # 中风险数（同上）
+    passed: int = 0                               # 通过项数（= len(passed_items)）
     items: list[RiskFinding] = Field(default_factory=list)
     passed_items: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _derive_counts(self):
+        """计数一律从 items/passed_items 推导，不信模型口头报数（两处口径必然漂移）。"""
+        self.high = sum(1 for i in self.items if i.level == "高风险")
+        self.mid = sum(1 for i in self.items if i.level == "中风险")
+        self.passed = len(self.passed_items)
+        return self

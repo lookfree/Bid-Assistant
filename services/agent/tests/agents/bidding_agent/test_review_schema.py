@@ -15,6 +15,8 @@ _SAMPLE = {
 def test_risk_report_validates():
     r = RiskReport(**_SAMPLE)
     assert r.high == 1 and r.items[0].target_id == "b4" and r.items[0].tone == "destructive"
+    # 计数由 items/passed_items 推导，纠正模型口头报数（样例故意给错的 mid=2/passed=9）
+    assert r.mid == 0 and r.passed == 2
 
 
 def test_submit_risk_captures():

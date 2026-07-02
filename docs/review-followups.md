@@ -143,3 +143,7 @@
 | C1 | `nodes/content.py` `_collect_chapters` | 模型写嵌套路径（chapters/t1/x.html）会产生含 `/` 的 cid，与 outline 章 id 对不上 | deferred | 收稿宽容优于丢稿重试（重试烧真钱）；App 端按 outline id 匹配、多余 key 可忽略。真实运行观察到再收紧 |
 | C2 | `nodes/content.py` | content 提示词保留 `source_quote`（outline 已裁） | wontfix | 子写手需原文证据写「可核查」正文；质量优先于 token，content 是质量关键节点 |
 | C3 | `nodes/content.py` + `prompts/content.py` | `chapters/<id>.html` 约定在代码常量 + 两条提示词共三处 | deferred | 提示词字面量可读性优先；若约定变更需三处同改（grep `chapters/` 即全中） |
+
+## spec204 · code-review（review 于 2026-07，4 合并角度 Explore + 自验）
+
+全修：① schema 加固——`RiskFinding.level` 收 `Literal["高风险","中风险"]`（对齐原型取值）、`RiskReport.score` 加 0–100 界限、`high/mid/passed` 改 `@model_validator` 从 items/passed_items 推导（不信模型口头报数）；② `_slim_read` 上提为 `nodes/common.py::slim_read`，outline/review 共用（review 载荷裁 source_quote；chapters 保留全文——审查对象即正文）；③ 节点测试补 outline 键（贴近真实图态）。驳回：空串默认 vs TS 非可选（"" 合法）；outline 缺失防御（图序保证）；查重走提示词（计划 v1 即如此）。Altitude/Conventions 角度报告清洁。
