@@ -93,3 +93,26 @@ class RiskReport(BaseModel):
         self.mid = sum(1 for i in self.items if i.level == "中风险")
         self.passed = len(self.passed_items)
         return self
+
+
+class Slide(BaseModel):
+    id: str
+    title: str
+    scoring: str = ""                              # 本页对应评分点（可空）
+    bullets: list[str] = Field(default_factory=list)
+    notes: str = ""                                # 口播稿/讲稿
+    kind: Literal["cover", "content", "end"] = "content"
+
+
+class QA(BaseModel):
+    q: str
+    a: str
+
+
+class DeckSpec(BaseModel):
+    title: str = ""                                # 述标主题（项目名）
+    duration: Literal[10, 15, 20] = 15             # 讲标时长档（分钟）
+    template: Literal["blue", "tech", "gov"] = "blue"  # 对齐原型 StyleId（商务蓝/科技感/政务红）
+    enterprise_template_id: str | None = None      # 企业自有模板（如 pe1/pe2），优先于 template
+    slides: list[Slide]
+    qa: list[QA] = Field(default_factory=list)
