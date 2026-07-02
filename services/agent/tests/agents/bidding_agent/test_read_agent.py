@@ -3,6 +3,7 @@ import os
 import uuid
 import pytest
 from langchain_core.messages import AIMessage
+from langgraph.checkpoint.memory import MemorySaver
 from agent.runtime.registry import get_agent, RunContext
 from agent.telemetry.recorder import Recorder
 from agent.db import get_pool
@@ -39,13 +40,15 @@ class _GW:
 def test_read_agent_captures_structured_result(cleanup_run):
     agent = get_agent("bidding_agent")                      # BiddingAgent 已注册
     ctx = RunContext(run_id=cleanup_run(str(uuid.uuid4())), agent_type="bidding_agent",
-                     thread_id=str(uuid.uuid4()), recorder=Recorder(get_pool()), gateway=_GW())
+                     thread_id=str(uuid.uuid4()), recorder=Recorder(get_pool()), gateway=_GW(),
+                     checkpointer=MemorySaver())
 
     async def run():
-        return [ev async for ev in agent.astream({"text": "请读标，key=uploads/x/tender.pdf"}, ctx)]
+        return [ev async for ev in agent.astream({"file_key": "uploads/x/tender.pdf"}, ctx)]
 
     evs = asyncio.run(run())
-    finals = [e for e in evs if e["type"] == "node.end" and e["node"] == "read"]
+    # spec201 后：read 是工作流首节点，产出走 step.done（跑到 read 后 interrupt 停）
+    finals = [e for e in evs if e["type"] == "step.done" and e["node"] == "read"]
     assert finals, "应产出 read 结构化结果"
     res = finals[-1]["data"]["result"]
     assert res["categories"][0]["items"][0]["risk"] is True

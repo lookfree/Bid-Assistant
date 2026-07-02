@@ -36,7 +36,18 @@ class BaseAgent:
     def build(self, ctx: RunContext) -> AgentBuild:
         raise NotImplementedError
 
-    def _compile(self, ctx: RunContext, checkpointer):
+    def build_graph(self, ctx: RunContext):
+        """可选：子类返回已编译的 CompiledStateGraph（多节点工作流）则用之；
+        默认 None → 退回 build() 的单 create_agent 循环（Phase 1 行为）。"""
+        return None
+
+    def _compile(self, ctx: RunContext):
+        graph = self.build_graph(ctx)
+        if graph is not None:
+            return graph
+        return self._compile_single_loop(ctx)
+
+    def _compile_single_loop(self, ctx: RunContext):
         b = self.build(ctx)
         llm = ctx.gateway.get_chat(provider=None) if ctx.gateway else None
         llm_with_tools = llm.bind_tools(b.tools) if (llm and b.tools) else llm
@@ -68,11 +79,17 @@ class BaseAgent:
             g.add_edge("tools", "agent")
         else:
             g.add_edge("agent", END)
-        return g.compile(checkpointer=checkpointer)
+        return g.compile(checkpointer=ctx.checkpointer)
+
+    async def _ensure_checkpointer(self, ctx: RunContext) -> None:
+        # 真实 run 的 executor 不给 checkpointer；测试可直接注入 MemorySaver。缺则取 Postgres 单例。
+        if ctx.checkpointer is None:
+            from agent.checkpointer import get_checkpointer
+            ctx.checkpointer = await get_checkpointer()
 
     async def astream(self, input: dict, ctx: RunContext) -> AsyncIterator[dict]:
-        from agent.checkpointer import get_checkpointer
-        graph = self._compile(ctx, await get_checkpointer())
+        await self._ensure_checkpointer(ctx)
+        graph = self._compile(ctx)
         config = {"configurable": {"thread_id": ctx.thread_id}}
         init = {"messages": [HumanMessage(content=str(input.get("text", input)))]}
         stream = graph.astream(init, config=config, stream_mode=["updates", "messages"])
@@ -80,9 +97,9 @@ class BaseAgent:
             yield ev
 
     async def aresume(self, value: Any, ctx: RunContext) -> AsyncIterator[dict]:
-        from agent.checkpointer import get_checkpointer
         from langgraph.types import Command
-        graph = self._compile(ctx, await get_checkpointer())
+        await self._ensure_checkpointer(ctx)
+        graph = self._compile(ctx)
         config = {"configurable": {"thread_id": ctx.thread_id}}
         # resume 与首跑走同一解码：否则 executor 收不到 resume 段的 node.end.result，
         # 也漏掉 resume 段内的第二次 interrupt（hitl.required）。

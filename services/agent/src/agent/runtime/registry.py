@@ -9,9 +9,10 @@ class RunContext:
     run_id: str
     agent_type: str
     thread_id: str
-    recorder: Any
+    recorder: Any = None
     gateway: Any = None
     redis: Any = None
+    checkpointer: Any = None   # LangGraph checkpointer（多节点工作流续状态，Phase 2 spec201）
 
 
 class AgentProtocol(Protocol):
