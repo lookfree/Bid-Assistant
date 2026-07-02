@@ -26,7 +26,8 @@ def make_present_node(ctx, *, duration: int = 15):
         deck = await run_submit_agent(
             ctx, PRESENT_SYSTEM_PROMPT, user,
             "submit_deck", DeckSpec, "提交述标 DeckSpec")
-        data = render_pptx(deck, template=deck.template)
+        data = render_pptx(deck)   # 模板色取 deck.template
+
         key = f"artifacts/{ctx.thread_id}/present.pptx"
         await storage.put_bytes(
             key, data,
