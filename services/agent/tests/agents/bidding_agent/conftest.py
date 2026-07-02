@@ -3,10 +3,12 @@ from langchain_core.messages import AIMessage
 
 
 class SubmitChat:
-    """通用 fake 模型：首轮按 bind 到的工具名从 args_by_tool 取参调用 submit，次轮收尾。"""
+    """通用 fake 模型：首轮按 bind 到的工具名从 args_by_tool 取参调用 submit，次轮回 reply 收尾。
+    args_by_tool 为空/不匹配即模拟"模型不提交"；reply 可定制，纯文本回复型测试（如改写）也用它。"""
 
-    def __init__(self, args_by_tool: dict):
+    def __init__(self, args_by_tool: dict, reply: str = "done"):
         self.args_by_tool = args_by_tool
+        self.reply = reply
         self.tool_names: list[str] = []
         self.n = 0
 
@@ -18,19 +20,20 @@ class SubmitChat:
         self.n += 1
         if self.n == 1:
             name = next((n for n in self.tool_names if n in self.args_by_tool), None)
-            if name:                              # 没配对应工具参数 → 模拟"模型不提交"
+            if name:
                 return AIMessage(content="", tool_calls=[{"name": name, "args": self.args_by_tool[name], "id": "c1"}])
-        return AIMessage(content="done")
+        return AIMessage(content=self.reply)
 
 
 class SubmitGateway:
     """每次 get_chat 给一个新 SubmitChat：各节点的子 agent 轮次互不串扰。"""
 
-    def __init__(self, args_by_tool: dict):
+    def __init__(self, args_by_tool: dict, reply: str = "done"):
         self.args_by_tool = args_by_tool
+        self.reply = reply
 
     def get_chat(self, **kw):
-        return SubmitChat(self.args_by_tool)
+        return SubmitChat(self.args_by_tool, self.reply)
 
 
 @pytest.fixture
