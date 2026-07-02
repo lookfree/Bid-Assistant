@@ -107,3 +107,11 @@
 |---|---|---|---|---|---|
 | RA2 | `framework/base_agent.py` + `bidding_agent/agent.py` | BiddingAgent.astream 靠"丢 node.end 再重发结构化结果"这个 workaround；更干净是给 `AgentBuild` 加 `result_extractor` 回调，BaseAgent 统一处理 | 低 | deferred | Phase 2 装配多节点工作流图时一并重构（对外契约不变） |
 | C1 | `bidding_agent/agent.py` | node.end 丢弃使 executor 的 node_count 只计到 agent/read，中间 tools 节点没计入（观测偏低，不影响结果） | 低 | deferred | 与 spec105 C4（node.start 缺失）一起在 Phase 2 增强观测 |
+
+## spec108 · Task 4 web /read 接真实接口（发现架构缺口，2026-07）
+
+后端里程碑（Tasks 1–3 + 真 2-服务 e2e）已完成合并。web `/read` 页接真实接口时发现缺口，未做：
+
+| # | 位置 | 问题 | 状态 | 建议 |
+|---|---|---|---|---|
+| doc | `/api/read` 返回 vs `read/page.tsx` | 页面核心交互（点解读→右栏高亮招标原文条款）依赖**静态 tenderDoc 全文 + 匹配 clause_ids**；`/api/read` 只返回 ReadResult（六大分类/评分/风险），**不含解析后的全文/clauses**。真数据接入后：类目/评分/风险可渲染，但右栏原文 + clauseLocation 定位会断（真 doc 的 sec-1-c1 在静态 doc 里无匹配）；且 `categories[].icon`（Lucide 组件）agent 不返回、需按 key 合并 | deferred | 先给后端补：`/api/read` 结果或 agent_runs 落库时**一并存解析后的 clauses**（parse_document 已产出 ParsedDoc.clauses），供前端右栏渲染原文 + 定位；前端再：按 category key 合并 icon、categories/scoring/risks 用真数据、clauseLocation 用真 clauses。然后浏览器验一遍。属 Phase 2 全流程接入（spec207）的一部分。 |
