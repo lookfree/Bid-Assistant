@@ -9,8 +9,19 @@ from agent.framework.resilient import resilient_tool_node
 from agent.models.usage import record_llm_usage
 
 
-class _State(TypedDict):
+class GraphState(TypedDict):
+    """消息式图状态：单循环（BaseAgent）与 create_agent 子图共用。"""
     messages: Annotated[list, add_messages]
+
+
+def add_tools_loop(g, tools: list) -> None:
+    """给已有 agent 节点的图接上 resilient tools 循环（无工具则 agent 直达 END）。"""
+    if tools:
+        g.add_node("tools", resilient_tool_node(tools))
+        g.add_conditional_edges("agent", tools_condition, {"tools": "tools", END: END})
+        g.add_edge("tools", "agent")
+    else:
+        g.add_edge("agent", END)
 
 
 def make_agent_node(ctx, hooks: list, tools: list):
@@ -36,13 +47,8 @@ def build_create_agent(prompt: str, tools: list, ctx):
     """把「提示词 + 工具」编成一个可 ainvoke 的确定性子图（agent_node + resilient tools 循环），
     不带 checkpointer/interrupt——供工作流图节点内部跑确定性子 agent（读标/审查/提纲等，§4.2）。"""
     hooks = [BuildMessagesHook(prompt), DropMalformedToolCallsHook()]
-    g = StateGraph(_State)
+    g = StateGraph(GraphState)
     g.add_node("agent", make_agent_node(ctx, hooks, tools))
     g.add_edge(START, "agent")
-    if tools:
-        g.add_node("tools", resilient_tool_node(tools))
-        g.add_conditional_edges("agent", tools_condition, {"tools": "tools", END: END})
-        g.add_edge("tools", "agent")
-    else:
-        g.add_edge("agent", END)
+    add_tools_loop(g, tools)
     return g.compile()   # 无 checkpointer/interrupt：确定性子图

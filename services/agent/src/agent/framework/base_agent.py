@@ -1,19 +1,12 @@
 from __future__ import annotations
 
-from typing import Annotated, Any, AsyncIterator, TypedDict
+from typing import Any, AsyncIterator
 from dataclasses import dataclass, field
 from langchain_core.messages import AIMessage, HumanMessage
-from langgraph.graph import StateGraph, START, END
-from langgraph.prebuilt import tools_condition
-from langgraph.graph.message import add_messages
+from langgraph.graph import StateGraph, START
 from agent.framework.hooks import AgentHook, BuildMessagesHook, DropMalformedToolCallsHook
-from agent.framework.resilient import resilient_tool_node
-from agent.framework.create_agent import make_agent_node
+from agent.framework.create_agent import GraphState, add_tools_loop, make_agent_node
 from agent.runtime.registry import register, RunContext
-
-
-class GraphState(TypedDict):
-    messages: Annotated[list, add_messages]
 
 
 @dataclass
@@ -58,12 +51,7 @@ class BaseAgent:
         else:
             g.add_edge(START, "agent")
         g.add_node("agent", make_agent_node(ctx, hooks, b.tools))
-        if b.tools:
-            g.add_node("tools", resilient_tool_node(b.tools))
-            g.add_conditional_edges("agent", tools_condition, {"tools": "tools", END: END})
-            g.add_edge("tools", "agent")
-        else:
-            g.add_edge("agent", END)
+        add_tools_loop(g, b.tools)
         return g.compile(checkpointer=ctx.checkpointer)
 
     async def _ensure_checkpointer(self, ctx: RunContext) -> None:
