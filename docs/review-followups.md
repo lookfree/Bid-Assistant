@@ -115,3 +115,11 @@
 | # | 位置 | 问题 | 状态 | 建议 |
 |---|---|---|---|---|
 | doc | `/api/read` 返回 vs `read/page.tsx` | 页面核心交互（点解读→右栏高亮招标原文条款）依赖**静态 tenderDoc 全文 + 匹配 clause_ids**；`/api/read` 只返回 ReadResult（六大分类/评分/风险），**不含解析后的全文/clauses**。真数据接入后：类目/评分/风险可渲染，但右栏原文 + clauseLocation 定位会断（真 doc 的 sec-1-c1 在静态 doc 里无匹配）；且 `categories[].icon`（Lucide 组件）agent 不返回、需按 key 合并 | deferred | 先给后端补：`/api/read` 结果或 agent_runs 落库时**一并存解析后的 clauses**（parse_document 已产出 ParsedDoc.clauses），供前端右栏渲染原文 + 定位；前端再：按 category key 合并 icon、categories/scoring/risks 用真数据、clauseLocation 用真 clauses。然后浏览器验一遍。属 Phase 2 全流程接入（spec207）的一部分。 |
+
+## spec201 · code-review（review 于 2026-07，8 角度 Explore + 自验）
+
+全修了 ①–⑥：① executor 处理 step.done（落 event_log + 取 result，修「工作流 run 结果丢失、假成功」）；② DeepAgent._compile 迁到 1 参 `(ctx)` 走 ctx.checkpointer（原 2 参签名会在 astream 里 TypeError）；③+⑦ BiddingAgent.astream 靠流事件记「实际跑过的节点」再发 step.done（空产物如 read={} 不再被当成没跑、假成功），删 `_last_done_node` 真值推断；④ 抽 `make_agent_node` 供 base 单循环与 build_create_agent 共用（去重 agent_node+埋点）；⑥ 删 BiddingState 死字段 `step`/`messages`。以下未修：
+
+| # | 位置 | 问题 | 严重度 | 状态 | 何时做 |
+|---|---|---|---|---|---|
+| A5(altitude) | `bidding_agent/agent.py` | 工作流式 astream（seed-vs-resume + 记录 ran_node + step.done + `_RESULT_KEY`）是任意「interrupt 工作流 agent」通用逻辑，现落在 bidding 专有类；第二个图 agent（contract_review）会复制粘贴 | 中 | deferred | **YAGNI**：当前仅 1 个图 agent，此时上提到 BaseAgent 属投机抽象（CLAUDE.md「不做投机性设计」）。待 contract_review 落地、有第二处复用时，再把通用部分上提 BaseAgent（`_RESULT_KEY` 作子类钩子/类属性）。 |

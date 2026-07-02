@@ -27,7 +27,7 @@ def test_deepagent_compiles_to_graph():
 
     ctx = RunContext(run_id="r", agent_type="demo_deep", thread_id="t",
                      recorder=Recorder(get_pool()), gateway=_GW())
-    graph = get_agent("demo_deep")._compile(ctx, checkpointer=None)
+    graph = get_agent("demo_deep")._compile(ctx)   # checkpointer 取自 ctx（此处 None）
     assert hasattr(graph, "astream")
 
 

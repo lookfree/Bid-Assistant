@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import AsyncIterator
 from agent.framework.base_agent import BaseAgent
 from agent.runtime.registry import RunContext
-from agent.agents.bidding_agent.graph import build_bidding_workflow, NODE_ORDER
+from agent.agents.bidding_agent.graph import build_bidding_workflow
 
 
 class BiddingAgent(BaseAgent):
@@ -22,28 +22,24 @@ class BiddingAgent(BaseAgent):
         if snap.values:                              # 已有状态 → 续跑下一节点
             payload = None
         else:                                        # 新标书 → 从 read 起（read 节点用 state['file_key']）
-            payload = {"file_key": input.get("file_key", ""), "messages": []}
+            payload = {"file_key": input.get("file_key", "")}
+        # 记「本 run 实际跑过的最后一个节点」：靠流事件而非 state 真值判定——
+        # 否则节点产空结果（如模型没 submit → read={}）会被当成没跑，漏发 step.done、假成功。
+        ran_node = None
         async for ev in graph.astream(payload, config=config, stream_mode="updates"):
             for node, delta in ev.items():
+                if node == "__interrupt__":          # interrupt_after 的断点标记，不是业务节点
+                    continue
+                ran_node = node
                 yield {"type": "node.end", "node": node, "data": {"delta": delta}}
-        # 本 run 停在某个 interrupt：产出"刚完成节点"的结果给 App（带 artifacts 快照，
+        # 本 run 停在该节点后的 interrupt：产出其结果给 App（带 artifacts 快照，
         # 否则 present/export 步的 pptx/docx key App 拿不到）。
-        snap2 = await graph.aget_state(config)
-        done = _last_done_node(snap2)
-        if done:
-            yield {"type": "step.done", "node": done,
-                   "data": {"result": snap2.values.get(_RESULT_KEY[done]),
-                            "artifacts": snap2.values.get("artifacts", {})}}
+        if ran_node:
+            values = (await graph.aget_state(config)).values or {}
+            yield {"type": "step.done", "node": ran_node,
+                   "data": {"result": values.get(_RESULT_KEY[ran_node]),
+                            "artifacts": values.get("artifacts", {})}}
 
 
 _RESULT_KEY = {"read": "read", "outline": "outline", "content": "chapters",
                "review": "risk", "present": "deck", "export": "artifacts"}
-
-
-def _last_done_node(snap):
-    """已写入结果的最后一个节点（按 NODE_ORDER）。"""
-    last = None
-    for n in NODE_ORDER:
-        if snap.values.get(_RESULT_KEY[n]):
-            last = n
-    return last

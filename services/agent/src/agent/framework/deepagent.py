@@ -21,7 +21,7 @@ class DeepAgent(BaseAgent):
     def deep_build(self, ctx: RunContext) -> DeepBuild:
         raise NotImplementedError
 
-    def _compile(self, ctx: RunContext, checkpointer):
+    def _compile(self, ctx: RunContext):
         cfg = self.deep_build(ctx)
         model = ctx.gateway.get_chat(provider=None) if ctx.gateway else None
         # deepagents 0.6.x：提示词参数是 system_prompt（旧文档的 instructions 已改名）。
@@ -30,5 +30,5 @@ class DeepAgent(BaseAgent):
             system_prompt=cfg.instructions,
             model=model,
             subagents=cfg.subagents or None,
-            checkpointer=checkpointer,
+            checkpointer=ctx.checkpointer,   # 与 BaseAgent._compile(ctx) 同签名，走 ctx 上的 checkpointer
         )

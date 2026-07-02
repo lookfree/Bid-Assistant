@@ -6,10 +6,10 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import tools_condition
 from langgraph.graph.message import add_messages
-from agent.framework.hooks import AgentHook, run_turn, BuildMessagesHook, DropMalformedToolCallsHook
+from agent.framework.hooks import AgentHook, BuildMessagesHook, DropMalformedToolCallsHook
 from agent.framework.resilient import resilient_tool_node
+from agent.framework.create_agent import make_agent_node
 from agent.runtime.registry import register, RunContext
-from agent.models.usage import record_llm_usage
 
 
 class GraphState(TypedDict):
@@ -49,22 +49,7 @@ class BaseAgent:
 
     def _compile_single_loop(self, ctx: RunContext):
         b = self.build(ctx)
-        llm = ctx.gateway.get_chat(provider=None) if ctx.gateway else None
-        llm_with_tools = llm.bind_tools(b.tools) if (llm and b.tools) else llm
         hooks = [BuildMessagesHook(b.prompt), DropMalformedToolCallsHook(), *b.extra_hooks]
-
-        async def agent_node(state, config=None):
-            turn = await run_turn(hooks, llm_with_tools, state, config)
-            # 框架统一埋点：agent_node 走 get_chat(...).ainvoke 绕过了 gateway.invoke，
-            # 这里补记 token 用量（否则真实 run 不上报、spec108 settle 汇总 0）。best-effort：
-            # 埋点/DB 失败不能拖垮已成功的这一轮（与 gateway.invoke 共用 record_llm_usage）。
-            _s = getattr(ctx.gateway, "s", None) if ctx.gateway else None
-            record_llm_usage(ctx.recorder, run_id=ctx.run_id, agent_type=ctx.agent_type,
-                             provider=getattr(_s, "model_default_provider", None),
-                             model=getattr(llm, "model_name", None),
-                             msg=turn.result, node="agent", thread_id=ctx.thread_id)
-            return {"messages": [turn.result]}
-
         g = StateGraph(GraphState)
         if b.compressor:
             g.add_node("compressor", b.compressor)
@@ -72,7 +57,7 @@ class BaseAgent:
             g.add_edge("compressor", "agent")
         else:
             g.add_edge(START, "agent")
-        g.add_node("agent", agent_node)
+        g.add_node("agent", make_agent_node(ctx, hooks, b.tools))
         if b.tools:
             g.add_node("tools", resilient_tool_node(b.tools))
             g.add_conditional_edges("agent", tools_condition, {"tools": "tools", END: END})

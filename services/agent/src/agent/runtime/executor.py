@@ -37,7 +37,8 @@ def _publish(r, run_id: str, event: dict) -> None:
 
 async def process_run(run_id: str) -> None:
     """执行单个 run：跑 agent 的 astream → 逐事件埋点 + 推进度流 → 结果落 Redis → finish + 用量回调。
-    事件契约 {type,data,node?}：node.start/node.end/error 落 event_log，node.end.data.result 即最终结果。"""
+    事件契约 {type,data,node?}：node.start/node.end/step.done/error 落 event_log；
+    结果取自 node.end.data.result（单循环）或 step.done.data.result（工作流每步）。"""
     r = get_redis()
     rec = _rec()
     meta = json.loads(r.get(runmeta_key(run_id)) or "{}")
@@ -62,10 +63,11 @@ async def process_run(run_id: str) -> None:
         async for ev in agent.astream(input, ctx):
             if ev.get("node"):
                 nodes.add(ev["node"])
-            if ev["type"] in ("node.start", "node.end", "error"):
+            if ev["type"] in ("node.start", "node.end", "step.done", "error"):
                 rec.log_event(run_id, agent_type, ev["type"], node=ev.get("node"),
                               data=ev.get("data"), thread_id=thread_id)
-            if ev["type"] == "node.end" and isinstance(ev.get("data"), dict) and "result" in ev["data"]:
+            # 单循环 agent 结果在 node.end.data.result；工作流每步结果在 step.done.data.result。
+            if ev["type"] in ("node.end", "step.done") and isinstance(ev.get("data"), dict) and "result" in ev["data"]:
                 result = ev["data"]["result"]
             _publish(r, run_id, ev)  # 全部事件推 SSE
 
