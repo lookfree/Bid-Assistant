@@ -6,11 +6,12 @@ from agent.agents.bidding_agent.prompts.outline import OUTLINE_SYSTEM_PROMPT
 
 
 def _slim_read(read: dict) -> dict:
-    """喂给提纲模型前裁掉 source_quote（原文摘录，提纲用不上、是 token 大头）。"""
+    """白名单出提纲需要的读标字段（项目信息/分类/评分表/红线），并裁掉 source_quote（原文摘录，token 大头）。"""
     cats = [{**c, "items": [{k: v for k, v in it.items() if k != "source_quote"}
                             for it in c.get("items", [])]}
             for c in read.get("categories", [])]
-    return {**read, "categories": cats}
+    return {"project_meta": read.get("project_meta", {}), "categories": cats,
+            "scoring": read.get("scoring", []), "risk_summary": read.get("risk_summary", [])}
 
 
 def make_outline_node(ctx):
