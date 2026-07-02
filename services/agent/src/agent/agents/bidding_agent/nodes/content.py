@@ -3,7 +3,9 @@ import json
 from deepagents import create_deep_agent          # 全流程唯一 deepagent 节点（§4.5）
 from langchain_core.messages import HumanMessage
 from agent.models.usage import UsageCallback
-from agent.agents.bidding_agent.prompts.content import CONTENT_PLANNER_PROMPT, CHAPTER_WRITER_PROMPT
+from agent.framework.create_agent import build_create_agent
+from agent.agents.bidding_agent.prompts.content import (
+    CONTENT_PLANNER_PROMPT, CHAPTER_WRITER_PROMPT, REWRITE_PROMPT)
 
 _CHAPTER_PREFIX = "/chapters/"
 
@@ -44,3 +46,12 @@ def make_content_node(ctx):
             raise RuntimeError("deepagent 未产出任何章节草稿（chapters/*.html）")
         return {"chapters": chapters}
     return content_node
+
+
+async def rewrite_chapter(ctx, chapter_id: str, instruction: str, state: dict) -> str:
+    """单章改写（/content 右栏 AI 对话）：原章 HTML + 用户指令 → 新 HTML。走轻量 create_agent，不重规划全本。"""
+    old = state.get("chapters", {}).get(chapter_id, "")
+    sub = build_create_agent(REWRITE_PROMPT, [], ctx)
+    msg = f"原章 HTML：\n{old}\n\n改写指令：{instruction}"
+    out = await sub.ainvoke({"messages": [HumanMessage(content=msg)]})
+    return out["messages"][-1].content
