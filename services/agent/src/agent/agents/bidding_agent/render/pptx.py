@@ -1,27 +1,31 @@
 from __future__ import annotations
 import io
 from pptx import Presentation
+from pptx.dml.color import RGBColor
 from pptx.util import Pt
 from agent.agents.bidding_agent.schemas import DeckSpec
 
-# 模板 → 主色（RGB）。上色钩子预留：本 spec 先保证「DeckSpec → 合法 .pptx + 备注含口播稿」；
-# 企业自有母版（enterprise_template_id）后续加载 .pptx 模板文件。
+# 模板 → 标题主色。企业自有母版（enterprise_template_id）为后续加固项：加载 .pptx 模板文件。
 _TEMPLATE_RGB = {"blue": (0x1F, 0x4E, 0x79), "tech": (0x0E, 0x76, 0x90), "gov": (0xA8, 0x1E, 0x1E)}
 
 
 def render_pptx(deck: DeckSpec, *, template: str | None = None) -> bytes:
     """DeckSpec → .pptx 字节（确定性，无 LLM，§4.2.1 两段式的渲染段）。
-    封面/结束页用 title 版式，正文页空白版式；口播稿写入备注页。"""
+    封面/结束页用 title 版式，正文页空白版式；模板决定标题主色；口播稿写入备注页。"""
+    color = RGBColor(*_TEMPLATE_RGB.get(template or deck.template, _TEMPLATE_RGB["blue"]))
     prs = Presentation()
     blank, title_only = prs.slide_layouts[6], prs.slide_layouts[5]
     for s in deck.slides:
         slide = prs.slides.add_slide(title_only if s.kind != "content" else blank)
-        # 标题
+        # 标题（着模板主色）
         if slide.shapes.title is not None:
             slide.shapes.title.text = s.title
+            title_tf = slide.shapes.title.text_frame
         else:
-            tb = slide.shapes.add_textbox(Pt(40), Pt(30), Pt(640), Pt(60))
-            tb.text_frame.text = s.title
+            title_tf = slide.shapes.add_textbox(Pt(40), Pt(30), Pt(640), Pt(60)).text_frame
+            title_tf.text = s.title
+        for run in title_tf.paragraphs[0].runs:
+            run.font.color.rgb = color
         # 要点
         if s.bullets:
             body = slide.shapes.add_textbox(Pt(40), Pt(110), Pt(640), Pt(360)).text_frame

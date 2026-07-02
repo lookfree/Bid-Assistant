@@ -147,3 +147,12 @@
 ## spec204 · code-review（review 于 2026-07，4 合并角度 Explore + 自验）
 
 全修：① schema 加固——`RiskFinding.level` 收 `Literal["高风险","中风险"]`（对齐原型取值）、`RiskReport.score` 加 0–100 界限、`high/mid/passed` 改 `@model_validator` 从 items/passed_items 推导（不信模型口头报数）；② `_slim_read` 上提为 `nodes/common.py::slim_read`，outline/review 共用（review 载荷裁 source_quote；chapters 保留全文——审查对象即正文）；③ 节点测试补 outline 键（贴近真实图态）。驳回：空串默认 vs TS 非可选（"" 合法）；outline 缺失防御（图序保证）；查重走提示词（计划 v1 即如此）。Altitude/Conventions 角度报告清洁。
+
+## spec205 · code-review（review 于 2026-07，2 合并角度 Explore + 自验）
+
+全修：① 模板色真正生效——`render_pptx` 用 `_TEMPLATE_RGB[template]` 给标题着色（原为死钩子，template 形参被静默忽略）；② `make_present_node` 的 duration 收敛到 {10,15,20}（对齐 DeckSpec Literal 档位）；③ present 载荷按计划「正文摘要」——`_plain` 剥 HTML 标签（token 减半）。驳回：同 key 覆盖（同 thread 重跑=最新版语义）；存储失败传播（fail-loud 设计）；run_submit_agent 替代计划旧草图（现行约定）。留档：
+
+| # | 位置 | 问题 | 状态 | 说明 |
+|---|---|---|---|---|
+| P1 | `render/pptx.py` | `enterprise_template_id` 未实现（企业自有母版加载）；版式取 `slide_layouts[5]/[6]` 依赖默认模板索引 | deferred | 计划明确为加固项（"模板色/企业母版为加固项"）；接企业母版时一并改为按名找版式 |
+| P2 | `render/pptx.py` | 封面/结束页 bullets 文本框定位可能与 title 位置重叠（通常这两类页无 bullets） | deferred | 视觉打磨项，真实 .pptx 冒烟已可打开；与 P1 一起做 |
