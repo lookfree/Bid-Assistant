@@ -2,6 +2,8 @@
 import asyncio
 import time
 
+import redis as redis_lib
+
 from agent import db, redis_client
 from agent.redis_client import get_redis
 from agent.runtime.channels import stream_key
@@ -22,7 +24,13 @@ async def run_loop() -> None:
     last_id = "$"  # 只读新消息（生产用 consumer group XREADGROUP+ack 保不丢/可水平扩，留 spec107 加固）
     print(f"[worker] consuming {stream_key()} ...", flush=True)
     while True:
-        resp = r.xread({stream_key(): last_id}, count=1, block=5000)
+        try:
+            resp = r.xread({stream_key(): last_id}, count=1, block=5000)
+        except redis_lib.exceptions.RedisError as e:
+            # 远程 Redis 瞬断/读超时不打崩消费循环：稍候重连重读（redis-py 会自动重建连接）
+            print(f"[worker] redis 瞬断，重试: {e}", flush=True)
+            await asyncio.sleep(2)
+            continue
         if not resp:
             continue
         for _stream, entries in resp:
