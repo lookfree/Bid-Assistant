@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, jsonb, index, unique } from "drizzle-orm/pg-core"
+import { pgTable, uuid, text, jsonb, index, unique, check } from "drizzle-orm/pg-core"
+import { sql } from "drizzle-orm"
 import { id, createdAt, tz } from "./columns"
 import { users } from "./users"
 
@@ -19,6 +20,9 @@ export const referrals = pgTable(
   (t) => ({
     inviterIdx: index("referrals_inviter_idx").on(t.inviterId),
     inviteeUq: unique("referrals_invitee_uq").on(t.inviteeId),
+    // reward_state 走发奖金钱路径（referral_reward 流水），typo 会让奖励永不解锁——同 CHECK 口径
+    statusCheck: check("referrals_status_check", sql`${t.status} in ('pending','bound','frozen')`),
+    rewardCheck: check("referrals_reward_state_check", sql`${t.rewardState} in ('pending','unlocked','capped')`),
   }),
 )
 

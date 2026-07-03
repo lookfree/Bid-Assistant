@@ -64,6 +64,13 @@
       "when": 1783053635932,
       "tag": "0008_gifted_demogoblin",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1783054623577,
+      "tag": "0009_goofy_patriot",
+      "breakpoints": true
     }
   ]
 }

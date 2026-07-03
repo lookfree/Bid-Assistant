@@ -16,7 +16,10 @@ export const plans = pgTable("plans", {
   status: text("status").notNull().default("active"), // active(上架)/archived(下架)
   version: integer("version").notNull().default(1),
   createdAt: createdAt(),
-})
+}, (t) => ({
+  // billing_cycle 驱动续期周期计算（spec305），typo 直接断续费链路
+  cycleCheck: check("plans_billing_cycle_check", sql`${t.billingCycle} in ('month','quarter','year')`),
+}))
 
 // 订阅：无 auto_renew/agreement_no——不做自动续费（架构 §6.2，到期提醒+手动续费）。
 export const subscriptions = pgTable(
