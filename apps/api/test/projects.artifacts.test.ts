@@ -33,19 +33,19 @@ beforeAll(async () => {
     .values({ userId, threadId: `proj-${crypto.randomUUID()}` })
     .returning()
   projectId = p!.id
-  // present 步：result 顶层是 deck，产物在 artifacts 快照（spec201 step.done 契约）
+  // present 步：result 是 deck 本身（不含产物 key——pptx key 在 export 步的合并快照里可见）
   await getDb().insert(projectSteps).values({
     projectId,
     step: "present",
     status: "done",
-    result: { slides: [], artifacts: { pptx: "artifacts/t/present.pptx" } },
+    result: { slides: [], qa: [] },
   })
-  // export 步：artifacts 合并快照含 docx + pptx
+  // export 步：result 即 BiddingState.artifacts 合并快照（顶层 docx + pptx，e2e 实测形状）
   await getDb().insert(projectSteps).values({
     projectId,
     step: "export",
     status: "done",
-    result: { artifacts: { docx: "artifacts/t/bid.docx", pptx: "artifacts/t/present.pptx" } },
+    result: { docx: "artifacts/t/bid.docx", pptx: "artifacts/t/present.pptx" },
   })
 })
 
@@ -57,7 +57,7 @@ afterAll(async () => {
 const auth = () => ({ Authorization: `Bearer ${token}` })
 
 describe("/api/projects/:id/artifacts/:kind", () => {
-  it("pptx：从 present 步 result.artifacts 取 key 发预签名 URL", async () => {
+  it("pptx：从 export 步合并快照取 key 发预签名 URL", async () => {
     const res = await app.request(`/api/projects/${projectId}/artifacts/pptx`, { headers: auth() })
     expect(res.status).toBe(200)
     const { url } = (await res.json()) as { url: string }
@@ -65,7 +65,7 @@ describe("/api/projects/:id/artifacts/:kind", () => {
     expect(presigned).toContain("artifacts/t/present.pptx")
   })
 
-  it("docx：从 export 步 artifacts 合并快照取 key", async () => {
+  it("docx：从 export 步合并快照取 key", async () => {
     const res = await app.request(`/api/projects/${projectId}/artifacts/docx`, { headers: auth() })
     expect(res.status).toBe(200)
     expect(((await res.json()) as { url: string }).url).toContain("artifacts/t/bid.docx")

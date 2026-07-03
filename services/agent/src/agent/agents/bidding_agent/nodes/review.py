@@ -6,12 +6,17 @@ from agent.agents.bidding_agent.schemas import RiskReport
 from agent.agents.bidding_agent.prompts.review import REVIEW_SYSTEM_PROMPT
 
 
+_CHAPTER_CAP = 4000  # 每章喂给审查模型的正文上限（合规要点集中在前部；整本不截会顶穿上下文窗）
+
+
 def make_review_node(ctx):
     """graph 节点：读 read+outline+chapters 比对 → 产 RiskReport → 写 state['risk']；模型未提交即失败（可重试）。
-    read 走 slim_read 裁 source_quote；chapters 保留全文——审查对象就是正文本身。"""
+    read 走 slim_read 裁 source_quote；章节正文按 _CHAPTER_CAP 截断（防超窗）。"""
     async def review_node(state):
+        chapters = {cid: (html[:_CHAPTER_CAP] + "…（截断）" if len(html) > _CHAPTER_CAP else html)
+                    for cid, html in (state.get("chapters") or {}).items()}
         payload = {"read": slim_read(state.get("read") or {}), "outline": state.get("outline") or {},
-                   "chapters": state.get("chapters") or {}}
+                   "chapters": chapters}
         user = f"招标与投标材料：\n{json.dumps(payload, ensure_ascii=False)}\n请审查并提交体检报告。"
         result = await run_submit_agent(
             ctx, REVIEW_SYSTEM_PROMPT, user,

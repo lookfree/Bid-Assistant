@@ -48,7 +48,7 @@ import {
 } from "@/lib/present"
 import { libraryCategories, type LibraryItem, type LibraryCategoryId } from "@/lib/library"
 import { useStep } from "@/lib/use-step"
-import { artifactUrl } from "@/lib/project"
+import { artifactUrl, runStep } from "@/lib/project"
 
 // agent DeckSpec（camelCase）：slides/qa 与原型 Slide/QA 同构
 type RealDeck = { title: string; duration: number; template: string; slides: Slide[]; qa: { q: string; a: string }[] }
@@ -258,7 +258,16 @@ export default function PresentPage() {
       setExportStatus("正在获取下载链接…")
       void (async () => {
         try {
-          window.open(await artifactUrl(projectId, "pptx"), "_blank")
+          let url: string
+          try {
+            url = await artifactUrl(projectId, "pptx")
+          } catch {
+            // pptx key 随 export 步的 artifacts 快照可见：未跑过 export 就先跑（确定性、低成本）
+            setExportStatus("正在整理产物…")
+            await runStep(projectId, "export")
+            url = await artifactUrl(projectId, "pptx")
+          }
+          window.open(url, "_blank")
           setExportStatus("已导出，浏览器开始下载")
         } catch {
           setExportStatus("下载失败，请重试")

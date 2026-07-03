@@ -138,8 +138,14 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       .where(and(eq(bidProjects.id, id), eq(bidProjects.userId, userId)))
     if (!p) return c.json({ error: "not_found" }, 404)
     const steps = await getDb().select().from(projectSteps).where(eq(projectSteps.projectId, p.id))
+    // export 步的 result 即 BiddingState.artifacts 合并快照（顶层 {docx,pptx}）；
+    // 兼容嵌套 result.artifacts 形态（防上游契约演化），两处都找。
     const key = steps
-      .map((s) => ((s.result as { artifacts?: Record<string, unknown> } | null)?.artifacts ?? {})[kind])
+      .map((s) => {
+        const r = s.result as { artifacts?: Record<string, unknown>; [k: string]: unknown } | null
+        const v = r?.artifacts?.[kind] ?? r?.[kind]
+        return typeof v === "string" ? v : undefined
+      })
       .find((k): k is string => typeof k === "string")
     if (!key) return c.json({ error: "artifact_not_ready" }, 404)
     return c.json({ url: await presign(key, 300, ARTIFACT_NAME[kind]) })
