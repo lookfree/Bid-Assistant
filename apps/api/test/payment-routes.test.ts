@@ -5,7 +5,7 @@ import { paymentRoutes } from "../src/routes/payment"
 import { createOrder } from "../src/services/payment-orders"
 import type { PaymentProvider } from "../src/services/payment/provider"
 import { loginWithPhone } from "../src/services/auth"
-import { seedConfigs } from "../src/services/config"
+import { seedConfigs, setConfig } from "../src/services/config"
 import { getDb, closeDb } from "../src/db/client"
 import { users, paymentOrders, creditTransactions } from "../src/db/schema"
 import { uniquePhone, TEST_TIMEOUT_MS } from "./repos/helpers"
@@ -20,10 +20,27 @@ const polled: string[] = []
 
 // mock 通道：验签只认 GOOD-SIGN；payUrl 固定；query/refund 不用
 const provider: PaymentProvider = {
+  notifyPath: "/shouqianba/notify",
   createPayment: async (opts) => ({ payUrl: `https://wap.test/gateway?client_sn=${opts.clientSn}` }),
   query: async () => ({ status: "pending" }),
   refund: async () => ({ ok: true }),
   verifyCallback: (_body, authorization) => authorization === "GOOD-SIGN",
+  parseCallback: (body, authorization) => {
+    if (authorization !== "GOOD-SIGN") return { ok: false, error: "bad_signature" }
+    const b = JSON.parse(body) as { client_sn: string; order_status?: string; sn?: string; trade_no?: string; payway?: string; total_amount?: string }
+    const amount = b.total_amount != null ? Number(b.total_amount) : undefined
+    return {
+      ok: true,
+      clientSn: b.client_sn,
+      result: {
+        status: b.order_status === "PAID" ? "paid" : "pending",
+        sn: b.sn,
+        tradeNo: b.trade_no,
+        payway: b.payway,
+        totalAmountCents: Number.isFinite(amount) ? amount : undefined,
+      },
+    }
+  },
 }
 
 const app = new Hono()
@@ -70,6 +87,20 @@ describe("POST /api/payment/recharge", () => {
     expect(res.status).toBe(400)
   })
 
+  it("recharge_packs 配置非法（积分非正整数）→ 500 拒绝下单（宁可下单失败，不可收钱不发积分）", async () => {
+    await setConfig("recharge_packs", [{ id: "pack_bad", amountCents: 100, credits: 0 }])
+    const res = await app.request("/api/payment/recharge", {
+      method: "POST",
+      headers: auth(token),
+      body: JSON.stringify({ packId: "pack_bad" }),
+    })
+    expect(res.status).toBe(500)
+    await setConfig("recharge_packs", [
+      { id: "pack_100", amountCents: 100, credits: 100 },
+      { id: "pack_1000", amountCents: 1000, credits: 1100 },
+    ]) // 还原种子值
+  })
+
   it("命中充值包 → 建单（金额/积分快照）+ 返回 payUrl + 启动后台轮询；客户端金额字段被忽略", async () => {
     const res = await app.request("/api/payment/recharge", {
       method: "POST",
@@ -105,7 +136,7 @@ describe("POST /api/payment/shouqianba/notify（无鉴权，验签放行）", ()
     expect(await grantCount(o.id)).toBe(0)
   })
 
-  it("验签通过但金额与订单不符 → 不入账（留给对账），返回 200 停止重发", async () => {
+  it("验签通过但金额与订单不符 → 不入账、置 unknown 进对账队列，返回 200 停止重发", async () => {
     const o = await createOrder({ userId, type: "recharge", amountCents: 100, creditsSnapshot: 100, idempotencyKey: `rt-${userId}-n2` })
     const res = await app.request("/api/payment/shouqianba/notify", {
       method: "POST",
@@ -113,7 +144,19 @@ describe("POST /api/payment/shouqianba/notify（无鉴权，验签放行）", ()
       body: notifyBody((await orderRow(o.id))!.clientSn, "1"),
     })
     expect(res.status).toBe(200)
-    expect((await orderRow(o.id))!.status).toBe("created")
+    expect((await orderRow(o.id))!.status).toBe("unknown") // spec306 对账扫 unknown；留 created 对账扫不到
+    expect(await grantCount(o.id)).toBe(0)
+  })
+
+  it("验签通过但缺 total_amount → 不入账（金额铁律：必须校验，不是有金额才校验）", async () => {
+    const o = await createOrder({ userId, type: "recharge", amountCents: 100, creditsSnapshot: 100, idempotencyKey: `rt-${userId}-n2b` })
+    const res = await app.request("/api/payment/shouqianba/notify", {
+      method: "POST",
+      headers: { Authorization: "GOOD-SIGN" },
+      body: JSON.stringify({ client_sn: (await orderRow(o.id))!.clientSn, order_status: "PAID", sn: "sqb-nb" }),
+    })
+    expect(res.status).toBe(200)
+    expect((await orderRow(o.id))!.status).toBe("unknown")
     expect(await grantCount(o.id)).toBe(0)
   })
 

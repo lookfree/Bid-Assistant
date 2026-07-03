@@ -5,6 +5,7 @@ import { paymentTerminals } from "../src/db/schema"
 import { md5BodySign } from "../src/services/payment/shouqianba-sign"
 import { makeTerminalService, type SqbTerminalConfig } from "../src/services/payment/terminal"
 import { TEST_TIMEOUT_MS } from "./repos/helpers"
+import { fakeGateway } from "./helpers/sqb-gateway"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB（跑法：./test-on-mbp.sh test/payment-terminal.test.ts）
 
@@ -19,19 +20,6 @@ const cfg: SqbTerminalConfig = {
   activationCode: "CODE1",
   deviceId,
   keySecret: "unit-test-secret",
-}
-
-type Captured = { url: string; auth: string; body: string }
-/** 造一个记录请求并按序返回 canned 响应的 fetch。 */
-function fakeGateway(responses: Array<Record<string, unknown> | Error>) {
-  const calls: Captured[] = []
-  const fetchFn = (async (url: unknown, init?: RequestInit) => {
-    calls.push({ url: String(url), auth: String(init?.headers && (init.headers as Record<string, string>)["Authorization"]), body: String(init?.body) })
-    const next = responses.shift()
-    if (next instanceof Error) throw next
-    return new Response(JSON.stringify(next), { status: 200 })
-  }) as typeof fetch
-  return { calls, fetchFn }
 }
 
 const activateOk = {

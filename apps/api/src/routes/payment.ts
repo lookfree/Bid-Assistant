@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { Hono } from "hono"
+import { Hono, type Context } from "hono"
 import { z } from "zod"
 import { and, eq } from "drizzle-orm"
 import { getDb } from "../db/client"
@@ -13,8 +13,14 @@ import type { PaymentProvider } from "../services/payment/provider"
 
 // 支付路由（架构 §6.1）：下单 → 跳转支付 URL（前端转二维码）→ 回调验签 + 后台轮询双通道 → 只入账一次。
 // 钱只在这一层动（§3.2）；金额/到账积分一律服务端从配置取快照，客户端字段全部忽略。
+// 通道报文解析/金额归一在 provider.parseCallback 内完成——路由不接触通道线格式。
 
 type RechargePack = { id: string; amountCents: number; credits: number }
+
+/** 充值包配置校验：金额/积分必须正整数。配置错误静默放行是资损（收钱不发积分/浮点炸单）。 */
+function validPack(p: RechargePack | undefined): p is RechargePack {
+  return p != null && Number.isInteger(p.amountCents) && p.amountCents > 0 && Number.isInteger(p.credits) && p.credits > 0
+}
 
 export type PaymentRouteDeps = {
   provider: PaymentProvider
@@ -22,58 +28,46 @@ export type PaymentRouteDeps = {
   poll: (orderId: string) => void // 后台轮询启动器（fire-and-forget；测试注入捕获）
 }
 
+/** 通道回调处理（收钱吧服务器调用，无用户鉴权，验签放行）。 */
+function notifyHandler(provider: PaymentProvider) {
+  return async (c: Context) => {
+    const rawBody = await c.req.text() // RSA 被签内容是 body 原文，必须先取 text
+    const parsed = provider.parseCallback(rawBody, c.req.header("Authorization") ?? "")
+    if (!parsed.ok) {
+      return parsed.error === "bad_signature" ? c.json({ error: "bad_signature" }, 403) : c.json({ error: "bad_body" }, 400)
+    }
+    const [order] = await getDb().select().from(paymentOrders).where(eq(paymentOrders.clientSn, parsed.clientSn))
+    if (!order) return c.json({ error: "order_not_found" }, 404)
+
+    if (parsed.result.status === "paid") {
+      // 金额缺失/不符（→unknown 待对账）、重复回调（already_final no-op）都在 markPaid 内兜底；
+      // 一律回 success 停止重发——重发不会改变金额事实，差异走 spec306 对账
+      const r = parsed.result
+      await markPaid(order.id, { sn: r.sn, tradeNo: r.tradeNo, payway: r.payway, paidAmountCents: r.totalAmountCents })
+    }
+    return c.text("success")
+  }
+}
+
 export function paymentRoutes(deps: Partial<PaymentRouteDeps> = {}) {
   const assembled = deps.provider ? undefined : getPayment()
   const provider = deps.provider ?? assembled?.provider
-  const baseUrl = deps.baseUrl ?? process.env.PAYMENT_NOTIFY_BASE_URL ?? ""
-  const poll =
-    deps.poll ??
-    ((orderId: string) => {
-      if (!provider) return
-      void pollUntilFinal(orderId, { provider }).catch((err) => console.error(`[payment] 轮询异常 order=${orderId}`, err))
-    })
+  const baseUrl = deps.baseUrl ?? assembled?.baseUrl
 
   const r = new Hono<{ Variables: { user: User } }>()
 
-  // 凭据未配置的环境：支付能力整体关闭（503），不半开
-  if (!provider) {
+  // 凭据未配置的环境：支付能力整体关闭（503），不半开（gate 与入口 Cron 同源 getPayment）
+  if (!provider || !baseUrl) {
     r.all("*", (c) => c.json({ error: "payment_unconfigured" }, 503))
     return r
   }
+  const poll =
+    deps.poll ??
+    ((orderId: string) => {
+      void pollUntilFinal(orderId, { provider }).catch((err) => console.error(`[payment] 轮询异常 order=${orderId}`, err))
+    })
 
-  // —— 回调（收钱吧服务器调用，无用户鉴权，验签放行）——
-  r.post("/shouqianba/notify", async (c) => {
-    const rawBody = await c.req.text() // RSA 被签内容是 body 原文，必须先取 text
-    const authorization = c.req.header("Authorization") ?? ""
-    if (!provider.verifyCallback(rawBody, authorization)) return c.json({ error: "bad_signature" }, 403)
-
-    const parsed = z
-      .object({
-        client_sn: z.string().min(1),
-        order_status: z.string().optional(),
-        sn: z.string().optional(),
-        trade_no: z.string().optional(),
-        payway: z.string().optional(),
-        total_amount: z.string().optional(),
-      })
-      .safeParse(JSON.parse(rawBody))
-    if (!parsed.success) return c.json({ error: "bad_body" }, 400)
-    const cb = parsed.data
-
-    const [order] = await getDb().select().from(paymentOrders).where(eq(paymentOrders.clientSn, cb.client_sn))
-    if (!order) return c.json({ error: "order_not_found" }, 404)
-
-    if (cb.order_status === "PAID") {
-      // 金额不符/重复回调都在 markPaid 内兜底（不入账/no-op）；一律回 success 停止重发，差异走对账
-      await markPaid(order.id, {
-        sn: cb.sn,
-        tradeNo: cb.trade_no,
-        payway: cb.payway,
-        paidAmountCents: cb.total_amount != null ? Number(cb.total_amount) : undefined,
-      })
-    }
-    return c.text("success")
-  })
+  r.post(provider.notifyPath, notifyHandler(provider))
 
   // —— 以下路由需登录 ——
   r.use("*", authMiddleware)
@@ -85,6 +79,10 @@ export function paymentRoutes(deps: Partial<PaymentRouteDeps> = {}) {
     const packs = (await getConfig<RechargePack[]>("recharge_packs")) ?? []
     const pack = packs.find((p) => p.id === parsed.data.packId)
     if (!pack) return c.json({ error: "invalid_pack" }, 400)
+    if (!validPack(pack)) {
+      console.error(`[payment] recharge_packs 配置非法 pack=${JSON.stringify(pack)}，拒绝下单`)
+      return c.json({ error: "pack_misconfigured" }, 500) // 配置事故：宁可下单失败，不可收钱不发积分
+    }
 
     const userId = c.get("user").id
     const order = await createOrder({
@@ -99,9 +97,9 @@ export function paymentRoutes(deps: Partial<PaymentRouteDeps> = {}) {
       amountCents: pack.amountCents,
       subject: "积分充值",
       returnUrl: `${baseUrl}/pay/result?orderId=${order.id}`,
-      notifyUrl: `${baseUrl}/api/payment/shouqianba/notify`,
+      notifyUrl: `${baseUrl}/api/payment${provider.notifyPath}`,
     })
-    poll(order.id) // 回调 + 轮询双通道取终态
+    poll(order.id) // 回调 + 轮询双通道取终态（进程重启由滞留单扫描 Cron 兜底）
     return c.json({ orderId: order.id, payUrl })
   })
 

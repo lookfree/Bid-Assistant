@@ -3,8 +3,8 @@ import { makeTerminalService, type SqbTerminalConfig, type TerminalService } fro
 import { makeShouqianbaProvider } from "./shouqianba"
 import type { PaymentProvider } from "./provider"
 
-// 支付装配入口：env → 终端服务 + Provider（默认收钱吧）。凭据缺失的环境返回 undefined，
-// 由调用方决定跳过（入口不注册签到 Cron、路由返回 payment_unconfigured）。
+// 支付装配入口（唯一组装点：路由与入口 Cron 共用，凭据判定只有一处 → 不半开）。
+// 凭据缺任一项返回 undefined，调用方整体跳过：入口不注册签到/扫单 Cron、路由 503 payment_unconfigured。
 
 const WAP_GATEWAY_DEFAULT = "https://qr.shouqianba.com/gateway"
 
@@ -23,13 +23,18 @@ export function sqbTerminalConfigFromEnv(env: Env = getEnv()): SqbTerminalConfig
   }
 }
 
-let cached: { provider: PaymentProvider; terminal: TerminalService } | undefined
+export type PaymentAssembly = { provider: PaymentProvider; terminal: TerminalService; baseUrl: string }
 
-/** 惰性单例：终端服务 + ShouqianbaProvider；未配置返回 undefined。 */
-export function getPayment(env: Env = getEnv()): { provider: PaymentProvider; terminal: TerminalService } | undefined {
+let cached: PaymentAssembly | undefined
+
+/** 惰性单例：终端服务 + ShouqianbaProvider + 回调公网基址。
+ *  gate 是完整集合（终端凭据 + 验签公钥 + PAYMENT_NOTIFY_BASE_URL）——缺公网基址会签出
+ *  相对路径的 notify_url，回调永远到不了，属于「下单成功但确认通道残废」的半开状态，必须一起关。 */
+export function getPayment(): PaymentAssembly | undefined {
   if (cached) return cached
+  const env = getEnv()
   const cfg = sqbTerminalConfigFromEnv(env)
-  if (!cfg || !env.SQB_PUBLIC_KEY) return undefined
+  if (!cfg || !env.SQB_PUBLIC_KEY || !env.PAYMENT_NOTIFY_BASE_URL) return undefined
   const terminal = makeTerminalService(cfg)
   const provider = makeShouqianbaProvider({
     cfg: {
@@ -39,5 +44,5 @@ export function getPayment(env: Env = getEnv()): { provider: PaymentProvider; te
     },
     getCredentials: () => terminal.getCredentials(),
   })
-  return (cached = { provider, terminal })
+  return (cached = { provider, terminal, baseUrl: env.PAYMENT_NOTIFY_BASE_URL })
 }

@@ -9,8 +9,9 @@ import { createCaptchaVerifier } from "./services/captcha"
 import { createWechatOAuthClient } from "./services/wechat-oauth"
 import { makeWechatAuth } from "./services/wechat-auth"
 import { startCronRunner } from "./services/cron"
-import { makeTerminalService, sqbCheckinJob } from "./services/payment/terminal"
-import { sqbTerminalConfigFromEnv } from "./services/payment"
+import { sqbCheckinJob } from "./services/payment/terminal"
+import { getPayment } from "./services/payment"
+import { paymentOrderSweepJob } from "./services/payment-orders"
 
 const env = getEnv()
 
@@ -45,9 +46,10 @@ const app = createApp({
   },
 })
 
-// 收钱吧每日签到 Cron：凭据齐全才注册（分布式锁保集群单实例执行）；缺凭据的环境静默跳过。
-const sqbCfg = sqbTerminalConfigFromEnv(env)
-const cron = sqbCfg ? startCronRunner([sqbCheckinJob(makeTerminalService(sqbCfg))]) : undefined
+// 支付 Cron：每日签到 + 滞留单扫描（治轮询孤儿）。gate 与路由同源 getPayment（不半开）；
+// 缺凭据的环境静默跳过。分布式锁保集群单实例执行。
+const payment = getPayment()
+const cron = payment ? startCronRunner([sqbCheckinJob(payment.terminal), paymentOrderSweepJob(payment.provider)]) : undefined
 
 // 优雅关闭：先停 Cron 并等在途 tick 收尾，再归还 DB/Redis/S3 连接（顺序错了在途 tick 会打在已断连接上）。
 for (const sig of ["SIGINT", "SIGTERM"] as const) {

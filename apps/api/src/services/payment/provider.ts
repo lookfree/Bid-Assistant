@@ -9,7 +9,14 @@ export type PaymentResult = {
   totalAmountCents?: number // 通道返回的实付金额（分）；markPaid 前与订单快照核对（铁律）
 }
 
+/** 回调解析结果：验签通过且报文合法才给 ok（金额归一为整数分在通道实现内完成，铁律只有一处）。 */
+export type CallbackParse =
+  | { ok: true; clientSn: string; result: PaymentResult }
+  | { ok: false; error: "bad_signature" | "bad_body" }
+
 export interface PaymentProvider {
+  /** 通道回调挂载路径（路由 + notify_url 拼接共用，换通道不改路由）。 */
+  notifyPath: string
   /** 生成顾客扫码的跳转支付 URL（前端转二维码）。 */
   createPayment(opts: {
     clientSn: string
@@ -24,4 +31,6 @@ export interface PaymentProvider {
   refund(opts: { clientSn: string; refundSn: string; amountCents: number }): Promise<{ ok: boolean }>
   /** 回调验签：body 原文 + Authorization 头签名 → 布尔。 */
   verifyCallback(rawBody: string, authorization: string): boolean
+  /** 回调验签 + 报文解析归一（路由只消费 PaymentResult，不接触通道线格式）。 */
+  parseCallback(rawBody: string, authorization: string): CallbackParse
 }

@@ -1,8 +1,8 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto"
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto"
 import { eq } from "drizzle-orm"
 import { getDb } from "../../db/client"
 import { paymentTerminals } from "../../db/schema"
-import { md5BodySign } from "./shouqianba-sign"
+import { sqbPost, type GatewayJson } from "./gateway"
 import type { CronJob } from "../cron"
 
 // 收钱吧终端凭证生命周期（架构 §6.0）：激活码+device_id → 激活得 terminal_sn/terminal_key（落库，集群共享）
@@ -25,7 +25,8 @@ export type SqbTerminalConfig = {
 const fromHex = (s: string): Uint8Array => new Uint8Array(Buffer.from(s, "hex"))
 
 function aesKey(secret: string): Uint8Array {
-  return new Uint8Array(createHash("sha256").update(secret, "utf8").digest())
+  // scrypt（非裸哈希）：TERMINAL_KEY_SECRET 熵不足或部分泄漏时，离线爆破每次猜测都要付 KDF 成本
+  return new Uint8Array(scryptSync(secret, "bidsaas:terminal-key:v1", 32))
 }
 
 function encryptKey(plain: string, secret: string): string {
@@ -43,21 +44,12 @@ function decryptKey(stored: string, secret: string): string {
   return decipher.update(data, "hex", "utf8") + decipher.final("utf8")
 }
 
-/** 网关成功响应形态（非支付接口）。 */
-type GatewayResp = { result_code?: string; error_message?: string; biz_response?: { terminal_sn?: string; terminal_key?: string } }
-
 export function makeTerminalService(cfg: SqbTerminalConfig, fetchFn: typeof fetch = fetch) {
-  /** 非支付接口 POST：Authorization = <sn> <MD5(body+key)>。业务失败/网络异常抛错（调用方决定重试）。 */
-  async function post(path: string, payload: Record<string, string>, sn: string, key: string): Promise<GatewayResp> {
-    const body = JSON.stringify(payload)
-    const resp = await fetchFn(`${cfg.gateway}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `${sn} ${md5BodySign(body, key)}` },
-      body,
-    })
-    const json = (await resp.json().catch(() => ({}))) as GatewayResp
-    if (!resp.ok || json.result_code !== "200") {
-      throw new Error(`收钱吧网关失败 ${path}: ${json.result_code ?? resp.status} ${json.error_message ?? ""}`)
+  /** 激活/签到 POST：业务失败/网络异常抛错（调用方决定重试）。 */
+  async function post(path: string, payload: Record<string, string>, sn: string, key: string): Promise<GatewayJson> {
+    const json = await sqbPost(fetchFn, cfg.gateway, path, payload, sn, key)
+    if (json.result_code !== "200") {
+      throw new Error(`收钱吧网关失败 ${path}: ${json.result_code ?? "无业务码"} ${json.error_message ?? ""}`)
     }
     return json
   }

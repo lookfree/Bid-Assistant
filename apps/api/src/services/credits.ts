@@ -9,7 +9,7 @@ import { InsufficientCreditsError } from "./credits-errors"
 // AI 操作两段式：hold(-N 预扣) → settle(多退少补) / release(全额退还)；全部带幂等键（DB 唯一约束兜底）。
 // 钱只在 App 层动；智能体只上报 usage（§3.2）。
 
-type Tx = Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0]
+export type Tx = Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0]
 
 /** Σ流水（事务内外通用）。 */
 async function sumBalance(dbOrTx: Tx | ReturnType<typeof getDb>, userId: string): Promise<number> {
@@ -26,17 +26,23 @@ async function lockUserBalanceRow(tx: Tx, userId: string): Promise<void> {
   await tx.execute(sql`select 1 from ${creditBalances} where ${creditBalances.userId} = ${userId} for update`)
 }
 
-/** 余额 = Σ流水；顺带刷新 credit_balances 缓存。 */
-export async function getBalance(userId: string): Promise<number> {
-  const balance = await sumBalance(getDb(), userId)
-  await getDb()
+/** Σ流水并刷新 credit_balances 缓存（事务内外通用）。 */
+async function refreshBalance(dbOrTx: Tx | ReturnType<typeof getDb>, userId: string): Promise<number> {
+  const balance = await sumBalance(dbOrTx, userId)
+  await dbOrTx
     .insert(creditBalances)
     .values({ userId, balance })
     .onConflictDoUpdate({ target: creditBalances.userId, set: { balance, updatedAt: new Date() } })
   return balance
 }
 
-/** 入账：赠送/充值/推荐奖励（带有效期批次与幂等键；重复入账被唯一约束忽略）。 */
+/** 余额 = Σ流水；顺带刷新 credit_balances 缓存。 */
+export async function getBalance(userId: string): Promise<number> {
+  return await refreshBalance(getDb(), userId)
+}
+
+/** 入账：赠送/充值/推荐奖励（带有效期批次与幂等键；重复入账被唯一约束忽略）。
+ *  可传 tx 并入调用方事务（如 markPaid 的「置 paid + 入账」原子提交，失败一起回滚）。 */
 export async function grant(
   userId: string,
   amount: number,
@@ -47,9 +53,11 @@ export async function grant(
     ref?: string
     idempotencyKey: string
   },
+  tx?: Tx,
 ): Promise<void> {
   if (amount <= 0) throw new Error(`grant 金额必须为正：${amount}`) // 钱从严：入账不允许 0/负
-  await getDb()
+  const db = tx ?? getDb()
+  await db
     .insert(creditTransactions)
     .values({
       userId,
@@ -61,7 +69,7 @@ export async function grant(
       idempotencyKey: opts.idempotencyKey,
     })
     .onConflictDoNothing({ target: creditTransactions.idempotencyKey })
-  await getBalance(userId)
+  await refreshBalance(db, userId)
 }
 
 /** 预扣：N = credit_cost.<op> 配置。事务内锁 credit_balances 用户行作串行化点，

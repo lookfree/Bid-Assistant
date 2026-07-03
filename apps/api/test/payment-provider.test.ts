@@ -2,22 +2,13 @@ import { describe, it, expect } from "bun:test"
 import { createSign, generateKeyPairSync } from "node:crypto"
 import { md5BodySign, wap2Sign } from "../src/services/payment/shouqianba-sign"
 import { makeShouqianbaProvider } from "../src/services/payment/shouqianba"
+import { fakeGateway } from "./helpers/sqb-gateway"
 
 // ShouqianbaProvider 四方法（mock 网关，不打网络、不连 DB——凭证注入）。
 
 const creds = { terminalSn: "TSN9", terminalKey: "tkey9" }
 const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 })
 const publicPem = publicKey.export({ type: "spki", format: "pem" }).toString()
-
-type Captured = { url: string; auth: string; body: string }
-function fakeGateway(responses: Array<Record<string, unknown>>) {
-  const calls: Captured[] = []
-  const fetchFn = (async (url: unknown, init?: RequestInit) => {
-    calls.push({ url: String(url), auth: String((init?.headers as Record<string, string>)?.["Authorization"]), body: String(init?.body) })
-    return new Response(JSON.stringify(responses.shift()), { status: 200 })
-  }) as typeof fetch
-  return { calls, fetchFn }
-}
 
 function makeProvider(responses: Array<Record<string, unknown>> = []) {
   const { calls, fetchFn } = fakeGateway(responses)
@@ -108,5 +99,38 @@ describe("verifyCallback", () => {
     const sig = createSign("RSA-SHA256").update(body, "utf8").sign(privateKey, "base64")
     expect(provider.verifyCallback(body, sig)).toBe(true)
     expect(provider.verifyCallback(body.replace("PAID", "FAKE"), sig)).toBe(false)
+  })
+})
+
+describe("parseCallback（验签 + 报文归一，路由不碰线格式）", () => {
+  const sign = (body: string) => createSign("RSA-SHA256").update(body, "utf8").sign(privateKey, "base64")
+
+  it("正签 PAID 报文 → ok + PaymentResult（金额归一整数分）", () => {
+    const { provider } = makeProvider()
+    const body = JSON.stringify({ client_sn: "order-9", order_status: "PAID", sn: "780", trade_no: "wx-9", payway: "3", total_amount: "100" })
+    const parsed = provider.parseCallback(body, sign(body))
+    expect(parsed).toEqual({
+      ok: true,
+      clientSn: "order-9",
+      result: { status: "paid", sn: "780", tradeNo: "wx-9", payway: "3", totalAmountCents: 100 },
+    })
+  })
+
+  it("total_amount 缺失/非数字 → totalAmountCents undefined（markPaid 端按 amount_missing 拒入账）", () => {
+    const { provider } = makeProvider()
+    const body = JSON.stringify({ client_sn: "order-9", order_status: "PAID", total_amount: "abc" })
+    const parsed = provider.parseCallback(body, sign(body))
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) expect(parsed.result.totalAmountCents).toBeUndefined()
+  })
+
+  it("坏签名 → bad_signature；签名对但 body 非法 → bad_body", () => {
+    const { provider } = makeProvider()
+    const body = JSON.stringify({ client_sn: "order-9", order_status: "PAID" })
+    expect(provider.parseCallback(body, "not-a-sig")).toEqual({ ok: false, error: "bad_signature" })
+    const junk = "not-json"
+    expect(provider.parseCallback(junk, sign(junk))).toEqual({ ok: false, error: "bad_body" })
+    const noSn = JSON.stringify({ order_status: "PAID" })
+    expect(provider.parseCallback(noSn, sign(noSn))).toEqual({ ok: false, error: "bad_body" })
   })
 })
