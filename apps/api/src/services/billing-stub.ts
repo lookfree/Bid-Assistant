@@ -2,8 +2,10 @@ import { getDb } from "../db/client"
 import { agentTokenUsage } from "../db/observability" // spec102 的 agent.agent_token_usage（只读汇总）
 import { eq, sql } from "drizzle-orm"
 
-// 每步消耗积分（Phase 3 接真账本）；Phase 1 只读标这一档。spec207 扩 STEP_COST 复用同文件。
-export const STEP_COST: Record<string, number> = { read: 10 }
+// 每步消耗积分（Phase 3 接真账本）。与 agent 节点序一致的六步档位（spec207）。
+export const STEP_COST: Record<string, number> = {
+  read: 10, outline: 8, content: 30, review: 8, present: 12, export: 2,
+}
 
 export async function preDeduct(step: string): Promise<{ ok: boolean; hold: number }> {
   // TODO(Phase3): 校验余额并冻结。stub：放行，返回应扣额度。

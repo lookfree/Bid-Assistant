@@ -16,6 +16,11 @@ describe("billing-stub", () => {
     expect(r.hold).toBe(10)
   })
 
+  it("preDeduct 覆盖六步档位（content 最贵）", async () => {
+    expect((await preDeduct("content")).hold).toBe(30)
+    expect((await preDeduct("export")).hold).toBe(2)
+  })
+
   it("preDeduct 未知步骤 hold=0", async () => {
     expect(await preDeduct("nope")).toEqual({ ok: true, hold: 0 })
   })
