@@ -57,7 +57,7 @@ export async function grant(
 ): Promise<void> {
   if (amount <= 0) throw new Error(`grant 金额必须为正：${amount}`) // 钱从严：入账不允许 0/负
   const db = tx ?? getDb()
-  await db
+  const inserted = await db
     .insert(creditTransactions)
     .values({
       userId,
@@ -69,7 +69,8 @@ export async function grant(
       idempotencyKey: opts.idempotencyKey,
     })
     .onConflictDoNothing({ target: creditTransactions.idempotencyKey })
-  await refreshBalance(db, userId)
+    .returning()
+  if (inserted.length > 0) await refreshBalance(db, userId) // 幂等命中账没动，跳过全表求和
 }
 
 /** 预扣：N = credit_cost.<op> 配置。事务内锁 credit_balances 用户行作串行化点，

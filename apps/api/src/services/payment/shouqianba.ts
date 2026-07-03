@@ -85,10 +85,6 @@ export function makeShouqianbaProvider(deps: ShouqianbaDeps): PaymentProvider {
       return { ok: json.result_code === "200" && json.biz_response?.result_code === "REFUND_SUCCESS" }
     },
 
-    verifyCallback(rawBody, authorization) {
-      return verifyRsaCallback(rawBody, authorization, cfg.publicKey)
-    },
-
     parseCallback(rawBody, authorization): CallbackParse {
       if (!verifyRsaCallback(rawBody, authorization, cfg.publicKey)) return { ok: false, error: "bad_signature" }
       let parsed: unknown

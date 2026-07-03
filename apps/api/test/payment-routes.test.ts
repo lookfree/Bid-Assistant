@@ -2,8 +2,9 @@ import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bu
 import { and, eq } from "drizzle-orm"
 import { Hono } from "hono"
 import { paymentRoutes } from "../src/routes/payment"
+import { createSign, generateKeyPairSync } from "node:crypto"
 import { createOrder } from "../src/services/payment-orders"
-import type { PaymentProvider } from "../src/services/payment/provider"
+import { makeShouqianbaProvider } from "../src/services/payment/shouqianba"
 import { loginWithPhone } from "../src/services/auth"
 import { seedConfigs, setConfig } from "../src/services/config"
 import { getDb, closeDb } from "../src/db/client"
@@ -18,30 +19,18 @@ let otherToken = ""
 let otherUserId = ""
 const polled: string[] = []
 
-// mock 通道：验签只认 GOOD-SIGN；payUrl 固定；query/refund 不用
-const provider: PaymentProvider = {
-  notifyPath: "/shouqianba/notify",
-  createPayment: async (opts) => ({ payUrl: `https://wap.test/gateway?client_sn=${opts.clientSn}` }),
-  query: async () => ({ status: "pending" }),
-  refund: async () => ({ ok: true }),
-  verifyCallback: (_body, authorization) => authorization === "GOOD-SIGN",
-  parseCallback: (body, authorization) => {
-    if (authorization !== "GOOD-SIGN") return { ok: false, error: "bad_signature" }
-    const b = JSON.parse(body) as { client_sn: string; order_status?: string; sn?: string; trade_no?: string; payway?: string; total_amount?: string }
-    const amount = b.total_amount != null ? Number(b.total_amount) : undefined
-    return {
-      ok: true,
-      clientSn: b.client_sn,
-      result: {
-        status: b.order_status === "PAID" ? "paid" : "pending",
-        sn: b.sn,
-        tradeNo: b.trade_no,
-        payway: b.payway,
-        totalAmountCents: Number.isFinite(amount) ? amount : undefined,
-      },
-    }
+// 真 ShouqianbaProvider（凭证注入、真 RSA 验签/报文解析——路由测试走生产解析路径，不用手抄 mock）
+const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 })
+const provider = makeShouqianbaProvider({
+  cfg: {
+    gateway: "https://sqb.test",
+    wapGateway: "https://wap.test/gateway",
+    publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
   },
-}
+  getCredentials: async () => ({ terminalSn: "TSN-RT", terminalKey: "tkey-rt" }),
+})
+/** 收钱吧侧对 body 原文的 RSA 签名（Authorization 头）。 */
+const signOf = (body: string) => createSign("RSA-SHA256").update(body, "utf8").sign(privateKey, "base64")
 
 const app = new Hono()
 app.route("/api/payment", paymentRoutes({ provider, baseUrl: "https://app.test", poll: (id) => void polled.push(id) }))
@@ -128,7 +117,7 @@ describe("POST /api/payment/shouqianba/notify（无鉴权，验签放行）", ()
     const o = await createOrder({ userId, type: "recharge", amountCents: 100, creditsSnapshot: 100, idempotencyKey: `rt-${userId}-n1` })
     const res = await app.request("/api/payment/shouqianba/notify", {
       method: "POST",
-      headers: { Authorization: "BAD-SIGN" },
+      headers: { Authorization: "BAD-SIGN" }, // 非法签名，真 RSA 验签必拒
       body: notifyBody((await orderRow(o.id))!.clientSn, "100"),
     })
     expect(res.status).toBe(403)
@@ -138,10 +127,11 @@ describe("POST /api/payment/shouqianba/notify（无鉴权，验签放行）", ()
 
   it("验签通过但金额与订单不符 → 不入账、置 unknown 进对账队列，返回 200 停止重发", async () => {
     const o = await createOrder({ userId, type: "recharge", amountCents: 100, creditsSnapshot: 100, idempotencyKey: `rt-${userId}-n2` })
+    const body = notifyBody((await orderRow(o.id))!.clientSn, "1")
     const res = await app.request("/api/payment/shouqianba/notify", {
       method: "POST",
-      headers: { Authorization: "GOOD-SIGN" },
-      body: notifyBody((await orderRow(o.id))!.clientSn, "1"),
+      headers: { Authorization: signOf(body) },
+      body,
     })
     expect(res.status).toBe(200)
     expect((await orderRow(o.id))!.status).toBe("unknown") // spec306 对账扫 unknown；留 created 对账扫不到
@@ -150,10 +140,11 @@ describe("POST /api/payment/shouqianba/notify（无鉴权，验签放行）", ()
 
   it("验签通过但缺 total_amount → 不入账（金额铁律：必须校验，不是有金额才校验）", async () => {
     const o = await createOrder({ userId, type: "recharge", amountCents: 100, creditsSnapshot: 100, idempotencyKey: `rt-${userId}-n2b` })
+    const body = JSON.stringify({ client_sn: (await orderRow(o.id))!.clientSn, order_status: "PAID", sn: "sqb-nb" })
     const res = await app.request("/api/payment/shouqianba/notify", {
       method: "POST",
-      headers: { Authorization: "GOOD-SIGN" },
-      body: JSON.stringify({ client_sn: (await orderRow(o.id))!.clientSn, order_status: "PAID", sn: "sqb-nb" }),
+      headers: { Authorization: signOf(body) },
+      body,
     })
     expect(res.status).toBe(200)
     expect((await orderRow(o.id))!.status).toBe("unknown")
@@ -163,8 +154,9 @@ describe("POST /api/payment/shouqianba/notify（无鉴权，验签放行）", ()
   it("验签+金额通过 → paid + grant 一次；重复 notify 不重复 grant", async () => {
     const o = await createOrder({ userId, type: "recharge", amountCents: 100, creditsSnapshot: 100, idempotencyKey: `rt-${userId}-n3` })
     const clientSn = (await orderRow(o.id))!.clientSn
+    const body = notifyBody(clientSn, "100")
     const fire = () =>
-      app.request("/api/payment/shouqianba/notify", { method: "POST", headers: { Authorization: "GOOD-SIGN" }, body: notifyBody(clientSn, "100") })
+      app.request("/api/payment/shouqianba/notify", { method: "POST", headers: { Authorization: signOf(body) }, body })
 
     const res1 = await fire()
     expect(res1.status).toBe(200)
@@ -179,10 +171,11 @@ describe("POST /api/payment/shouqianba/notify（无鉴权，验签放行）", ()
   })
 
   it("未知 client_sn → 404（非我方订单的回调不吞成 200）", async () => {
+    const body = notifyBody("bid-not-exists", "100")
     const res = await app.request("/api/payment/shouqianba/notify", {
       method: "POST",
-      headers: { Authorization: "GOOD-SIGN" },
-      body: notifyBody("bid-not-exists", "100"),
+      headers: { Authorization: signOf(body) },
+      body,
     })
     expect(res.status).toBe(404)
   })

@@ -28,6 +28,8 @@ export const paymentOrders = pgTable(
   (t) => ({
     userIdx: index("payment_orders_user_idx").on(t.userId),
     statusIdx: index("payment_orders_status_idx").on(t.status), // 对账/清算按状态扫（unknown/created）
+    // 滞留单扫描 Cron 每分钟查 status='created' AND created_at<=cutoff：部分索引精确命中
+    sweepIdx: index("payment_orders_created_sweep_idx").on(t.createdAt).where(sql`${t.status} = 'created'`),
     idemUq: unique("payment_orders_idem_uq").on(t.idempotencyKey),
     amountPositive: check("payment_orders_amount_positive", sql`${t.amountCents} > 0`), // 钱从严：DB 层拒绝非正金额
     creditsNonNegative: check("payment_orders_credits_nonneg", sql`${t.creditsSnapshot} is null or ${t.creditsSnapshot} >= 0`),

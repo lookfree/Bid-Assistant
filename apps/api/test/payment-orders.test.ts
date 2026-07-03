@@ -4,8 +4,9 @@ import { getDb, closeDb } from "../src/db/client"
 import { users, paymentOrders, creditTransactions } from "../src/db/schema"
 import { createOrder, markPaid, markFinal, pollUntilFinal, sweepStaleCreatedOrders } from "../src/services/payment-orders"
 import { seedConfigs, setConfig } from "../src/services/config"
-import type { PaymentProvider, PaymentResult } from "../src/services/payment/provider"
+import type { PaymentResult } from "../src/services/payment/provider"
 import { makeLedgerUser, TEST_TIMEOUT_MS } from "./repos/helpers"
+import { stubProvider } from "./helpers/sqb-gateway"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB（跑法：./test-on-mbp.sh test/payment-orders.test.ts）
 
@@ -23,19 +24,6 @@ afterAll(async () => {
   await closeDb()
 })
 
-/** 只实现 query 的假 provider（轮询/扫单用）。 */
-function queryOnly(fn: () => Promise<PaymentResult>): PaymentProvider {
-  return {
-    notifyPath: "/shouqianba/notify",
-    query: fn,
-    createPayment: async () => {
-      throw new Error("not used")
-    },
-    refund: async () => ({ ok: false }),
-    verifyCallback: () => false,
-    parseCallback: () => ({ ok: false, error: "bad_signature" }),
-  }
-}
 
 const grantRows = (orderId: string) =>
   getDb()
@@ -136,10 +124,10 @@ describe("pollUntilFinal（官方轮询节奏，窗口尽头置 unknown）", () 
     const o = await mkOrder("pl-1")
     const delays: number[] = []
     let queries = 0
-    const provider = queryOnly(async () => {
+    const provider = stubProvider({ query: async () => {
       queries++
       return { status: "pending" }
-    })
+    } })
     const result = await pollUntilFinal(o.id, { provider, sleepFn: async (ms) => void delays.push(ms) })
     expect(result).toBe("unknown")
     expect((await orderRow(o.id))!.status).toBe("unknown") // 不置 failed——钱可能已付
@@ -153,9 +141,9 @@ describe("pollUntilFinal（官方轮询节奏，窗口尽头置 unknown）", () 
   it("轮询中途 PAID → markPaid 入账并返回 paid", async () => {
     const o = await mkOrder("pl-2")
     let n = 0
-    const provider = queryOnly(async () =>
-      ++n < 3 ? { status: "pending" } : { status: "paid", sn: "sqb-p", tradeNo: "ali-1", payway: "2", totalAmountCents: 100 },
-    )
+    const provider = stubProvider({
+      query: async () => (++n < 3 ? { status: "pending" } : { status: "paid", sn: "sqb-p", tradeNo: "ali-1", payway: "2", totalAmountCents: 100 }),
+    })
     const result = await pollUntilFinal(o.id, { provider, sleepFn: async () => {} })
     expect(result).toBe("paid")
     expect((await orderRow(o.id))!.status).toBe("paid")
@@ -164,7 +152,7 @@ describe("pollUntilFinal（官方轮询节奏，窗口尽头置 unknown）", () 
 
   it("轮询查到终态 failed → created→failed（不入账）", async () => {
     const o = await mkOrder("pl-3")
-    const provider = queryOnly(async () => ({ status: "failed" }))
+    const provider = stubProvider({ query: async () => ({ status: "failed" }) })
     const result = await pollUntilFinal(o.id, { provider, sleepFn: async () => {} })
     expect(result).toBe("failed")
     expect((await orderRow(o.id))!.status).toBe("failed")
@@ -173,7 +161,7 @@ describe("pollUntilFinal（官方轮询节奏，窗口尽头置 unknown）", () 
 
   it("轮询查到 PAID 但金额不符 → 停止轮询、订单 unknown、不入账（不误报 paid）", async () => {
     const o = await mkOrder("pl-mm")
-    const provider = queryOnly(async () => ({ status: "paid", sn: "sqb-x", totalAmountCents: 1 }))
+    const provider = stubProvider({ query: async () => ({ status: "paid", sn: "sqb-x", totalAmountCents: 1 }) })
     const result = await pollUntilFinal(o.id, { provider, sleepFn: async () => {} })
     expect(result).toBe("unknown")
     expect((await orderRow(o.id))!.status).toBe("unknown")
@@ -184,7 +172,7 @@ describe("pollUntilFinal（官方轮询节奏，窗口尽头置 unknown）", () 
     await setConfig("payment_poll", { windowMinutes: 6, fastSeconds: 0, slowSeconds: -5 })
     const o = await mkOrder("pl-cfg")
     const delays: number[] = []
-    const provider = queryOnly(async () => ({ status: "pending" }))
+    const provider = stubProvider({})
     const result = await pollUntilFinal(o.id, { provider, sleepFn: async (ms) => void delays.push(ms) })
     expect(result).toBe("unknown") // 循环正常收敛（配置若被采纳会 elapsed+=0 死循环）
     expect(delays.filter((d) => d === 3000).length).toBe(20) // 用的是默认 3s/10s
@@ -212,13 +200,12 @@ describe("sweepStaleCreatedOrders（滞留单扫描：治轮询孤儿）", () =>
       [pendingOrder.clientSn, { status: "pending" }],
     ])
     const asked: string[] = []
-    const provider: PaymentProvider = {
-      ...queryOnly(async () => ({ status: "pending" })),
+    const provider = stubProvider({
       query: async (clientSn) => {
         asked.push(clientSn)
         return bySn.get(clientSn) ?? { status: "pending" }
       },
-    }
+    })
     const handled = await sweepStaleCreatedOrders(provider)
     expect(handled).toBeGreaterThanOrEqual(2)
     expect((await orderRow(paidOrder.id))!.status).toBe("paid") // 孤儿单补入账
@@ -231,7 +218,7 @@ describe("sweepStaleCreatedOrders（滞留单扫描：治轮询孤儿）", () =>
   it("重复扫描幂等：已处理单不再变化、不重复入账", async () => {
     const o = await mkOrder("sw-idem")
     await backdate(o.id, 10)
-    const provider = { ...queryOnly(async () => ({ status: "pending" })), query: async () => ({ status: "paid", sn: "s", totalAmountCents: 100 }) as PaymentResult }
+    const provider = stubProvider({ query: async () => ({ status: "paid", sn: "s", totalAmountCents: 100 }) })
     await sweepStaleCreatedOrders(provider)
     await sweepStaleCreatedOrders(provider) // 第二轮：单已 paid，不在 created 扫描范围
     expect((await orderRow(o.id))!.status).toBe("paid")

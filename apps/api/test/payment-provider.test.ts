@@ -92,18 +92,16 @@ describe("refund", () => {
   })
 })
 
-describe("verifyCallback", () => {
-  it("直通 RSA 验签：正签通过、篡改失败", async () => {
-    const { provider } = makeProvider()
-    const body = '{"client_sn":"order-1","order_status":"PAID"}'
-    const sig = createSign("RSA-SHA256").update(body, "utf8").sign(privateKey, "base64")
-    expect(provider.verifyCallback(body, sig)).toBe(true)
-    expect(provider.verifyCallback(body.replace("PAID", "FAKE"), sig)).toBe(false)
-  })
-})
-
 describe("parseCallback（验签 + 报文归一，路由不碰线格式）", () => {
   const sign = (body: string) => createSign("RSA-SHA256").update(body, "utf8").sign(privateKey, "base64")
+
+  it("RSA 验签：篡改 body 即拒（bad_signature）", () => {
+    const { provider } = makeProvider()
+    const body = '{"client_sn":"order-1","order_status":"PAID"}'
+    const sig = sign(body)
+    expect(provider.parseCallback(body, sig).ok).toBe(true)
+    expect(provider.parseCallback(body.replace("PAID", "FAKE"), sig)).toEqual({ ok: false, error: "bad_signature" })
+  })
 
   it("正签 PAID 报文 → ok + PaymentResult（金额归一整数分）", () => {
     const { provider } = makeProvider()

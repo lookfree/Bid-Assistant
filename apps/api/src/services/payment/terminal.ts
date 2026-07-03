@@ -25,29 +25,36 @@ export type SqbTerminalConfig = {
 const fromHex = (s: string): Uint8Array => new Uint8Array(Buffer.from(s, "hex"))
 
 function aesKey(secret: string): Uint8Array {
-  // scrypt（非裸哈希）：TERMINAL_KEY_SECRET 熵不足或部分泄漏时，离线爆破每次猜测都要付 KDF 成本
+  // scrypt（非裸哈希）：TERMINAL_KEY_SECRET 熵不足或部分泄漏时，离线爆破每次猜测都要付 KDF 成本。
+  // 刻意慢且同步——只在 makeTerminalService 构造时派生一次，不进热路径。
   return new Uint8Array(scryptSync(secret, "bidsaas:terminal-key:v1", 32))
 }
 
-function encryptKey(plain: string, secret: string): string {
+function encryptKey(plain: string, key: Uint8Array): string {
   const iv = randomBytes(12).toString("hex")
-  const cipher = createCipheriv("aes-256-gcm", aesKey(secret), fromHex(iv))
+  const cipher = createCipheriv("aes-256-gcm", key, fromHex(iv))
   const data = cipher.update(plain, "utf8", "hex") + cipher.final("hex")
   return [iv, cipher.getAuthTag().toString("hex"), data].join(".")
 }
 
-function decryptKey(stored: string, secret: string): string {
+function decryptKey(stored: string, key: Uint8Array): string {
   const [iv, tag, data] = stored.split(".")
   if (!iv || !tag || !data) throw new Error("terminal_key 密文格式非法")
-  const decipher = createDecipheriv("aes-256-gcm", aesKey(secret), fromHex(iv))
+  const decipher = createDecipheriv("aes-256-gcm", key, fromHex(iv))
   decipher.setAuthTag(fromHex(tag))
   return decipher.update(data, "hex", "utf8") + decipher.final("utf8")
 }
 
 export function makeTerminalService(cfg: SqbTerminalConfig, fetchFn: typeof fetch = fetch) {
+  const key = aesKey(cfg.keySecret) // scrypt 只派生一次；每次加解密都跑 KDF 会阻塞事件循环
+  // 解密凭证短 TTL 缓存：每次 query/createPayment 都查库+解密是纯浪费（key 只在每日签到轮换）。
+  // 集群内他实例签到轮换后本地缓存最长滞后 TTL，签名失败由轮询/扫单自然重试消化。
+  const CREDS_TTL_MS = 60_000
+  let cachedCreds: { value: { terminalSn: string; terminalKey: string }; expiresAt: number } | undefined
+
   /** 激活/签到 POST：业务失败/网络异常抛错（调用方决定重试）。 */
-  async function post(path: string, payload: Record<string, string>, sn: string, key: string): Promise<GatewayJson> {
-    const json = await sqbPost(fetchFn, cfg.gateway, path, payload, sn, key)
+  async function post(path: string, payload: Record<string, string>, sn: string, signKey: string): Promise<GatewayJson> {
+    const json = await sqbPost(fetchFn, cfg.gateway, path, payload, sn, signKey)
     if (json.result_code !== "200") {
       throw new Error(`收钱吧网关失败 ${path}: ${json.result_code ?? "无业务码"} ${json.error_message ?? ""}`)
     }
@@ -69,32 +76,37 @@ export function makeTerminalService(cfg: SqbTerminalConfig, fetchFn: typeof fetc
         cfg.vendorSn,
         cfg.vendorKey,
       )
-      const { terminal_sn: sn, terminal_key: key } = json.biz_response ?? {}
-      if (!sn || !key) throw new Error("激活响应缺 terminal_sn/terminal_key")
-      const encrypted = encryptKey(key, cfg.keySecret)
+      const { terminal_sn: sn, terminal_key: plainKey } = json.biz_response ?? {}
+      if (!sn || !plainKey) throw new Error("激活响应缺 terminal_sn/terminal_key")
+      const encrypted = encryptKey(plainKey, key)
       await getDb()
         .insert(paymentTerminals)
         .values({ terminalSn: sn, terminalKey: encrypted, deviceId: cfg.deviceId })
         .onConflictDoUpdate({ target: paymentTerminals.deviceId, set: { terminalSn: sn, terminalKey: encrypted, activatedAt: new Date() } })
+      cachedCreds = undefined
       return sn
     },
 
     /** 每日签到：terminal 参数（当前 key）签名，成功才写入轮换后的 key + last_checkin_at；失败抛错、不动旧 key。 */
     async checkin(): Promise<void> {
       const row = await loadRow()
-      const currentKey = decryptKey(row.terminalKey, cfg.keySecret)
+      const currentKey = decryptKey(row.terminalKey, key)
       const json = await post("/terminal/checkin", { terminal_sn: row.terminalSn, device_id: cfg.deviceId }, row.terminalSn, currentKey)
       const rotated = json.biz_response?.terminal_key ?? currentKey // 网关可能不轮换，沿用当前 key
       await getDb()
         .update(paymentTerminals)
-        .set({ terminalKey: encryptKey(rotated, cfg.keySecret), lastCheckinAt: new Date() })
+        .set({ terminalKey: encryptKey(rotated, key), lastCheckinAt: new Date() })
         .where(eq(paymentTerminals.id, row.id))
+      cachedCreds = undefined // 轮换后立刻失效本地缓存
     },
 
-    /** 取解密后的终端凭证（provider 拼签名用）。 */
+    /** 取解密后的终端凭证（provider 拼签名用；短 TTL 缓存免每次查库+解密）。 */
     async getCredentials(): Promise<{ terminalSn: string; terminalKey: string }> {
+      if (cachedCreds && Date.now() < cachedCreds.expiresAt) return cachedCreds.value
       const row = await loadRow()
-      return { terminalSn: row.terminalSn, terminalKey: decryptKey(row.terminalKey, cfg.keySecret) }
+      const value = { terminalSn: row.terminalSn, terminalKey: decryptKey(row.terminalKey, key) }
+      cachedCreds = { value, expiresAt: Date.now() + CREDS_TTL_MS }
+      return value
     },
   }
 }
