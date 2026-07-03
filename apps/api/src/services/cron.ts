@@ -128,5 +128,9 @@ export type CronJob = {
 /** worker/api 启动时批量注册全部 cron job；stopAll() 清全部定时器并等在途 job 收尾（优雅停机/测试）。 */
 export function startCronRunner(jobs: CronJob[], opts: { client?: RedisLike } = {}): { stopAll: () => Promise<void> } {
   const handles = jobs.map((j) => registerCron(j.name, j.everyMs, j.jobFn, { client: opts.client, watchdog: j.watchdog }))
-  return { stopAll: async () => void (await Promise.all(handles.map((h) => h.stop()))) }
+  return {
+    stopAll: async () => {
+      await Promise.all(handles.map((h) => h.stop()))
+    },
+  }
 }

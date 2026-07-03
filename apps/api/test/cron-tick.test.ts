@@ -1,8 +1,7 @@
 import { expect, test } from "bun:test"
 import { registerCron, startCronRunner } from "../src/services/cron"
 import { makeRedisMock } from "./helpers/redis-mock"
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+import { sleep } from "./helpers/time"
 
 test("注册时立即首跑一次（日级 everyMs + 频繁重启也不会静默不跑）", async () => {
   const m = makeRedisMock("OK")

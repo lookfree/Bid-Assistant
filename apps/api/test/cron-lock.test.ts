@@ -1,8 +1,7 @@
 import { expect, test, mock } from "bun:test"
 import { withCronLock, type RedisLike } from "../src/services/cron"
 import { makeRedisMock } from "./helpers/redis-mock"
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+import { sleep } from "./helpers/time"
 
 test("抢到锁 → 执行 fn → Lua CAS 删自己持有的锁", async () => {
   const m = makeRedisMock("OK")
