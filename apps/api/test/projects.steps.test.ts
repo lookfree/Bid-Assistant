@@ -14,18 +14,24 @@ let userId = ""
 let capturedRunId = ""
 const captured: {
   preDeductSteps: string[]
+  preDeductUserId?: string
   createRunOpts?: Parameters<ProjectDeps["createRun"]>[0]
-  settleArgs?: { runId: string; hold: number }
-} = { preDeductSteps: [] }
+  settleArgs?: { ref: string; holdId: string; actualCost: number }
+  releasedRefs: string[]
+} = { preDeductSteps: [], releasedRefs: [] }
 
 const mockDeps: Partial<ProjectDeps> = {
-  preDeduct: async (step: string) => {
-    captured.preDeductSteps.push(step)
-    return { ok: true, hold: 10 }
+  preDeduct: async (userId: string, op: string, _ref: string) => {
+    captured.preDeductUserId = userId
+    captured.preDeductSteps.push(op)
+    return { ok: true, holdId: `hold-${op}`, hold: 10 }
   },
-  settle: async (runId: string, hold: number) => {
-    captured.settleArgs = { runId, hold }
-    return hold
+  settle: async (ref: string, holdId: string, actualCost: number) => {
+    captured.settleArgs = { ref, holdId, actualCost }
+    return actualCost
+  },
+  settleFailed: async (ref: string) => {
+    captured.releasedRefs.push(ref)
   },
   createRun: async (opts) => {
     captured.createRunOpts = opts
@@ -92,7 +98,9 @@ describe("/api/projects 按步编排", () => {
     expect(sse).toContain("data: 进度")
     expect(sse).toContain("event: step.done")
     expect(sse).toContain("clauseIds") // SSE 的 result 已转 camelCase
-    expect(captured.settleArgs).toEqual({ runId: capturedRunId, hold: 10 })
+    expect(captured.preDeductUserId).toBe(userId) // 预扣落到发起用户头上
+    expect(captured.settleArgs?.holdId).toBe("hold-read")
+    expect(captured.settleArgs?.actualCost).toBe(10) // v1 按口径全额结算
 
     // 落库为 snake_case 原样；currentStep 推进
     const [s] = await getDb().select().from(projectSteps).where(eq(projectSteps.runId, capturedRunId))
