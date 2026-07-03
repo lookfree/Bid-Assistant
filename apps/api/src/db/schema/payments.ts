@@ -41,11 +41,13 @@ export const paymentTerminals = pgTable("payment_terminals", {
 })
 
 // 退款：唯一入口在运营后台（spec310，过 RBAC+审计）；支持部分退款。
-export const refunds = pgTable("refunds", {
-  id: id(),
-  orderId: uuid("order_id")
-    .notNull()
-    .references(() => paymentOrders.id),
+export const refunds = pgTable(
+  "refunds",
+  {
+    id: id(),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => paymentOrders.id),
     amountCents: integer("amount_cents").notNull(),
     reason: text("reason"),
     status: text("status").notNull().default("pending"), // pending/done/failed
