@@ -12,17 +12,22 @@ setDefaultTimeout(TEST_TIMEOUT_MS) // 连真库落 agent_runs
 let token = ""
 let userId = ""
 let capturedRunId = ""
-const captured: { preDeductStep?: string; createRunOpts?: Parameters<ReadDeps["createRun"]>[0]; settleArgs?: { runId: string; hold: number } } = {}
+const captured: {
+  preDeductStep?: string
+  createRunOpts?: Parameters<ReadDeps["createRun"]>[0]
+  settleArgs?: { ref: string; holdId: string; actualCost: number }
+} = {}
 
 const mockDeps: Partial<ReadDeps> = {
-  preDeduct: async (step: string) => {
-    captured.preDeductStep = step
-    return { ok: true, hold: 10 }
+  preDeduct: async (_userId: string, op: string, _ref: string) => {
+    captured.preDeductStep = op
+    return { ok: true, holdId: "hold-read", hold: 10 }
   },
-  settle: async (runId: string, hold: number) => {
-    captured.settleArgs = { runId, hold }
-    return hold
+  settle: async (ref: string, holdId: string, actualCost: number) => {
+    captured.settleArgs = { ref, holdId, actualCost }
+    return actualCost
   },
+  settleFailed: async () => {},
   createRun: async (opts) => {
     captured.createRunOpts = opts
     capturedRunId = crypto.randomUUID()
@@ -32,7 +37,7 @@ const mockDeps: Partial<ReadDeps> = {
     yield "data: 进度\n\n"
   },
   getRun: async () => ({
-    status: "done",
+    status: "succeeded",
     result: { categories: [{ key: "qualification", title: "资格要求", items: [] }], risk_summary: ["ISO27001 缺失即废标"] },
   }),
 }
@@ -71,7 +76,8 @@ describe("/api/read 编排", () => {
     })
     expect(sse).toContain("data: 进度") // 中继了 agent 进度分片
     expect(sse).toContain("event: done") // 末尾 done
-    expect(captured.settleArgs).toEqual({ runId: capturedRunId, hold: 10 })
+    expect(captured.settleArgs?.holdId).toBe("hold-read")
+    expect(captured.settleArgs?.actualCost).toBe(10)
 
     // 结果落库
     const [row] = await getDb().select().from(agentRuns).where(eq(agentRuns.runId, capturedRunId))

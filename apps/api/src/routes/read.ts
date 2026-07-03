@@ -13,6 +13,7 @@ import * as client from "../services/agent-client"
 export type ReadDeps = {
   preDeduct: typeof billing.preDeduct
   settle: typeof billing.settle
+  settleFailed: typeof billing.settleFailed
   createRun: typeof client.createRun
   relayStream: typeof client.relayStream
   getRun: typeof client.getRun
@@ -23,6 +24,7 @@ const bodySchema = z.object({ fileKey: z.string().min(1) })
 export function readRoutes(deps: Partial<ReadDeps> = {}) {
   const preDeduct = deps.preDeduct ?? billing.preDeduct
   const settle = deps.settle ?? billing.settle
+  const settleFailed = deps.settleFailed ?? billing.settleFailed
   const createRun = deps.createRun ?? client.createRun
   const relayStream = deps.relayStream ?? client.relayStream
   const getRun = deps.getRun ?? client.getRun
@@ -38,7 +40,7 @@ export function readRoutes(deps: Partial<ReadDeps> = {}) {
     const userId = c.get("user").id
     const threadId = `proj-${crypto.randomUUID()}`
 
-    const hold = await preDeduct("read")
+    const hold = await preDeduct(userId, "read", threadId) // 真账本预扣（ref=threadId，一次读标一个 thread）
     if (!hold.ok) return c.json({ error: "insufficient" }, 402)
 
     const { run_id } = await createRun({
@@ -54,12 +56,15 @@ export function readRoutes(deps: Partial<ReadDeps> = {}) {
     return streamSSE(c, async (stream) => {
       for await (const chunk of relayStream(run_id)) await stream.write(chunk) // 透传 agent SSE
       const run = await getRun(run_id) // 取六大分类结果
-      const cost = await settle(run_id, hold.hold)
+      const failed = run.status !== "succeeded"
+      const cost = failed
+        ? (await settleFailed(threadId, hold.holdId!), 0)
+        : await settle(threadId, hold.holdId!, hold.hold)
       await getDb()
         .update(agentRuns)
-        .set({ status: "done", result: run.result ?? null, costPoints: cost })
+        .set({ status: failed ? "failed" : "done", result: run.result ?? null, costPoints: cost })
         .where(eq(agentRuns.runId, run_id))
-      await stream.writeSSE({ event: "done", data: JSON.stringify({ runId: run_id, cost }) })
+      await stream.writeSSE({ event: "done", data: JSON.stringify({ runId: run_id, cost, status: failed ? "failed" : "done" }) })
     })
   })
 

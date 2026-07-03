@@ -1,23 +1,33 @@
-import { getDb } from "../db/client"
-import { agentTokenUsage } from "../db/observability" // spec102 的 agent.agent_token_usage（只读汇总）
-import { eq, sql } from "drizzle-orm"
+import { hold as ledgerHold, settle as ledgerSettle, release } from "./credits"
+import { InsufficientCreditsError } from "./credits-errors"
 
-// 每步消耗积分（Phase 3 接真账本）。与 agent 节点序一致的六步档位（spec207）。
-export const STEP_COST: Record<string, number> = {
-  read: 10, outline: 8, content: 30, review: 8, present: 12, export: 2,
+// Phase 3（spec302）：本模块从 stub 变为真账本的编排门面——实现全部委托 credits 服务，
+// 文件名保留（spec300 接缝约定：只换实现不换挂点）。STEP_COST 常量已删，口径读 billing_configs。
+// 结算口径 v1：编排层按操作口径全额结算（actualCost = 预扣 N）；按 token 计量的
+// 「用量→积分」换算口径待商业定价定义后，编排层改传真实用量即启用多退少补。
+
+/** 预扣：N = credit_cost.<op>。余额不足返回 ok:false（业务态）；配置缺失等基建错误照抛。 */
+export async function preDeduct(
+  userId: string,
+  op: string,
+  ref: string,
+): Promise<{ ok: boolean; holdId?: string; hold: number }> {
+  try {
+    const { holdId, amount } = await ledgerHold(userId, op, { ref, idempotencyKey: `hold:${ref}` })
+    return { ok: true, holdId, hold: amount }
+  } catch (e) {
+    if (e instanceof InsufficientCreditsError) return { ok: false, hold: 0 }
+    throw e
+  }
 }
 
-export async function preDeduct(step: string): Promise<{ ok: boolean; hold: number }> {
-  // TODO(Phase3): 校验余额并冻结。stub：放行，返回应扣额度。
-  return { ok: true, hold: STEP_COST[step] ?? 0 }
+/** 成功结算：净消耗 = actualCost（多退少补），返回实际计费额。幂等键=settle:<ref>。 */
+export async function settle(ref: string, holdId: string, actualCost: number): Promise<number> {
+  await ledgerSettle(holdId, actualCost, { idempotencyKey: `settle:${ref}` })
+  return actualCost
 }
 
-export async function settle(runId: string, hold: number): Promise<number> {
-  // 真去汇总该 run 实际 token 用量（消费路径打通）；积分换算 Phase 3 接真账本，此处 stub 按 hold 结算。
-  const [row] = await getDb()
-    .select({ total: sql<number>`coalesce(sum(${agentTokenUsage.totalTokens}), 0)` })
-    .from(agentTokenUsage)
-    .where(eq(agentTokenUsage.runId, runId))
-  void row // 可据 row.total 做计量日志；stub 返回 hold
-  return hold
+/** 失败退还：hold 全额退回（净 0）。幂等键=release:<ref>。 */
+export async function settleFailed(ref: string, holdId: string): Promise<void> {
+  await release(holdId, { idempotencyKey: `release:${ref}` })
 }

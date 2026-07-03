@@ -32,6 +32,7 @@ const ARTIFACT_NAME: Record<string, string> = { docx: "投标文件.docx", pptx:
 export type ProjectDeps = {
   preDeduct: typeof billing.preDeduct
   settle: typeof billing.settle
+  settleFailed: typeof billing.settleFailed
   createRun: typeof client.createRun
   relayStream: typeof client.relayStream
   getRun: typeof client.getRun
@@ -41,6 +42,7 @@ export type ProjectDeps = {
 export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
   const preDeduct = deps.preDeduct ?? billing.preDeduct
   const settle = deps.settle ?? billing.settle
+  const settleFailed = deps.settleFailed ?? billing.settleFailed
   const createRun = deps.createRun ?? client.createRun
   const relayStream = deps.relayStream ?? client.relayStream
   const getRun = deps.getRun ?? client.getRun
@@ -78,10 +80,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const allowed = p.status === "draft" ? step === "read" : step === p.currentStep
     if (!allowed) return c.json({ error: "out_of_order", expected: p.currentStep }, 409)
 
-    const hold = await preDeduct(step)
-    if (!hold.ok) return c.json({ error: "insufficient" }, 402)
-
-    // 先落「running 占位行」再建 run：部分唯一索引 (project_id, step) WHERE status='running'
+    // 先落「running 占位行」再计费/建 run：部分唯一索引 (project_id, step) WHERE status='running'
     // 在 DB 层原子挡掉并发双击（第二个请求这里冲突 → 409，不会双建 run/双计费）。
     let s: typeof projectSteps.$inferSelect
     try {
@@ -93,6 +92,14 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       s = row
     } catch {
       return c.json({ error: "step_already_running" }, 409)
+    }
+
+    // 真账本预扣（spec302）：ref=占位行 id（该次步进的稳定标识，幂等键随之稳定）。
+    // 余额不足 → 释放占位行，402。
+    const hold = await preDeduct(userId, step, s.id)
+    if (!hold.ok) {
+      await getDb().update(projectSteps).set({ status: "failed" }).where(eq(projectSteps.id, s.id))
+      return c.json({ error: "insufficient" }, 402)
     }
 
     const input = { text: `${STEP_TEXT[step as Step]}，key=${p.tenderFileKey}`, file_key: p.tenderFileKey, step }
@@ -111,7 +118,10 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         for await (const chunk of relayStream(run_id)) await stream.write(chunk) // 透传 agent SSE
         const run = await getRun(run_id) // 该步结构化结果（snake_case）
         const failed = run.status !== "succeeded"
-        const cost = failed ? 0 : await settle(run_id, hold.hold)
+        // 成功按口径全额结算；失败全额退还（净 0）——多退少补待用量换算口径定义
+        const cost = failed
+          ? (await settleFailed(s.id, hold.holdId!), 0)
+          : await settle(s.id, hold.holdId!, hold.hold)
         await getDb()
           .update(projectSteps)
           .set({ result: run.result ?? null, status: failed ? "failed" : "done", costPoints: cost })
@@ -130,7 +140,8 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
           data: JSON.stringify({ step, cost, status: failed ? "failed" : "done", result: toCamel(run.result ?? null) }),
         })
       } catch (e) {
-        // 中继/收尾中途炸（agent 掉线等）：占位行标 failed（0 计费），别留永久 running 卡死重试
+        // 中继/收尾中途炸（agent 掉线等）：退还预扣 + 占位行标 failed，别留永久 running/冻结积分
+        await settleFailed(s.id, hold.holdId!).catch(() => {}) // 幂等；退还失败交对账
         await getDb().update(projectSteps).set({ status: "failed" }).where(eq(projectSteps.id, s.id))
         await stream.writeSSE({
           event: "step.done",
