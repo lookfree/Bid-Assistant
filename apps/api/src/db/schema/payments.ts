@@ -2,6 +2,7 @@ import { pgTable, uuid, text, integer, index, unique, check } from "drizzle-orm/
 import { sql } from "drizzle-orm"
 import { id, createdAt, tz } from "./columns"
 import { users } from "./users"
+import { plans } from "./plans"
 
 // 支付订单（收钱吧 C 扫 B）：金额一律整数分；服务端定价快照，不信客户端金额。
 export const paymentOrders = pgTable(
@@ -22,6 +23,8 @@ export const paymentOrders = pgTable(
     // 下单时快照的到账积分（recharge 命中充值包的 credits；回调晚到/运营改配置也按快照入账）。
     // 会员单（purchase/renewal）不走积分快照 → NULL（spec308 按套餐发当期积分）。
     creditsSnapshot: integer("credits_snapshot"),
+    // renewal/purchase 单：续/购的套餐（spec305 续期按此套餐周期与赠送积分入账）；recharge 为 NULL
+    planId: uuid("plan_id").references(() => plans.id),
     idempotencyKey: text("idempotency_key").notNull(), // 幂等键必填（nullable+unique 会被多 NULL 绕过）
     createdAt: createdAt(),
   },

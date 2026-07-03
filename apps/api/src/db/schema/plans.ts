@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, integer, jsonb, index, check } from "drizzle-orm/pg-core"
+import { pgTable, uuid, text, integer, jsonb, index, unique, check } from "drizzle-orm/pg-core"
 import { sql } from "drizzle-orm"
 import { id, createdAt, tz } from "./columns"
 import { users } from "./users"
@@ -40,5 +40,23 @@ export const subscriptions = pgTable(
   (t) => ({
     userIdx: index("subscriptions_user_idx").on(t.userId),
     statusCheck: check("subscriptions_status_check", sql`${t.status} in ('active','past_due','expired')`),
+  }),
+)
+
+// 到期提醒发送记录（spec305）：同一订阅同一周期同一档只提醒一次——唯一约束落库去重，
+// Cron 双触发/重启重扫都不会重复骚扰用户；续费后 period_end 变化 → 新周期各档重新计。
+export const renewalReminders = pgTable(
+  "renewal_reminders",
+  {
+    id: id(),
+    subscriptionId: uuid("subscription_id")
+      .notNull()
+      .references(() => subscriptions.id, { onDelete: "cascade" }),
+    periodEnd: tz("period_end").notNull(), // 提醒针对的周期末
+    tier: integer("tier").notNull(), // 提醒档（T-N 天，如 7/3/1）
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    uq: unique("renewal_reminders_uq").on(t.subscriptionId, t.periodEnd, t.tier),
   }),
 )

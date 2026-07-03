@@ -4,6 +4,7 @@ import { getDb } from "../db/client"
 import { paymentOrders } from "../db/schema"
 import { getConfig } from "./config"
 import * as credits from "./credits"
+import { renewOnPaid } from "./renewal"
 import type { CronJob } from "./cron"
 import type { PaymentProvider } from "./payment/provider"
 
@@ -22,6 +23,7 @@ export async function createOrder(input: {
   type: OrderType
   amountCents: number
   creditsSnapshot?: number
+  planId?: string // renewal/purchase 单：续/购的套餐
   idempotencyKey: string
 }): Promise<{ id: string; clientSn: string }> {
   const inserted = await getDb()
@@ -31,6 +33,7 @@ export async function createOrder(input: {
       type: input.type,
       amountCents: input.amountCents,
       creditsSnapshot: input.creditsSnapshot,
+      planId: input.planId,
       clientSn: `bid-${randomUUID()}`, // 我方订单号，送收钱吧，全局唯一
       idempotencyKey: input.idempotencyKey,
     })
@@ -94,7 +97,11 @@ export async function markPaid(
         tx, // 状态与入账同事务提交；幂等键是并发双保险
       )
     }
-    // TODO(spec308): purchase/renewal 单在此激活/续期订阅并发当期赠送积分
+    if (order.type === "renewal") {
+      // 续期 + 发当期积分与置 paid 同事务（spec305）：失败整体回滚，通道重试重新驱动
+      await renewOnPaid({ orderId: order.id, userId: order.userId, planId: order.planId }, tx, deps)
+    }
+    // TODO(spec308): purchase 单（首购会员）在此激活订阅
     return { paid: true }
   })
 }
