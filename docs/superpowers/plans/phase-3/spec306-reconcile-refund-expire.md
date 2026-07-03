@@ -54,7 +54,7 @@ apps/api/test/
 ## Interfaces
 
 **消费（来自前序 spec，不在本 spec 实现）：**
-- spec303 Cron（契约以 spec303 为准）：`registerCron(name: string, everyMs: number, jobFn: () => Promise<void>, opts?): { stop: () => void }`；`withCronLock<T>(name: string, fn: () => Promise<T>): Promise<T | undefined>`（`registerCron` 内部已用 `withCronLock` 包裹保证分布式单例，未抢到锁时跳过；本 spec 直接用 `registerCron`，拿到的 `{ stop }` 句柄用于关停，job 体单独导出供测试直调）。
+- spec303 Cron（契约以 spec303 为准）：`registerCron(name: string, everyMs: number, jobFn: () => Promise<void>, opts?): { stop: () => Promise<void> }`（注册时立即首跑一次 tick，重复触发由业务幂等键去重；stop 返回在途 tick 的 drain Promise，停机须 await 后再 closeRedis）；`withCronLock<T>(name: string, fn: () => Promise<T>): Promise<T | undefined>`（`registerCron` 内部已用 `withCronLock` 包裹保证分布式单例，未抢到锁时跳过；本 spec 直接用 `registerCron`，拿到的 `{ stop }` 句柄用于关停，job 体单独导出供测试直调）。
 - spec302 账本：`credits.expireDue(now: Date) -> Promise<number>`；`credits.grant(userId, amount, opts)`（退款扣回积分用负向 amount，`type: "refund_clawback"`，spec301 已登记；**不借 spec302 的 `release`**——`release` 是 hold 退还净 0 语义，见 Task 2）。
 - spec304 支付：`PaymentProvider` 接口（含 `query`/`refund`）。本 spec **不另起一套** provider 接口，直接复用 spec304 的类型：
   - `query(clientSn: string) -> Promise<{ status: "paid" | "failed" | "pending"; sn?: string; tradeNo?: string; payway?: string; amountCents?: number }>`（spec304 定义；对账补充消费 `amountCents` 字段做金额核对）。对账侧用 `Pick<PaymentProvider, "query">` 收窄，不自建 provider 接口。**收钱吧无账单拉取 API（以官方文档为准）——对账采用"逐笔查询核对"**；如后续开通商户后台对账单导出，再加可选的账单文件比对路径，`runReconcile` 签名不变。
@@ -581,8 +581,8 @@ export async function expireCreditsJob(): Promise<void> {
 }
 
 /** 注册每日过期 Cron（Redis 分布式单例，spec303 registerCron 内部已加锁）。
- *  spec303 契约：registerCron(name, everyMs, jobFn, opts?) -> { stop }；返回句柄供关停。 */
-export function registerCreditExpireCron(): { stop: () => void } {
+ *  spec303 契约：registerCron(name, everyMs, jobFn, opts?) -> { stop: () => Promise<void> }；注册即首跑，stop 为 drain。 */
+export function registerCreditExpireCron(): { stop: () => Promise<void> } {
   return registerCron("credit_expire", ONE_DAY_MS, expireCreditsJob);
 }
 ```
@@ -622,8 +622,8 @@ export async function reconcileJob(deps: { provider: ReconcileProvider; alertHoo
 }
 
 /** 注册每日对账 Cron（Redis 分布式单例）。provider 来自 spec304（须实现 query）。
- *  spec303 契约：registerCron(name, everyMs, jobFn, opts?) -> { stop }；返回句柄供关停。 */
-export function registerReconcileCron(deps: { provider: ReconcileProvider; alertHook?: AlertHook }): { stop: () => void } {
+ *  spec303 契约：registerCron(name, everyMs, jobFn, opts?) -> { stop: () => Promise<void> }；注册即首跑，stop 为 drain。 */
+export function registerReconcileCron(deps: { provider: ReconcileProvider; alertHook?: AlertHook }): { stop: () => Promise<void> } {
   return registerCron("reconcile", ONE_DAY_MS, () => reconcileJob(deps));
 }
 ```

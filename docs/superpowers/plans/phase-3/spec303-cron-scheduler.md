@@ -36,15 +36,15 @@ apps/api/test/
 
 ## Interfaces（本 spec 对外产出，供 spec304/305/306 注册签到、提醒、对账、过期 job）
 
-- Produces：`apps/api/src/services/cron.ts`
-  - `instanceId: string`（本进程唯一标识，模块加载时生成 `crypto.randomUUID()`）。
+- Produces：`apps/api/src/services/cron.ts`（**已按实现+code-review 定稿，本节即真实契约**，spec304/305/306 以此为准）
+  - `instanceId: string`（本进程唯一标识，仅日志/排障用；**锁 value 是 `withCronLock` 内每次抢锁生成的一次性 token**——进程级 id 作锁值会让同进程超 TTL 重抢后被旧调用 CAS 误删）。
   - `withCronLock<T>(name: string, fn: () => Promise<T>, opts?: { ttlSec?: number; watchdog?: boolean; client?: RedisLike }) -> Promise<T | undefined>`
-    抢锁 `SET lock:cron:<name> <instanceId> NX EX <ttl>`；抢到→执行 `fn`，结束 Lua CAS 释放；没抢到→返回 `undefined`（跳过）。`watchdog:true` 时 fn 执行期每 `ttl/3` 秒 `PEXPIRE` 续租。
-  - `registerCron(name: string, everyMs: number, jobFn: () => Promise<void>, opts?: { client?: RedisLike }) -> { stop: () => void }`
-    `setInterval(everyMs)` 起进程内 tick，每 tick 调 `withCronLock(name, jobFn)`（吞错并记日志，单 tick 失败不影响下一 tick）。
-  - `startCronRunner(jobs: CronJob[], opts?: { client?: RedisLike }) -> { stopAll: () => void }`
-    批量 `registerCron`；worker/api 启动时调用。
-  - 类型：`type CronJob = { name: string; everyMs: number; jobFn: () => Promise<void>; watchdog?: boolean }`；`type RedisLike = Pick<Redis, "set" | "eval" | "pexpire">`（便于注入 mock）。
+    抢锁 `SET lock:cron:<name> <一次性token> NX EX <ttl>`；抢到→执行 `fn`，结束 Lua CAS 释放（值==token 才 DEL）；没抢到→返回 `undefined`（跳过）。`watchdog:true` 时 fn 执行期每 `ttl/3`（下限 1s）**Lua CAS 续租**（值==token 才 PEXPIRE；发现易主停止续租并告警）。释放失败只记日志（锁靠 TTL 自愈），不吞 fn 的结果/原始异常。
+  - `registerCron(name: string, everyMs: number, jobFn: () => Promise<void>, opts?: { client?: RedisLike; watchdog?: boolean }) -> { stop: () => Promise<void> }`
+    **注册时立即首跑一次 tick**（天级 everyMs 遇频繁重启也不会静默不跑；重复触发由锁+业务幂等键去重），之后 `setInterval(everyMs)`；上一 tick 未结束本 tick 跳过；单 tick 抛错吞掉记日志不影响后续。`stop()` 清定时器并**返回在途 tick 的 drain Promise**——停机须 `await stop()` 再 `closeRedis()`。
+  - `startCronRunner(jobs: CronJob[], opts?: { client?: RedisLike }) -> { stopAll: () => Promise<void> }`
+    批量 `registerCron`；worker/api 启动时调用；停机顺序 `await stopAll()` → `closeRedis()`（review-followups C3）。
+  - 类型：`type CronJob = { name: string; everyMs: number; jobFn: () => Promise<void>; watchdog?: boolean }`；`type RedisLike = Pick<Redis, "set" | "eval">`（续租走 Lua CAS eval，不再需要裸 pexpire；便于注入 mock，共享 mock 工厂在 `test/helpers/redis-mock.ts`）。
 
 - Consumes：`apps/api/src/redis/client.ts` 的 `redis`（ioredis，Phase 0/spec004）。
 
