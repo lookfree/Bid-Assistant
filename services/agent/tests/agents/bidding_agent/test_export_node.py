@@ -1,6 +1,6 @@
 import asyncio
 from agent.runtime.registry import RunContext
-from agent.agents.bidding_agent.nodes import export as export_mod
+from agent.agents.bidding_agent.nodes import common as common_mod
 from agent.agents.bidding_agent.nodes.export import make_export_node
 
 
@@ -11,7 +11,7 @@ def test_export_node_writes_docx_key(monkeypatch):
         async def put_bytes(self, key, data, content_type=None):
             saved["key"], saved["len"], saved["ct"] = key, len(data), content_type
 
-    monkeypatch.setattr(export_mod, "storage", _Storage())
+    monkeypatch.setattr(common_mod, "storage", _Storage())
     node = make_export_node(RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-7"))
     out = asyncio.run(node({
         "outline": {"chapters": [{"id": "t1", "no": "第一章", "title": "项目理解", "group": "tech"}]},

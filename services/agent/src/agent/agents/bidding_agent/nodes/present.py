@@ -2,11 +2,10 @@ from __future__ import annotations
 import json
 import re
 from agent.framework.create_agent import run_submit_agent
-from agent.agents.bidding_agent.nodes.common import slim_read
+from agent.agents.bidding_agent.nodes.common import slim_read, upload_artifact
 from agent.agents.bidding_agent.schemas import DeckSpec
 from agent.agents.bidding_agent.prompts.present import PRESENT_SYSTEM_PROMPT
 from agent.agents.bidding_agent.render.pptx import render_pptx
-from agent.parsing.storage_read import storage      # spec106 的 MinIO 单例（读写同一封装）
 
 
 def _plain(html: str) -> str:
@@ -27,10 +26,8 @@ def make_present_node(ctx, *, duration: int = 15):
             ctx, PRESENT_SYSTEM_PROMPT, user,
             "submit_deck", DeckSpec, "提交述标 DeckSpec")
         data = render_pptx(deck)   # 模板色取 deck.template
-
-        key = f"artifacts/{ctx.thread_id}/present.pptx"
-        await storage.put_bytes(
-            key, data,
-            content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation")
+        key = await upload_artifact(
+            ctx, "present.pptx", data,
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation")
         return {"deck": deck.model_dump(), "artifacts": {"pptx": key}}
     return present_node

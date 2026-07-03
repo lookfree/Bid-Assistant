@@ -156,3 +156,7 @@
 |---|---|---|---|---|
 | P1 | `render/pptx.py` | `enterprise_template_id` 未实现（企业自有母版加载）；版式取 `slide_layouts[5]/[6]` 依赖默认模板索引 | deferred | 计划明确为加固项（"模板色/企业母版为加固项"）；接企业母版时一并改为按名找版式 |
 | P2 | `render/pptx.py` | 封面/结束页 bullets 文本框定位可能与 title 位置重叠（通常这两类页无 bullets） | deferred | 视觉打磨项，真实 .pptx 冒烟已可打开；与 P1 一起做 |
+
+## spec206 · code-review（review 于 2026-07，2 合并角度 Explore + 自验）
+
+全修：① 表格列数取所有行最大值（原固定首行列数，模型产参差表格即 IndexError 崩渲染）；② `_emit_el` 递归展开容器标签（div/section 等，原被 get_text 压扁成单段丢结构）；③ 抽 `nodes/common.py::upload_artifact` 统一 present/export 的终产物落 MinIO 样板。补参差表格 + div 包裹回归测试。

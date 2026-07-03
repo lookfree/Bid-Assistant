@@ -19,3 +19,15 @@ def test_render_docx_assembles_chapters():
     assert "（本章正文待生成）" in texts          # t5 无正文 → 占位
     assert "7×24" in texts                         # 列表项进入 docx
     assert doc.tables and doc.tables[0].rows[1].cells[0].text == "运维"   # 表格映射
+
+
+def test_render_docx_handles_ragged_table_and_container():
+    """模型产出不规整时不崩：表格行列参差取最大列数；div 包裹递归展开不压扁。"""
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]}
+    chapters = {"t1": "<div><h3>标题</h3><p>正文</p>"
+                      "<table><tr><td>a</td></tr><tr><td>b</td><td>c</td></tr></table></div>"}
+    data = render_docx(outline, chapters)
+    doc = Document(io.BytesIO(data))
+    texts = [p.text for p in doc.paragraphs]
+    assert "标题" in texts and "正文" in texts        # div 内结构保留（各自成段）
+    assert doc.tables[0].rows[1].cells[1].text == "c"  # 参差行不越界

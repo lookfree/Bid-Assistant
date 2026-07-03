@@ -3,30 +3,41 @@ import io
 from bs4 import BeautifulSoup
 from docx import Document
 
+_CONTAINERS = ("div", "section", "article", "body")
+
+
+def _emit_el(doc: Document, el) -> None:
+    """单个 HTML 元素 → docx：h1–h4→Heading2、p→段落、ul/li→项目符号、table→表格；
+    容器标签（div 等）递归展开，防止整块被 get_text 压扁成一段。"""
+    name = getattr(el, "name", None)
+    if name in ("h1", "h2", "h3", "h4"):
+        doc.add_heading(el.get_text(strip=True), level=2)
+    elif name == "p":
+        doc.add_paragraph(el.get_text(strip=True))
+    elif name == "ul":
+        for li in el.find_all("li", recursive=False):
+            doc.add_paragraph(li.get_text(strip=True), style="List Bullet")
+    elif name == "table":
+        rows = el.find_all("tr")
+        if rows:
+            # 列数取所有行最大值：模型产出的表格行列可能参差，固定取首行会越界
+            cols = max(len(r.find_all(["td", "th"])) for r in rows)
+            t = doc.add_table(rows=len(rows), cols=cols)
+            for i, r in enumerate(rows):
+                for j, c in enumerate(r.find_all(["td", "th"])):
+                    t.rows[i].cells[j].text = c.get_text(strip=True)
+    elif name in _CONTAINERS:
+        for child in el.children:
+            _emit_el(doc, child)
+    elif el.get_text(strip=True):
+        doc.add_paragraph(el.get_text(strip=True))
+
 
 def _emit_html(doc: Document, html: str) -> None:
-    """HTML 最小映射到 docx：h1–h4→Heading2、p→段落、ul/li→项目符号、table→表格。
-    复杂样式（嵌套/富文本行内样式）为后续加固项。"""
+    """HTML 最小映射到 docx。复杂样式（行内富文本等）为后续加固项。"""
     soup = BeautifulSoup(html or "", "html.parser")
     for el in soup.children:
-        name = getattr(el, "name", None)
-        if name in ("h1", "h2", "h3", "h4"):
-            doc.add_heading(el.get_text(strip=True), level=2)
-        elif name == "p":
-            doc.add_paragraph(el.get_text(strip=True))
-        elif name == "ul":
-            for li in el.find_all("li", recursive=False):
-                doc.add_paragraph(li.get_text(strip=True), style="List Bullet")
-        elif name == "table":
-            rows = el.find_all("tr")
-            if rows:
-                cols = rows[0].find_all(["td", "th"])
-                t = doc.add_table(rows=len(rows), cols=len(cols))
-                for i, r in enumerate(rows):
-                    for j, c in enumerate(r.find_all(["td", "th"])):
-                        t.rows[i].cells[j].text = c.get_text(strip=True)
-        elif el.get_text(strip=True):
-            doc.add_paragraph(el.get_text(strip=True))
+        _emit_el(doc, el)
 
 
 def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None) -> bytes:

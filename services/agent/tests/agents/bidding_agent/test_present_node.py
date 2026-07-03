@@ -1,6 +1,6 @@
 import asyncio
 from agent.runtime.registry import RunContext
-from agent.agents.bidding_agent.nodes import present as present_mod
+from agent.agents.bidding_agent.nodes import common as common_mod
 from agent.agents.bidding_agent.nodes.present import make_present_node
 
 
@@ -17,7 +17,7 @@ def test_present_node_produces_deck_and_pptx_key(monkeypatch, submit_gateway):
         async def put_bytes(self, key, data, content_type=None):
             saved["key"], saved["len"] = key, len(data)
 
-    monkeypatch.setattr(present_mod, "storage", _Storage())
+    monkeypatch.setattr(common_mod, "storage", _Storage())
     ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-1",
                      gateway=submit_gateway({"submit_deck": _DECK_ARGS}))
     node = make_present_node(ctx)

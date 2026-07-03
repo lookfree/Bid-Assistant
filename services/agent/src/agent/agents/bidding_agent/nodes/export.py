@@ -1,6 +1,6 @@
 from __future__ import annotations
 from agent.agents.bidding_agent.render.docx import render_docx
-from agent.parsing.storage_read import storage      # spec106 MinIO 封装
+from agent.agents.bidding_agent.nodes.common import upload_artifact
 
 
 def make_export_node(ctx):
@@ -9,9 +9,8 @@ def make_export_node(ctx):
     async def export_node(state):
         meta = (state.get("read") or {}).get("project_meta", {})
         data = render_docx(state.get("outline") or {}, state.get("chapters") or {}, meta=meta)
-        key = f"artifacts/{ctx.thread_id}/bid.docx"
-        await storage.put_bytes(
-            key, data,
-            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        key = await upload_artifact(
+            ctx, "bid.docx", data,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         return {"artifacts": {"docx": key}}
     return export_node
