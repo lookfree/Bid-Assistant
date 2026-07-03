@@ -99,6 +99,25 @@ describe("spec301 计费数据模型", () => {
     )
   })
 
+  it("金额铁律：非正金额订单/退款被 DB CHECK 拒绝", async () => {
+    await expectConflict(() =>
+      getDb()
+        .insert(paymentOrders)
+        .values({ userId, type: "recharge", amountCents: -100, clientSn: `neg-${crypto.randomUUID()}`, idempotencyKey: `neg-${crypto.randomUUID()}` }),
+    )
+    await expectConflict(() =>
+      getDb()
+        .insert(paymentOrders)
+        .values({ userId, type: "recharge", amountCents: 0, clientSn: `zero-${crypto.randomUUID()}`, idempotencyKey: `zero-${crypto.randomUUID()}` }),
+    )
+  })
+
+  it("幂等键必填：缺 idempotency_key 的流水/订单被拒", async () => {
+    await expectConflict(() =>
+      getDb().insert(creditTransactions).values({ userId, type: "grant", amount: 1 } as never),
+    )
+  })
+
   it("refunds 外键必须指向已有订单", async () => {
     await expectConflict(() =>
       getDb().insert(refunds).values({ orderId: crypto.randomUUID(), amountCents: 100 }),

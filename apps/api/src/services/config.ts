@@ -3,7 +3,8 @@ import { getDb } from "../db/client"
 import { billingConfigs } from "../db/schema"
 import { BILLING_SEED } from "../config/billing-seed"
 
-// billing_configs 读写：单一权威键值表。开发只读 + 种子写；运营后台（spec310）经 setConfig 改值即生效。
+// billing_configs 读写：单一权威键值表。
+// 开发只读 + 种子写；运营后台（spec310）经 setConfig 改值即生效。
 
 export async function getConfig<T = unknown>(key: string): Promise<T | undefined> {
   const [row] = await getDb().select().from(billingConfigs).where(eq(billingConfigs.key, key))
@@ -11,11 +12,13 @@ export async function getConfig<T = unknown>(key: string): Promise<T | undefined
 }
 
 export async function getConfigs(prefix?: string): Promise<Record<string, unknown>> {
-  const rows = prefix
+  // LIKE 通配符转义：prefix 是字面前缀，% _ \ 不作通配
+  const escaped = prefix?.replace(/[\\%_]/g, (m) => `\\${m}`)
+  const rows = escaped
     ? await getDb()
         .select()
         .from(billingConfigs)
-        .where(sql`${billingConfigs.key} like ${prefix + "%"}`)
+        .where(sql`${billingConfigs.key} like ${escaped + "%"}`)
     : await getDb().select().from(billingConfigs)
   return Object.fromEntries(rows.map((r) => [r.key, r.value]))
 }

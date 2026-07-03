@@ -50,6 +50,13 @@
       "when": 1783049554523,
       "tag": "0006_quick_wendell_rand",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1783050598559,
+      "tag": "0007_gray_squadron_sinister",
+      "breakpoints": true
     }
   ]
 }

@@ -26,5 +26,8 @@ export const referrals = pgTable(
 export const billingConfigs = pgTable("billing_configs", {
   key: text("key").primaryKey(),
   value: jsonb("value").notNull(),
-  updatedAt: tz("updated_at").notNull().defaultNow(),
+  updatedAt: tz("updated_at")
+    .notNull()
+    .defaultNow()
+    .$onUpdate(() => new Date()),
 })

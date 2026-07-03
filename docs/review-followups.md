@@ -181,3 +181,7 @@
 | A2 | 5 页 running/error 横幅 JSX 重复 | 同构横幅 ×4–5 处 | fixed-in-simplify | 抽 StepBanner 组件（见下一节 /simplify） |
 | A3 | `routes/read.ts` | 与 projects 步进并存（计划明确 agent_runs 留给通用 run） | wontfix | 通用 run 记账路径，非死代码 |
 | A4 | 上传多文件只取第一个已完成的建项目 | v1 单招标文件语义 | deferred | 多文件（附件/澄清函）归企业版需求 |
+
+## spec301 · code-review（review 于 2026-07，2 合并角度 Explore + 自验，钱从严）
+
+全修：① 汇率方向文档矛盾——spec301 计划 sketch（cny_cents_per_credit）与 spec304 公式（credits_per_cny_cent 正向）互斥，统一为 spec304 正向公式并在种子注明（汇率倒数=算错钱，最高危）；② `payment_orders`/`refunds` 加 `amount_cents > 0` CHECK（DB 层拒绝非正金额）；③ 幂等键改 notNull（nullable+unique 被多 NULL 绕过）；④ `refund_clawback` 补进权威规格文档类型清单（spec306 已用）；⑤ getConfigs LIKE 前缀转义；⑥ `updatedAt` 加 `$onUpdate`；⑦ 超长注释。补「负金额被拒/幂等键必填」测试。跳过：expectConflict 宽 catch（沿用既有测试模式）；seed 无事务（幂等可自愈）；drizzle 自动约束命名（与现表一致）。

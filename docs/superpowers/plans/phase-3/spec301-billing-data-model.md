@@ -296,7 +296,7 @@ export const BILLING_SEED: Record<string, unknown> = {
   "credit_cost.review": 10, "credit_cost.present": 10, "credit_cost.export": 10,
   // 充值包（金额分 → 到账积分）；每项带稳定 id；充值到账以 pack.credits 为准（含赠送），credit_rate 仅用于无包任意金额充值
   "recharge_packs": [{ id: "pack_100", amountCents: 100, credits: 100 }, { id: "pack_1000", amountCents: 1000, credits: 1100 }],
-  "credit_rate": { cny_cents_per_credit: 1 },                 // 汇率：1 分 = 1 积分（占位）
+  "credit_rate": { credits_per_cny_cent: 1 },                 // 正向汇率：credits = floor(amountCents × credits_per_cny_cent)（对齐 spec304，占位 1 分=1 积分）
   "grant_expire_days": 30, "reward_expire_days": 30,          // 赠送/奖励积分有效期
   "referral_rules": { inviterReward: 50, inviteeReward: 50, unlockOn: "invitee_first_paid", capPerUser: 500, riskMaxPerIpPerHour: 20 },  // riskMaxPerIpPerHour 占位，spec307 风控阈值不写死
   "renewal_reminder_days": [7, 3, 1],                          // 到期提醒天数档（T-7/T-3/T-1）

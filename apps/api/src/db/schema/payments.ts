@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, integer, index, unique } from "drizzle-orm/pg-core"
+import { pgTable, uuid, text, integer, index, unique, check } from "drizzle-orm/pg-core"
+import { sql } from "drizzle-orm"
 import { id, createdAt, tz } from "./columns"
 import { users } from "./users"
 
@@ -18,12 +19,13 @@ export const paymentOrders = pgTable(
     providerTradeNo: text("provider_trade_no"), // 收钱吧订单号 sn
     channelTradeNo: text("channel_trade_no"), // 微信/支付宝渠道单号 trade_no
     payway: text("payway"), // 实际付款方式（对账用）
-    idempotencyKey: text("idempotency_key"),
+    idempotencyKey: text("idempotency_key").notNull(), // 幂等键必填（nullable+unique 会被多 NULL 绕过）
     createdAt: createdAt(),
   },
   (t) => ({
     userIdx: index("payment_orders_user_idx").on(t.userId),
     idemUq: unique("payment_orders_idem_uq").on(t.idempotencyKey),
+    amountPositive: check("payment_orders_amount_positive", sql`${t.amountCents} > 0`), // 钱从严：DB 层拒绝非正金额
   }),
 )
 
@@ -44,9 +46,13 @@ export const refunds = pgTable("refunds", {
   orderId: uuid("order_id")
     .notNull()
     .references(() => paymentOrders.id),
-  amountCents: integer("amount_cents").notNull(),
-  reason: text("reason"),
-  status: text("status").notNull().default("pending"), // pending/done/failed
-  operator: text("operator"), // 运营操作人（admin）
-  createdAt: createdAt(),
-})
+    amountCents: integer("amount_cents").notNull(),
+    reason: text("reason"),
+    status: text("status").notNull().default("pending"), // pending/done/failed
+    operator: text("operator"), // 运营操作人（admin）
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    amountPositive: check("refunds_amount_positive", sql`${t.amountCents} > 0`), // 退款金额同样必须为正
+  }),
+)

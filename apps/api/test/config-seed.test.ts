@@ -8,7 +8,8 @@ import { TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS)
 
-// 本套测试对 billing_configs 做种子/改写，跑前清掉种子键，跑完恢复种子（该表为全局配置、无 user 归属）
+// 本套测试对 billing_configs 做种子/改写：跑前清掉种子键，跑完恢复种子
+// （该表为全局配置、无 user 归属）
 async function wipeSeedKeys() {
   for (const key of Object.keys(BILLING_SEED)) {
     await getDb().delete(billingConfigs).where(sql`${billingConfigs.key} = ${key}`)
