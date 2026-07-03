@@ -1,0 +1,6 @@
+CREATE INDEX IF NOT EXISTS "credit_tx_user_expire_idx" ON "credit_transactions" USING btree ("user_id","expire_at");--> statement-breakpoint
+ALTER TABLE "credit_transactions" ADD CONSTRAINT "credit_tx_type_check" CHECK ("credit_transactions"."type" in ('grant','purchase','hold','settle','release','expire','referral_reward','refund_clawback'));--> statement-breakpoint
+ALTER TABLE "subscriptions" ADD CONSTRAINT "subscriptions_status_check" CHECK ("subscriptions"."status" in ('active','past_due','expired'));--> statement-breakpoint
+ALTER TABLE "payment_orders" ADD CONSTRAINT "payment_orders_type_check" CHECK ("payment_orders"."type" in ('recharge','purchase','renewal'));--> statement-breakpoint
+ALTER TABLE "payment_orders" ADD CONSTRAINT "payment_orders_status_check" CHECK ("payment_orders"."status" in ('created','paid','failed','unknown','refunded'));--> statement-breakpoint
+ALTER TABLE "refunds" ADD CONSTRAINT "refunds_status_check" CHECK ("refunds"."status" in ('pending','done','failed'));

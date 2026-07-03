@@ -185,3 +185,14 @@
 ## spec301 · code-review（review 于 2026-07，2 合并角度 Explore + 自验，钱从严）
 
 全修：① 汇率方向文档矛盾——spec301 计划 sketch（cny_cents_per_credit）与 spec304 公式（credits_per_cny_cent 正向）互斥，统一为 spec304 正向公式并在种子注明（汇率倒数=算错钱，最高危）；② `payment_orders`/`refunds` 加 `amount_cents > 0` CHECK（DB 层拒绝非正金额）；③ 幂等键改 notNull（nullable+unique 被多 NULL 绕过）；④ `refund_clawback` 补进权威规格文档类型清单（spec306 已用）；⑤ getConfigs LIKE 前缀转义；⑥ `updatedAt` 加 `$onUpdate`；⑦ 超长注释。补「负金额被拒/幂等键必填」测试。跳过：expectConflict 宽 catch（沿用既有测试模式）；seed 无事务（幂等可自愈）；drizzle 自动约束命名（与现表一致）。
+
+## spec301 · /code-review 完整 8 角度（review 于 2026-07，钱从严·二轮）
+
+在首轮修复（汇率方向/CHECK>0/幂等键 notNull/LIKE 转义/$onUpdate）之上，二轮全修：① 钱链路核心列加 **CHECK IN 枚举约束**（credit_transactions.type、payment_orders.type/status、refunds.status、subscriptions.status——typo 状态静默入库是真实对账破坏路径，表全新时加约束零成本）+ 非法枚举被拒测试；② `credit_tx_user_expire_idx (user_id, expire_at)` 复合索引（spec302 FIFO 消耗/spec306 过期扫描）；③ seedConfigs 批量单条插入；④ `expectConflict` 提取到 test/repos/helpers（三处重复收敛）；⑤ phase-3 计划草图 `import { db }` 与代码库 `getDb()` 契约错位——spec300 加实现注记，spec301 草图对齐加固后 schema；⑥ getConfig/getConfigs 函数注释。**实证驳回**：LIKE 缺 ESCAPE（真库验证：PG 默认转义符即反斜杠，转义命中真 key、拒绝假 key）；0006→0007 幂等键空窗（全新表、部署按序原子应用）。留档：
+
+| # | 位置 | 问题 | 状态 | 说明 |
+|---|---|---|---|---|
+| L1 | spec305 | `subscriptions.current_period_end` 可空，状态机判断必须 null-guard | deferred | spec305 实现时的测试要点，已记入其验收语境 |
+| L2 | `services/config.ts` | getConfig 每调一次 SELECT，spec302 每次操作查口径 | deferred | PK 查询开销极小且配置改动需即时生效；真实压测出现热点再加缓存（TTL/失效复杂度不白付） |
+| L3 | `setConfig` | 值无 schema 校验（jsonb 任意） | deferred | spec310 运营后台是唯一写入口，届时按 key 加 zod 校验层 |
+| L4 | 测试样板 | `loginWithPhone(...)` beforeAll 样板散布 7+ 文件 | deferred | 渐进收敛：新测试用 helpers，存量不批量翻动（Surgical） |

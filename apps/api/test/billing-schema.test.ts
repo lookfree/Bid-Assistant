@@ -13,7 +13,7 @@ import {
   refunds,
   referrals,
 } from "../src/db/schema"
-import { uniquePhone, TEST_TIMEOUT_MS } from "./repos/helpers"
+import { uniquePhone, TEST_TIMEOUT_MS, expectConflict } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB
 
@@ -36,17 +36,6 @@ afterAll(async () => {
   await getDb().delete(plans).where(eq(plans.id, planId))
   await closeDb()
 })
-
-// 幂等断言助手：同约束冲突必须抛错（drizzle insert 是 thenable，用显式 try/catch）
-async function expectConflict(fn: () => Promise<unknown>) {
-  let threw = false
-  try {
-    await fn()
-  } catch {
-    threw = true
-  }
-  expect(threw).toBe(true)
-}
 
 describe("spec301 计费数据模型", () => {
   it("plans 默认值：价格 0（不写死定价）、active、v1", async () => {
@@ -115,6 +104,19 @@ describe("spec301 计费数据模型", () => {
   it("幂等键必填：缺 idempotency_key 的流水/订单被拒", async () => {
     await expectConflict(() =>
       getDb().insert(creditTransactions).values({ userId, type: "grant", amount: 1 } as never),
+    )
+  })
+
+  it("枚举铁律：非法 type/status 被 DB CHECK 拒绝", async () => {
+    await expectConflict(() =>
+      getDb()
+        .insert(creditTransactions)
+        .values({ userId, type: "grantt", amount: 1, idempotencyKey: `bad-${crypto.randomUUID()}` }),
+    )
+    await expectConflict(() =>
+      getDb()
+        .insert(paymentOrders)
+        .values({ userId, type: "renew", amountCents: 100, clientSn: `bt-${crypto.randomUUID()}`, idempotencyKey: `bt-${crypto.randomUUID()}` }),
     )
   })
 

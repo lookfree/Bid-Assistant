@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, integer, jsonb, index } from "drizzle-orm/pg-core"
+import { pgTable, uuid, text, integer, jsonb, index, check } from "drizzle-orm/pg-core"
+import { sql } from "drizzle-orm"
 import { id, createdAt, tz } from "./columns"
 import { users } from "./users"
 
@@ -33,5 +34,8 @@ export const subscriptions = pgTable(
     currentPeriodEnd: tz("current_period_end"),
     createdAt: createdAt(),
   },
-  (t) => ({ userIdx: index("subscriptions_user_idx").on(t.userId) }),
+  (t) => ({
+    userIdx: index("subscriptions_user_idx").on(t.userId),
+    statusCheck: check("subscriptions_status_check", sql`${t.status} in ('active','past_due','expired')`),
+  }),
 )

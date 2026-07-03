@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, integer, index, unique } from "drizzle-orm/pg-core"
+import { pgTable, uuid, text, integer, index, unique, check } from "drizzle-orm/pg-core"
+import { sql } from "drizzle-orm"
 import { id, createdAt, tz } from "./columns"
 import { users } from "./users"
 
@@ -22,7 +23,11 @@ export const creditTransactions = pgTable(
   },
   (t) => ({
     userIdx: index("credit_tx_user_idx").on(t.userId),
+    userExpireIdx: index("credit_tx_user_expire_idx").on(t.userId, t.expireAt), // FIFO 消耗/过期扫描（spec302/306）
     idemUq: unique("credit_tx_idem_uq").on(t.idempotencyKey), // 幂等：同键只入一次
+    // 钱表从严：type 拼错静默入库会破坏对账口径，DB 层白名单兜底
+    typeCheck: check("credit_tx_type_check",
+      sql`${t.type} in ('grant','purchase','hold','settle','release','expire','referral_reward','refund_clawback')`),
   }),
 )
 

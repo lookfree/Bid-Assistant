@@ -85,6 +85,11 @@ STEP_COST 常量                    ──▶    billing_configs 的「操作→
 
 ---
 
+## 实现契约核对（spec 草图 vs 代码库实际约定）
+
+- 各 spec 代码草图里的 `import { db } from "../db"` 在本代码库对应 **`getDb()`（`src/db/client`）惰性单例**；表对象统一从 `src/db/schema`（index barrel）导入。照草图直抄 import 会编译失败。
+- spec301 落地时已加固（草图为准之外的从严项）：幂等键 **NOT NULL**、金额/枚举 **CHECK 约束**、`credit_tx_user_expire_idx` FIFO 复合索引——后续 spec 按实际 schema 为准。
+
 ## 与前序 Phase 的接缝（替换点，落地时核对）
 
 - **spec108/spec207 的 `billing-stub.ts`**：`preDeduct/settle` 改为调 spec302 的真账本 `credits` 服务；`STEP_COST` 常量删除，改读 `billing_configs` 操作口径。**编排（routes/read.ts、routes/projects.ts）签名不变**，只换实现。

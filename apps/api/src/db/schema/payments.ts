@@ -26,6 +26,9 @@ export const paymentOrders = pgTable(
     userIdx: index("payment_orders_user_idx").on(t.userId),
     idemUq: unique("payment_orders_idem_uq").on(t.idempotencyKey),
     amountPositive: check("payment_orders_amount_positive", sql`${t.amountCents} > 0`), // 钱从严：DB 层拒绝非正金额
+    typeCheck: check("payment_orders_type_check", sql`${t.type} in ('recharge','purchase','renewal')`),
+    statusCheck: check("payment_orders_status_check",
+      sql`${t.status} in ('created','paid','failed','unknown','refunded')`),
   }),
 )
 
@@ -56,5 +59,6 @@ export const refunds = pgTable(
   },
   (t) => ({
     amountPositive: check("refunds_amount_positive", sql`${t.amountCents} > 0`), // 退款金额同样必须为正
+    statusCheck: check("refunds_status_check", sql`${t.status} in ('pending','done','failed')`),
   }),
 )

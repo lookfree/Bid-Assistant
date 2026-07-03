@@ -127,7 +127,7 @@ export const creditTransactions = pgTable("credit_transactions", {
   sourceBatch: text("source_batch"),                          // 来源批次（FIFO 过期用）
   expireAt: timestamp("expire_at"),                           // 该笔过期时间（充值/赠送有别）
   ref: text("ref"),                                           // 关联 agent_run / order / referral
-  idempotencyKey: text("idempotency_key"),                    // 幂等键，防重复扣
+  idempotencyKey: text("idempotency_key").notNull(),         // 幂等键必填（nullable+unique 被多 NULL 绕过）
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (t) => ({
   userIdx: index("credit_tx_user_idx").on(t.userId),

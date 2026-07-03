@@ -17,3 +17,14 @@ export async function createTestUser(phone: string): Promise<User> {
 export async function deleteTestUser(id: string): Promise<void> {
   await getDb().delete(users).where(eq(users.id, id))
 }
+
+// 断言约束冲突：插入等必须抛错（drizzle insert 是 thenable，统一用显式 try/catch）。
+export async function expectConflict(fn: () => Promise<unknown>): Promise<void> {
+  let threw = false
+  try {
+    await fn()
+  } catch {
+    threw = true
+  }
+  if (!threw) throw new Error("预期约束冲突抛错，但没有抛")
+}
