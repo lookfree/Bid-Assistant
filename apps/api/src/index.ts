@@ -12,6 +12,7 @@ import { startCronRunner } from "./services/cron"
 import { sqbCheckinJob } from "./services/payment/terminal"
 import { getPayment } from "./services/payment"
 import { paymentOrderSweepJob } from "./services/payment-orders"
+import { renewalCronJobs } from "./crons/renewal"
 
 const env = getEnv()
 
@@ -46,10 +47,14 @@ const app = createApp({
   },
 })
 
-// 支付 Cron：每日签到 + 滞留单扫描（治轮询孤儿）。gate 与路由同源 getPayment（不半开）；
-// 缺凭据的环境静默跳过。分布式锁保集群单实例执行。
+// Cron 注册（分布式锁保集群单实例执行）：
+// - 支付两个 job（每日签到 + 滞留单扫描）：gate 与路由同源 getPayment（不半开），缺凭据静默跳过；
+// - 续费两个 job（到期提醒 + 订阅状态推进）：不依赖支付凭据，始终注册。
 const payment = getPayment()
-const cron = payment ? startCronRunner([sqbCheckinJob(payment.terminal), paymentOrderSweepJob(payment.provider)]) : undefined
+const cron = startCronRunner([
+  ...(payment ? [sqbCheckinJob(payment.terminal), paymentOrderSweepJob(payment.provider)] : []),
+  ...renewalCronJobs(),
+])
 
 // 优雅关闭：先停 Cron 并等在途 tick 收尾，再归还 DB/Redis/S3 连接（顺序错了在途 tick 会打在已断连接上）。
 for (const sig of ["SIGINT", "SIGTERM"] as const) {

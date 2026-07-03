@@ -28,6 +28,24 @@ export type PaymentRouteDeps = {
   poll: (orderId: string) => void // 后台轮询启动器（fire-and-forget；测试注入捕获）
 }
 
+/** 建好订单 → 生成跳转支付 URL + 启动后台轮询（充值/续费下单共用的收尾）。 */
+export async function launchPayment(
+  deps: PaymentRouteDeps,
+  order: { id: string; clientSn: string },
+  subject: string,
+  amountCents: number,
+): Promise<{ orderId: string; payUrl: string }> {
+  const { payUrl } = await deps.provider.createPayment({
+    clientSn: order.clientSn,
+    amountCents,
+    subject,
+    returnUrl: `${deps.baseUrl}/pay/result?orderId=${order.id}`,
+    notifyUrl: `${deps.baseUrl}/api/payment${deps.provider.notifyPath}`,
+  })
+  deps.poll(order.id) // 回调 + 轮询双通道取终态（进程重启由滞留单扫描 Cron 兜底）
+  return { orderId: order.id, payUrl }
+}
+
 /** 通道回调处理（收钱吧服务器调用，无用户鉴权，验签放行）。 */
 function notifyHandler(provider: PaymentProvider) {
   return async (c: Context) => {
@@ -92,15 +110,7 @@ export function paymentRoutes(deps: Partial<PaymentRouteDeps> = {}) {
       creditsSnapshot: pack.credits, // 到账以下单快照为准（运营改包不影响在途单）
       idempotencyKey: `recharge:${userId}:${randomUUID()}`,
     })
-    const { payUrl } = await provider.createPayment({
-      clientSn: order.clientSn,
-      amountCents: pack.amountCents,
-      subject: "积分充值",
-      returnUrl: `${baseUrl}/pay/result?orderId=${order.id}`,
-      notifyUrl: `${baseUrl}/api/payment${provider.notifyPath}`,
-    })
-    poll(order.id) // 回调 + 轮询双通道取终态（进程重启由滞留单扫描 Cron 兜底）
-    return c.json({ orderId: order.id, payUrl })
+    return c.json(await launchPayment({ provider, baseUrl, poll }, order, "积分充值", pack.amountCents))
   })
 
   // 订单状态（前端支付页轮询显示用）：本人可查
