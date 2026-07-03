@@ -214,3 +214,12 @@
 |---|---|---|---|---|
 | C3 | 入口停机顺序 | spec305/306 在 worker/api 入口接 startCronRunner 时，SIGTERM 须按 `stopAll() → await drain → closeRedis()` 收尾；乱序会让在途 tick 的释放/续租打在已断连接上（锁悬 300s）或 getRedis() 惰性重建连接 | **deferred → spec305/306 接线时** | stop 已返回 drain Promise，机制就绪，只差入口按序调用 |
 | L5 | cron 测试计时 | 真实计时器 + 毫秒级 sleep（watchdog 用例 ~2.3s、tick 用例 75ms 窗口断言 ≥2）；bun:test 假计时器支持不全，暂用真时 | accepted | 立即首跑已给阈值留足余量；CI 若出现 flake 再收紧（拉长窗口/注入续租间隔） |
+
+## spec304 · 实现留档（2026-07，收钱吧支付——Task 1–3 已完成，Task 4 真实冒烟待办）
+
+api 入口已按 C3 顺序接线（`startCronRunner([sqb-checkin]) → SIGTERM 时 stopAll → drain → close`）。两处有据可依的契约偏差：① **`payment_orders` 加列 `credits_snapshot`（迁移 0011）**——spec301 字段清单/规格文档无此列，但 spec300-index 资金约束要求「充值到账以命中 pack 的 credits 为准（**下单时快照**）」；回调可能在运营改充值包之后才到，无快照列则只能按当前配置反查 = 违背约束。会员单（purchase/renewal）此列为 NULL，spec308 按套餐发当期积分。② **`PaymentResult` 加 `totalAmountCents`**——计划 Interfaces 的契约无此字段，但「markPaid 前必须校验实付==订单快照」是铁律，查询/回调返回的实付金额必须能穿透 Provider 抽象。留档：
+
+| # | 位置 | 问题 | 状态 | 说明 |
+|---|---|---|---|---|
+| C4 | Task 4 真实冒烟 | 端点路径（/terminal/activate、/terminal/checkin、/upay/v2/query、/upay/v2/refund、WAP2 网关 qr.shouqianba.com/gateway）与响应字段按公开资料固化，本地无收钱吧接口文档可核对 | **open → Task 4** | 拿到测试激活码后 1 分钱端到端（激活→签到→扫码付→回调/轮询→grant→退款）逐一实证；不符处只改 shouqianba.ts/terminal.ts 的常量与解析 |
+| C5 | 金额不符订单滞留 | amount_mismatch 不改状态（status 枚举无此值，DB check 约束拒绝），订单留在 created 等 spec306 对账清算；轮询窗口尽头会把它并入 unknown | accepted | 告警日志已打；spec306 对账队列接手 |
