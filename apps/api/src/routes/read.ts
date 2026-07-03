@@ -58,9 +58,12 @@ export function readRoutes(deps: Partial<ReadDeps> = {}) {
         for await (const chunk of relayStream(run_id)) await stream.write(chunk) // 透传 agent SSE
         const run = await getRun(run_id) // 取六大分类结果
         const failed = run.status !== "succeeded"
-        const cost = failed
-          ? (await settleFailed(threadId, hold.holdId!), 0)
-          : await settle(threadId, hold.holdId!, hold.hold)
+        let cost = 0
+        if (failed) {
+          await settleFailed(threadId, hold.holdId!)
+        } else {
+          cost = await settle(threadId, hold.holdId!, hold.hold)
+        }
         await getDb()
           .update(agentRuns)
           .set({ status: failed ? "failed" : "done", result: run.result ?? null, costPoints: cost })

@@ -116,7 +116,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     return streamSSE(c, async (stream) => {
       try {
         for await (const chunk of relayStream(run_id)) await stream.write(chunk) // 透传 agent SSE
-        await finishStep(stream, { p, s, step: step as Step, run_id, hold })
+        await finishStep(stream, { project: p, stepRow: s, step: step as Step, runId: run_id, hold })
       } catch (e) {
         // 中继/收尾中途炸（agent 掉线等）：退还预扣（已结算则被了结唯一索引吞掉）+ 占位行标 failed
         await settleFailed(s.id, hold.holdId!).catch(() => {})
@@ -132,36 +132,40 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
   /** 步进收尾：取 run 终态 → 结算/退还 → 落步结果 → 推进 currentStep → 发 step.done。 */
   async function finishStep(
     stream: { writeSSE: (m: { event: string; data: string }) => Promise<void> },
-    a: {
-      p: typeof bidProjects.$inferSelect
-      s: typeof projectSteps.$inferSelect
+    ctx: {
+      project: typeof bidProjects.$inferSelect
+      stepRow: typeof projectSteps.$inferSelect
       step: Step
-      run_id: string
+      runId: string
       hold: { holdId?: string; hold: number }
     },
   ) {
-    const run = await getRun(a.run_id) // 该步结构化结果（snake_case）
+    const { project, stepRow, step, runId, hold } = ctx
+    const run = await getRun(runId) // 该步结构化结果（snake_case）
     const failed = run.status !== "succeeded"
     // 成功按口径全额结算；失败全额退还（净 0）——多退少补待用量换算口径定义
-    const cost = failed
-      ? (await settleFailed(a.s.id, a.hold.holdId!), 0)
-      : await settle(a.s.id, a.hold.holdId!, a.hold.hold)
+    let cost = 0
+    if (failed) {
+      await settleFailed(stepRow.id, hold.holdId!)
+    } else {
+      cost = await settle(stepRow.id, hold.holdId!, hold.hold)
+    }
     await getDb()
       .update(projectSteps)
       .set({ result: run.result ?? null, status: failed ? "failed" : "done", costPoints: cost })
-      .where(eq(projectSteps.id, a.s.id))
+      .where(eq(projectSteps.id, stepRow.id))
     if (!failed) {
       // 推进 currentStep；最后一步完成即整本 done
-      const next = STEP_ORDER[STEP_ORDER.indexOf(a.step) + 1]
+      const next = STEP_ORDER[STEP_ORDER.indexOf(step) + 1]
       await getDb()
         .update(bidProjects)
         .set({ currentStep: next ?? "done", status: next ? "running" : "done" })
-        .where(eq(bidProjects.id, a.p.id))
+        .where(eq(bidProjects.id, project.id))
     }
     // DB 存 snake_case 原样；给前端的经 toCamel 转 camelCase（对齐原型 TS 类型）
     await stream.writeSSE({
       event: "step.done",
-      data: JSON.stringify({ step: a.step, cost, status: failed ? "failed" : "done", result: toCamel(run.result ?? null) }),
+      data: JSON.stringify({ step, cost, status: failed ? "failed" : "done", result: toCamel(run.result ?? null) }),
     })
   }
 
