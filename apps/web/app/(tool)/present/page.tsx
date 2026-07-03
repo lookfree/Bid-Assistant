@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
@@ -47,6 +47,11 @@ import {
   type SlideStyle,
 } from "@/lib/present"
 import { libraryCategories, type LibraryItem, type LibraryCategoryId } from "@/lib/library"
+import { useStep } from "@/lib/use-step"
+import { artifactUrl, runStep } from "@/lib/project"
+
+// agent DeckSpec（camelCase）：slides/qa 与原型 Slide/QA 同构
+type RealDeck = { title: string; duration: number; template: string; slides: Slide[]; qa: { q: string; a: string }[] }
 
 const GEN_COST = creditCosts.find((c) => c.feature === "述标演示生成")?.value ?? 80
 const EXPORT_COST = creditCosts.find((c) => c.feature.startsWith("导出"))?.value ?? 20
@@ -88,6 +93,18 @@ export default function PresentPage() {
   const [aiInput, setAiInput] = useState("")
   const [aiReply, setAiReply] = useState("")
   const [dragId, setDragId] = useState<string | null>(null)
+
+  /* 真实项目：present 步产 DeckSpec（真实幻灯+口播稿），到位即覆盖示例 */
+  const { projectId, info, data: realDeck, running: stepRunning, error: stepError, start } = useStep<RealDeck>("present")
+  useEffect(() => {
+    if (projectId && info && !realDeck && !stepRunning && info.project.currentStep === "present") void start()
+  }, [projectId, info, realDeck, stepRunning, start])
+  useEffect(() => {
+    if (!realDeck) return
+    setSlides(realDeck.slides)
+    setActiveId(realDeck.slides[0]?.id ?? "")
+    setGenState("done")
+  }, [realDeck])
 
   /* 当前预览样式：套用企业模板时优先，否则用内置预设 */
   const style = enterpriseStyle ?? slideStyles.find((s) => s.id === styleId)!
@@ -236,6 +253,30 @@ export default function PresentPage() {
   function doExport(format: "pptx" | "pdf") {
     const name = format === "pptx" ? "PPTX" : "PDF"
     setExportOpen(false)
+    if (projectId && realDeck) {
+      // 真实导出：present 步已把 .pptx 落 MinIO，取预签名 URL 直下
+      setExportStatus("正在获取下载链接…")
+      void (async () => {
+        try {
+          let url: string
+          try {
+            url = await artifactUrl(projectId, "pptx")
+          } catch {
+            // pptx key 随 export 步的 artifacts 快照可见：未跑过 export 就先跑（确定性、低成本）
+            setExportStatus("正在整理产物…")
+            await runStep(projectId, "export")
+            url = await artifactUrl(projectId, "pptx")
+          }
+          window.open(url, "_blank")
+          setExportStatus("已导出，浏览器开始下载")
+        } catch {
+          setExportStatus("下载失败，请重试")
+        } finally {
+          setTimeout(() => setExportStatus(""), 3000)
+        }
+      })()
+      return
+    }
     setExportStatus(`正在导出述标 PPT（${name}）…`)
     setTimeout(() => {
       setExportStatus(`已导出述标 PPT（${name}）`)
@@ -248,6 +289,17 @@ export default function PresentPage() {
       {/* 流程返回区：上一步 + 面包屑 */}
       <div className="shrink-0 px-4 pt-4 sm:px-6">
         <FlowNav current="present" />
+      {stepRunning && (
+        <div className="mb-4 rounded-2xl border border-primary/20 gradient-brand-soft px-4 py-3 text-sm font-medium text-primary">
+          AI 正在基于标书与评分点生成述标稿与 PPT…
+        </div>
+      )}
+      {stepError && (
+        <div className="mb-4 flex items-center justify-between rounded-2xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+          <span>{stepError}</span>
+          <button onClick={() => void start()} className="rounded-lg border border-destructive/30 px-3 py-1 text-xs font-semibold">重试</button>
+        </div>
+      )}
       </div>
       {/* 顶部工具条 */}
       <div className="shrink-0 border-b border-border bg-card px-4 py-3 sm:px-6">

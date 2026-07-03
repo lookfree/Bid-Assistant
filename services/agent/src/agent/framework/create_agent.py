@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Annotated, TypedDict
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import tools_condition
 from langgraph.graph.message import add_messages
@@ -55,11 +56,35 @@ async def run_submit_agent(ctx, prompt: str, user_msg: str,
                            tool_name: str, schema, desc: str, extra_tools: list | None = None):
     """跑一个「必须用 submit 工具提交 schema 结构化结果」的子 agent，返回校验后的实例。
     模型没提交（含提交但校验失败）就抛错 → run 落 failed 而非把空结果当成功；
-    checkpoint 停在节点前，客户端重发 run 即重试本节点。工作流各 submit 节点共用。"""
+    checkpoint 停在节点前，客户端重发 run 即重试本节点。工作流各 submit 节点共用。
+    只有 submit 一个工具时走 tool_choice 强制路径（模型自由发挥不调工具是真实高频失败模式）。"""
     submit, get_result = make_submit_tool(tool_name, schema, desc)
-    sub = build_create_agent(prompt, [*(extra_tools or []), submit], ctx)
-    await sub.ainvoke({"messages": [{"role": "user", "content": user_msg}]})
+    if extra_tools:
+        sub = build_create_agent(prompt, [*extra_tools, submit], ctx)
+        await sub.ainvoke({"messages": [{"role": "user", "content": user_msg}]})
+    else:
+        await _forced_submit(ctx, prompt, user_msg, submit, tool_name)
     result = get_result()
     if result is None:
         raise RuntimeError(f"模型未通过 {tool_name} 提交结构化结果")
     return result
+
+
+async def _forced_submit(ctx, prompt: str, user_msg: str, submit, tool_name: str, attempts: int = 3) -> None:
+    """纯 submit 节点：tool_choice 锁定提交工具，模型无法只回文字；
+    Pydantic 校验失败把错误喂回，最多重试 attempts 轮。"""
+    llm = ctx.gateway.get_chat(provider=None) if ctx.gateway else None
+    forced = llm.bind_tools([submit], tool_choice=tool_name)
+    messages: list = [SystemMessage(content=prompt), HumanMessage(content=user_msg)]
+    for _ in range(attempts):
+        msg = await forced.ainvoke(messages)
+        record_ctx_usage(ctx, msg, node="agent", model=getattr(llm, "model_name", None))
+        call = next((c for c in (getattr(msg, "tool_calls", None) or []) if c["name"] == tool_name), None)
+        if call is None:
+            return                       # 模型没产出提交调用（如 fake 模型）：交给上层抛"未提交"
+        try:
+            await submit.ainvoke(call["args"])
+            return                       # 校验通过，结果已被 make_submit_tool 捕获
+        except Exception as e:  # noqa: BLE001 校验错误喂回模型修正
+            messages = [*messages, msg,
+                        ToolMessage(content=f"提交被拒绝：{e}。请修正字段后重新提交。", tool_call_id=call["id"])]

@@ -160,3 +160,13 @@
 ## spec206 · code-review（review 于 2026-07，2 合并角度 Explore + 自验）
 
 全修：① 表格列数取所有行最大值（原固定首行列数，模型产参差表格即 IndexError 崩渲染）；② `_emit_el` 递归展开容器标签（div/section 等，原被 get_text 压扁成单段丢结构）；③ 抽 `nodes/common.py::upload_artifact` 统一 present/export 的终产物落 MinIO 样板。补参差表格 + div 包裹回归测试。
+
+## spec207 · 端到端里程碑（2026-07，真实 2 服务 × DeepSeek × MinIO 全链路）
+
+上传招标 docx → read(6 类, 3 红线, 21s) → outline(12 章, 21s) → content(deepagent 12 章正文, 194s) → review(初次失败→重试成功, score 55/10 items) → present(14 slides+5 QA, 48s) → export(4s) → docx 90KB + pptx 68KB 预签名直下。每步独立 run + project_steps 记账（失败步 0 分不扣费）。e2e 逼出的三个真实修复：① worker 对远程 Redis 瞬断重试（原一次抖动即崩）；② 纯 submit 节点改 tool_choice 强制路径 + 校验错误喂回重试 ×3（模型自由发挥不调工具是高频真实失败模式，structured.py 注释本就预留此招）；③ 产物 key 解析对齐真实契约（export 步 result 即 artifacts 顶层快照；present 页下载 404 时先跑 export 再取）。留档：
+
+| # | 位置 | 问题 | 状态 | 说明 |
+|---|---|---|---|---|
+| E1 | `/read` 页右栏 | 招标原文 + 条款定位仍用示例 doc（agent ReadResult 不含解析全文） | deferred | 需 agent 侧把 ParsedDoc.clauses 随 read 结果带出或另开查询口；接企业化需求时做（原 spec108 followup 收敛至此） |
+| E2 | `rewrite_chapter` | 单章改写有 agent 函数无 App 路由（/content 右栏对话仍本地演示） | deferred | 需单独 run 类型或轻量同步端点；Phase 3 前补 |
+| E3 | agent SSE step.done 的 artifacts 快照 | App 中继时未解析利用（现从 export 步 result 取） | wontfix-for-now | 现路径已闭环；若要 present 后立刻可下 pptx 不跑 export，再解析中继流 |

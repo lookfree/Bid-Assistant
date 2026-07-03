@@ -12,7 +12,7 @@ class SubmitChat:
         self.tool_names: list[str] = []
         self.n = 0
 
-    def bind_tools(self, tools):
+    def bind_tools(self, tools, **kw):                # 兼容 tool_choice 强制路径
         self.tool_names = [t.name for t in tools]
         return self
 

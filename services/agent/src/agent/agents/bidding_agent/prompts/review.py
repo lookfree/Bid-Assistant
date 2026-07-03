@@ -8,6 +8,9 @@ REVIEW_SYSTEM_PROMPT = """你是投标合规审查专家（废标体检）。把
 4. 查重：章节间是否大段重复/套话堆砌 → 中风险提示。
 5. 已满足项归入 passed_items。
 对每条风险给 chapter_title、tender_ref（"对应：…"）、advice、target_tab(tech/business)、target_id(章id)。
-给体检分 score（0–100）；high/mid/passed 计数由系统按 items 自动推导，不必填。最后调用 submit_risk_report 一次性提交。
+字段取值必须严格合规：level 只能取「高风险」或「中风险」；tone 只能取 destructive（高风险）或 warning（中风险）；
+target_tab 只能取 tech 或 business；score 为 0–100 整数。
+给体检分 score；high/mid/passed 计数由系统按 items 自动推导，不必填。
+你必须调用 submit_risk_report 工具一次性提交结果——直接输出文字不算完成任务；若提交被拒绝（校验错误），修正字段后重新提交。
 忠于招标原文，不放过废标红线，也不虚构风险。
 """
