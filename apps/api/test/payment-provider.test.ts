@@ -57,13 +57,13 @@ describe("createPayment（WAP2 跳转支付 URL）", () => {
 describe("query（轮询/对账共用）", () => {
   const queryResp = (order_status: string) => ({
     result_code: "200",
-    biz_response: { result_code: "SUCCESS", data: { order_status, sn: "7800001", trade_no: "wx-123", payway: "3" } },
+    biz_response: { result_code: "SUCCESS", data: { order_status, sn: "7800001", trade_no: "wx-123", payway: "3", total_amount: "100" } },
   })
 
-  it("terminal 签名请求，PAID → paid + 带 sn/trade_no/payway", async () => {
+  it("terminal 签名请求，PAID → paid + 带 sn/trade_no/payway/实付金额", async () => {
     const { provider, calls } = makeProvider([queryResp("PAID")])
     const r = await provider.query("order-1")
-    expect(r).toEqual({ status: "paid", sn: "7800001", tradeNo: "wx-123", payway: "3" })
+    expect(r).toEqual({ status: "paid", sn: "7800001", tradeNo: "wx-123", payway: "3", totalAmountCents: 100 })
     const req = calls[0]!
     expect(JSON.parse(req.body)).toEqual({ terminal_sn: "TSN9", client_sn: "order-1" })
     expect(req.auth).toBe(`TSN9 ${md5BodySign(req.body, "tkey9")}`)

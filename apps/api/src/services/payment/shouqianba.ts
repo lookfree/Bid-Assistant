@@ -24,7 +24,7 @@ const FAILED_STATUSES = new Set(["CANCELED", "PAY_CANCELED", "EXPIRED", "PAY_ERR
 type BizResponse = {
   result_code?: string
   error_message?: string
-  data?: { order_status?: string; sn?: string; trade_no?: string; payway?: string }
+  data?: { order_status?: string; sn?: string; trade_no?: string; payway?: string; total_amount?: string }
 }
 
 export function makeShouqianbaProvider(deps: ShouqianbaDeps): PaymentProvider {
@@ -68,7 +68,8 @@ export function makeShouqianbaProvider(deps: ShouqianbaDeps): PaymentProvider {
       const d = biz.data ?? {}
       const status: PaymentResult["status"] =
         d.order_status === "PAID" ? "paid" : FAILED_STATUSES.has(d.order_status ?? "") ? "failed" : "pending"
-      return { status, sn: d.sn, tradeNo: d.trade_no, payway: d.payway }
+      const amount = d.total_amount != null ? Number(d.total_amount) : undefined
+      return { status, sn: d.sn, tradeNo: d.trade_no, payway: d.payway, totalAmountCents: Number.isFinite(amount) ? amount : undefined }
     },
 
     async refund({ clientSn, refundSn, amountCents }) {

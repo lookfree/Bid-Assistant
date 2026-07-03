@@ -6,6 +6,7 @@ export type PaymentResult = {
   sn?: string // 通道订单号（收钱吧 sn）
   tradeNo?: string // 渠道单号（微信/支付宝 trade_no）
   payway?: string // 实际付款方式（对账用）
+  totalAmountCents?: number // 通道返回的实付金额（分）；markPaid 前与订单快照核对（铁律）
 }
 
 export interface PaymentProvider {

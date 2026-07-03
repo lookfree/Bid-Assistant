@@ -19,6 +19,9 @@ export const paymentOrders = pgTable(
     providerTradeNo: text("provider_trade_no"), // 收钱吧订单号 sn
     channelTradeNo: text("channel_trade_no"), // 微信/支付宝渠道单号 trade_no
     payway: text("payway"), // 实际付款方式（对账用）
+    // 下单时快照的到账积分（recharge 命中充值包的 credits；回调晚到/运营改配置也按快照入账）。
+    // 会员单（purchase/renewal）不走积分快照 → NULL（spec308 按套餐发当期积分）。
+    creditsSnapshot: integer("credits_snapshot"),
     idempotencyKey: text("idempotency_key").notNull(), // 幂等键必填（nullable+unique 会被多 NULL 绕过）
     createdAt: createdAt(),
   },
@@ -27,6 +30,7 @@ export const paymentOrders = pgTable(
     statusIdx: index("payment_orders_status_idx").on(t.status), // 对账/清算按状态扫（unknown/created）
     idemUq: unique("payment_orders_idem_uq").on(t.idempotencyKey),
     amountPositive: check("payment_orders_amount_positive", sql`${t.amountCents} > 0`), // 钱从严：DB 层拒绝非正金额
+    creditsNonNegative: check("payment_orders_credits_nonneg", sql`${t.creditsSnapshot} is null or ${t.creditsSnapshot} >= 0`),
     typeCheck: check("payment_orders_type_check", sql`${t.type} in ('recharge','purchase','renewal')`),
     statusCheck: check("payment_orders_status_check",
       sql`${t.status} in ('created','paid','failed','unknown','refunded')`),
