@@ -81,36 +81,62 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const hold = await preDeduct(step)
     if (!hold.ok) return c.json({ error: "insufficient" }, 402)
 
+    // 先落「running 占位行」再建 run：部分唯一索引 (project_id, step) WHERE status='running'
+    // 在 DB 层原子挡掉并发双击（第二个请求这里冲突 → 409，不会双建 run/双计费）。
+    let s: typeof projectSteps.$inferSelect
+    try {
+      const [row] = await getDb()
+        .insert(projectSteps)
+        .values({ projectId: p.id, step, status: "running" })
+        .returning()
+      if (!row) return c.json({ error: "insert_failed" }, 500)
+      s = row
+    } catch {
+      return c.json({ error: "step_already_running" }, 409)
+    }
+
     const input = { text: `${STEP_TEXT[step as Step]}，key=${p.tenderFileKey}`, file_key: p.tenderFileKey, step }
-    const { run_id } = await createRun({ agentType: "bidding_agent", threadId: p.threadId, input })
-    const [s] = await getDb()
-      .insert(projectSteps)
-      .values({ projectId: p.id, step, runId: run_id, status: "running" })
-      .returning()
-    if (!s) return c.json({ error: "insert_failed" }, 500)
+    let run_id: string
+    try {
+      ;({ run_id } = await createRun({ agentType: "bidding_agent", threadId: p.threadId, input }))
+      await getDb().update(projectSteps).set({ runId: run_id }).where(eq(projectSteps.id, s.id))
+    } catch (e) {
+      // agent 服务不可达等：释放占位行为 failed，可立即重试
+      await getDb().update(projectSteps).set({ status: "failed" }).where(eq(projectSteps.id, s.id))
+      throw e
+    }
 
     return streamSSE(c, async (stream) => {
-      for await (const chunk of relayStream(run_id)) await stream.write(chunk) // 透传 agent SSE
-      const run = await getRun(run_id) // 该步结构化结果（snake_case）
-      const failed = run.status !== "succeeded"
-      const cost = failed ? 0 : await settle(run_id, hold.hold)
-      await getDb()
-        .update(projectSteps)
-        .set({ result: run.result ?? null, status: failed ? "failed" : "done", costPoints: cost })
-        .where(eq(projectSteps.id, s.id))
-      if (!failed) {
-        // 推进 currentStep；最后一步完成即整本 done
-        const next = STEP_ORDER[STEP_ORDER.indexOf(step as Step) + 1]
+      try {
+        for await (const chunk of relayStream(run_id)) await stream.write(chunk) // 透传 agent SSE
+        const run = await getRun(run_id) // 该步结构化结果（snake_case）
+        const failed = run.status !== "succeeded"
+        const cost = failed ? 0 : await settle(run_id, hold.hold)
         await getDb()
-          .update(bidProjects)
-          .set({ currentStep: next ?? "done", status: next ? "running" : "done" })
-          .where(eq(bidProjects.id, p.id))
+          .update(projectSteps)
+          .set({ result: run.result ?? null, status: failed ? "failed" : "done", costPoints: cost })
+          .where(eq(projectSteps.id, s.id))
+        if (!failed) {
+          // 推进 currentStep；最后一步完成即整本 done
+          const next = STEP_ORDER[STEP_ORDER.indexOf(step as Step) + 1]
+          await getDb()
+            .update(bidProjects)
+            .set({ currentStep: next ?? "done", status: next ? "running" : "done" })
+            .where(eq(bidProjects.id, p.id))
+        }
+        // DB 存 snake_case 原样；给前端的经 toCamel 转 camelCase（对齐原型 TS 类型）
+        await stream.writeSSE({
+          event: "step.done",
+          data: JSON.stringify({ step, cost, status: failed ? "failed" : "done", result: toCamel(run.result ?? null) }),
+        })
+      } catch (e) {
+        // 中继/收尾中途炸（agent 掉线等）：占位行标 failed（0 计费），别留永久 running 卡死重试
+        await getDb().update(projectSteps).set({ status: "failed" }).where(eq(projectSteps.id, s.id))
+        await stream.writeSSE({
+          event: "step.done",
+          data: JSON.stringify({ step, cost: 0, status: "failed", error: String(e) }),
+        })
       }
-      // DB 存 snake_case 原样；给前端的经 toCamel 转 camelCase（对齐原型 TS 类型）
-      await stream.writeSSE({
-        event: "step.done",
-        data: JSON.stringify({ step, cost, status: failed ? "failed" : "done", result: toCamel(run.result ?? null) }),
-      })
     })
   })
 

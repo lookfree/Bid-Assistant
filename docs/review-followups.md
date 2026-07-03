@@ -170,3 +170,14 @@
 | E1 | `/read` 页右栏 | 招标原文 + 条款定位仍用示例 doc（agent ReadResult 不含解析全文） | deferred | 需 agent 侧把 ParsedDoc.clauses 随 read 结果带出或另开查询口；接企业化需求时做（原 spec108 followup 收敛至此） |
 | E2 | `rewrite_chapter` | 单章改写有 agent 函数无 App 路由（/content 右栏对话仍本地演示） | deferred | 需单独 run 类型或轻量同步端点；Phase 3 前补 |
 | E3 | agent SSE step.done 的 artifacts 快照 | App 中继时未解析利用（现从 export 步 result 取） | wontfix-for-now | 现路径已闭环；若要 present 后立刻可下 pptx 不跑 export，再解析中继流 |
+
+## spec207 · code-review（review 于 2026-07，3 合并角度 Explore + 自验）
+
+全修：① 并发双击竞态——`project_steps` 加部分唯一索引 `(project_id, step) WHERE status='running'`，占位行先行、DB 层原子挡重（第二请求 409 step_already_running，不双建 run/双计费）；② SSE 中继异常收尾——relay/getRun/settle 全程 try/catch，中途炸标 failed（0 计费）+ 发 failed 事件，不留永久 running 卡死重试；createRun 失败同样释放占位；③ `toCamel` 仅递归纯对象（Date/Map 原样保留防丢值）；④ `_forced_submit` llm None 守卫 + 不走图循环的原因注释（强制 tool_choice 下图循环永不停机）。驳回：tool_choice 字符串形态（e2e 已实证）；SSE 多行 data（writeSSE 单行 JSON 契约）；use-step 竞态（页面级常量）。留档：
+
+| # | 位置 | 问题 | 状态 | 说明 |
+|---|---|---|---|---|
+| A1 | `apps/web/app/(tool)/*/page.tsx` | content/present/risk 页 800+ 行（原型期预存量，spec207 只做手术式接线未拆） | deferred | 按 CLAUDE.md 拆分组件文件；商业化打磨期做 |
+| A2 | 5 页 running/error 横幅 JSX 重复 | 同构横幅 ×4–5 处 | fixed-in-simplify | 抽 StepBanner 组件（见下一节 /simplify） |
+| A3 | `routes/read.ts` | 与 projects 步进并存（计划明确 agent_runs 留给通用 run） | wontfix | 通用 run 记账路径，非死代码 |
+| A4 | 上传多文件只取第一个已完成的建项目 | v1 单招标文件语义 | deferred | 多文件（附件/澄清函）归企业版需求 |

@@ -71,9 +71,12 @@ async def run_submit_agent(ctx, prompt: str, user_msg: str,
 
 
 async def _forced_submit(ctx, prompt: str, user_msg: str, submit, tool_name: str, attempts: int = 3) -> None:
-    """纯 submit 节点：tool_choice 锁定提交工具，模型无法只回文字；
-    Pydantic 校验失败把错误喂回，最多重试 attempts 轮。"""
+    """纯 submit 节点：tool_choice 锁定提交工具，模型无法只回文字（e2e 实测：自由发挥不调工具
+    是真实高频失败模式）；Pydantic 校验失败把错误喂回，最多重试 attempts 轮。
+    不走 build_create_agent：强制 tool_choice 下图循环永不停机（每轮都被迫调工具），单轮循环才可控。"""
     llm = ctx.gateway.get_chat(provider=None) if ctx.gateway else None
+    if llm is None:
+        return                           # 无 gateway（异常装配）：交给上层抛"未提交"
     forced = llm.bind_tools([submit], tool_choice=tool_name)
     messages: list = [SystemMessage(content=prompt), HumanMessage(content=user_msg)]
     for _ in range(attempts):

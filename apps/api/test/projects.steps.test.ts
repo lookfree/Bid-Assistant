@@ -116,6 +116,17 @@ describe("/api/projects 按步编排", () => {
     expect(res.status).toBe(409)
   })
 
+  it("同一步已有 running 占位 → 409（并发双击 DB 层挡掉）", async () => {
+    const [p2] = await getDb()
+      .insert(bidProjects)
+      .values({ userId, threadId: `proj-${crypto.randomUUID()}` })
+      .returning()
+    await getDb().insert(projectSteps).values({ projectId: p2!.id, step: "read", status: "running" })
+    const res = await app.request(`/api/projects/${p2!.id}/steps/read`, { method: "POST", headers: auth() })
+    expect(res.status).toBe(409)
+    expect(((await res.json()) as { error: string }).error).toBe("step_already_running")
+  })
+
   it("未知步骤 → 400；他人项目 → 404", async () => {
     const bad = await app.request(`/api/projects/${projectId}/steps/nope`, { method: "POST", headers: auth() })
     expect(bad.status).toBe(400)

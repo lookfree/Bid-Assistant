@@ -9,7 +9,8 @@ function snakeToCamel(s: string): string {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function toCamel<T = any>(input: unknown): T {
   if (Array.isArray(input)) return input.map((v) => toCamel(v)) as T
-  if (input && typeof input === "object") {
+  const proto = input && typeof input === "object" ? Object.getPrototypeOf(input) : undefined
+  if (proto === Object.prototype || proto === null) {
     const out: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
       out[snakeToCamel(k)] = toCamel(v)
