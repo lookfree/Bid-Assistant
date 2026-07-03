@@ -25,7 +25,7 @@ apps/api/src/
 ├── db/schema/
 │   ├── plans.ts                 # 新：plans / subscriptions
 │   ├── credits.ts               # 新：credit_transactions / credit_balances
-│   ├── payments.ts              # 新：payment_orders / payment_agreements / refunds
+│   ├── payments.ts              # 新：payment_orders / payment_terminals / refunds
 │   └── billing.ts               # 新：referrals / billing_configs
 ├── services/config.ts           # 新：getConfig/getConfigs + 种子写入
 └── config/billing-seed.ts       # 新：种子配置（占位定价，非真实）
@@ -85,9 +85,7 @@ export const subscriptions = pgTable("subscriptions", {
   status: text("status").notNull().default("active"),          // active/past_due/expired
   currentPeriodStart: timestamp("current_period_start"),
   currentPeriodEnd: timestamp("current_period_end"),
-  autoRenew: boolean("auto_renew").notNull().default(false),
-  agreementNo: text("agreement_no"),                           // 关联 payment_agreements
-  createdAt: timestamp("created_at").defaultNow().notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),   // 无 auto_renew/agreement_no：不做自动续费（架构 §6.2）
 }, (t) => ({ userIdx: index("subscriptions_user_idx").on(t.userId) }));
 ```
 
@@ -175,7 +173,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 3: 支付表（payment_orders / payment_agreements / refunds）
+## Task 3: 支付表（payment_orders / payment_terminals / refunds）
 
 **Files:** Create `apps/api/src/db/schema/payments.ts`、迁移；Modify 测试
 
@@ -188,11 +186,14 @@ import { users } from "./users";
 export const paymentOrders = pgTable("payment_orders", {
   id: uuid("id").defaultRandom().primaryKey(),
   userId: uuid("user_id").notNull().references(() => users.id),
-  type: text("type").notNull(),                               // recharge/purchase/auto_renew
+  type: text("type").notNull(),                               // recharge/purchase/renewal
   amountCents: integer("amount_cents").notNull(),
-  status: text("status").notNull().default("created"),        // created/paid/failed/refunded
-  provider: text("provider").notNull().default("alipay"),
-  providerTradeNo: text("provider_trade_no"),                 // 支付宝 trade_no
+  status: text("status").notNull().default("created"),        // created/paid/failed/unknown/refunded
+  provider: text("provider").notNull().default("shouqianba"),
+  clientSn: text("client_sn").notNull().unique(),             // 我方订单号（送收钱吧，全局唯一）
+  providerTradeNo: text("provider_trade_no"),                 // 收钱吧订单号 sn
+  channelTradeNo: text("channel_trade_no"),                   // 微信/支付宝渠道单号 trade_no
+  payway: text("payway"),                                     // 实际付款方式（对账用）
   idempotencyKey: text("idempotency_key"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (t) => ({
@@ -200,18 +201,15 @@ export const paymentOrders = pgTable("payment_orders", {
   idemUq: unique("payment_orders_idem_uq").on(t.idempotencyKey),
 }));
 
-export const paymentAgreements = pgTable("payment_agreements", {
+// 收钱吧交易终端凭证：激活产生、每日签到轮换 terminal_key（架构 §6.0）。
+// 集群共享唯一真相；terminal_key 加密存储；密钥丢失只能重激活。
+export const paymentTerminals = pgTable("payment_terminals", {
   id: uuid("id").defaultRandom().primaryKey(),
-  userId: uuid("user_id").notNull().references(() => users.id),
-  provider: text("provider").notNull().default("alipay"),
-  agreementNo: text("agreement_no").unique(),                 // 我方签约号
-  externalAgreementNo: text("external_agreement_no"),         // 支付宝侧签约号
-  status: text("status").notNull().default("signing"),        // signing/signed/unsigned/sign_failed
-  planId: uuid("plan_id"),
-  period: text("period"),                                     // 扣款周期
-  nextDeductAt: timestamp("next_deduct_at"),
-  deductLimitCents: integer("deduct_limit_cents"),            // 单次扣款上限
-  createdAt: timestamp("created_at").defaultNow().notNull(),
+  terminalSn: text("terminal_sn").notNull().unique(),
+  terminalKey: text("terminal_key").notNull(),                // 加密存储（Bun crypto AES，密钥走 env）
+  deviceId: text("device_id").notNull().unique(),             // 激活时自定义设备号（带业务含义）
+  activatedAt: timestamp("activated_at").defaultNow().notNull(),
+  lastCheckinAt: timestamp("last_checkin_at"),                // 每日签到成功后更新
 });
 
 export const refunds = pgTable("refunds", {
@@ -232,7 +230,7 @@ export const refunds = pgTable("refunds", {
 ```bash
 cd apps/api && bun run drizzle-kit generate && bun test test/billing-schema.test.ts
 git add apps/api/src/db/schema/payments.ts apps/api/drizzle apps/api/test/billing-schema.test.ts
-git commit -m "feat(spec301): payment_orders/payment_agreements/refunds 表
+git commit -m "feat(spec301): payment_orders/payment_terminals/refunds 表
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
@@ -301,7 +299,9 @@ export const BILLING_SEED: Record<string, unknown> = {
   "credit_rate": { cny_cents_per_credit: 1 },                 // 汇率：1 分 = 1 积分（占位）
   "grant_expire_days": 30, "reward_expire_days": 30,          // 赠送/奖励积分有效期
   "referral_rules": { inviterReward: 50, inviteeReward: 50, unlockOn: "invitee_first_paid", capPerUser: 500, riskMaxPerIpPerHour: 20 },  // riskMaxPerIpPerHour 占位，spec307 风控阈值不写死
-  "deduct_retry": { intervalsDays: [1, 3], maxAttempts: 3 },  // 代扣重试策略
+  "renewal_reminder_days": [7, 3, 1],                          // 到期提醒天数档（T-7/T-3/T-1）
+  "renewal_grace_days": 3,                                     // past_due 宽限期（天）
+  "payment_poll": { windowMinutes: 6, fastSeconds: 3, slowSeconds: 10 },  // 收钱吧结果轮询窗口
 };
 ```
 
@@ -379,7 +379,7 @@ git push origin main
 
 > **增量说明（note）：** 本 spec 是建表基线；`referrals` 后续由 spec307 ALTER 加 `device_hash/signup_ip/frozen_reason` 列、status 增 frozen；`plans` 由 spec308 加稳定 `tier`/`code` 列；新增表 `reconcile_diffs`(spec306)/`referral_codes`/`referral_risk_audits`(spec307)由对应 spec 增量建，不在本 spec 9 表内，非漏建。
 
-- [ ] 9 张表建好（plans/subscriptions/credit_transactions/credit_balances/payment_orders/payment_agreements/refunds/referrals/billing_configs），字段对齐规格文档第四节。
+- [ ] 9 张表建好（plans/subscriptions/credit_transactions/credit_balances/payment_orders/payment_terminals/refunds/referrals/billing_configs），字段对齐规格文档第四节（2026-07 修订版：无 payment_agreements）。
 - [ ] `credit_transactions` append-only + `idempotency_key` 唯一约束；`payment_orders` 幂等键唯一；`referrals` invitee 唯一。
 - [ ] 金额统一 `*_cents`(integer 分)；积分 `integer`；数值字段不写死真实定价。
 - [ ] `config` 服务：`getConfig/getConfigs/seedConfigs`；种子占位值可读、`seedConfigs` 不覆盖已改值。

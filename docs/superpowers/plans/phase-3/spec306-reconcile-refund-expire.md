@@ -3,15 +3,15 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 实现 Phase 3 商业化的「资金校验与回退」三件套（架构 §6.3 对账 / §6.2(D) 退款 / §5.1 积分过期）：
-1. **每日对账 Cron**——拉支付宝账单 vs `payment_orders` + `credit_transactions`，逐笔比对金额/状态，差异落 `reconcile_diffs` + 告警；积分账本独立审计（余额 = Σ流水）。
-2. **退款流程**——`createRefund` service（建 `refunds(pending)` → `provider.refund` → 成功置 `done` + 订单 `refunded` + 必要时扣回已发积分（负向 `refund_clawback` 流水）/解约；失败 `failed`；敏感操作留审计）。**退款唯一入口收口到 spec310 `POST /admin-api/refunds`（过 admin RBAC + 审计），本 spec 不建自有路由，只产出 `createRefund` 供 spec310 调用。**
+1. **每日对账 Cron**——按 `payment_orders` 逐笔调收钱吧「查询」接口核对终态（重点清算 `unknown` 态订单），比对金额/状态，差异落 `reconcile_diffs` + 告警；积分账本独立审计（余额 = Σ流水）。（如后续开通收钱吧对账单导出，再以账单文件比对替代逐笔查询，接口不变。）
+2. **退款流程**——`createRefund` service（建 `refunds(pending)` → `provider.refund` → 成功置 `done` + 订单 `refunded` + 必要时扣回已发积分（负向 `refund_clawback` 流水）；失败 `failed`；敏感操作留审计）。**退款唯一入口收口到 spec310 `POST /admin-api/refunds`（过 admin RBAC + 审计），本 spec 不建自有路由，只产出 `createRefund` 供 spec310 调用。**
 3. **积分过期 Cron**——调 `credits.expireDue(now)` 写 `expire` 流水。
 
 本 spec **只消费** spec302 账本、spec303 Cron、spec304 支付抽象，不重复实现它们；新增对账逻辑、退款编排、过期任务注册。
 
 **Architecture:**
-- **对账**：每日 `registerCron("reconcile", 1 天)` 调对账 job 体。job 用 `provider.queryBill(date)` 拉支付宝当日账单（逐笔 `{tradeNo, amountCents, status}`），与本地 `payment_orders`（按 `provider_trade_no` 关联）逐笔比对**金额**与**状态**；差异（金额不符/状态不符/单边账：本地有账单无、账单有本地无）写入 **`reconcile_diffs` 表**并触发**告警钩子**（`alertHook`，默认 console.error，可注入）。积分账本独立审计：抽样/全量校验 `credit_balances.balance === Σ credit_transactions.amount`，不一致也落 diff。**对账只读不改账**（差异交由人工/退款流程处置），保证幂等可重复跑。
-- **退款**：本 spec 只产出 `createRefund(input, deps)` **service**（不建路由）。**退款唯一入口收口到 spec310 `POST /admin-api/refunds`（过 admin RBAC + 审计），由 spec310 取 admin 会话的 `operator` 传入并调用本 service。** 流程：①事务内建 `refunds(pending)` 并校验订单为 `paid`、退款额 ≤ 订单额；②调 `provider.refund({tradeNo, amountCents, outRequestNo})`；③成功 → `refunds.status=done` + `payment_orders.status=refunded` + （若该订单曾入账积分）写**负向 `refund_clawback` 积分流水**扣回 + （若关联 `payment_agreements`）解约置 `unsigned`；④失败 → `refunds.status=failed`。整个动作走**审计**（operator + 前后值）：service 内把 `operator` 落 `refunds` + 占位 audit；正式审计装置在 spec310 入口侧（admin RBAC + 审计）落地。
+- **对账**：每日 `registerCron("reconcile", 1 天)` 调对账 job 体。job 扫当日（含 `unknown` 态存量）`payment_orders`，逐笔 `provider.query(clientSn)` 取收钱吧终态（`{sn, tradeNo, amountCents, status}`），比对**金额**与**状态**；差异（金额不符/状态不符/查无此单/本地 unknown 而通道已付）写入 **`reconcile_diffs` 表**并触发**告警钩子**（`alertHook`，默认 console.error，可注入）。积分账本独立审计：抽样/全量校验 `credit_balances.balance === Σ credit_transactions.amount`，不一致也落 diff。**对账只读不改账**（差异交由人工/退款流程处置），保证幂等可重复跑。
+- **退款**：本 spec 只产出 `createRefund(input, deps)` **service**（不建路由）。**退款唯一入口收口到 spec310 `POST /admin-api/refunds`（过 admin RBAC + 审计），由 spec310 取 admin 会话的 `operator` 传入并调用本 service。** 流程：①事务内建 `refunds(pending)` 并校验订单为 `paid`、退款额 ≤ 订单额；②调 `provider.refund({tradeNo, amountCents, outRequestNo})`；③成功 → `refunds.status=done` + `payment_orders.status=refunded` + （若该订单曾入账积分）写**负向 `refund_clawback` 积分流水**扣回；④失败 → `refunds.status=failed`。整个动作走**审计**（operator + 前后值）：service 内把 `operator` 落 `refunds` + 占位 audit；正式审计装置在 spec310 入口侧（admin RBAC + 审计）落地。
 - **过期**：每日 `registerCron("credit_expire", 1 天)` 调 `credits.expireDue(now)`（spec302 已实现 FIFO 先过期先扣 + `expire:<grantId>` 幂等），写 `expire` 流水。Cron 体只是薄封装 + 日志。
 
 **Tech Stack:** Hono 4.12、Bun、Drizzle ORM、PostgreSQL（事务）、Zod、Redis（Cron 锁，经 spec303）、bun:test。
@@ -19,7 +19,7 @@
 ## Global Constraints
 
 见 `spec300-index.md`。本 spec 关键：
-- **钱只在 App API 动**；对账是只读校验，不改账；退款是唯一会"扣回积分/解约"的运营动作，必须事务 + 审计。
+- **钱只在 App API 动**；对账是只读校验，不改账；退款是唯一会"扣回积分"的运营动作，必须事务 + 审计。
 - **余额 = Σ流水**：积分账本审计 = 校验 `credit_balances` 缓存与 `Σ credit_transactions` 一致。
 - 周期任务（对账/过期）统一走 **Redis 分布式单例 Cron**（spec303 `registerCron(name, everyMs, jobFn, opts?) -> {stop}` / `withCronLock<T>(name, fn) -> Promise<T|undefined>`），不引入独立调度器；job 体幂等、可重复跑。
 - 退款金额单位 `*_cents`(integer 分)；退款幂等（同 `out_request_no` 不重复退）。
@@ -36,14 +36,14 @@ apps/api/src/
 │   └── reconcile.ts              # 新：reconcile_diffs（对账差异表）
 ├── services/
 │   ├── reconcile.ts              # 新：对账 job 体（账单 vs orders+ledger + 账本审计）
-│   └── refunds.ts                # 新：退款编排（建单→provider.refund→落账/扣积分/解约/审计）
+│   └── refunds.ts                # 新：退款编排（建单→provider.refund→落账/扣积分/审计）
 └── cron/
     ├── reconcile-job.ts          # 新：registerCron("reconcile", 1天) 注册
     └── credit-expire-job.ts      # 新：registerCron("credit_expire", 1天) → credits.expireDue
 # 注：本 spec 不建退款路由。退款唯一入口收口到 spec310 POST /admin-api/refunds（过 admin RBAC + 审计），spec310 调用本 spec 的 createRefund service。
 apps/api/test/
 ├── reconcile.test.ts             # 新：金额/状态差异检出 + 单边账 + 账本审计
-├── refunds.test.ts               # 新：pending→done + 订单 refunded + 扣回积分 + 解约 + 失败 failed
+├── refunds.test.ts               # 新：pending→done + 订单 refunded + 扣回积分 + 失败 failed
 └── credit-expire-job.test.ts     # 新：过期 job 调 expireDue 写 expire
 ```
 
@@ -56,16 +56,16 @@ apps/api/test/
 **消费（来自前序 spec，不在本 spec 实现）：**
 - spec303 Cron（契约以 spec303 为准）：`registerCron(name: string, everyMs: number, jobFn: () => Promise<void>, opts?): { stop: () => void }`；`withCronLock<T>(name: string, fn: () => Promise<T>): Promise<T | undefined>`（`registerCron` 内部已用 `withCronLock` 包裹保证分布式单例，未抢到锁时跳过；本 spec 直接用 `registerCron`，拿到的 `{ stop }` 句柄用于关停，job 体单独导出供测试直调）。
 - spec302 账本：`credits.expireDue(now: Date) -> Promise<number>`；`credits.grant(userId, amount, opts)`（退款扣回积分用负向 amount，`type: "refund_clawback"`，spec301 已登记；**不借 spec302 的 `release`**——`release` 是 hold 退还净 0 语义，见 Task 2）。
-- spec304 支付：`PaymentProvider` 接口（含 `queryBill`/`refund`）。本 spec **不另起一套** provider 接口，直接复用 spec304 的类型：
-  - `queryBill?(billDate: string /* YYYY-MM-DD */) -> Promise<Array<{ tradeNo: string; amountCents: number; status: "paid" | "refunded" | "closed" }>>`（spec304 定义；status 为窄联合 `"paid" | "refunded" | "closed"`）。对账侧用 `Pick<PaymentProvider, "queryBill">` / `import` spec304 的 `BillItem` 类型，不自建 `ReconcilableProvider`。
-  - `refund(args: { tradeNo: string; amountCents: number; outRequestNo: string }) -> Promise<{ ok: boolean; refundedCents?: number; error?: string }>`（spec304 已声明 refund；本 spec 固定其入参/出参契约）。
-- 表（spec301）：`paymentOrders`、`refunds`、`paymentAgreements`、`creditTransactions`、`creditBalances`。
+- spec304 支付：`PaymentProvider` 接口（含 `query`/`refund`）。本 spec **不另起一套** provider 接口，直接复用 spec304 的类型：
+  - `query(clientSn: string) -> Promise<{ status: "paid" | "failed" | "pending"; sn?: string; tradeNo?: string; payway?: string; amountCents?: number }>`（spec304 定义；对账补充消费 `amountCents` 字段做金额核对）。对账侧用 `Pick<PaymentProvider, "query">` 收窄，不自建 provider 接口。**收钱吧无账单拉取 API（以官方文档为准）——对账采用"逐笔查询核对"**；如后续开通商户后台对账单导出，再加可选的账单文件比对路径，`runReconcile` 签名不变。
+  - `refund(opts: { clientSn: string; refundSn: string; amountCents: number }) -> Promise<{ ok: boolean; error?: string }>`（spec304 已声明；refundSn 幂等）。
+- 表（spec301）：`paymentOrders`（含 `clientSn/providerTradeNo/status(created/paid/failed/unknown/refunded)`）、`refunds`、`creditTransactions`、`creditBalances`。（无 `paymentAgreements`——不做自动续费）
 
 **产出（供 spec310 运营后台 / 告警消费）：**
 - `reconcileDiffs` 表对象。
 - `runReconcile(date: string, deps: { provider, alertHook? }) -> Promise<{ checked: number; diffs: number }>`（对账 job 体，可直调测试）。
 - `auditLedger() -> Promise<Array<{ userId: string; cached: number; actual: number }>>`（积分账本审计，返回不一致项）。
-- `createRefund(input: { orderId; amountCents; reason; operator; agreementNo? }, deps: { provider }) -> Promise<{ refundId; status }>`（退款编排 service，可直调测试 + **被 spec310 `POST /admin-api/refunds` 调用**；本 spec 不建自有路由）。
+- `createRefund(input: { orderId; amountCents; reason; operator }, deps: { provider }) -> Promise<{ refundId; status }>`（退款编排 service，可直调测试 + **被 spec310 `POST /admin-api/refunds` 调用**；本 spec 不建自有路由）。
 - `expireCreditsJob()`（过期 job 体）。
 - Cron 注册：`registerReconcileCron(deps)`、`registerCreditExpireCron()`。
 
@@ -91,9 +91,9 @@ import { pgTable, uuid, text, integer, timestamp, index } from "drizzle-orm/pg-c
 export const reconcileDiffs = pgTable("reconcile_diffs", {
   id: uuid("id").defaultRandom().primaryKey(),
   billDate: text("bill_date").notNull(),                       // 对账日 YYYY-MM-DD
-  // amount_mismatch(金额不符) | status_mismatch(状态不符) | bill_only(账单有本地无) | local_only(本地有账单无) | ledger_mismatch(账本余额≠Σ流水)
+  // amount_mismatch(金额不符) | status_mismatch(状态不符) | unknown_paid(本地未知而通道已付★最高优先) | provider_missing(本地已结算而通道查无) | ledger_mismatch(账本余额≠Σ流水)
   diffType: text("diff_type").notNull(),
-  tradeNo: text("trade_no"),                                   // 关联支付宝 trade_no（账本审计类为空）
+  tradeNo: text("trade_no"),                                   // 关联收钱吧 sn / 渠道 trade_no（账本审计类为空）
   orderId: uuid("order_id"),                                   // 关联本地订单（单边账可空）
   userId: uuid("user_id"),                                     // 账本审计类记 user
   localValue: text("local_value"),                            // 本地侧值（金额/状态/缓存余额）
@@ -112,20 +112,20 @@ import { paymentOrders } from "../src/db/schema/payments";
 import { reconcileDiffs } from "../src/db/schema/reconcile";
 import { eq } from "drizzle-orm";
 
-// mock provider：可控账单
-function mockProvider(bill: Array<{ tradeNo: string; amountCents: number; status: string }>) {
-  return { queryBill: async (_d: string) => bill } as any;
+// mock provider：按 clientSn 返回可控查询结果
+function mockProvider(results: Record<string, { status: string; amountCents?: number; sn?: string }>) {
+  return { query: async (clientSn: string) => results[clientSn] ?? { status: "failed" } } as any;
 }
 
 test("金额不符 → 落 amount_mismatch", async () => {
   const userId = await makeTestUser();
   const [order] = await db.insert(paymentOrders).values({
     userId, type: "recharge", amountCents: 1000, status: "paid",
-    provider: "alipay", providerTradeNo: "T1", idempotencyKey: "o1",
+    provider: "shouqianba", providerTradeNo: "T1", idempotencyKey: "o1",
   }).returning();
-  // 账单金额 999，本地 1000 → 金额不符
+  // 通道查询金额 999，本地 1000 → 金额不符
   const res = await runReconcile("2026-06-29", {
-    provider: mockProvider([{ tradeNo: "T1", amountCents: 999, status: "paid" }]),
+    provider: mockProvider({ [order.clientSn]: { status: "paid", amountCents: 999, sn: "T1" } }),
   });
   expect(res.diffs).toBe(1);
   const [d] = await db.select().from(reconcileDiffs).where(eq(reconcileDiffs.tradeNo, "T1"));
@@ -138,7 +138,7 @@ test("状态不符 → 落 status_mismatch（本地 paid，账单 refunded）", 
   const userId = await makeTestUser();
   await db.insert(paymentOrders).values({
     userId, type: "recharge", amountCents: 500, status: "paid",
-    provider: "alipay", providerTradeNo: "T2", idempotencyKey: "o2",
+    provider: "shouqianba", providerTradeNo: "T2", idempotencyKey: "o2",
   });
   const res = await runReconcile("2026-06-29", {
     provider: mockProvider([{ tradeNo: "T2", amountCents: 500, status: "refunded" }]),
@@ -148,27 +148,43 @@ test("状态不符 → 落 status_mismatch（本地 paid，账单 refunded）", 
   expect(d.diffType).toBe("status_mismatch");
 });
 
-test("单边账：账单有本地无 → bill_only；本地有账单无 → local_only", async () => {
+test("unknown 清算：通道已付 → unknown_paid 差异；通道明确失败 → 订单收敛 failed", async () => {
+  const userId = await makeTestUser();
+  const [oPaid] = await db.insert(paymentOrders).values({
+    userId, type: "recharge", amountCents: 300, status: "unknown",
+    provider: "shouqianba", clientSn: "C_UP", idempotencyKey: "o3",
+  }).returning();
+  const [oFail] = await db.insert(paymentOrders).values({
+    userId, type: "recharge", amountCents: 400, status: "unknown",
+    provider: "shouqianba", clientSn: "C_UF", idempotencyKey: "o3b",
+  }).returning();
+  const res = await runReconcile("2026-06-29", {
+    provider: mockProvider({ C_UP: { status: "paid", amountCents: 300, sn: "S1" }, C_UF: { status: "failed" } }),
+  });
+  expect(res.diffs).toBe(1);                                   // unknown_paid 落差异
+  const rows = await db.select().from(reconcileDiffs);
+  expect(rows.map((r) => r.diffType)).toContain("unknown_paid");
+  const [f] = await db.select().from(paymentOrders).where(eq(paymentOrders.id, oFail.id));
+  expect(f.status).toBe("failed");                             // 通道明确失败 → 收敛
+});
+
+test("本地已结算而通道查无 → provider_missing", async () => {
   const userId = await makeTestUser();
   await db.insert(paymentOrders).values({
     userId, type: "recharge", amountCents: 300, status: "paid",
-    provider: "alipay", providerTradeNo: "T_LOCAL", idempotencyKey: "o3",
+    provider: "shouqianba", clientSn: "C_LOCAL", providerTradeNo: "T_LOCAL", idempotencyKey: "o3c",
   });
-  const res = await runReconcile("2026-06-29", {
-    provider: mockProvider([{ tradeNo: "T_BILL", amountCents: 700, status: "paid" }]),
-  });
-  expect(res.diffs).toBe(2);
+  const res = await runReconcile("2026-06-29", { provider: mockProvider({}) });
+  expect(res.diffs).toBe(1);
   const rows = await db.select().from(reconcileDiffs);
-  const types = rows.map((r) => r.diffType).sort();
-  expect(types).toContain("bill_only");
-  expect(types).toContain("local_only");
+  expect(rows.map((r) => r.diffType)).toContain("provider_missing");
 });
 
 test("对账一致 → 无差异；可重复跑（幂等不重复落 diff）", async () => {
   const userId = await makeTestUser();
   await db.insert(paymentOrders).values({
     userId, type: "recharge", amountCents: 800, status: "paid",
-    provider: "alipay", providerTradeNo: "T_OK", idempotencyKey: "o4",
+    provider: "shouqianba", providerTradeNo: "T_OK", idempotencyKey: "o4",
   });
   const bill = [{ tradeNo: "T_OK", amountCents: 800, status: "paid" }];
   const r1 = await runReconcile("2026-06-29", { provider: mockProvider(bill) });
@@ -181,12 +197,13 @@ test("对账一致 → 无差异；可重复跑（幂等不重复落 diff）", a
 - [ ] **Step 4: 写 `services/reconcile.ts`（对账 job 体 + 账本审计）**
 
 要点：
-- `runReconcile(date, deps)`：拉 `deps.provider.queryBill(date)` → **当日** `payment_orders`（**必须按 `created_at` 落在当日窗口 `[date 00:00, 次日 00:00)` 过滤**，不取全表——否则历史订单会被误报 `local_only`），再按 `providerTradeNo` 关联。
-- 用 `Map<tradeNo, order>` + `Map<tradeNo, billItem>` 做双向比对：
-  - 两侧都有：金额不符 → `amount_mismatch`；状态不符（映射本地 `paid/refunded/failed` ↔ 账单 `paid/refunded/closed`）→ `status_mismatch`。
-  - 仅账单有 → `bill_only`；仅本地有（且本地 `paid`）→ `local_only`。
-- **幂等**：落 diff 前先查同 `(billDate, tradeNo, diffType)` 是否已存在 `open`，存在则跳过（避免重复跑重复落）。
-- 状态状态映射表集中定义，注释清楚口径（本地 `created` 不参与对账，只比已支付/已退款）。
+- `runReconcile(date, deps)`：扫**当日窗口 `[date 00:00, 次日 00:00)`** 的 `payment_orders`（按 `created_at` 过滤，不取全表）**加上全部存量 `unknown` 态订单**（不限当日——unknown 必须清算到终态为止），逐笔 `deps.provider.query(order.clientSn)` 取通道终态。
+- 比对口径（集中定义，注释写清）：
+  - 本地 `paid`：通道非 `paid` → `status_mismatch`；金额不符 → `amount_mismatch`。
+  - 本地 `unknown`：通道 `paid` → `unknown_paid`（钱已收、账没入——最高优先级差异，人工/自动补入账走幂等 markPaid）；通道 `failed` → 订单可安全置 `failed`（对账唯一允许的写动作，条件 UPDATE `WHERE status='unknown'`）。
+  - 本地 `paid/refunded` 而通道查无此单 → `provider_missing`。
+  - 本地 `created/failed` 不参与比对。
+- **幂等**：落 diff 前先查同 `(billDate, clientSn, diffType)` 是否已存在 `open`，存在则跳过（重复跑不重复落）。
 - 返回 `{ checked, diffs }`。
 
 ```typescript
@@ -195,26 +212,17 @@ import { paymentOrders } from "../db/schema/payments";
 import { reconcileDiffs } from "../db/schema/reconcile";
 import { creditTransactions, creditBalances } from "../db/schema/credits";
 import { and, eq, gte, lt, sql } from "drizzle-orm";
-// 复用 spec304 的支付抽象类型，不自建 provider 接口/账单结构
-import type { PaymentProvider, BillItem } from "./payment-provider";
+// 复用 spec304 的支付抽象类型，不自建 provider 接口
+import type { PaymentProvider } from "./payment/provider";
 
-// 对账只需要 queryBill 这一能力 → Pick 收窄，便于 mock/注入
-export type ReconcileProvider = Pick<PaymentProvider, "queryBill">;
-// BillItem.status 为窄联合 "paid" | "refunded" | "closed"（spec304 定义）
-export type BillStatus = BillItem["status"];
+// 对账只需要 query 这一能力 → Pick 收窄，便于 mock/注入
+export type ReconcileProvider = Pick<PaymentProvider, "query">;
 export type AlertHook = (msg: string, detail: unknown) => void;
 
 const defaultAlert: AlertHook = (msg, detail) => console.error(`[reconcile] ${msg}`, detail);
 
-// 本地状态 ↔ 账单状态 是否一致（口径集中处）。bill 为窄联合 "paid" | "refunded" | "closed"。
-function statusMatch(local: string, bill: BillStatus): boolean {
-  if (local === "paid") return bill === "paid";
-  if (local === "refunded") return bill === "refunded" || bill === "closed";
-  return false; // created/failed 不应出现在账单已支付侧
-}
-
 async function recordDiff(d: typeof reconcileDiffs.$inferInsert, alert: AlertHook) {
-  // 幂等：同 (billDate, tradeNo, diffType) 已有 open 则跳过
+  // 幂等：同 (billDate, clientSn, diffType) 已有 open 则跳过
   const existing = await db.select().from(reconcileDiffs).where(and(
     eq(reconcileDiffs.billDate, d.billDate),
     d.tradeNo ? eq(reconcileDiffs.tradeNo, d.tradeNo) : sql`${reconcileDiffs.tradeNo} is null`,
@@ -228,34 +236,47 @@ async function recordDiff(d: typeof reconcileDiffs.$inferInsert, alert: AlertHoo
 }
 
 export async function runReconcile(
-  date: string,  // billDate，YYYY-MM-DD
+  date: string,  // 对账日，YYYY-MM-DD
   deps: { provider: ReconcileProvider; alertHook?: AlertHook },
 ): Promise<{ checked: number; diffs: number }> {
   const alert = deps.alertHook ?? defaultAlert;
-  if (!deps.provider.queryBill) throw new Error("provider 未实现 queryBill，无法对账");
-  const bill = await deps.provider.queryBill(date);
-  // 当日窗口 [date 00:00, 次日 00:00)，只比对该日订单（避免历史订单被误报 local_only）
   const dayStart = new Date(`${date}T00:00:00.000Z`);
   const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
-  // 本地：当日已结算（paid/refunded）的订单（created/failed 不对账；按 created_at 落在当日过滤）
-  const orders = (await db.select().from(paymentOrders).where(and(
-    gte(paymentOrders.createdAt, dayStart),
-    lt(paymentOrders.createdAt, dayEnd),
-  ))).filter((o) => o.providerTradeNo && (o.status === "paid" || o.status === "refunded"));
-  const orderByTrade = new Map(orders.map((o) => [o.providerTradeNo!, o]));
-  const billByTrade = new Map(bill.map((b) => [b.tradeNo, b]));
+  // 当日已结算订单 + 全量存量 unknown（unknown 必须清算到终态）
+  const dayOrders = await db.select().from(paymentOrders).where(and(
+    gte(paymentOrders.createdAt, dayStart), lt(paymentOrders.createdAt, dayEnd),
+  ));
+  const unknowns = await db.select().from(paymentOrders).where(eq(paymentOrders.status, "unknown"));
+  const seen = new Set<string>();
+  const targets = [...dayOrders, ...unknowns]
+    .filter((o) => ["paid", "refunded", "unknown"].includes(o.status))
+    .filter((o) => (seen.has(o.id) ? false : (seen.add(o.id), true)));
   let diffs = 0;
 
-  for (const b of bill) {
-    const o = orderByTrade.get(b.tradeNo);
-    if (!o) { if (await recordDiff({ billDate: date, diffType: "bill_only", tradeNo: b.tradeNo, billValue: String(b.amountCents) }, alert)) diffs++; continue; }
-    if (o.amountCents !== b.amountCents) { if (await recordDiff({ billDate: date, diffType: "amount_mismatch", tradeNo: b.tradeNo, orderId: o.id, localValue: String(o.amountCents), billValue: String(b.amountCents) }, alert)) diffs++; }
-    if (!statusMatch(o.status, b.status)) { if (await recordDiff({ billDate: date, diffType: "status_mismatch", tradeNo: b.tradeNo, orderId: o.id, localValue: o.status, billValue: b.status }, alert)) diffs++; }
+  for (const o of targets) {
+    const r = await deps.provider.query(o.clientSn);   // 逐笔查通道终态
+    if (o.status === "unknown") {
+      if (r.status === "paid") {
+        if (await recordDiff({ billDate: date, diffType: "unknown_paid", tradeNo: r.sn ?? o.clientSn, orderId: o.id, localValue: "unknown", billValue: String(r.amountCents ?? "") }, alert)) diffs++;
+      } else if (r.status === "failed") {
+        // 对账唯一允许的写动作：unknown 且通道明确失败 → 收敛为 failed（条件 UPDATE）
+        await db.update(paymentOrders).set({ status: "failed" })
+          .where(and(eq(paymentOrders.id, o.id), eq(paymentOrders.status, "unknown")));
+      }
+      continue;
+    }
+    if (r.status === "pending" || (r.status === "failed" && !r.sn)) {
+      if (await recordDiff({ billDate: date, diffType: "provider_missing", tradeNo: o.providerTradeNo ?? o.clientSn, orderId: o.id, localValue: o.status }, alert)) diffs++;
+      continue;
+    }
+    if (o.status === "paid" && r.status !== "paid") {
+      if (await recordDiff({ billDate: date, diffType: "status_mismatch", tradeNo: o.providerTradeNo ?? o.clientSn, orderId: o.id, localValue: o.status, billValue: r.status }, alert)) diffs++;
+    }
+    if (r.amountCents != null && r.amountCents !== o.amountCents) {
+      if (await recordDiff({ billDate: date, diffType: "amount_mismatch", tradeNo: o.providerTradeNo ?? o.clientSn, orderId: o.id, localValue: String(o.amountCents), billValue: String(r.amountCents) }, alert)) diffs++;
+    }
   }
-  for (const o of orders) {
-    if (!billByTrade.has(o.providerTradeNo!)) { if (await recordDiff({ billDate: date, diffType: "local_only", tradeNo: o.providerTradeNo!, orderId: o.id, localValue: o.status }, alert)) diffs++; }
-  }
-  return { checked: bill.length + orders.length, diffs };
+  return { checked: targets.length, diffs };
 }
 
 // 积分账本独立审计：缓存余额 vs Σ流水（不一致落 ledger_mismatch + 告警）
@@ -313,7 +334,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 2: 退款编排（建单 → provider.refund → 落账 / 扣回积分 / 解约 / 审计）
+## Task 2: 退款编排（建单 → provider.refund → 落账 / 扣回积分 / 审计）
 
 **Files:** Create `apps/api/src/services/refunds.ts`、`apps/api/test/refunds.test.ts`
 
@@ -322,7 +343,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```typescript
 import { createRefund } from "../src/services/refunds";
 import { db } from "../src/db";
-import { paymentOrders, refunds, paymentAgreements } from "../src/db/schema/payments";
+import { paymentOrders, refunds } from "../src/db/schema/payments";
 import { creditTransactions } from "../src/db/schema/credits";
 import { eq } from "drizzle-orm";
 
@@ -337,7 +358,7 @@ test("退款成功：refunds pending→done + 订单 refunded + 扣回积分", a
   const userId = await makeTestUser();
   const [order] = await db.insert(paymentOrders).values({
     userId, type: "recharge", amountCents: 1000, status: "paid",
-    provider: "alipay", providerTradeNo: "T1", idempotencyKey: "o1",
+    provider: "shouqianba", providerTradeNo: "T1", idempotencyKey: "o1",
   }).returning();
   // 该订单曾入账 1000 积分（充值到账）
   await db.insert(creditTransactions).values({ userId, type: "purchase", amount: 1000, ref: order.id, idempotencyKey: "grant:o1" });
@@ -361,28 +382,11 @@ test("退款成功：refunds pending→done + 订单 refunded + 扣回积分", a
   expect(negative[0].type).toBe("refund_clawback");
 });
 
-test("退款成功且订单关联代扣协议：解约 unsigned", async () => {
-  const userId = await makeTestUser();
-  const [ag] = await db.insert(paymentAgreements).values({
-    userId, provider: "alipay", agreementNo: "AG1", status: "signed",
-  }).returning();
-  const [order] = await db.insert(paymentOrders).values({
-    userId, type: "auto_renew", amountCents: 2900, status: "paid",
-    provider: "alipay", providerTradeNo: "T2", idempotencyKey: "o2",
-  }).returning();
-  await createRefund(
-    { orderId: order.id, amountCents: 2900, reason: "扣款后退款", operator: "ops_bob", agreementNo: "AG1" },
-    { provider: okProvider() },
-  );
-  const [a] = await db.select().from(paymentAgreements).where(eq(paymentAgreements.id, ag.id));
-  expect(a.status).toBe("unsigned");
-});
-
 test("退款失败：refunds failed，订单不变，不扣积分", async () => {
   const userId = await makeTestUser();
   const [order] = await db.insert(paymentOrders).values({
     userId, type: "recharge", amountCents: 500, status: "paid",
-    provider: "alipay", providerTradeNo: "T3", idempotencyKey: "o3",
+    provider: "shouqianba", providerTradeNo: "T3", idempotencyKey: "o3",
   }).returning();
   const res = await createRefund(
     { orderId: order.id, amountCents: 500, reason: "测试失败", operator: "ops_carol" },
@@ -399,7 +403,7 @@ test("拒绝非法退款：订单非 paid / 超额", async () => {
   const userId = await makeTestUser();
   const [order] = await db.insert(paymentOrders).values({
     userId, type: "recharge", amountCents: 500, status: "created",
-    provider: "alipay", providerTradeNo: "T4", idempotencyKey: "o4",
+    provider: "shouqianba", providerTradeNo: "T4", idempotencyKey: "o4",
   }).returning();
   await expect(createRefund(
     { orderId: order.id, amountCents: 500, reason: "x", operator: "ops" },
@@ -411,17 +415,17 @@ test("拒绝非法退款：订单非 paid / 超额", async () => {
 - [ ] **Step 2: 写 `services/refunds.ts`（退款编排）**
 
 要点：
-- 入参 Zod 校验：`{ orderId: uuid, amountCents: int>0, reason: string, operator: string, agreementNo?: string }`。
+- 入参 Zod 校验：`{ orderId: uuid, amountCents: int>0, reason: string, operator: string }`。
 - ①事务建 `refunds(pending)` + 校验：订单存在且 `status==="paid"`；`amountCents <= order.amountCents`（不满足抛错，不建 provider 调用）。
 - ②`out_request_no = refunds.id`（退款幂等键，同一退款重试不重复退）。调 `deps.provider.refund({ tradeNo: order.providerTradeNo, amountCents, outRequestNo })`。
-- ③成功（`ok`）：事务内 `refunds.status=done` + `payment_orders.status=refunded` + 若该订单曾入账积分（按 `ref===order.id` 查 `purchase/grant` 正向流水之和 > 0）则写**负向流水** `type:"refund_clawback"`（spec301 已登记的新类型，负向注销充值积分；**不借 `release`**，`release` 是 spec302 的 hold 退还净 0 语义）`amount: -clawback`（`idempotencyKey: refund_clawback:${refundId}`，幂等）+ 若 `agreementNo` 给定则该协议 `status=unsigned`。
+- ③成功（`ok`）：事务内 `refunds.status=done` + `payment_orders.status=refunded` + 若该订单曾入账积分（按 `ref===order.id` 查 `purchase/grant` 正向流水之和 > 0）则写**负向流水** `type:"refund_clawback"`（spec301 已登记的新类型，负向注销充值积分；**不借 `release`**，`release` 是 spec302 的 hold 退还净 0 语义）`amount: -clawback`（`idempotencyKey: refund_clawback:${refundId}`，幂等）。
 - ④失败：`refunds.status=failed`，不动订单/积分/协议。
 - **审计**：成功/失败都写审计（operator + 前值后值）。spec309 审计装置就绪则调 `audit.log({ operator, action:"refund", orderId, before, after })`；未就绪先留 `operator` 字段写进 `refunds` + 顶部 `TODO(spec309): 接 admin_audit_logs 审计装置`。
 
 ```typescript
 import { z } from "zod";
 import { db } from "../db";
-import { paymentOrders, refunds, paymentAgreements } from "../db/schema/payments";
+import { paymentOrders, refunds } from "../db/schema/payments";
 import { creditTransactions } from "../db/schema/credits";
 import { and, eq, sql } from "drizzle-orm";
 
@@ -439,7 +443,6 @@ const InputSchema = z.object({
   amountCents: z.number().int().positive(),
   reason: z.string(),
   operator: z.string().min(1),
-  agreementNo: z.string().optional(),
 });
 export type RefundInput = z.infer<typeof InputSchema>;
 
@@ -476,7 +479,7 @@ export async function createRefund(
     return { refundId, status: "failed" };
   }
 
-  // ③ 成功：事务落账 + 扣回积分 + 解约
+  // ③ 成功：事务落账 + 扣回积分
   await db.transaction(async (tx) => {
     await tx.update(refunds).set({ status: "done" }).where(eq(refunds.id, refundId));
     await tx.update(paymentOrders).set({ status: "refunded" }).where(eq(paymentOrders.id, order.id));
@@ -497,11 +500,6 @@ export async function createRefund(
         idempotencyKey: `refund_clawback:${refundId}`,
       }).onConflictDoNothing({ target: creditTransactions.idempotencyKey });
     }
-
-    // 关联代扣协议 → 解约
-    if (input.agreementNo) {
-      await tx.update(paymentAgreements).set({ status: "unsigned" }).where(eq(paymentAgreements.agreementNo, input.agreementNo));
-    }
   });
 
   auditLog({ operator: input.operator, action: "refund.done", orderId: order.id, before: { orderStatus: "paid" }, after: { orderStatus: "refunded", refundId, amountCents: input.amountCents } });
@@ -514,7 +512,7 @@ export async function createRefund(
 ```bash
 cd apps/api && bun test test/refunds.test.ts
 git add apps/api/src/services/refunds.ts apps/api/test/refunds.test.ts
-git commit -m "feat(spec306): 退款编排(pending→done/failed + 订单 refunded + 扣回积分 + 解约 + 审计占位)
+git commit -m "feat(spec306): 退款编排(pending→done/failed + 订单 refunded + 扣回积分 + 审计占位)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
@@ -530,13 +528,13 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - [ ] **Step 1: 确认无自建退款路由**
 
 - 不创建 `apps/api/src/routes/admin/refunds.ts`，不在主 app 挂任何 `POST /api/admin/refunds`。
-- `createRefund(input, deps)` 已在 Task 2 产出，签名 `{ orderId, amountCents, reason, operator, agreementNo? }`；spec310 的 `POST /admin-api/refunds` handler 负责：
+- `createRefund(input, deps)` 已在 Task 2 产出，签名 `{ orderId, amountCents, reason, operator }`；spec310 的 `POST /admin-api/refunds` handler 负责：
   - 过 admin RBAC + 鉴权（spec310/spec309 装置）；
   - 从 admin 会话取 `operator`（不再 header/body 兜底）；
   - body Zod 校验 `{ orderId, amount, reason }` 后映射为 `amountCents` 传入；
-  - 注入 spec304 provider（实现 `refund`/`queryBill`）调 `createRefund`；
+  - 注入 spec304 provider（实现 `refund`/`query`）调 `createRefund`；
   - 落审计（operator + 前后值）到 `admin_audit_logs`。
-- 退款的领域逻辑（建单 / provider.refund / 落账 / `refund_clawback` 扣回 / 解约）全在本 spec 的 service，spec310 只做入口编排，不重复实现。
+- 退款的领域逻辑（建单 / provider.refund / 落账 / `refund_clawback` 扣回）全在本 spec 的 service，spec310 只做入口编排，不重复实现。
 
 - [ ] **Step 2: grep 自检无残留路由**
 
@@ -623,7 +621,7 @@ export async function reconcileJob(deps: { provider: ReconcileProvider; alertHoo
   console.info(`[cron:reconcile] ${date} checked=${r.checked} diffs=${r.diffs}`);
 }
 
-/** 注册每日对账 Cron（Redis 分布式单例）。provider 来自 spec304（须实现 queryBill）。
+/** 注册每日对账 Cron（Redis 分布式单例）。provider 来自 spec304（须实现 query）。
  *  spec303 契约：registerCron(name, everyMs, jobFn, opts?) -> { stop }；返回句柄供关停。 */
 export function registerReconcileCron(deps: { provider: ReconcileProvider; alertHook?: AlertHook }): { stop: () => void } {
   return registerCron("reconcile", ONE_DAY_MS, () => reconcileJob(deps));
@@ -641,7 +639,7 @@ test("reconcileJob：对账昨日并跑账本审计（mock provider）", async (
   // ...建 paid 订单 providerTradeNo=T1 amountCents=1000...
   let alerts = 0;
   await reconcileJob({
-    provider: { queryBill: async () => [{ tradeNo: "T1", amountCents: 999, status: "paid" }] },
+    provider: { query: async () => ({ status: "paid", amountCents: 999, sn: "T1" }) },
     alertHook: () => { alerts++; },
   });
   expect(alerts).toBeGreaterThan(0);                          // 触发了告警
@@ -650,7 +648,7 @@ test("reconcileJob：对账昨日并跑账本审计（mock provider）", async (
 
 - [ ] **Step 3: startup 接线**
 
-在 App 启动处（spec303 的 cron 初始化旁）调 `registerReconcileCron({ provider: getPaymentProvider() })` 与 `registerCreditExpireCron()`。provider 须是实现了 `queryBill`/`refund` 的 spec304 实例（若 spec304 provider 未实现 `queryBill`，本 spec 在 spec304 接口上补该方法，或在 startup 用适配器包装）。
+在 App 启动处（spec303 的 cron 初始化旁）调 `registerReconcileCron({ provider: getPaymentProvider() })` 与 `registerCreditExpireCron()`。provider 须是实现了 `query`/`refund` 的 spec304 实例（`ShouqianbaProvider` 两者皆有，无需适配器）。
 
 ```typescript
 // apps/api/src/index.ts（或 cron 聚合 registerAllCrons()）
@@ -683,7 +681,7 @@ git push origin main
 
 **对账（§6.3）**
 - [ ] `reconcile_diffs` 表建好；`runReconcile(date, {provider})` 逐笔比对账单 vs `payment_orders`。
-- [ ] 检出 4 类差异：金额不符 `amount_mismatch`、状态不符 `status_mismatch`、账单单边 `bill_only`、本地单边 `local_only`，落表 + 触发 `alertHook`。
+- [ ] 检出 4 类差异：金额不符 `amount_mismatch`、状态不符 `status_mismatch`、未知已付 `unknown_paid`（★最高优先）、通道查无 `provider_missing`，落表 + 触发 `alertHook`；unknown 且通道明确失败 → 订单收敛 `failed`（对账唯一写动作）。
 - [ ] 对账只读不改账；同 `(billDate, tradeNo, diffType)` 幂等不重复落，可重复跑。
 - [ ] `auditLedger` 校验 `credit_balances` vs `Σ credit_transactions`，不一致落 `ledger_mismatch` + 告警。
 - [ ] `registerReconcileCron` 经 spec303 `registerCron("reconcile", 1天)` 注册（Redis 分布式单例）。
@@ -691,7 +689,7 @@ git push origin main
 **退款（§6.2(D)）**
 - [ ] `createRefund({orderId, amountCents, reason, operator})` service 产出，供 spec310 `POST /admin-api/refunds` 调用；本 spec **不建** 自有 `/api/admin/refunds` 路由；非法（订单非 paid/超额）拒绝。
 - [ ] 流转 `refunds` pending → `provider.refund` → done + `payment_orders` refunded；失败 → failed（订单/积分/协议不变）。
-- [ ] 成功时按比例**扣回已发积分**（负向流水 `type:"refund_clawback"`，`idempotencyKey=refund_clawback:<id>` 幂等；不借 `release`）；关联协议则**解约 unsigned**。
+- [ ] 成功时按比例**扣回已发积分**（负向流水 `type:"refund_clawback"`，`idempotencyKey=refund_clawback:<id>` 幂等；不借 `release`）。
 - [ ] 退款幂等键 `out_request_no=refundId`；敏感操作 service 内留 operator + 占位 audit；正式审计（`admin_audit_logs`）在 spec310 退款入口侧（admin RBAC）落地。
 
 **积分过期（§5.1）**

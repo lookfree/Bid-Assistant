@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 实现 **Redis 分布式单例 Cron**（架构 §6.4）：每个 App/worker 实例内置分钟级 tick，执行前抢 Redis 锁（`SET lock:cron:<name> <instanceId> NX EX 300`），抢到的实例独占执行 job、用 **Lua CAS** 只删自己持有的锁、长任务 watchdog 续租 → 保证集群内同一时刻**只有一个实例**在跑（分布式单例）。产出 `withCronLock` / `registerCron` / `startCronRunner` 三件套，供 spec305 代扣、spec306 对账+积分过期复用。不引入 Quartz/独立调度器（§6.4「简单」原则）。
+**Goal:** 实现 **Redis 分布式单例 Cron**（架构 §6.4）：每个 App/worker 实例内置分钟级 tick，执行前抢 Redis 锁（`SET lock:cron:<name> <instanceId> NX EX 300`），抢到的实例独占执行 job、用 **Lua CAS** 只删自己持有的锁、长任务 watchdog 续租 → 保证集群内同一时刻**只有一个实例**在跑（分布式单例）。产出 `withCronLock` / `registerCron` / `startCronRunner` 三件套，供 spec305 到期提醒/订阅状态推进、spec306 对账+积分过期复用。不引入 Quartz/独立调度器（§6.4「简单」原则）。
 
 **Architecture:** Redis 只负责「同一时刻单实例执行」，**DB 是「什么到期」的唯一真相**——job 体以 DB 为准查到期项、逐条幂等处理（业务幂等键兜底，双触发不重复扣款）。锁 TTL=300s 自愈：实例挂了锁自动过期，下一 tick 别的实例接管。`withCronLock` 抢锁→执行→Lua CAS 释放（值=instanceId，比对一致才 DEL，避免误删续期后别人抢到的锁）；可选 watchdog 在 fn 执行期间周期 `PEXPIRE` 续租。`registerCron(name, everyMs, jobFn)` 用 `setInterval` 起进程内 tick，每 tick 包一层 `withCronLock`。`startCronRunner(jobs)` 在 worker/api 启动时批量注册。**消费 Phase 0 的 ioredis 客户端**（`apps/api/src/redis/client.ts`，库 3、前缀 `bid:`）。
 
@@ -15,7 +15,7 @@
 - 复用 Phase 0 的 ioredis 客户端 `apps/api/src/redis/client.ts`（`redis`，库 3）；锁键前缀经客户端统一加 `bid:`，本服务再加 `lock:cron:` → 最终键 `bid:lock:cron:<name>`。
 - 锁释放**必须 Lua CAS**（GET 值 == instanceId 才 DEL），杜绝 TTL 过期后误删他人锁。
 - **DB 为准**：job 体查到期项、逐条幂等；Redis 只保证单实例。锁 TTL=300s 自愈。
-- 本 spec **不实现具体 job**（代扣/对账/过期分别在 spec305/306），只提供调度器与一个示例注册；TDD；`main` 上先开分支。
+- 本 spec **不实现具体 job**（到期提醒/对账/过期分别在 spec305/306，收钱吧每日签到在 spec304），只提供调度器与一个示例注册；TDD；`main` 上先开分支。
 
 ---
 
@@ -34,7 +34,7 @@ apps/api/test/
 
 ---
 
-## Interfaces（本 spec 对外产出，供 spec305/306 注册代扣、对账、过期 job）
+## Interfaces（本 spec 对外产出，供 spec304/305/306 注册签到、提醒、对账、过期 job）
 
 - Produces：`apps/api/src/services/cron.ts`
   - `instanceId: string`（本进程唯一标识，模块加载时生成 `crypto.randomUUID()`）。
@@ -282,7 +282,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - [ ] **Step 1: 在 `cron.ts` 加 `CronJob` 类型 + `startCronRunner`**
 
 ```typescript
-/** 一个待注册的 cron job 定义（spec305 代扣、spec306 对账/过期 各产出一个）。 */
+/** 一个待注册的 cron job 定义（spec304 签到、spec305 提醒/状态推进、spec306 对账/过期 各产出）。 */
 export type CronJob = {
   name: string;                 // 锁名，集群唯一
   everyMs: number;              // tick 间隔（分钟级，如 60_000）
@@ -316,7 +316,7 @@ export function startCronRunner(
 >   { name: "expire-credits", everyMs: 60_000, jobFn: expireCreditsJob },    // 扫 expire_at 写 expire
 > ]);
 > ```
-> job 体内部以 DB 为准、逐条幂等（代扣幂等键=订阅+周期），即使锁异常双触发也不重复扣款。
+> job 体内部以 DB 为准、逐条幂等（如提醒幂等键=订阅+周期末+档），即使锁异常双触发也不重复处理。
 
 - [ ] **Step 2: 失败测试（startCronRunner 注册多 job 都触发, stopAll 全停）**
 
@@ -389,6 +389,6 @@ git push origin main
 - [ ] 释放用 **Lua CAS**：值 == instanceId 才 DEL；值是别人的 instanceId **不误删**。
 - [ ] `watchdog:true` 时 fn 执行期周期 `PEXPIRE` 续租（长任务不丢锁）。
 - [ ] `registerCron` 用 `setInterval` 按 everyMs **周期触发** jobFn，每 tick 包 `withCronLock`；单 tick 抛错被吞、不影响后续 tick（自愈）；`stop()` 后不再触发。
-- [ ] `startCronRunner(jobs)` 批量注册，`stopAll()` 全停；接口可供 spec305 代扣 / spec306 对账+过期注册 job。
+- [ ] `startCronRunner(jobs)` 批量注册，`stopAll()` 全停；接口可供 spec304 签到 / spec305 提醒 / spec306 对账+过期注册 job。
 - [ ] 消费 Phase 0 ioredis 客户端（`apps/api/src/redis/client.ts`，库 3、前缀 `bid:`）；锁实际键 `bid:lock:cron:<name>`。
 - [ ] `bun test` 全绿。
