@@ -29,8 +29,8 @@ def _emit_el(doc: Document, el) -> None:
     elif name in _CONTAINERS:
         for child in el.children:
             _emit_el(doc, child)
-    elif el.get_text(strip=True):
-        doc.add_paragraph(el.get_text(strip=True))
+    elif text := el.get_text(strip=True):
+        doc.add_paragraph(text)
 
 
 def _emit_html(doc: Document, html: str) -> None:
