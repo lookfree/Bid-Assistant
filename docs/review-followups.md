@@ -205,3 +205,12 @@
 |---|---|---|---|---|
 | C1 | 孤儿 hold 清扫 | 进程被杀（kill -9）在 hold 与了结之间 → 冻结积分无人回收 | **deferred → spec306** | 对账 Cron 加「扫无了结行且超时 X 的 hold → 自动 release」；有了结唯一索引后清扫绝对安全 |
 | C2 | 用量→积分换算口径 | settle v1 按操作口径全额结算；agent_token_usage 真实用量换算待商业定价（如 token_credit_rate）定义 | deferred | 定价定稿后编排层改传真实用量即启用多退少补（机制已就绪并有测试） |
+
+## spec303 · code-review（review 于 2026-07，Cron 调度器——billing job 的互斥地基）
+
+8 角度全审（含 ioredis 5.11.1 实证：keyPrefix 对 eval 的 KEYS、set、pexpire 一致加 `bid:` 前缀，无键错位）。修复：① **锁 token 改每次抢锁一次性 UUID**——进程级 instanceId 作锁值时，jobFn 超 TTL 后同进程下一 tick 重抢（值相同），旧调用 finally 的 CAS 会误删新锁 → 第三实例趁虚而入并发跑 billing job（4 角度交叉命中）；instanceId 保留作日志。② **watchdog 续租改 Lua CAS**（get==token 才 PEXPIRE）——裸 PEXPIRE 在锁易主后会给别人的锁无限续命：他人崩溃时「TTL 自愈」失效，接管被阻塞至本实例长任务结束；发现易主（返回 0）即停止续租并告警。③ **finally 释放锁包 try/catch**——释放 eval 拒绝（如停机时连接已断）会替换 fn 的结果/原始异常，成功的 job 被报成失败；释放失败只记日志，锁靠 TTL 自愈。④ **注册时立即首跑 tick**——天级 everyMs（spec304 签到/spec306 对账、过期均按日）遇上重启比周期频繁，setInterval 永远等不到首个到点 → 每日对账/积分过期静默停摆；首跑重复触发由锁+业务幂等键去重。⑤ tick 在途守卫（上一 tick 未完跳过，不空耗 SET）+ **stop()/stopAll() 返回 drain Promise**（停机可等在途 job 收尾）。⑥ 测试 mock 收敛为共享工厂 test/helpers/redis-mock.ts（set 真写 store、eval 真模拟两段 CAS——原 mock 预置死键 "lock:cron:job"，dedup 测试的 CAS 路径实为空转）。留档：
+
+| # | 位置 | 问题 | 状态 | 说明 |
+|---|---|---|---|---|
+| C3 | 入口停机顺序 | spec305/306 在 worker/api 入口接 startCronRunner 时，SIGTERM 须按 `stopAll() → await drain → closeRedis()` 收尾；乱序会让在途 tick 的释放/续租打在已断连接上（锁悬 300s）或 getRedis() 惰性重建连接 | **deferred → spec305/306 接线时** | stop 已返回 drain Promise，机制就绪，只差入口按序调用 |
+| L5 | cron 测试计时 | 真实计时器 + 毫秒级 sleep（watchdog 用例 ~2.3s、tick 用例 75ms 窗口断言 ≥2）；bun:test 假计时器支持不全，暂用真时 | accepted | 立即首跑已给阈值留足余量；CI 若出现 flake 再收紧（拉长窗口/注入续租间隔） |
