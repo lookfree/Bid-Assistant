@@ -8,6 +8,8 @@ import { makeSmsCodeService, type SmsLimits } from "./services/sms-code"
 import { createCaptchaVerifier } from "./services/captcha"
 import { createWechatOAuthClient } from "./services/wechat-oauth"
 import { makeWechatAuth } from "./services/wechat-auth"
+import { startCronRunner } from "./services/cron"
+import { makeTerminalService, sqbCheckinJob, type SqbTerminalConfig } from "./services/payment/terminal"
 
 const env = getEnv()
 
@@ -42,10 +44,27 @@ const app = createApp({
   },
 })
 
-// 优雅关闭：归还 DB 连接池与 Redis 连接，避免重启/热重载泄漏。
+// 收钱吧每日签到 Cron：凭据齐全才注册（分布式锁保集群单实例执行）；缺凭据的环境静默跳过。
+const sqbCfg: SqbTerminalConfig | undefined =
+  env.SQB_VENDOR_SN && env.SQB_VENDOR_KEY && env.SQB_APP_ID && env.SQB_ACTIVATION_CODE && env.SQB_DEVICE_ID && env.TERMINAL_KEY_SECRET
+    ? {
+        gateway: env.SQB_GATEWAY,
+        vendorSn: env.SQB_VENDOR_SN,
+        vendorKey: env.SQB_VENDOR_KEY,
+        appId: env.SQB_APP_ID,
+        activationCode: env.SQB_ACTIVATION_CODE,
+        deviceId: env.SQB_DEVICE_ID,
+        keySecret: env.TERMINAL_KEY_SECRET,
+      }
+    : undefined
+const cron = sqbCfg ? startCronRunner([sqbCheckinJob(makeTerminalService(sqbCfg))]) : undefined
+
+// 优雅关闭：先停 Cron 并等在途 tick 收尾，再归还 DB/Redis/S3 连接（顺序错了在途 tick 会打在已断连接上）。
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, () => {
-    void Promise.allSettled([closeDb(), closeRedis(), closeS3()]).finally(() => process.exit(0))
+    void (cron?.stopAll() ?? Promise.resolve())
+      .then(() => Promise.allSettled([closeDb(), closeRedis(), closeS3()]))
+      .finally(() => process.exit(0))
   })
 }
 
