@@ -1,6 +1,6 @@
 "use client"
 
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import {
   FileText,
@@ -19,16 +19,41 @@ import {
 import {
   projectMeta,
   tenderDoc as docSections,
-  analysisCategories as categories,
-  scoringTable,
+  analysisCategories as sampleCategories,
+  scoringTable as sampleScoring,
   clauseLocation,
+  type AnalysisItem,
+  type ScoringRow,
 } from "@/lib/sample-bid"
+import { FileText as FileTextIcon } from "lucide-react"
+import { useStep } from "@/lib/use-step"
+
+// agent ReadResult（App 已转 camelCase）→ 原型渲染形状；icon 按 key 从示例类目合并（agent 不产 UI 组件）。
+type RealRead = {
+  categories: { key: string; title: string; items: AnalysisItem[] }[]
+  scoring?: ScoringRow[]
+  riskSummary?: string[]
+}
 import { FlowNav } from "@/components/tool/flow-nav"
 
 const docFileName = projectMeta.fileName
 
 
 export default function ReadPage() {
+  const { projectId, info, data: real, running, error, start } = useStep<RealRead>("read")
+  // 进入页面且该步未跑 → 自动触发读标（从上传页过来即开跑）
+  useEffect(() => {
+    if (projectId && info && !real && !running && info.project.currentStep === "read") void start()
+  }, [projectId, info, real, running, start])
+  const categories = real
+    ? real.categories.map((c) => ({
+        ...c,
+        icon: sampleCategories.find((s) => s.key === c.key)?.icon ?? FileTextIcon,
+        items: c.items.map((i) => ({ ...i, clauseIds: i.clauseIds ?? [] })),
+      }))
+    : sampleCategories
+  const scoringTable = real?.scoring?.length ? real.scoring : sampleScoring
+
   const clauseRefs = useRef<Record<string, HTMLParagraphElement | null>>({})
   /* 精确高亮的条款 id（可多条）+ 弱上下文高亮的所属章节 */
   const [activeClauses, setActiveClauses] = useState<string[]>([])
@@ -60,6 +85,18 @@ export default function ReadPage() {
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
       <FlowNav current="read" />
+      {running && (
+        <div className="mb-4 flex items-center gap-2 rounded-2xl border border-primary/20 gradient-brand-soft px-4 py-3 text-sm font-medium text-primary">
+          <Loader2 className="size-4 animate-spin" />
+          AI 正在通读招标文件，提取评分点与废标红线…（约 1–2 分钟）
+        </div>
+      )}
+      {error && (
+        <div className="mb-4 flex items-center justify-between rounded-2xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+          <span>{error}</span>
+          <button onClick={() => void start()} className="rounded-lg border border-destructive/30 px-3 py-1 text-xs font-semibold">重试</button>
+        </div>
+      )}
       {isDemo && (
         <div className="mb-4 flex flex-col gap-2 rounded-2xl border border-primary/20 gradient-brand-soft px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="inline-flex items-center gap-2 text-xs font-medium text-primary sm:text-sm">

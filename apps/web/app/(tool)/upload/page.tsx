@@ -3,6 +3,7 @@
 import { useState, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { api } from "@/lib/api"
+import { createProject } from "@/lib/project"
 import {
   UploadCloud,
   FileText,
@@ -30,6 +31,7 @@ type UploadFile = {
   progress: number
   status: FileStatus
   fileId?: string
+  fileKey?: string // MinIO key（complete 返回），建项目用
 }
 
 function formatSize(bytes: number) {
@@ -72,8 +74,10 @@ export default function UploadPage() {
         }),
       })
       await putWithProgress(uploadUrl, file, (pct) => patch({ progress: pct }))
-      await api.request(`/files/${fileId}/complete`, { method: "POST" })
-      patch({ progress: 100, status: "done", fileId })
+      const { file: rec } = await api.request<{ file: { key: string } }>(`/files/${fileId}/complete`, {
+        method: "POST",
+      })
+      patch({ progress: 100, status: "done", fileId, fileKey: rec.key })
     } catch {
       patch({ status: "error" })
     }
@@ -91,6 +95,21 @@ export default function UploadPage() {
 
   function removeFile(id: string) {
     setFiles((prev) => prev.filter((f) => f.id !== id))
+  }
+
+  const [creating, setCreating] = useState(false)
+
+  // 建项目（一本标书一个 thread）→ 进入读标；后续各页经 localStorage 的 projectId 贯穿。
+  async function startRead() {
+    const key = files.find((f) => f.status === "done")?.fileKey
+    if (!key || creating) return
+    setCreating(true)
+    try {
+      await createProject(key)
+      router.push("/read")
+    } finally {
+      setCreating(false)
+    }
   }
 
   function startDemo() {
@@ -273,11 +292,11 @@ export default function UploadPage() {
             </ul>
 
             <button
-              disabled={!allDone}
-              onClick={() => router.push("/read")}
+              disabled={!allDone || creating}
+              onClick={startRead}
               className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-xl gradient-brand px-6 py-3.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {allDone ? "开始智能读标" : "文件上传中…"}
+              {creating ? "创建项目中…" : allDone ? "开始智能读标" : "文件上传中…"}
               {allDone && <ArrowRight className="size-4" />}
             </button>
           </div>

@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import {
   FileText,
   Briefcase,
@@ -42,6 +42,12 @@ import { useEscapeClose } from "@/hooks/use-escape-close"
 import { creditCosts, DEMO_CREDIT_BALANCE } from "@/lib/plans"
 import { libraryCategories, type LibraryItem, type LibraryCategoryId } from "@/lib/library"
 import { chapters as bidChapters, riskFindings } from "@/lib/sample-bid"
+import { useStep } from "@/lib/use-step"
+import { artifactUrl, runStep, stepResult } from "@/lib/project"
+
+// agent content 步结果（camelCase）：{chapterId: bodyHtml}；章结构取 outline 步结果
+type RealChapters = Record<string, string>
+type RealOutline = { chapters: { id: string; no: string; title: string; group: Group; sourced: boolean }[] }
 
 type BidType = "tech" | "business" | "full"
 type Group = "tech" | "business"
@@ -125,6 +131,23 @@ const EXPORT_COST = creditCosts.find((c) => c.feature.startsWith("导出"))?.val
 export default function ContentPage() {
   const [bidType, setBidType] = useState<BidType>("tech")
   const [data, setData] = useState(initialChapters)
+
+  // 真实项目：outline 树 + content 各章 HTML → 覆盖示例正文；该步未跑则自动触发
+  const { projectId, info, data: realBodies, running, error, start } = useStep<RealChapters>("content")
+  useEffect(() => {
+    if (projectId && info && !realBodies && !running && info.project.currentStep === "content") void start()
+  }, [projectId, info, realBodies, running, start])
+  useEffect(() => {
+    if (!realBodies || !info) return
+    const ol = stepResult<RealOutline>(info, "outline")
+    if (!ol) return
+    const build = (g: Group) =>
+      ol.chapters
+        .filter((c) => c.group === g)
+        .map((c) => ({ id: c.id, no: c.no, title: c.title, sourced: c.sourced, html: realBodies[c.id] ?? "" }))
+    setData({ tech: build("tech"), business: build("business") })
+    setActiveId(ol.chapters[0]?.id ?? "t1")
+  }, [realBodies, info])
   const [activeId, setActiveId] = useState<string>("t1")
   const [chatOpen, setChatOpen] = useState(true)
   const [chat, setChat] = useState<ChatMsg[]>([
@@ -340,6 +363,23 @@ export default function ContentPage() {
     const formatName = format === "word" ? "Word" : "PDF"
     setExportConfirm(false)
     setExportOpen(false)
+    if (projectId && info) {
+      // 真实导出：export 步（渲染完整 .docx 落 MinIO）→ 预签名 URL 直下
+      setExportStatus("正在渲染完整标书…")
+      void (async () => {
+        try {
+          if (!stepResult(info, "export")) await runStep(projectId, "export")
+          window.open(await artifactUrl(projectId, "docx"), "_blank")
+          setExportStatus("已导出，浏览器开始下载")
+          setHasExported(true)
+        } catch {
+          setExportStatus("导出失败，请重试")
+        } finally {
+          setTimeout(() => setExportStatus(""), 3000)
+        }
+      })()
+      return
+    }
     setExportStatus(`正在导出 ${scopeName}（${formatName}）…`)
     setTimeout(() => {
       setExportStatus(`已导出 ${scopeName}（${formatName}）`)
@@ -355,6 +395,17 @@ export default function ContentPage() {
   return (
     <div className="mx-auto flex h-[calc(100vh-4rem)] max-w-[1600px] flex-col px-4 py-5 sm:px-6 lg:px-8">
       <FlowNav current="content" />
+      {running && (
+        <div className="mb-4 rounded-2xl border border-primary/20 gradient-brand-soft px-4 py-3 text-sm font-medium text-primary">
+          AI 写手团队正在按章撰写正文（多章并行，约 3–8 分钟）…
+        </div>
+      )}
+      {error && (
+        <div className="mb-4 flex items-center justify-between rounded-2xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+          <span>{error}</span>
+          <button onClick={() => void start()} className="rounded-lg border border-destructive/30 px-3 py-1 text-xs font-semibold">重试</button>
+        </div>
+      )}
       {/* 头部 */}
       <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">

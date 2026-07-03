@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   ShieldCheck,
   ShieldAlert,
@@ -32,28 +32,29 @@ import { FlowNav } from "@/components/tool/flow-nav"
 import { creditCosts } from "@/lib/plans"
 import { libraryMatch } from "@/lib/library"
 import { riskFindings } from "@/lib/sample-bid"
+import { useStep } from "@/lib/use-step"
+
+// agent RiskReport（camelCase）：与原型 riskFindings 同构
+type RealRisk = typeof riskFindings
 
 type Tab = "reject" | "dedup" | "checklist"
 
 /** 审核表导出消耗积分（沿用导出口径） */
 const CHECKLIST_EXPORT_COST = creditCosts.find((c) => c.feature.startsWith("导出"))?.value ?? 20
 
-/* ---------------- 废标风险审查数据（取自全流程共享风险项） ---------------- */
-const overview = [
-  { label: "高风险", value: riskFindings.high, tone: "destructive" },
-  { label: "中风险", value: riskFindings.mid, tone: "warning" },
-  { label: "已通过", value: riskFindings.passed, tone: "success" },
-]
-
-const riskItems = riskFindings.items.map((f) => ({
-  level: f.level,
-  tone: f.tone,
-  title: f.title,
-  chapter: f.tenderRef,
-  advice: f.advice,
-}))
-
-const passed = riskFindings.passedItems
+/* ---------------- 废标风险审查数据（真实项目用 review 步结果，否则示例） ---------------- */
+function deriveRisk(f: RealRisk) {
+  return {
+    score: f.score,
+    overview: [
+      { label: "高风险", value: f.high, tone: "destructive" },
+      { label: "中风险", value: f.mid, tone: "warning" },
+      { label: "已通过", value: f.passed, tone: "success" },
+    ],
+    riskItems: f.items.map((x) => ({ level: x.level, tone: x.tone, title: x.title, chapter: x.tenderRef, advice: x.advice })),
+    passed: f.passedItems,
+  }
+}
 
 const toneClasses: Record<string, { badge: string; icon: string; border: string }> = {
   destructive: { badge: "bg-destructive/10 text-destructive", icon: "text-destructive", border: "border-destructive/30" },
@@ -230,6 +231,13 @@ export default function ReviewPage() {
 
 /* ============== 废标风险审查 ============== */
 function RejectReview() {
+  // 真实项目：review 步产 RiskReport；未跑则自动触发，跑完直接进 done 视图
+  const { projectId, info, data: real, running, error, start } = useStep<RealRisk>("review")
+  useEffect(() => {
+    if (projectId && info && !real && !running && info.project.currentStep === "review") void start()
+  }, [projectId, info, real, running, start])
+  const { score, overview, riskItems, passed } = deriveRisk(real ?? riskFindings)
+
   const [tender, setTender] = useState<string[]>([])
   const [bid, setBid] = useState<string[]>([])
   const [status, setStatus] = useState<"idle" | "running" | "done">("idle")
@@ -249,7 +257,21 @@ function RejectReview() {
     setStatus("idle")
   }
 
-  if (status === "done") {
+  if (running || error) {
+    return (
+      <div className="rounded-2xl border border-border bg-card px-5 py-6 text-sm">
+        {running ? (
+          <span className="font-medium text-primary">AI 正在逐条比对招标要求与标书内容，生成废标体检报告…</span>
+        ) : (
+          <span className="flex items-center justify-between text-destructive">
+            {error}
+            <button onClick={() => void start()} className="rounded-lg border border-destructive/30 px-3 py-1 text-xs font-semibold">重试</button>
+          </span>
+        )}
+      </div>
+    )
+  }
+  if (real || status === "done") {
     return (
       <div className="flex flex-col gap-6">
         <div className="flex items-center justify-between">
@@ -268,13 +290,15 @@ function RejectReview() {
         {/* 健康分 */}
         <div className="flex flex-col items-center gap-5 rounded-3xl border border-border bg-card p-8 sm:flex-row sm:gap-8">
           <div className="flex size-28 shrink-0 flex-col items-center justify-center rounded-full gradient-brand-soft">
-            <span className="text-3xl font-bold text-gradient-brand">78</span>
+            <span className="text-3xl font-bold text-gradient-brand">{score}</span>
             <span className="text-xs text-muted-foreground">健康分</span>
           </div>
           <div className="flex-1 text-center sm:text-left">
             <div className="flex items-center justify-center gap-2 sm:justify-start">
               <ShieldAlert className="size-5 text-warning" />
-              <p className="text-base font-semibold text-foreground">发现 1 项高风险，建议处理后再交付</p>
+              <p className="text-base font-semibold text-foreground">
+                {overview[0].value > 0 ? `发现 ${overview[0].value} 项高风险，建议处理后再交付` : "未发现高风险项"}
+              </p>
             </div>
             <div className="mt-4 grid grid-cols-3 gap-3">
               {overview.map((o) => (

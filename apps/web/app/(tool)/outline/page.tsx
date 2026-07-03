@@ -1,6 +1,6 @@
 "use client"
 
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import {
   FileText,
@@ -27,6 +27,10 @@ import {
   type BidChapter,
 } from "@/lib/sample-bid"
 import { FlowNav } from "@/components/tool/flow-nav"
+import { useStep } from "@/lib/use-step"
+
+// agent Outline（camelCase）：chapters[{id,no,title,group,sourced,items[{id,label,clauseIds,isNew}]}]
+type RealOutline = { chapters: (BidChapter & { group: "tech" | "business" })[] }
 
 const docFileName = projectMeta.fileName
 
@@ -65,6 +69,17 @@ export default function OutlinePage() {
 
   const [techChapters, setTechChapters] = useState<Chapter[]>(initialTechOutline)
   const [businessChapters, setBusinessChapters] = useState<Chapter[]>(initialBusinessOutline)
+
+  // 真实项目：进入页面且该步未跑 → 自动生成提纲；结果覆盖示例树
+  const { projectId, info, data: real, running, error, start } = useStep<RealOutline>("outline")
+  useEffect(() => {
+    if (projectId && info && !real && !running && info.project.currentStep === "outline") void start()
+  }, [projectId, info, real, running, start])
+  useEffect(() => {
+    if (!real) return
+    setTechChapters(toOutline(real.chapters.filter((c) => c.group === "tech")))
+    setBusinessChapters(toOutline(real.chapters.filter((c) => c.group === "business")))
+  }, [real])
 
   // 正在编辑的目标：条目或章节标题
   const [editingItem, setEditingItem] = useState<string | null>(null)
@@ -175,6 +190,17 @@ export default function OutlinePage() {
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
       <FlowNav current="outline" />
+      {running && (
+        <div className="mb-4 rounded-2xl border border-primary/20 gradient-brand-soft px-4 py-3 text-sm font-medium text-primary">
+          AI 正在基于读标结论搭建技术标/商务标提纲…
+        </div>
+      )}
+      {error && (
+        <div className="mb-4 flex items-center justify-between rounded-2xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+          <span>{error}</span>
+          <button onClick={() => void start()} className="rounded-lg border border-destructive/30 px-3 py-1 text-xs font-semibold">重试</button>
+        </div>
+      )}
       <div className="flex flex-col gap-4 rounded-2xl border border-border bg-card px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-start gap-3">
           <div className="flex size-10 shrink-0 items-center justify-center rounded-xl gradient-brand">
