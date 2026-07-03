@@ -38,6 +38,7 @@ import {
 import { usePaywall } from "@/components/paywall"
 import { CreditEstimate } from "@/components/credit-estimate"
 import { FlowNav } from "@/components/tool/flow-nav"
+import { StepBanner } from "@/components/tool/step-banner"
 import { useEscapeClose } from "@/hooks/use-escape-close"
 import { creditCosts, DEMO_CREDIT_BALANCE } from "@/lib/plans"
 import { libraryCategories, type LibraryItem, type LibraryCategoryId } from "@/lib/library"
@@ -395,17 +396,7 @@ export default function ContentPage() {
   return (
     <div className="mx-auto flex h-[calc(100vh-4rem)] max-w-[1600px] flex-col px-4 py-5 sm:px-6 lg:px-8">
       <FlowNav current="content" />
-      {running && (
-        <div className="mb-4 rounded-2xl border border-primary/20 gradient-brand-soft px-4 py-3 text-sm font-medium text-primary">
-          AI 写手团队正在按章撰写正文（多章并行，约 3–8 分钟）…
-        </div>
-      )}
-      {error && (
-        <div className="mb-4 flex items-center justify-between rounded-2xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-          <span>{error}</span>
-          <button onClick={() => void start()} className="rounded-lg border border-destructive/30 px-3 py-1 text-xs font-semibold">重试</button>
-        </div>
-      )}
+      {<StepBanner running={running} error={error} runningText="AI 写手团队正在按章撰写正文（多章并行，约 3–8 分钟）…" onRetry={() => void start()} />}
       {/* 头部 */}
       <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">

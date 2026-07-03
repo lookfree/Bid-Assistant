@@ -34,6 +34,7 @@ import {
 import { usePaywall } from "@/components/paywall"
 import { CreditEstimate } from "@/components/credit-estimate"
 import { FlowNav } from "@/components/tool/flow-nav"
+import { StepBanner } from "@/components/tool/step-banner"
 import { useEscapeClose } from "@/hooks/use-escape-close"
 import { creditCosts, DEMO_CREDIT_BALANCE } from "@/lib/plans"
 import {
@@ -289,17 +290,7 @@ export default function PresentPage() {
       {/* 流程返回区：上一步 + 面包屑 */}
       <div className="shrink-0 px-4 pt-4 sm:px-6">
         <FlowNav current="present" />
-      {stepRunning && (
-        <div className="mb-4 rounded-2xl border border-primary/20 gradient-brand-soft px-4 py-3 text-sm font-medium text-primary">
-          AI 正在基于标书与评分点生成述标稿与 PPT…
-        </div>
-      )}
-      {stepError && (
-        <div className="mb-4 flex items-center justify-between rounded-2xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-          <span>{stepError}</span>
-          <button onClick={() => void start()} className="rounded-lg border border-destructive/30 px-3 py-1 text-xs font-semibold">重试</button>
-        </div>
-      )}
+      {<StepBanner running={stepRunning} error={stepError} runningText="AI 正在基于标书与评分点生成述标稿与 PPT…" onRetry={() => void start()} />}
       </div>
       {/* 顶部工具条 */}
       <div className="shrink-0 border-b border-border bg-card px-4 py-3 sm:px-6">

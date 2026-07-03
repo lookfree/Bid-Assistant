@@ -27,6 +27,7 @@ import {
   type BidChapter,
 } from "@/lib/sample-bid"
 import { FlowNav } from "@/components/tool/flow-nav"
+import { StepBanner } from "@/components/tool/step-banner"
 import { useStep } from "@/lib/use-step"
 
 // agent Outline（camelCase）：chapters[{id,no,title,group,sourced,items[{id,label,clauseIds,isNew}]}]
@@ -190,17 +191,7 @@ export default function OutlinePage() {
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
       <FlowNav current="outline" />
-      {running && (
-        <div className="mb-4 rounded-2xl border border-primary/20 gradient-brand-soft px-4 py-3 text-sm font-medium text-primary">
-          AI 正在基于读标结论搭建技术标/商务标提纲…
-        </div>
-      )}
-      {error && (
-        <div className="mb-4 flex items-center justify-between rounded-2xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-          <span>{error}</span>
-          <button onClick={() => void start()} className="rounded-lg border border-destructive/30 px-3 py-1 text-xs font-semibold">重试</button>
-        </div>
-      )}
+      {<StepBanner running={running} error={error} runningText="AI 正在基于读标结论搭建技术标/商务标提纲…" onRetry={() => void start()} />}
       <div className="flex flex-col gap-4 rounded-2xl border border-border bg-card px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-start gap-3">
           <div className="flex size-10 shrink-0 items-center justify-center rounded-xl gradient-brand">

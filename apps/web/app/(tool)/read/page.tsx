@@ -35,6 +35,7 @@ type RealRead = {
   riskSummary?: string[]
 }
 import { FlowNav } from "@/components/tool/flow-nav"
+import { StepBanner } from "@/components/tool/step-banner"
 
 const docFileName = projectMeta.fileName
 
@@ -85,18 +86,7 @@ export default function ReadPage() {
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
       <FlowNav current="read" />
-      {running && (
-        <div className="mb-4 flex items-center gap-2 rounded-2xl border border-primary/20 gradient-brand-soft px-4 py-3 text-sm font-medium text-primary">
-          <Loader2 className="size-4 animate-spin" />
-          AI 正在通读招标文件，提取评分点与废标红线…（约 1–2 分钟）
-        </div>
-      )}
-      {error && (
-        <div className="mb-4 flex items-center justify-between rounded-2xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-          <span>{error}</span>
-          <button onClick={() => void start()} className="rounded-lg border border-destructive/30 px-3 py-1 text-xs font-semibold">重试</button>
-        </div>
-      )}
+      {<StepBanner running={running} error={error} runningText="AI 正在通读招标文件，提取评分点与废标红线…（约 1–2 分钟）" onRetry={() => void start()} />}
       {isDemo && (
         <div className="mb-4 flex flex-col gap-2 rounded-2xl border border-primary/20 gradient-brand-soft px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="inline-flex items-center gap-2 text-xs font-medium text-primary sm:text-sm">
