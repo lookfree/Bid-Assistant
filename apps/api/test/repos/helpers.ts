@@ -28,3 +28,11 @@ export async function expectConflict(fn: () => Promise<unknown>): Promise<void> 
   }
   if (!threw) throw new Error("预期约束冲突抛错，但没有抛")
 }
+
+// 账本类测试用：建一个唯一手机号测试用户并登记 id（调用方负责 afterAll 级联删）。
+const madeSeq = { n: 0 }
+export async function makeLedgerUser(register: (id: string) => void): Promise<string> {
+  const u = await createTestUser(`+8613${Date.now().toString().slice(-8)}${(madeSeq.n++ % 90) + 10}`.slice(0, 14))
+  register(u.id)
+  return u.id
+}

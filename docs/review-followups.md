@@ -196,3 +196,12 @@
 | L2 | `services/config.ts` | getConfig 每调一次 SELECT，spec302 每次操作查口径 | deferred | PK 查询开销极小且配置改动需即时生效；真实压测出现热点再加缓存（TTL/失效复杂度不白付） |
 | L3 | `setConfig` | 值无 schema 校验（jsonb 任意） | deferred | spec310 运营后台是唯一写入口，届时按 key 加 zod 校验层 |
 | L4 | 测试样板 | `loginWithPhone(...)` beforeAll 样板散布 7+ 文件 | deferred | 渐进收敛：新测试用 helpers，存量不批量翻动（Surgical） |
+
+## spec302 · code-review（review 于 2026-07，钱从严——账本引擎）
+
+抓到并修掉三个真实资损路径：① **settle+release 双返还**——结算成功后 SSE/推进阶段抛错，catch 补 settleFailed 导致一个 hold 同时有 settle(+差额) 和 release(+全额)。深修：了结行 ref=holdId + 部分唯一索引「每 hold 至多一条了结流水」(0010)，DB 层杜绝（含并发 settle+release 竞争）；双向回归测试。② **并发同幂等键 hold** 撞唯一约束抛错而非幂等返回——幂等检查移到用户行锁内（并发同键在锁上排队，第二个能看到第一个的行）；测试 5 并发同键全部拿同一 holdId。③ read.ts 流式体无 try/catch——中继中途炸 hold 永久冻结；补兜底退还 + run 标 failed。附带：hold 幂等命中校验流水类型（键跨类型复用即报错）；sumBalance/lockUserBalanceRow 提取（3x/2x 重复）；projects 步进收尾拆 finishStep（处理器回 80 行内）；makeLedgerUser 测试助手上提。驳回：FIFO 只在到期批次间分配消耗（"先过期先扣"语义即消耗优先抵扣先过期批次，非过期批次天然靠后）。留档：
+
+| # | 位置 | 问题 | 状态 | 说明 |
+|---|---|---|---|---|
+| C1 | 孤儿 hold 清扫 | 进程被杀（kill -9）在 hold 与了结之间 → 冻结积分无人回收 | **deferred → spec306** | 对账 Cron 加「扫无了结行且超时 X 的 hold → 自动 release」；有了结唯一索引后清扫绝对安全 |
+| C2 | 用量→积分换算口径 | settle v1 按操作口径全额结算；agent_token_usage 真实用量换算待商业定价（如 token_credit_rate）定义 | deferred | 定价定稿后编排层改传真实用量即启用多退少补（机制已就绪并有测试） |

@@ -4,16 +4,12 @@ import { getDb, closeDb } from "../src/db/client"
 import { users } from "../src/db/schema"
 import { grant, hold, settle, getBalance, expireDue } from "../src/services/credits"
 import { seedConfigs } from "../src/services/config"
-import { createTestUser, TEST_TIMEOUT_MS } from "./repos/helpers"
+import { makeLedgerUser, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS)
 
 const madeUsers: string[] = []
-async function makeUser(): Promise<string> {
-  const u = await createTestUser(`+8614${Date.now().toString().slice(-9)}${madeUsers.length}`.slice(0, 14))
-  madeUsers.push(u.id)
-  return u.id
-}
+const makeUser = () => makeLedgerUser((id) => madeUsers.push(id))
 
 beforeAll(async () => {
   await seedConfigs()

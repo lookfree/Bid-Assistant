@@ -116,32 +116,10 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     return streamSSE(c, async (stream) => {
       try {
         for await (const chunk of relayStream(run_id)) await stream.write(chunk) // 透传 agent SSE
-        const run = await getRun(run_id) // 该步结构化结果（snake_case）
-        const failed = run.status !== "succeeded"
-        // 成功按口径全额结算；失败全额退还（净 0）——多退少补待用量换算口径定义
-        const cost = failed
-          ? (await settleFailed(s.id, hold.holdId!), 0)
-          : await settle(s.id, hold.holdId!, hold.hold)
-        await getDb()
-          .update(projectSteps)
-          .set({ result: run.result ?? null, status: failed ? "failed" : "done", costPoints: cost })
-          .where(eq(projectSteps.id, s.id))
-        if (!failed) {
-          // 推进 currentStep；最后一步完成即整本 done
-          const next = STEP_ORDER[STEP_ORDER.indexOf(step as Step) + 1]
-          await getDb()
-            .update(bidProjects)
-            .set({ currentStep: next ?? "done", status: next ? "running" : "done" })
-            .where(eq(bidProjects.id, p.id))
-        }
-        // DB 存 snake_case 原样；给前端的经 toCamel 转 camelCase（对齐原型 TS 类型）
-        await stream.writeSSE({
-          event: "step.done",
-          data: JSON.stringify({ step, cost, status: failed ? "failed" : "done", result: toCamel(run.result ?? null) }),
-        })
+        await finishStep(stream, { p, s, step: step as Step, run_id, hold })
       } catch (e) {
-        // 中继/收尾中途炸（agent 掉线等）：退还预扣 + 占位行标 failed，别留永久 running/冻结积分
-        await settleFailed(s.id, hold.holdId!).catch(() => {}) // 幂等；退还失败交对账
+        // 中继/收尾中途炸（agent 掉线等）：退还预扣（已结算则被了结唯一索引吞掉）+ 占位行标 failed
+        await settleFailed(s.id, hold.holdId!).catch(() => {})
         await getDb().update(projectSteps).set({ status: "failed" }).where(eq(projectSteps.id, s.id))
         await stream.writeSSE({
           event: "step.done",
@@ -150,6 +128,42 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       }
     })
   })
+
+  /** 步进收尾：取 run 终态 → 结算/退还 → 落步结果 → 推进 currentStep → 发 step.done。 */
+  async function finishStep(
+    stream: { writeSSE: (m: { event: string; data: string }) => Promise<void> },
+    a: {
+      p: typeof bidProjects.$inferSelect
+      s: typeof projectSteps.$inferSelect
+      step: Step
+      run_id: string
+      hold: { holdId?: string; hold: number }
+    },
+  ) {
+    const run = await getRun(a.run_id) // 该步结构化结果（snake_case）
+    const failed = run.status !== "succeeded"
+    // 成功按口径全额结算；失败全额退还（净 0）——多退少补待用量换算口径定义
+    const cost = failed
+      ? (await settleFailed(a.s.id, a.hold.holdId!), 0)
+      : await settle(a.s.id, a.hold.holdId!, a.hold.hold)
+    await getDb()
+      .update(projectSteps)
+      .set({ result: run.result ?? null, status: failed ? "failed" : "done", costPoints: cost })
+      .where(eq(projectSteps.id, a.s.id))
+    if (!failed) {
+      // 推进 currentStep；最后一步完成即整本 done
+      const next = STEP_ORDER[STEP_ORDER.indexOf(a.step) + 1]
+      await getDb()
+        .update(bidProjects)
+        .set({ currentStep: next ?? "done", status: next ? "running" : "done" })
+        .where(eq(bidProjects.id, a.p.id))
+    }
+    // DB 存 snake_case 原样；给前端的经 toCamel 转 camelCase（对齐原型 TS 类型）
+    await stream.writeSSE({
+      event: "step.done",
+      data: JSON.stringify({ step: a.step, cost, status: failed ? "failed" : "done", result: toCamel(run.result ?? null) }),
+    })
+  }
 
   // 查项目 + 各步结果（前端各页渲染；result 转 camelCase）
   r.get("/:id", async (c) => {

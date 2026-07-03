@@ -5,16 +5,12 @@ import { users } from "../src/db/schema"
 import { getBalance, grant, hold, release, settle } from "../src/services/credits"
 import { InsufficientCreditsError } from "../src/services/credits-errors"
 import { seedConfigs } from "../src/services/config"
-import { createTestUser, TEST_TIMEOUT_MS, expectConflict } from "./repos/helpers"
+import { makeLedgerUser, TEST_TIMEOUT_MS, expectConflict } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS)
 
 const madeUsers: string[] = []
-async function makeUser(): Promise<string> {
-  const u = await createTestUser(`+8613${Date.now().toString().slice(-9)}${madeUsers.length}`.slice(0, 14))
-  madeUsers.push(u.id)
-  return u.id
-}
+const makeUser = () => makeLedgerUser((id) => madeUsers.push(id))
 
 beforeAll(async () => {
   await seedConfigs() // credit_cost.read = 10（占位口径）
@@ -76,6 +72,37 @@ describe("spec302 账本引擎", () => {
     const { holdId } = await hold(userId, "read", { ref: `run-${userId}`, idempotencyKey: `h-${userId}` }) // -10
     await settle(holdId, 13, { idempotencyKey: `s-${userId}` }) // 超用 3 → 补扣
     expect(await getBalance(userId)).toBe(17) // 30 - 13
+  })
+
+  it("每 hold 至多一条了结：settle 后再 release 是 no-op（双返还回归）", async () => {
+    const userId = await makeUser()
+    await grant(userId, 30, { idempotencyKey: `g-${userId}` })
+    const { holdId } = await hold(userId, "read", { ref: `run-${userId}`, idempotencyKey: `h-${userId}` }) // -10
+    await settle(holdId, 8, { idempotencyKey: `s-${userId}` }) // 净扣 8 → 22
+    expect(await getBalance(userId)).toBe(22)
+    await release(holdId, { idempotencyKey: `r-${userId}` }) // 异常路径补退还 → 必须被唯一索引吞掉
+    expect(await getBalance(userId)).toBe(22) // 不得双返还
+  })
+
+  it("release 后再 settle 也是 no-op（反向双记回归）", async () => {
+    const userId = await makeUser()
+    await grant(userId, 30, { idempotencyKey: `g-${userId}` })
+    const { holdId } = await hold(userId, "read", { ref: `run-${userId}`, idempotencyKey: `h-${userId}` })
+    await release(holdId, { idempotencyKey: `r-${userId}` }) // 净 0 → 30
+    expect(await getBalance(userId)).toBe(30)
+    await settle(holdId, 8, { idempotencyKey: `s-${userId}` }) // 已了结 → no-op
+    expect(await getBalance(userId)).toBe(30)
+  })
+
+  it("并发同幂等键 hold：全部拿到同一 holdId，只扣一次", async () => {
+    const userId = await makeUser()
+    await grant(userId, 30, { idempotencyKey: `g-${userId}` })
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => hold(userId, "read", { idempotencyKey: `same-${userId}` })),
+    )
+    const ids = new Set(results.map((r) => r.holdId))
+    expect(ids.size).toBe(1)
+    expect(await getBalance(userId)).toBe(20) // 只扣一次
   })
 
   it("并发首扣不超扣（锁 credit_balances 用户行作串行化点）", async () => {

@@ -9,13 +9,26 @@ import { InsufficientCreditsError } from "./credits-errors"
 // AI 操作两段式：hold(-N 预扣) → settle(多退少补) / release(全额退还)；全部带幂等键（DB 唯一约束兜底）。
 // 钱只在 App 层动；智能体只上报 usage（§3.2）。
 
-/** 余额 = Σ流水；顺带刷新 credit_balances 缓存。 */
-export async function getBalance(userId: string): Promise<number> {
-  const [row] = await getDb()
+type Tx = Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0]
+
+/** Σ流水（事务内外通用）。 */
+async function sumBalance(dbOrTx: Tx | ReturnType<typeof getDb>, userId: string): Promise<number> {
+  const [row] = await dbOrTx
     .select({ total: sql<number>`coalesce(sum(${creditTransactions.amount}), 0)` })
     .from(creditTransactions)
     .where(eq(creditTransactions.userId, userId))
-  const balance = Number(row?.total ?? 0)
+  return Number(row?.total ?? 0)
+}
+
+/** 锁用户余额行作串行化点（不存在先 upsert 兜底建行）。hold/expire 共用。 */
+async function lockUserBalanceRow(tx: Tx, userId: string): Promise<void> {
+  await tx.insert(creditBalances).values({ userId, balance: 0 }).onConflictDoNothing({ target: creditBalances.userId })
+  await tx.execute(sql`select 1 from ${creditBalances} where ${creditBalances.userId} = ${userId} for update`)
+}
+
+/** 余额 = Σ流水；顺带刷新 credit_balances 缓存。 */
+export async function getBalance(userId: string): Promise<number> {
+  const balance = await sumBalance(getDb(), userId)
   await getDb()
     .insert(creditBalances)
     .values({ userId, balance })
@@ -64,23 +77,21 @@ export async function hold(
   if (configured == null) throw new Error(`未配置操作积分口径 credit_cost.${op}`) // 静默免费是资损，缺口径即失败
   const n = Number(configured)
   return await getDb().transaction(async (tx) => {
-    // 幂等：同 key 已 hold 过 → 返回原记录（重试/重复请求不重复扣）
+    // —— 并发超扣串行化点：先锁该用户在 credit_balances 的行 ——
+    // （幂等检查放锁内：同幂等键并发请求在此排队，第二个进来时能看到第一个已插的行，
+    //   幂等返回原记录而不是撞唯一约束抛错）
+    await lockUserBalanceRow(tx, userId)
     const [exist] = await tx
       .select()
       .from(creditTransactions)
       .where(eq(creditTransactions.idempotencyKey, opts.idempotencyKey))
-    if (exist) return { holdId: exist.id, amount: -exist.amount }
-
-    // —— 并发超扣串行化点：锁该用户在 credit_balances 的行 ——
-    await tx.insert(creditBalances).values({ userId, balance: 0 }).onConflictDoNothing({ target: creditBalances.userId })
-    await tx.execute(sql`select 1 from ${creditBalances} where ${creditBalances.userId} = ${userId} for update`)
+    if (exist) {
+      if (exist.type !== "hold") throw new Error(`幂等键 ${opts.idempotencyKey} 已被 ${exist.type} 流水占用`) // 键跨类型复用是调用方 bug
+      return { holdId: exist.id, amount: -exist.amount }
+    }
 
     // 持锁后再算余额、校验、插 hold —— 同 userId 的并发 hold 在此串行排队
-    const [row] = await tx
-      .select({ total: sql<number>`coalesce(sum(${creditTransactions.amount}), 0)` })
-      .from(creditTransactions)
-      .where(eq(creditTransactions.userId, userId))
-    const available = Number(row?.total ?? 0)
+    const available = await sumBalance(tx, userId)
     if (available < n) throw new InsufficientCreditsError(n, available)
 
     const [ins] = await tx
@@ -96,14 +107,16 @@ export async function hold(
   })
 }
 
-/** 失败全额退还：对 holdId 写 release(+N)，净=0。幂等；holdId 非 hold 类型则 no-op。 */
+/** 失败全额退还：对 holdId 写 release(+N)，净=0。幂等；holdId 非 hold 类型则 no-op。
+ *  了结行 ref=holdId：部分唯一索引「每个 hold 至多一条了结（settle/release）」在 DB 层
+ *  杜绝 settle+release 双返还（成功结算后异常路径再补 release 会被吞掉）。 */
 export async function release(holdId: string, opts: { idempotencyKey: string }): Promise<void> {
   const [h] = await getDb().select().from(creditTransactions).where(eq(creditTransactions.id, holdId))
   if (!h || h.type !== "hold") return
   await getDb()
     .insert(creditTransactions)
-    .values({ userId: h.userId, type: "release", amount: -h.amount, ref: h.ref, idempotencyKey: opts.idempotencyKey })
-    .onConflictDoNothing({ target: creditTransactions.idempotencyKey })
+    .values({ userId: h.userId, type: "release", amount: -h.amount, ref: holdId, idempotencyKey: opts.idempotencyKey })
+    .onConflictDoNothing() // 幂等键冲突或该 hold 已有了结 → no-op
   await getBalance(h.userId)
 }
 
@@ -117,8 +130,8 @@ export async function settle(holdId: string, actualCost: number, opts: { idempot
   const adjust = held - actualCost // 多退(>0)/少补(<0)
   await getDb()
     .insert(creditTransactions)
-    .values({ userId: h.userId, type: "settle", amount: adjust, ref: h.ref, idempotencyKey: opts.idempotencyKey })
-    .onConflictDoNothing({ target: creditTransactions.idempotencyKey })
+    .values({ userId: h.userId, type: "settle", amount: adjust, ref: holdId, idempotencyKey: opts.idempotencyKey })
+    .onConflictDoNothing() // 幂等键冲突或该 hold 已有了结 → no-op（杜绝 settle+release 双返还）
   await getBalance(h.userId)
 }
 
@@ -137,7 +150,8 @@ export async function expireDue(now: Date): Promise<number> {
 }
 
 /** 已落地消耗口径（正数）：expire/refund_clawback 直接累计；
- *  hold/settle/release 按 ref 分组，组内含 settle/release 才算落地（取净额的负数部分）；
+ *  hold/settle/release 按 hold 分组（hold 用自身 id、了结行用 ref=holdId），
+ *  组内含 settle/release 才算落地（取净额的负数部分）；
  *  在途裸 hold 不计——否则高估消耗导致漏过期。 */
 function landedConsumption(rows: Array<{ id: string; type: string; amount: number; ref: string | null }>): number {
   let consumed = 0
@@ -148,7 +162,7 @@ function landedConsumption(rows: Array<{ id: string; type: string; amount: numbe
       continue
     }
     if (!["hold", "settle", "release"].includes(r.type)) continue
-    const key = r.ref ?? r.id
+    const key = r.type === "hold" ? r.id : (r.ref ?? r.id)
     const g = groups.get(key) ?? { settled: false, net: 0 }
     g.net += r.amount
     if (r.type === "settle" || r.type === "release") g.settled = true
@@ -165,8 +179,7 @@ function landedConsumption(rows: Array<{ id: string; type: string; amount: numbe
  *  - 消耗从最早到期批次起抵扣，到期批次的剩余 → expire(-剩余)，幂等键 expire:<grantId>。 */
 async function expireUser(userId: string, now: Date): Promise<number> {
   return await getDb().transaction(async (tx) => {
-    await tx.insert(creditBalances).values({ userId, balance: 0 }).onConflictDoNothing({ target: creditBalances.userId })
-    await tx.execute(sql`select 1 from ${creditBalances} where ${creditBalances.userId} = ${userId} for update`)
+    await lockUserBalanceRow(tx, userId)
 
     const grants = await tx
       .select()
@@ -207,14 +220,8 @@ async function expireUser(userId: string, now: Date): Promise<number> {
       }
     }
     if (expired > 0) {
-      const [row] = await tx
-        .select({ total: sql<number>`coalesce(sum(${creditTransactions.amount}), 0)` })
-        .from(creditTransactions)
-        .where(eq(creditTransactions.userId, userId))
-      await tx
-        .update(creditBalances)
-        .set({ balance: Number(row?.total ?? 0), updatedAt: new Date() })
-        .where(eq(creditBalances.userId, userId))
+      const balance = await sumBalance(tx, userId)
+      await tx.update(creditBalances).set({ balance, updatedAt: new Date() }).where(eq(creditBalances.userId, userId))
     }
     return expired
   })

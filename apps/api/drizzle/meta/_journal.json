@@ -71,6 +71,13 @@
       "when": 1783054623577,
       "tag": "0009_goofy_patriot",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1783054624577,
+      "tag": "0010_hold_settlement_unique",
+      "breakpoints": true
     }
   ]
 }

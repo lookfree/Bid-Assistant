@@ -54,17 +54,23 @@ export function readRoutes(deps: Partial<ReadDeps> = {}) {
       .values({ userId, agentType: "bidding_agent", runId: run_id, threadId, status: "running" })
 
     return streamSSE(c, async (stream) => {
-      for await (const chunk of relayStream(run_id)) await stream.write(chunk) // 透传 agent SSE
-      const run = await getRun(run_id) // 取六大分类结果
-      const failed = run.status !== "succeeded"
-      const cost = failed
-        ? (await settleFailed(threadId, hold.holdId!), 0)
-        : await settle(threadId, hold.holdId!, hold.hold)
-      await getDb()
-        .update(agentRuns)
-        .set({ status: failed ? "failed" : "done", result: run.result ?? null, costPoints: cost })
-        .where(eq(agentRuns.runId, run_id))
-      await stream.writeSSE({ event: "done", data: JSON.stringify({ runId: run_id, cost, status: failed ? "failed" : "done" }) })
+      try {
+        for await (const chunk of relayStream(run_id)) await stream.write(chunk) // 透传 agent SSE
+        const run = await getRun(run_id) // 取六大分类结果
+        const failed = run.status !== "succeeded"
+        const cost = failed
+          ? (await settleFailed(threadId, hold.holdId!), 0)
+          : await settle(threadId, hold.holdId!, hold.hold)
+        await getDb()
+          .update(agentRuns)
+          .set({ status: failed ? "failed" : "done", result: run.result ?? null, costPoints: cost })
+          .where(eq(agentRuns.runId, run_id))
+        await stream.writeSSE({ event: "done", data: JSON.stringify({ runId: run_id, cost, status: failed ? "failed" : "done" }) })
+      } catch {
+        // 中继/收尾中途炸：退还预扣（若已 settle 则被"每 hold 一条了结"唯一索引吞掉，不会双返还）+ run 标 failed
+        await settleFailed(threadId, hold.holdId!).catch(() => {})
+        await getDb().update(agentRuns).set({ status: "failed" }).where(eq(agentRuns.runId, run_id))
+      }
     })
   })
 
