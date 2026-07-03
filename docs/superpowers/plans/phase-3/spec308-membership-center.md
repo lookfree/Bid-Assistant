@@ -1,8 +1,8 @@
 # spec308 · C 端会员中心接真实数据(渐进式套餐展示)实现计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: 执行本计划前必须先加载并遵循 `superpowers:subagent-driven-development`(子代理驱动开发)。每个 Task 独立用 TDD(先写 `bun:test` 真实测试 → 红 → 实现 → 绿 → 提交)。**不要**编造接口、不要写占位实现(no `TODO`/`stub`/空 `return`),所有代码必须可运行、测试必须真实断言。本 spec 依赖 spec301(账单数据模型)、spec302(积分账本服务)、spec304(支付下单)、spec305(自动续费签约)已完成;若依赖未就绪,先停下来上报,不要 mock 掉真实服务。
+> **For agentic workers:** REQUIRED SUB-SKILL: 执行本计划前必须先加载并遵循 `superpowers:subagent-driven-development`(子代理驱动开发)。每个 Task 独立用 TDD(先写 `bun:test` 真实测试 → 红 → 实现 → 绿 → 提交)。**不要**编造接口、不要写占位实现(no `TODO`/`stub`/空 `return`),所有代码必须可运行、测试必须真实断言。本 spec 依赖 spec301(账单数据模型)、spec302(积分账本服务)、spec304(支付下单)、spec305(到期提醒+手动续费)已完成;若依赖未就绪,先停下来上报,不要 mock 掉真实服务。
 
-**Goal:** 把 C 端会员中心页(`app/(tool)/membership/page.tsx`)从本地 demo 数据(`lib/plans.ts` 的 `memberTiers` / `DEMO_CREDIT_BALANCE` / 硬编码 `orders`)切换为真实后端数据。后端新增**会员中心聚合接口** `GET /api/membership`(当前订阅 + 积分余额 + 套餐列表 + 渐进式展示:当前档 + 下一档)、**积分流水分页** `GET /api/credits/transactions`、**我的订单** `GET /api/orders`;前端将充值入口接到 spec304 `POST /api/payment/recharge`、开通自动续费接到 spec305 `POST /api/subscriptions/auto-renew/sign`、邀请入口接到 spec307 的真实路由 `GET /api/referral/code` + `GET /api/referral/list`(只展示我的邀请码 + 邀请列表,不做绑定写接口;绑定在注册流程 Phase 0 完成,若未就绪则保留入口按钮但走 feature flag)。实现架构文档 §5.3「渐进式套餐展示」。
+**Goal:** 把 C 端会员中心页(`app/(tool)/membership/page.tsx`)从本地 demo 数据(`lib/plans.ts` 的 `memberTiers` / `DEMO_CREDIT_BALANCE` / 硬编码 `orders`)切换为真实后端数据。后端新增**会员中心聚合接口** `GET /api/membership`(当前订阅 + 积分余额 + 套餐列表 + 渐进式展示:当前档 + 下一档)、**积分流水分页** `GET /api/credits/transactions`、**我的订单** `GET /api/orders`;前端将充值入口接到 spec304 `POST /api/payment/recharge`、开通/续费会员接到 spec305 `POST /api/membership/renew`（扫码单笔，**无自动续费**）、邀请入口接到 spec307 的真实路由 `GET /api/referral/code` + `GET /api/referral/list`(只展示我的邀请码 + 邀请列表,不做绑定写接口;绑定在注册流程 Phase 0 完成,若未就绪则保留入口按钮但走 feature flag)。实现架构文档 §5.3「渐进式套餐展示」。
 
 **Architecture:** App 层 = Hono 4.12 + Bun + Drizzle ORM + PostgreSQL(public schema)+ Zod;前端 = Next.js App Router(`app/(tool)/membership`)+ React client component。后端读 spec301 的表(`plans` / `subscriptions` / `credit_transactions` / `credit_balances` / `payment_orders`),调 spec302 的 `credits` 服务(`getBalance`),不直接重算余额。所有金额以 `*_cents`(分)存储;返回前端时由 App 层转 camelCase(复用 spec207 的 `toCamel`,`apps/api/src/lib/case.ts`)并把分→元。鉴权用 Phase 0 `authMiddleware`,取当前用户。
 
@@ -111,7 +111,6 @@ export interface SubscriptionView {
   autoRenew: boolean
   currentPeriodStart: string | null   // ISO
   currentPeriodEnd: string | null      // ISO,到期时间
-  agreementNo: string | null
 }
 export interface MembershipOverview {
   subscription: SubscriptionView
@@ -137,7 +136,7 @@ export function listCreditTransactions(
 // apps/api/src/services/order-history.ts
 export interface OrderView {
   id: string
-  type: "recharge" | "purchase" | "auto_renew"
+  type: "recharge" | "purchase" | "renewal"
   amountCents: number; amountYuan: number
   status: "created" | "paid" | "failed" | "refunded"
   provider: string
@@ -183,7 +182,7 @@ export function fetchMembership(): Promise<MembershipOverview>
 export function fetchCreditTransactions(page?: number, pageSize?: number): Promise<Paged<CreditTxView>>
 export function fetchOrders(page?: number, pageSize?: number): Promise<Paged<OrderView>>
 export function startRecharge(packCredits: number, amountCents: number): Promise<{ qrCode?: string; payUrl?: string; orderId: string }>  // → POST /api/payment/recharge (spec304)
-export function signAutoRenew(planId: string, period: "month"|"quarter"|"year"): Promise<{ signPageUrl: string; agreementNo: string }>  // → POST /api/subscriptions/auto-renew/sign (spec305)
+export function renewMembership(planId: string): Promise<{ orderId: string; payUrl: string }>  // → POST /api/membership/renew (spec305，扫码单笔)
 ```
 
 ---
@@ -281,7 +280,7 @@ export function signAutoRenew(planId: string, period: "month"|"quarter"|"year"):
    - `fetchCreditTransactions(2, 20)` 拼出 `?page=2&pageSize=20`。
    - `fetchOrders` 同理。
    - `startRecharge` → `POST /api/payment/recharge`,body `{ amountCents, credits }`(对齐 spec304 入参);返回 `{qrCode?,payUrl?,orderId}`。
-   - `signAutoRenew(planId, period)` → `POST /api/subscriptions/auto-renew/sign`,body `{planId, period}`(对齐 spec305);返回 `{signPageUrl, agreementNo}`。
+   - `renewMembership(planId)` → `POST /api/membership/renew`,body `{planId}`(对齐 spec305,金额服务端定价);返回 `{orderId, payUrl}`,前端把 payUrl 转二维码弹层供扫码。
    - 非 2xx → 抛错(含状态码),401 → 触发既有未登录处理(沿用项目约定)。
 2. `lib/membership-types.ts`:声明上文五个 camelCase 类型 + `Paged<T>`;**复用** `lib/plans.ts` 的 `type TierId`(`import type { TierId } from "@/lib/plans"`),避免重复定义档位枚举;`Feature` 复用 `lib/plans.ts` 的 `Feature`。
 3. `bun test`(红)→ 实现 → 绿。
@@ -305,7 +304,7 @@ export function signAutoRenew(planId: string, period: "month"|"quarter"|"year"):
    - 套餐:用 `overview.plans` 渲染完整对比;**渐进式区块**用 `overview.progressive.current` + `overview.progressive.next` 渲染「当前档 / 推荐升级到下一档」;`next===null` 时显示「已是最高档」。
    - 仍可复用 `lib/plans.ts` 的 `creditCosts`/`creditPacks`(消耗说明、充值包目录是产品静态文案,保留;但充值价格以接口/配置为准时优先接口)。
 3. **入口接线**:
-   - 升级/开通自动续费按钮 → `signAutoRenew(plan.id, billingPeriod)` → 拿 `signPageUrl` 跳转(spec305)。
+   - 升级/开通/续费按钮 → `renewMembership(plan.id)` → 拿 `payUrl` 展示扫码二维码弹层(spec305);支付结果轮询我方订单接口。
    - 充值包 `buyPack` → `startRecharge(pack.credits, yuanToCents(pack.price))` → 用返回的 `qrCode`/`payUrl` 展示/跳转(spec304)。
    - 邀请入口 → 接 spec307 的**真实路由**:`GET /api/referral/code`(单数,取「我的邀请码」)+ `GET /api/referral/list`(邀请列表);并用环境开关 `NEXT_PUBLIC_REFERRAL_ENABLED` 守卫;开关关闭时按钮置灰/隐藏,**不**留死链。会员中心只**展示**「我的邀请码 + 邀请列表」,**不**做「输入邀请码绑定」——绑定在注册流程(Phase 0)完成,spec307 不产出任何 `/bind` 写接口,故此处**禁止**假设 `POST /api/referrals/bind` 之类路由。实现时若 spec307 已就绪则直接对接上述两个真实接口,否则保留入口 + flag 并在 PR 描述里标注「待 spec307」。
 4. 抽出纯逻辑(如 `pickProgressive`、`formatPeriodEnd`、`tierLabel`)到可测模块并写 `bun:test`。
@@ -341,9 +340,9 @@ export function signAutoRenew(planId: string, period: "month"|"quarter"|"year"):
 - [ ] `GET /api/orders` 分页,`amountCents`/`amountYuan` 一致换算,用户隔离。
 - [ ] 出参经 `toCamel`(复用 spec207 `apps/api/src/lib/case.ts`);金额同时含 `*Cents` 与 `*Yuan`。
 - [ ] 三接口均挂 `authMiddleware`,未登录 → 401;参数非法 → 400。
-- [ ] 前端 `app/(tool)/membership/page.tsx` 移除 `DEMO_CREDIT_BALANCE` 与硬编码 `orders`;余额/订阅状态/到期/auto_renew/套餐/流水/订单真实渲染。
+- [ ] 前端 `app/(tool)/membership/page.tsx` 移除 `DEMO_CREDIT_BALANCE` 与硬编码 `orders`;余额/订阅状态/到期/套餐/流水/订单真实渲染(无自动续费开关)。
 - [ ] 前端类型复用 `lib/plans.ts` 的 `TierId`/`Feature`,新增 `lib/membership-types.ts` 与 `lib/membership-api.ts`。
-- [ ] 充值入口 → spec304 `POST /api/payment/recharge`;开通自动续费 → spec305 `POST /api/subscriptions/auto-renew/sign`;邀请入口 → spec307 的 `GET /api/referral/code` + `GET /api/referral/list`(只展示我的码+列表,不做 `/bind` 绑定;绑定在注册流程 Phase 0 完成)(或 `NEXT_PUBLIC_REFERRAL_ENABLED` flag 守卫,标注待 spec307)。
+- [ ] 充值入口 → spec304 `POST /api/payment/recharge`;开通/续费 → spec305 `POST /api/membership/renew`(扫码单笔,无自动续费开关);邀请入口 → spec307 的 `GET /api/referral/code` + `GET /api/referral/list`(只展示我的码+列表,不做 `/bind` 绑定;绑定在注册流程 Phase 0 完成)(或 `NEXT_PUBLIC_REFERRAL_ENABLED` flag 守卫,标注待 spec307)。
 - [ ] 端到端集成测试覆盖三接口 + 401;全量 `bun test` 与前端类型检查全绿。
 
 ---
