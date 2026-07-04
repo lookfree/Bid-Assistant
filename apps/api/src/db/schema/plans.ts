@@ -7,6 +7,7 @@ import { users } from "./users"
 export const plans = pgTable("plans", {
   id: id(),
   name: text("name").notNull(),
+  code: text("code"), // 档位标识 free/personal/professional（spec308 会员中心分组；同档不同 cycle 行共享同 code）
   priceCents: integer("price_cents").notNull().default(0), // 价格（分，integer——金额全链路禁浮点）
   currency: text("currency").notNull().default("CNY"),
   billingCycle: text("billing_cycle").notNull(), // month/quarter/year
@@ -19,6 +20,8 @@ export const plans = pgTable("plans", {
 }, (t) => ({
   // billing_cycle 驱动续期周期计算（spec305），typo 直接断续费链路
   cycleCheck: check("plans_billing_cycle_check", sql`${t.billingCycle} in ('month','quarter','year')`),
+  // 档位标识只允许固定枚举（NULL=非会员档套餐，如纯充值不入会员分组）
+  codeCheck: check("plans_code_check", sql`${t.code} is null or ${t.code} in ('free','personal','professional')`),
 }))
 
 // 订阅：无 auto_renew/agreement_no——不做自动续费（架构 §6.2，到期提醒+手动续费）。

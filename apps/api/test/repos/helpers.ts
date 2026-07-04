@@ -40,12 +40,13 @@ export async function makeLedgerUser(register: (id: string) => void): Promise<st
 /** 订阅/续费测试共用：建测试套餐并登记清理（镜像 makeLedgerUser 模式）。 */
 export async function makeTestPlan(
   register: (id: string) => void,
-  overrides: Partial<{ name: string; priceCents: number; billingCycle: string; grantCreditsPerCycle: number }> = {},
+  overrides: Partial<{ name: string; code: string; priceCents: number; billingCycle: string; grantCreditsPerCycle: number }> = {},
 ): Promise<string> {
   const [p] = await getDb()
     .insert(plans)
     .values({
       name: overrides.name ?? `测试套餐-${Date.now().toString(36)}`,
+      code: overrides.code, // spec308 档位标识（free/personal/professional），默认 undefined=不入会员分组
       priceCents: overrides.priceCents ?? 1000,
       billingCycle: overrides.billingCycle ?? "month",
       grantCreditsPerCycle: overrides.grantCreditsPerCycle ?? 100,

@@ -7,23 +7,28 @@ import { plans } from "../db/schema"
 import type { User } from "../db/schema"
 import { authMiddleware } from "../middleware/auth"
 import { countOpenOrders, createOrder } from "../services/payment-orders"
+import { getMembershipOverview } from "../services/membership"
+import { getUserId } from "../lib/auth-user"
+import { toCamel } from "../lib/case"
 import { launchPayment, respondLaunch, paywaySchema, resolvePaymentDeps, MAX_OPEN_ORDERS_PER_USER, type PaymentRouteDeps } from "./payment"
 
-// 会员路由（架构 §6.2，spec305）：手动续费下单 → 复用 spec304 单笔支付链路。
+// 会员路由（架构 §6.2，spec305/308）：会员中心只读总览 + 手动续费下单（复用 spec304 单笔支付链路）。
 // 服务端定价：客户端只传 planId，金额从 plans 当前价取并快照进订单；无任何签约/代扣路径。
-// spec308 会员中心的套餐列表/我的会员页在此文件扩展。
 
 export function membershipRoutes(deps: Partial<PaymentRouteDeps> = {}) {
   const resolved = resolvePaymentDeps(deps, "membership")
   const r = new Hono<{ Variables: { user: User } }>()
 
-  // 凭据未配置的环境：支付能力整体关闭（503），gate 与 payment 路由同源 getPayment（不半开）
+  r.use("*", authMiddleware)
+
+  // 会员中心总览（spec308，只读）：不依赖支付凭据——凭据缺失的环境也能查看会员/套餐/余额。
+  r.get("/", async (c) => c.json(toCamel(await getMembershipOverview(getUserId(c)))))
+
+  // 以下为下单路径：支付凭据未配置则整体 503（gate 与 payment 路由同源 getPayment，不半开）。
   if (!resolved) {
     r.all("*", (c) => c.json({ error: "payment_unconfigured" }, 503))
     return r
   }
-
-  r.use("*", authMiddleware)
 
   // 手动续费下单：金额=所选套餐当期价（服务端取价），支付成功由 markPaid renewal 分支续期+发当期积分
   r.post("/renew", async (c) => {

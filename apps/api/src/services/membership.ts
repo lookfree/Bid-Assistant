@@ -1,0 +1,120 @@
+import { eq } from "drizzle-orm"
+import { getDb } from "../db/client"
+import { plans, subscriptions } from "../db/schema"
+import { getBalance } from "./credits"
+import { centsToYuan } from "../lib/money"
+
+// 会员中心聚合（spec308，架构 §5.3）：当前订阅 + 积分余额 + 套餐列表 + 渐进式展示（当前档+下一档）。
+// 只读：余额一律走 spec302 credits.getBalance，不在此自算 Σ流水。tier 由 plans.code 分组（非中文名匹配）。
+
+export type TierId = "free" | "personal" | "professional"
+const TIER_ORDER: TierId[] = ["free", "personal", "professional"]
+
+export interface PlanView {
+  id: string
+  name: string
+  tierId: TierId
+  priceMonthCents: number
+  priceMonthYuan: number
+  priceYearCents: number
+  priceYearYuan: number
+  grantCreditsPerCycle: number
+  features: { text: string; included: boolean }[]
+  recommended: boolean
+}
+export interface SubscriptionView {
+  status: "active" | "past_due" | "expired" | "none"
+  planId: string | null
+  tierId: TierId
+  billingCycle: "month" | "quarter" | "year" | null
+  currentPeriodStart: string | null
+  currentPeriodEnd: string | null
+}
+export interface MembershipOverview {
+  subscription: SubscriptionView
+  balance: number
+  plans: PlanView[]
+  progressive: { current: PlanView | null; next: PlanView | null }
+}
+
+type PlanRow = typeof plans.$inferSelect
+
+/** DB features 开关 map → {text,included}[]（营销文案在前端 memberTiers，这里只忠实反映 DB 权益开关）。 */
+function toFeatureList(features: Record<string, unknown> | null): { text: string; included: boolean }[] {
+  if (!features) return []
+  return Object.entries(features).map(([text, v]) => ({ text, included: Boolean(v) }))
+}
+
+/** 把同一档（code）的月/年 cycle 行聚成一条 PlanView。 */
+function buildPlanView(code: TierId, rows: PlanRow[]): PlanView {
+  const month = rows.find((r) => r.billingCycle === "month")
+  const year = rows.find((r) => r.billingCycle === "year")
+  const rep = month ?? year ?? rows[0]!
+  return {
+    id: rep.id,
+    name: rep.name,
+    tierId: code,
+    priceMonthCents: month?.priceCents ?? 0,
+    priceMonthYuan: centsToYuan(month?.priceCents ?? 0),
+    priceYearCents: year?.priceCents ?? 0,
+    priceYearYuan: centsToYuan(year?.priceCents ?? 0),
+    grantCreditsPerCycle: rep.grantCreditsPerCycle,
+    features: toFeatureList(rep.features ?? null),
+    recommended: code === "professional", // 主推档（对齐前端 memberTiers）
+  }
+}
+
+/** 上架套餐按 code 分组成 tier 视图，按升级顺序排列（入参为已取的全量 plans 行，避免重复读表）。 */
+function buildPlanViews(allRows: PlanRow[]): { list: PlanView[]; byTier: Map<TierId, PlanView> } {
+  const grouped = new Map<TierId, PlanRow[]>()
+  for (const r of allRows) {
+    if (r.status !== "active") continue // 下架档不入会员分组
+    if (!r.code || !TIER_ORDER.includes(r.code as TierId)) continue // 非会员档（如纯充值）不入分组
+    const tier = r.code as TierId
+    ;(grouped.get(tier) ?? grouped.set(tier, []).get(tier)!).push(r)
+  }
+  const byTier = new Map<TierId, PlanView>()
+  for (const tier of TIER_ORDER) {
+    const rs = grouped.get(tier)
+    if (rs?.length) byTier.set(tier, buildPlanView(tier, rs))
+  }
+  return { list: TIER_ORDER.map((t) => byTier.get(t)).filter((p): p is PlanView => !!p), byTier }
+}
+
+/** 当前订阅视图：一人一订阅行（unique user_id），过期（状态或周期末<now）归一为 expired。 */
+async function loadSubscription(userId: string, planCode: Map<string, TierId>): Promise<SubscriptionView> {
+  const [row] = await getDb().select().from(subscriptions).where(eq(subscriptions.userId, userId))
+  if (!row) return { status: "none", planId: null, tierId: "free", billingCycle: null, currentPeriodStart: null, currentPeriodEnd: null }
+  const expired = row.status === "expired" || (row.currentPeriodEnd != null && row.currentPeriodEnd.getTime() < Date.now())
+  const status = expired ? "expired" : (row.status as "active" | "past_due")
+  return {
+    status,
+    planId: row.planId,
+    tierId: planCode.get(row.planId) ?? "free",
+    billingCycle: null, // 由下方补齐（需 plan.billingCycle）
+    currentPeriodStart: row.currentPeriodStart?.toISOString() ?? null,
+    currentPeriodEnd: row.currentPeriodEnd?.toISOString() ?? null,
+  }
+}
+
+export async function getMembershipOverview(userId: string): Promise<MembershipOverview> {
+  const allPlans = await getDb().select().from(plans)
+  const planCode = new Map<string, TierId>()
+  const planCycle = new Map<string, "month" | "quarter" | "year">()
+  for (const p of allPlans) {
+    if (p.code) planCode.set(p.id, p.code as TierId)
+    planCycle.set(p.id, p.billingCycle as "month" | "quarter" | "year")
+  }
+
+  const { list, byTier } = buildPlanViews(allPlans)
+  const subscription = await loadSubscription(userId, planCode)
+  if (subscription.planId) subscription.billingCycle = planCycle.get(subscription.planId) ?? null
+  const balance = await getBalance(userId)
+
+  const current = byTier.get(subscription.tierId) ?? null
+  const idx = TIER_ORDER.indexOf(subscription.tierId)
+  const nextTier = idx >= 0 && idx < TIER_ORDER.length - 1 ? TIER_ORDER[idx + 1]! : null
+  const next = nextTier ? (byTier.get(nextTier) ?? null) : null
+
+  return { subscription, balance, plans: list, progressive: { current, next } }
+}
