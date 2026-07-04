@@ -28,6 +28,19 @@
 
 ---
 
+## 实现校正（与现有代码库对齐 —— 以下覆盖本文档后续示例代码）
+
+本文档草拟于施工前，示例代码若与代码库现状不符，**一律以下列约定为准**：
+
+1. **DB 句柄用 `getDb()`**：`db/client` 导出的是 `getDb()`（非 `db`）。所有仓储/服务/种子/测试把 `import { db } from "../db/client"` + `db.xxx` 改为 `import { getDb } from "../db/client"` + `getDb().xxx`；测试收尾 `await closeDb()`。
+2. **schema 沿用码库约定**：不用 `pgEnum`/裸 `timestamp(...)`。用 `columns` helper（`id()` / `tz(name)` / `createdAt()`）+ `text().$type<...>()` + `check(...)` 约束 + const 元组（如 `ADMIN_ROLES`），与 `plans.ts`/`sessions.ts` 一致（见下方 Task 1 已订正的 schema）。
+3. **迁移手写、不用 `db:generate`**：仓库 snapshot 停留在 ~0017（0018/0019 为手写迁移），`db:generate` 会重复 emit 既有表并产出无 `IF NOT EXISTS` 的 `ADD COLUMN`（应用即失败）。**手写** `drizzle/0020_admin_foundation.sql`（仅 4 张 admin 表 + 内联 FK + 索引，`CREATE TABLE IF NOT EXISTS`）并手动向 `drizzle/meta/_journal.json` 追加 idx 20 条目。
+4. **测试连真库 → 经 mbp 隧道跑**：本机直连远程 PG 丢包。用 `./test-on-mbp.sh test/xxx.test.ts`（自动建 15432/16379/19000 隧道），**不要**用 `bun --env-file=… test` 本机直连。迁移亦经隧道 `drizzle-kit migrate` 应用。
+5. **测试自建 Hono、不 import `app`**：`app.ts` 导出 `createApp(deps)`（非现成 `app` 实例）。端到端测试建 `const app = new Hono(); app.route("/admin-api", adminRoutes())`；越权探针（finance-only）挂在**测试的** app 上（`app.get("/probe/finance", requireAdmin("finance"), …)`），**不**污染生产 `adminRoutes()`。
+6. **提交规范**：见 Global Constraints 第 10 条（英文 Conventional Commits、账号 `lookfree`、不加 `Co-Authored-By`）。
+
+---
+
 ## File Structure
 
 ```
@@ -97,45 +110,62 @@ git checkout -b phase3/spec309-admin-foundation
 - [ ] **Step 2: 写 `apps/api/src/db/schema/admin.ts`**
 
 ```ts
-import { pgTable, uuid, text, jsonb, timestamp, pgEnum, index } from "drizzle-orm/pg-core"
+import { pgTable, uuid, text, jsonb, index, unique, check } from "drizzle-orm/pg-core"
+import { sql } from "drizzle-orm"
+import { id, tz, createdAt } from "./columns"
 
-// admin 角色（与 C 端无关，独立枚举）
-export const adminRole = pgEnum("admin_role", ["superadmin", "ops", "finance", "support"])
-export type AdminRole = (typeof adminRole.enumValues)[number]
+// 枚举沿用码库约定（text + check + const 元组 $type），不用 pgEnum。
+export const ADMIN_ROLES = ["superadmin", "ops", "finance", "support"] as const
+export type AdminRole = (typeof ADMIN_ROLES)[number]
+export const ADMIN_STATUSES = ["active", "disabled"] as const
+export type AdminStatus = (typeof ADMIN_STATUSES)[number]
 
-export const adminStatus = pgEnum("admin_status", ["active", "disabled"])
+const roleInList = (col: unknown) => sql`${col} in ('superadmin','ops','finance','support')`
 
 // 运营人员账号本体（与 C 端 users 完全分离）
-export const adminUsers = pgTable("admin_users", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  username: text("username").notNull().unique(),
-  passwordHash: text("password_hash").notNull(),     // Bun.password 哈希（非 native bcrypt）
-  role: adminRole("role").notNull().default("support"),
-  status: adminStatus("status").notNull().default("active"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-})
+export const adminUsers = pgTable(
+  "admin_users",
+  {
+    id: id(),
+    username: text("username").notNull().unique(),
+    passwordHash: text("password_hash").notNull(), // Bun.password 哈希（非 native bcrypt）
+    role: text("role").$type<AdminRole>().notNull().default("support"),
+    status: text("status").$type<AdminStatus>().notNull().default("active"),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    roleCheck: check("admin_users_role_check", roleInList(t.role)),
+    statusCheck: check("admin_users_status_check", sql`${t.status} in ('active','disabled')`),
+  }),
+)
 
-// 角色 → 权限集（配置化；代码内有默认映射 rbac.ts，此表作可视化/覆盖载体，spec310 用）
-export const adminRoles = pgTable("admin_roles", {
-  role: adminRole("role").primaryKey(),
-  permissions: jsonb("permissions").$type<string[]>().notNull().default([]),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-})
+// 角色 → 权限集（配置化；代码内默认映射在 rbac.ts，此表供 spec310 可视化/覆盖）
+export const adminRoles = pgTable(
+  "admin_roles",
+  {
+    role: text("role").$type<AdminRole>().primaryKey(),
+    permissions: jsonb("permissions").$type<string[]>().notNull().default([]),
+    updatedAt: tz("updated_at").notNull().defaultNow(),
+  },
+  (t) => ({ roleCheck: check("admin_roles_role_check", roleInList(t.role)) }),
+)
 
 // admin 独立会话（与 C 端 sessions 分离；只存 token 的 sha256）
 export const adminSessions = pgTable(
   "admin_sessions",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    adminId: uuid("admin_id").notNull().references(() => adminUsers.id, { onDelete: "cascade" }),
+    id: id(),
+    adminId: uuid("admin_id")
+      .notNull()
+      .references(() => adminUsers.id, { onDelete: "cascade" }),
     tokenHash: text("token_hash").notNull(),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    revokedAt: timestamp("revoked_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: tz("expires_at").notNull(),
+    revokedAt: tz("revoked_at"),
+    createdAt: createdAt(),
   },
   (t) => ({
     byAdmin: index("admin_sessions_admin_id_idx").on(t.adminId),
-    byTokenHash: index("admin_sessions_token_hash_idx").on(t.tokenHash),
+    tokenHashUq: unique("admin_sessions_token_hash_uq").on(t.tokenHash), // 一个 token hash 唯一标识一个会话
   }),
 )
 
@@ -143,13 +173,13 @@ export const adminSessions = pgTable(
 export const adminAuditLogs = pgTable(
   "admin_audit_logs",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    operator: text("operator").notNull(),           // admin username（冗余存，便于审计追溯）
-    action: text("action").notNull(),               // 如 refund.approve / credit.adjust / user.ban
-    target: text("target"),                          // 操作对象标识（order_id / user_id ...）
-    before: jsonb("before"),                         // 操作前快照
-    after: jsonb("after"),                           // 操作后快照
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    id: id(),
+    operator: text("operator").notNull(), // admin username（冗余存，便于追溯）
+    action: text("action").notNull(), // 如 refund.approve / credit.adjust / user.ban
+    target: text("target"), // 操作对象标识（order_id / user_id ...）
+    before: jsonb("before"), // 操作前快照
+    after: jsonb("after"), // 操作后快照
+    createdAt: createdAt(),
   },
   (t) => ({
     byOperator: index("admin_audit_logs_operator_idx").on(t.operator),

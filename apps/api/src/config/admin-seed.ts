@@ -7,10 +7,10 @@ import { hashPassword } from "../services/admin-auth"
 
 // 种子角色权限集（与代码内 ROLE_PERMISSIONS 一致；spec310 后台可在此表覆盖/可视化）。
 export async function seedAdminRoles(): Promise<void> {
-  const db = getDb()
-  for (const role of ADMIN_ROLES) {
-    await db.insert(adminRoles).values({ role, permissions: ROLE_PERMISSIONS[role] }).onConflictDoNothing({ target: adminRoles.role })
-  }
+  await getDb()
+    .insert(adminRoles)
+    .values(ADMIN_ROLES.map((role) => ({ role, permissions: ROLE_PERMISSIONS[role] })))
+    .onConflictDoNothing({ target: adminRoles.role })
 }
 
 const DEV_PLACEHOLDER_PASSWORD = "ChangeMe-dev-only"
