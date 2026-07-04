@@ -24,6 +24,20 @@ describe("api-client", () => {
     expect(seen!.url).toBe("http://api.test/auth/sms/verify")
   })
 
+  it("verifySmsCode 带邀请码进 body（推荐链接注册）", async () => {
+    let body: unknown = null
+    const client = createApiClient({
+      baseUrl: "http://api.test",
+      getToken: () => null,
+      fetchImpl: fakeFetch((_url, init) => {
+        body = JSON.parse(String(init?.body))
+        return { status: 200, body: { token: "t1", isNew: true, user: { id: "u1", nickname: null } } }
+      }),
+    })
+    await client.authApi.verifySmsCode("+8613900000000", "123456", true, "ABC123")
+    expect(body).toMatchObject({ phone: "+8613900000000", code: "123456", agreedToTerms: true, referralCode: "ABC123" })
+  })
+
   it("me 带 Authorization Bearer", async () => {
     let auth: string | null = null
     const client = createApiClient({

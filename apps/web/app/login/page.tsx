@@ -22,6 +22,7 @@ function LoginContent() {
   const searchParams = useSearchParams()
   const redirect = searchParams.get("redirect") || "/upload"
   const reason = searchParams.get("reason")
+  const referralCode = searchParams.get("ref") || undefined // 邀请链接 /login?ref=CODE：首次注册带上 → 绑定推荐关系
 
   const { login } = useAuth()
   const [tab, setTab] = useState<"phone" | "wechat">("phone")
@@ -61,7 +62,7 @@ function LoginContent() {
     setBusy(true)
     setMsg("")
     try {
-      const { token, user } = await api.authApi.verifySmsCode(phone, code, agreed)
+      const { token, user } = await api.authApi.verifySmsCode(phone, code, agreed, referralCode)
       login(token, user)
       router.push(redirect)
     } catch (e) {
