@@ -8,7 +8,7 @@ from agent.config import settings
 from agent.db import get_pool
 from agent.redis_client import get_redis
 from agent.telemetry.recorder import Recorder
-from agent.models.gateway import ModelGateway
+from agent.models.gateway import ModelGateway, model_override_to_settings
 from agent.runtime.channels import progress_stream, runmeta_key, result_key
 from agent.runtime.registry import get_agent, RunContext
 import agent.runtime.dummy_agent  # noqa: F401 确保 dummy 注册
@@ -54,8 +54,12 @@ async def process_run(run_id: str) -> None:
     rec.log_event(run_id, agent_type, "run.start", thread_id=thread_id)
     _publish(r, run_id, {"type": "run.start"})
 
+    model = meta.get("model")
+    override = model_override_to_settings(model)
+    # 有 per-run override 才新建 gateway；否则复用模块级单例 _gateway（零额外开销）
+    gateway = ModelGateway(settings.model_copy(update=override)) if override else _gateway
     ctx = RunContext(run_id=run_id, agent_type=agent_type, thread_id=thread_id,
-                     recorder=rec, gateway=_gateway, redis=r)
+                     recorder=rec, gateway=gateway, redis=r)
     result = None
     nodes = set()
     try:

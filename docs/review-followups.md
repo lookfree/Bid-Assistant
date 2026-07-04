@@ -306,9 +306,11 @@ spec307 遗留的 R1-R6 全部落地（含前端邀请链接接线）：
 
 code-review 全修：A1 并发降级（WHERE pending）、A2 指纹塌常量、A3/A4 sweep 有界+立即模式兜底、B1 catch 区分已知/非预期、B2 cron 移 crons/referral.ts。全量 mbp 300 pass 0 fail。**产品决策**：unlockOn 保持 invitee_first_paid（首付才发，防薅羊毛），不改成注册即送。
 
-## 开发待办：agent 模型改为运营后台可配（2026-07-04 记）
+## 开发待办：agent 模型改为运营后台可配（2026-07-04 记）—— ✅ 已实现（spec311，2026-07-05）
 
-现状：agent 用哪个大模型由 env 写死——`services/agent/src/agent/config.py` 的 `model_default_provider`（默认 `deepseek`）+ `model_default_model` + `model_fallbacks`。支持 deepseek / dashscope(通义千问) / zhipu(GLM) 三家 key。
+**落地方式**（App API 为权威，key 仍留 env）：`billing_configs` 键 `agent_model={provider,model,fallbacks}`（复用 spec310 通用 `PUT /admin-api/plans/configs/:key`，未加新端点）→ App 建 run 时 `getAgentModel()` 随请求体下发 → agent `CreateRunBody.model` 经 dispatch/executor 用 `settings.model_copy` 覆盖 env 默认（gateway 零改动）→ admin 套餐页「智能体模型」分区可视化配。缺省回退 env，向后兼容。见 `docs/superpowers/plans/phase-3/spec311-agent-model-config.md`。
+
+现状（改造前）：agent 用哪个大模型由 env 写死——`services/agent/src/agent/config.py` 的 `model_default_provider`（默认 `deepseek`）+ `model_default_model` + `model_fallbacks`。支持 deepseek / dashscope(通义千问) / zhipu(GLM) 三家 key。
 
 产品要求：**改成运营后台可配**（像 `billing_configs` 那样存 DB、admin 后台可视化改、即时生效），运营能切换 agent 使用的 provider/model/fallback，无需改 env 重部署。
 

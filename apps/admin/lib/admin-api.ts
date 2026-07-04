@@ -30,4 +30,13 @@ export const adminApi = {
     }),
   me: () => req<{ admin: AdminMe }>("/me"),
   logout: () => req<void>("/logout", { method: "POST" }),
+  plans: {
+    // 套餐&配置页（spec310）：GET 全量配置 / PUT 单 key（如 agent_model，需 config.write）。
+    getConfigs: () => req<Record<string, unknown>>("/plans/configs"),
+    setConfig: (key: string, value: unknown) =>
+      req<{ ok: true }>(`/plans/configs/${key}`, {
+        method: "PUT",
+        body: JSON.stringify({ value }),
+      }),
+  },
 }
