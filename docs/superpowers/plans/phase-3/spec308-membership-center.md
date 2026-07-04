@@ -21,10 +21,7 @@
 7. **分页规范**:`GET /api/credits/transactions` 与 `GET /api/orders` 用 `?page=1&pageSize=20`(Zod 校验,`pageSize` 上限 100,默认 20,`page` 从 1 开始),返回 `{ items, page, pageSize, total, hasMore }`。
 8. **幂等/无副作用**:聚合接口若发现 `credit_balances` 缓存缺失,允许 `getBalance` 内部刷新(那是 spec302 的行为),本 spec 不额外写库。
 9. **错误处理**:未登录 → 401;参数非法 → 400(Zod);用户存在但无订阅 → 200 返回 free 档结构(不是 404)。
-10. **每个 Task 结束 `git commit`**,message 末尾附:
-    ```
-    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
-    ```
+10. **每个 Task 结束 `git commit`**,遵循仓库 CLAUDE.md 提交规范:英文 Conventional Commits（`feat:`/`fix:`/`refactor:` 等）、提交账号 `lookfree <etwuman@126.com>`、**禁止**任何 Claude 相关内容（不加 `Co-Authored-By`）。此规范覆盖本文档旧示例。
 11. **分支**:`phase3/spec308-membership-center`。
 12. **行数约束**:单源码文件不超过 1000 行,超出按职责拆分。
 
@@ -200,7 +197,7 @@ export function renewMembership(planId: string): Promise<{ orderId: string; qrCo
 2. 写 `test/lib/money.test.ts`:`centsToYuan(3900)===39`、`centsToYuan(159900)===1599`、`centsToYuan(1)===0.01`;`yuanToCents(39)===3900`、`yuanToCents(0.1)===10`;边界 `0`。
 3. 写 `test/lib/pagination.test.ts`:默认 `{page:1,pageSize:20,offset:0}`;`page=3,pageSize=10 → offset 20`;`pageSize=1000` 被截到 100;`page=0` / 负数 / 非数字 → 报错或归 1(选定一种语义并测试);`offset=(page-1)*pageSize`。
 4. `bun test`(红)→ 实现 `auth-user.ts` / `money.ts` / `pagination.ts` → 绿。
-5. `git commit -m "spec308 task0: app 层 getUserId/money/pagination 公共 helper"`(附 Co-Authored-By)。
+5. `git commit -m "spec308 task0: app 层 getUserId/money/pagination 公共 helper"`。
 
 **验收**:三个 helper 测试全绿;`getUserId` 兼容两种鉴权写法。
 
@@ -229,7 +226,7 @@ export function renewMembership(planId: string): Promise<{ orderId: string; qrCo
      - 计算 `progressive`:按 free<personal<professional 顺序定位 `current` 索引,`next = order[i+1] ?? null`。
    - `routes/membership.ts`:`new Hono()`,`authMiddleware`,`getUserId(c)`,调服务,出参 `toCamel` + 金额加 `*Yuan`,`c.json(...)`。
    - `app.ts`:`app.route("/api/membership", membershipRoutes)`。
-4. 绿后 `git commit -m "spec308 task1: GET /api/membership 聚合接口(渐进式当前档+下一档)"`(附 Co-Authored-By)。
+4. 绿后 `git commit -m "spec308 task1: GET /api/membership 聚合接口(渐进式当前档+下一档)"`。
 
 **验收**:四类用户(未订阅/personal/professional/过期)用例全绿;`progressive` 行为符合架构 §5.3;余额走 `getBalance` 非自算。
 
@@ -250,7 +247,7 @@ export function renewMembership(planId: string): Promise<{ orderId: string; qrCo
    - `pageSize=999` 被截到 100(透传 Task0 pagination)。
    - `page=abc` → 400。无 token → 401。
 3. `bun test`(红)→ 实现 `services/credits-history.ts` + `routes/credits.ts`(`app.route("/api/credits", creditsRoutes)`,内部 `GET /transactions`),用 `parsePagination`、`getUserId`、`toCamel`、`hasMore = offset+items.length < total`。
-4. `git commit -m "spec308 task2: GET /api/credits/transactions 积分流水分页"`(附 Co-Authored-By)。
+4. `git commit -m "spec308 task2: GET /api/credits/transactions 积分流水分页"`。
 
 **验收**:分页/排序/用户隔离/参数校验用例全绿。
 
@@ -266,7 +263,7 @@ export function renewMembership(planId: string): Promise<{ orderId: string; qrCo
    - `amountCents`→`amountYuan` 用 `centsToYuan` 一致;`status`/`provider`/`type` 透传。
 2. 写 `test/routes/orders.route.test.ts`:`GET /api/orders?page=1&pageSize=20` → 200 `{items,page,pageSize,total,hasMore}`;无 token → 401;非法 page → 400。
 3. `bun test`(红)→ 实现 `services/order-history.ts` + `routes/orders.ts`(`app.route("/api/orders", ordersRoutes)`)。
-4. `git commit -m "spec308 task3: GET /api/orders 我的订单分页"`(附 Co-Authored-By)。
+4. `git commit -m "spec308 task3: GET /api/orders 我的订单分页"`。
 
 **验收**:订单分页/金额换算/隔离/校验用例全绿。
 
@@ -286,7 +283,7 @@ export function renewMembership(planId: string): Promise<{ orderId: string; qrCo
    - 非 2xx → 抛错(含状态码),401 → 触发既有未登录处理(沿用项目约定)。
 2. `lib/membership-types.ts`:声明上文五个 camelCase 类型 + `Paged<T>`;**复用** `lib/plans.ts` 的 `type TierId`(`import type { TierId } from "@/lib/plans"`),避免重复定义档位枚举;`Feature` 复用 `lib/plans.ts` 的 `Feature`。
 3. `bun test`(红)→ 实现 → 绿。
-4. `git commit -m "spec308 task4: 前端 membership API 封装与类型(复用 plans.ts TierId)"`(附 Co-Authored-By)。
+4. `git commit -m "spec308 task4: 前端 membership API 封装与类型(复用 plans.ts TierId)"`。
 
 **验收**:封装函数 URL/method/body 正确;类型复用 `lib/plans.ts`;错误处理覆盖 401/非 2xx。
 
@@ -311,7 +308,7 @@ export function renewMembership(planId: string): Promise<{ orderId: string; qrCo
    - 邀请入口 → 接 spec307 的**真实路由**:`GET /api/referral/code`(单数,取「我的邀请码」)+ `GET /api/referral/list`(邀请列表);并用环境开关 `NEXT_PUBLIC_REFERRAL_ENABLED` 守卫;开关关闭时按钮置灰/隐藏,**不**留死链。会员中心只**展示**「我的邀请码 + 邀请列表」,**不**做「输入邀请码绑定」——绑定在注册流程(Phase 0)完成,spec307 不产出任何 `/bind` 写接口,故此处**禁止**假设 `POST /api/referrals/bind` 之类路由。实现时若 spec307 已就绪则直接对接上述两个真实接口,否则保留入口 + flag 并在 PR 描述里标注「待 spec307」。
 4. 抽出纯逻辑(如 `pickProgressive`、`formatPeriodEnd`、`tierLabel`)到可测模块并写 `bun:test`。
 5. `bun test` 全绿 + 前端类型检查通过(`tsc --noEmit` 或项目既有 lint)。
-6. `git commit -m "spec308 task5: 会员中心页接真实接口(余额/订阅/渐进式套餐/充值/续费/邀请入口)"`(附 Co-Authored-By)。
+6. `git commit -m "spec308 task5: 会员中心页接真实接口(余额/订阅/渐进式套餐/充值/续费/邀请入口)"`。
 
 **验收**:页面不再引用 `DEMO_CREDIT_BALANCE` 与硬编码 orders;余额/订阅/套餐/流水/订单全部真实渲染;渐进式区块正确显示当前档+下一档;充值/续费按钮调通 spec304/305;邀请入口接 spec307 或 flag 守卫。
 
@@ -326,7 +323,7 @@ export function renewMembership(planId: string): Promise<{ orderId: string; qrCo
    - 依次请求三个接口,断言:聚合返回订阅+余额+套餐(含 `progressive.next` 为 professional)、流水分页 `hasMore` 正确、订单分页正确;
    - 未登录请求三接口全部 401。
 3. 全量 `bun test` 绿;前端 `tsc`/lint 绿。
-4. `git commit -m "spec308 task6: 会员中心端到端集成测试与路由挂载回归"`(附 Co-Authored-By)。
+4. `git commit -m "spec308 task6: 会员中心端到端集成测试与路由挂载回归"`。
 
 **验收**:全量测试绿;三接口在 `app.ts` 正确挂载且受鉴权保护。
 
@@ -334,7 +331,7 @@ export function renewMembership(planId: string): Promise<{ orderId: string; qrCo
 
 ## 验收清单(整体)
 
-- [ ] 分支 `phase3/spec308-membership-center`,每个 Task 一次提交,均附 `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`。
+- [ ] 分支 `phase3/spec308-membership-center`,每个 Task 一次提交,提交信息遵循仓库 CLAUDE.md 规范（英文 Conventional Commits、账号 `lookfree`、不加 `Co-Authored-By`）。
 - [ ] Task0 `getUserId` 兼容 `c.get("user")` 与 `c.get("userId")` 两种写法并有测试。
 - [ ] `GET /api/membership` 返回 `subscription` + `balance` + `plans` + `progressive{current,next}`;余额来自 `credits.getBalance`(spec302),非本 spec 自算。
 - [ ] 渐进式展示(架构 §5.3):仅返回当前档 + 下一档;professional 时 `next===null`;**未订阅用户返回 free 档 + 下一档 personal(升级入口),不返回 404**。
