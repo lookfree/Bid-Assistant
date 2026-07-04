@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 852" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', Segoe UI, sans-serif">
+  <defs>
+    <linearGradient id="page" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#f4f7fc"/>
+    </linearGradient>
+    <linearGradient id="gFe" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f5f7ff"/><stop offset="1" stop-color="#e6ebff"/></linearGradient>
+    <linearGradient id="gApi" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fffdf3"/><stop offset="1" stop-color="#fdf0cf"/></linearGradient>
+    <linearGradient id="gAgent" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f2fdf8"/><stop offset="1" stop-color="#d6f5e5"/></linearGradient>
+    <linearGradient id="gData" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fbfcfe"/><stop offset="1" stop-color="#eef2f7"/></linearGradient>
+    <linearGradient id="gBar1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#818cf8"/><stop offset="1" stop-color="#6366f1"/></linearGradient>
+    <linearGradient id="gBar2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f59e0b"/></linearGradient>
+    <linearGradient id="gBar3" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#34d399"/><stop offset="1" stop-color="#10b981"/></linearGradient>
+    <linearGradient id="gBar4" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#94a3b8"/><stop offset="1" stop-color="#64748b"/></linearGradient>
+    <filter id="soft" x="-6%" y="-10%" width="112%" height="128%"><feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#1e293b" flood-opacity="0.10"/></filter>
+    <filter id="chip" x="-20%" y="-30%" width="140%" height="170%"><feDropShadow dx="0" dy="1.5" stdDeviation="2" flood-color="#1e293b" flood-opacity="0.10"/></filter>
+    <marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/></marker>
+    <marker id="arG" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#34d399"/></marker>
+  </defs>
+
+  <rect x="0" y="0" width="1040" height="852" fill="url(#page)"/>
+  <text x="520" y="52" text-anchor="middle" font-size="25" font-weight="800" fill="#0f172a" letter-spacing="0.5">投标智能体 SaaS · 总体架构</text>
+  <text x="520" y="80" text-anchor="middle" font-size="13.5" fill="#64748b">三层职责隔离　·　铁律：钱只在 App API 动，智能体只上报用量</text>
+
+  <!-- ===== 前端层 ===== -->
+  <rect x="70" y="106" width="900" height="112" rx="18" fill="url(#gFe)" stroke="#c7d2fe" stroke-width="1.4" filter="url(#soft)"/>
+  <rect x="70" y="106" width="9" height="112" rx="4.5" fill="url(#gBar1)"/>
+  <rect x="94" y="128" width="26" height="26" rx="7" fill="#6366f1"/><text x="107" y="146" text-anchor="middle" font-size="14" fill="#fff">◻</text>
+  <text x="132" y="140" font-size="16" font-weight="700" fill="#3730a3">前端</text>
+  <text x="182" y="140" font-size="12.5" fill="#818cf8">Next.js 16 · React 19 · Tailwind</text>
+  <rect x="132" y="158" width="386" height="46" rx="10" fill="#ffffff" stroke="#dbe2fe" filter="url(#chip)"/>
+  <text x="150" y="180" font-size="13" font-weight="700" fill="#312e81">apps/web — C 端应用</text>
+  <text x="150" y="197" font-size="11" fill="#6366f1">读标→提纲→正文→审查→述标→导出 · 会员中心</text>
+  <rect x="534" y="158" width="404" height="46" rx="10" fill="#ffffff" stroke="#dbe2fe" filter="url(#chip)"/>
+  <text x="552" y="180" font-size="13" font-weight="700" fill="#312e81">apps/admin — 运营后台</text>
+  <text x="552" y="197" font-size="11" fill="#6366f1">RBAC + 审计 · 独立子域 / 身份（建设中）</text>
+
+  <!-- 箭头 1 -->
+  <line x1="520" y1="218" x2="520" y2="262" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar)"/>
+  <rect x="536" y="230" width="92" height="21" rx="10.5" fill="#ffffff" stroke="#e2e8f0" filter="url(#chip)"/>
+  <text x="582" y="244.5" text-anchor="middle" font-size="11" fill="#475569">REST + SSE</text>
+
+  <!-- ===== App API 层（高亮） ===== -->
+  <rect x="70" y="266" width="900" height="150" rx="18" fill="url(#gApi)" stroke="#f59e0b" stroke-width="2.2" filter="url(#soft)"/>
+  <rect x="70" y="266" width="9" height="150" rx="4.5" fill="url(#gBar2)"/>
+  <rect x="94" y="288" width="26" height="26" rx="7" fill="#f59e0b"/><text x="107" y="306" text-anchor="middle" font-size="13" fill="#fff">¥</text>
+  <text x="132" y="300" font-size="16.5" font-weight="800" fill="#92400e">App API · apps/api</text>
+  <text x="316" y="300" font-size="12.5" fill="#b45309">Hono 4.12 + Bun + Drizzle + PostgreSQL</text>
+  <text x="132" y="320" font-size="12" fill="#b45309">钱 / 鉴权的唯一权威　·　同步 REST + 向智能体 SSE 中继　·　只接收 usage 上报，自己扣费</text>
+  <g font-size="12" font-weight="700" fill="#78350f">
+    <rect x="94" y="340" width="134" height="56" rx="11" fill="#ffffff" stroke="#fde68a" filter="url(#chip)"/><text x="161" y="366" text-anchor="middle">积分账本</text><text x="161" y="384" text-anchor="middle" font-size="10" font-weight="500" fill="#a16207">hold/settle · FIFO 过期</text>
+    <rect x="238" y="340" width="134" height="56" rx="11" fill="#ffffff" stroke="#fde68a" filter="url(#chip)"/><text x="305" y="366" text-anchor="middle">收钱吧支付</text><text x="305" y="384" text-anchor="middle" font-size="10" font-weight="500" fill="#a16207">C 扫 B · 回调验签</text>
+    <rect x="382" y="340" width="134" height="56" rx="11" fill="#ffffff" stroke="#fde68a" filter="url(#chip)"/><text x="449" y="366" text-anchor="middle">订阅续费</text><text x="449" y="384" text-anchor="middle" font-size="10" font-weight="500" fill="#a16207">手动 · 到期提醒</text>
+    <rect x="526" y="340" width="134" height="56" rx="11" fill="#ffffff" stroke="#fde68a" filter="url(#chip)"/><text x="593" y="366" text-anchor="middle">对账退款</text><text x="593" y="384" text-anchor="middle" font-size="10" font-weight="500" fill="#a16207">过期 · 差异核对</text>
+    <rect x="670" y="340" width="134" height="56" rx="11" fill="#ffffff" stroke="#fde68a" filter="url(#chip)"/><text x="737" y="366" text-anchor="middle">推荐奖励</text><text x="737" y="384" text-anchor="middle" font-size="10" font-weight="500" fill="#a16207">配置化 · 防刷</text>
+    <rect x="814" y="340" width="124" height="56" rx="11" fill="#ffffff" stroke="#fde68a" filter="url(#chip)"/><text x="876" y="366" text-anchor="middle">智能体编排</text><text x="876" y="384" text-anchor="middle" font-size="10" font-weight="500" fill="#a16207">预扣→SSE→结算</text>
+  </g>
+
+  <!-- 箭头 2 -->
+  <line x1="520" y1="416" x2="520" y2="460" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar)"/>
+  <rect x="536" y="428" width="258" height="21" rx="10.5" fill="#ffffff" stroke="#e2e8f0" filter="url(#chip)"/>
+  <text x="665" y="442.5" text-anchor="middle" font-size="11" fill="#475569">POST /agents/bidding_agent/runs（SSE 流）</text>
+
+  <!-- ===== Agent 服务层 ===== -->
+  <rect x="70" y="464" width="900" height="140" rx="18" fill="url(#gAgent)" stroke="#6ee7b7" stroke-width="1.4" filter="url(#soft)"/>
+  <rect x="70" y="464" width="9" height="140" rx="4.5" fill="url(#gBar3)"/>
+  <rect x="94" y="486" width="26" height="26" rx="7" fill="#10b981"/><text x="107" y="504" text-anchor="middle" font-size="14" fill="#fff">✦</text>
+  <text x="132" y="498" font-size="16" font-weight="700" fill="#065f46">Agent 服务 · services/agent</text>
+  <text x="368" y="498" font-size="12.5" fill="#059669">Python + FastAPI + LangGraph / deepagents</text>
+  <text x="132" y="518" font-size="12" fill="#047857">bidding_agent = 一个 LangGraph 工作流 = 自包含包　·　仅上报 token 用量，绝不碰钱</text>
+  <g font-size="12" font-weight="700" fill="#065f46">
+    <rect x="94" y="536" width="126" height="50" rx="11" fill="#ffffff" stroke="#a7f3d0" filter="url(#chip)"/><text x="157" y="566" text-anchor="middle">read 读标</text>
+    <rect x="240" y="536" width="126" height="50" rx="11" fill="#ffffff" stroke="#a7f3d0" filter="url(#chip)"/><text x="303" y="566" text-anchor="middle">outline 提纲</text>
+    <rect x="386" y="536" width="126" height="50" rx="11" fill="#ffffff" stroke="#34d399" stroke-width="2" filter="url(#chip)"/><text x="449" y="560" text-anchor="middle">content 正文</text><text x="449" y="576" text-anchor="middle" font-size="9.5" font-weight="500" fill="#059669">deepagent</text>
+    <rect x="532" y="536" width="126" height="50" rx="11" fill="#ffffff" stroke="#a7f3d0" filter="url(#chip)"/><text x="595" y="566" text-anchor="middle">review 审查</text>
+    <rect x="678" y="536" width="126" height="50" rx="11" fill="#ffffff" stroke="#a7f3d0" filter="url(#chip)"/><text x="741" y="566" text-anchor="middle">present 述标</text>
+    <rect x="824" y="536" width="114" height="50" rx="11" fill="#ffffff" stroke="#a7f3d0" filter="url(#chip)"/><text x="881" y="566" text-anchor="middle">export 导出</text>
+  </g>
+  <g stroke="#34d399" stroke-width="2" marker-end="url(#arG)">
+    <line x1="220" y1="561" x2="238" y2="561"/><line x1="366" y1="561" x2="384" y2="561"/>
+    <line x1="512" y1="561" x2="530" y2="561"/><line x1="658" y1="561" x2="676" y2="561"/>
+    <line x1="804" y1="561" x2="822" y2="561"/>
+  </g>
+
+  <!-- 箭头 3（App API ↔ 数据） -->
+  <line x1="520" y1="604" x2="520" y2="648" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar)" marker-start="url(#ar)"/>
+  <rect x="536" y="616" width="130" height="21" rx="10.5" fill="#ffffff" stroke="#e2e8f0" filter="url(#chip)"/>
+  <text x="601" y="630.5" text-anchor="middle" font-size="11" fill="#475569">读写 · 检查点 · 观测</text>
+
+  <!-- ===== 数据与中间件 ===== -->
+  <rect x="70" y="652" width="900" height="146" rx="18" fill="url(#gData)" stroke="#cbd5e1" stroke-width="1.4" filter="url(#soft)"/>
+  <rect x="70" y="652" width="9" height="146" rx="4.5" fill="url(#gBar4)"/>
+  <rect x="94" y="674" width="26" height="26" rx="7" fill="#64748b"/><text x="107" y="692" text-anchor="middle" font-size="13" fill="#fff">▤</text>
+  <text x="132" y="692" font-size="15.5" font-weight="700" fill="#334155">数据与中间件</text>
+  <rect x="94" y="712" width="274" height="72" rx="11" fill="#ffffff" stroke="#dbe3ec" filter="url(#chip)"/>
+  <text x="112" y="736" font-size="13.5" font-weight="700" fill="#0f172a">PostgreSQL · bidsaas</text>
+  <text x="112" y="756" font-size="11" fill="#475569">public 业务+积分账本（Drizzle）</text>
+  <text x="112" y="773" font-size="11" fill="#475569">langgraph 检查点 · agent 观测</text>
+  <rect x="384" y="712" width="274" height="72" rx="11" fill="#ffffff" stroke="#dbe3ec" filter="url(#chip)"/>
+  <text x="402" y="736" font-size="13.5" font-weight="700" fill="#0f172a">Redis</text>
+  <text x="402" y="756" font-size="11" fill="#475569">前缀 bid:</text>
+  <text x="402" y="773" font-size="11" fill="#475569">Cron 分布式锁 + 缓存</text>
+  <rect x="674" y="712" width="264" height="72" rx="11" fill="#ffffff" stroke="#dbe3ec" filter="url(#chip)"/>
+  <text x="692" y="736" font-size="13.5" font-weight="700" fill="#0f172a">MinIO</text>
+  <text x="692" y="756" font-size="11" fill="#475569">bucket bidsaas</text>
+  <text x="692" y="773" font-size="11" fill="#475569">招标文件 / 导出产物</text>
+</svg>
