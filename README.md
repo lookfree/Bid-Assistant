@@ -31,8 +31,8 @@ App API 集成测试连远程真实 PG/Redis/MinIO，**在 mbp 上经 SSH 隧道
 
 ## 进度
 
-- **App API（`apps/api`）· Phase 3 商业化**：积分账本、收钱吧 C 扫 B 支付（真实 1 分钱冒烟已过）、到期提醒+手动续费、对账/退款/过期、推荐奖励引擎、C 端会员中心均已合并 `main`。
-- **智能体服务（`services/agent`）/ 运营后台（`apps/admin`）**：建设中，详见 `docs/superpowers/plans`。
+- **Phase 0–2**：账号鉴权 + App 骨架、智能体服务（`services/agent` 的 `bidding_agent`：读标→提纲→正文→审查→述标→导出）已实现。
+- **Phase 3 商业化**：积分账本、收钱吧 C 扫 B 支付（真实 1 分钱冒烟已过）、到期提醒+手动续费、对账/退款/过期、推荐奖励引擎、C 端会员中心均已合并 `main`；运营后台（`apps/admin`，spec309/310）待建。
 
 ## 约定（铁律）
 
