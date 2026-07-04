@@ -3,6 +3,7 @@ import { eq, inArray } from "drizzle-orm"
 import { getDb, closeDb } from "../../src/db/client"
 import { users, plans } from "../../src/db/schema"
 import { getMembershipOverview } from "../../src/services/membership"
+import { seedConfigs } from "../../src/services/config"
 import { makeLedgerUser, makeTestPlan, makeTestSubscription, TEST_TIMEOUT_MS } from "../repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB（跑法：./test-on-mbp.sh test/services/membership.test.ts）
@@ -16,6 +17,7 @@ let personalId = ""
 let proId = ""
 
 beforeAll(async () => {
+  await seedConfigs() // recharge_packs 等配置（rechargePacks 断言用）
   await mkPlan({ name: "免费版", code: "free", priceCents: 0, billingCycle: "month", grantCreditsPerCycle: 200 })
   personalId = await mkPlan({ name: "个人版月", code: "personal", priceCents: 3900, billingCycle: "month", grantCreditsPerCycle: 1200 })
   proId = await mkPlan({ name: "专业版月", code: "professional", priceCents: 15900, billingCycle: "month", grantCreditsPerCycle: 6000 })
@@ -65,11 +67,22 @@ describe("spec308 会员中心聚合（渐进式当前档+下一档）", () => {
     expect(ov.progressive.current!.tierId).toBe("personal")
   })
 
-  it("金额换算一致：personal 月价 3900 分 = 39 元", async () => {
+  it("金额换算一致：personal 月价 3900 分 = 39 元；月行 planIdMonth 就是该行", async () => {
     const userId = await makeLedgerUser(regUser)
     const ov = await getMembershipOverview(userId)
     const personal = ov.plans.find((p) => p.tierId === "personal")!
     expect(personal.priceMonthCents).toBe(3900)
     expect(personal.priceMonthYuan).toBe(39)
+    expect(personal.planIdMonth).toBe(personalId) // 月付按月行 id 下单（避免年付误按月价，反之亦然）
+    expect(personal.planIdYear).toBeNull() // 本档只种了月行
+  })
+
+  it("rechargePacks 来自配置，amountYuan 一致换算", async () => {
+    const userId = await makeLedgerUser(regUser)
+    const ov = await getMembershipOverview(userId)
+    expect(ov.rechargePacks.length).toBeGreaterThanOrEqual(1)
+    const p = ov.rechargePacks[0]!
+    expect(p.amountYuan).toBe(p.amountCents / 100)
+    expect(typeof p.id).toBe("string")
   })
 })

@@ -4,6 +4,8 @@ import type { MembershipOverview, PlanView } from "../lib/membership-types"
 
 const plan = (tierId: PlanView["tierId"], m: number, y: number): PlanView => ({
   id: `p-${tierId}`,
+  planIdMonth: `p-${tierId}-m`,
+  planIdYear: `p-${tierId}-y`,
   name: tierId,
   tierId,
   priceMonthCents: m * 100,

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react"
 import Link from "next/link"
-import { memberTiers, creditCosts, creditPacks, type TierId } from "@/lib/plans"
+import { memberTiers, creditCosts, type TierId } from "@/lib/plans"
 import { fetchMembership, fetchOrders, startRecharge, renewMembership } from "@/lib/membership-api"
 import type { MembershipOverview, OrderView, LaunchResponse, Payway } from "@/lib/membership-types"
 import { formatPeriodEnd, statusLabel, tierCardState, planPriceYuan, plansByTier } from "@/lib/membership-view"
@@ -35,13 +35,18 @@ export default function MembershipPage() {
     setLoading(true)
     setError(null)
     try {
-      const [ov, od] = await Promise.all([fetchMembership(), fetchOrders(1, 20)])
-      setOverview(ov)
-      setOrders(od.items)
+      setOverview(await fetchMembership()) // 会员总览是页面主体，失败才整页报错
     } catch (e) {
       setError(e instanceof Error ? e.message : "加载失败")
     } finally {
       setLoading(false)
+    }
+    // 订单是次要区块：单独加载，失败只让订单区降级，不阻塞会员/余额/套餐
+    try {
+      const od = await fetchOrders(1, 20)
+      setOrders(od.items)
+    } catch {
+      setOrders([])
     }
   }, [])
 
@@ -52,6 +57,7 @@ export default function MembershipPage() {
   const currentTierId: TierId = overview?.subscription.tierId ?? "free"
   const credits = overview?.balance ?? 0
   const backendPlans = plansByTier(overview)
+  const packs = overview?.rechargePacks ?? [] // 充值包由后端配置驱动，前端按真实 id 下单
   const currentTier = memberTiers.find((t) => t.id === currentTierId) ?? memberTiers[0]!
   const sub = overview?.subscription
   const currentIndex = memberTiers.findIndex((t) => t.id === currentTierId)
@@ -173,13 +179,15 @@ export default function MembershipPage() {
             const backend = backendPlans.get(tier.id)
             const price = planPriceYuan(backend, billing, billing === "year" ? tier.priceYear : tier.priceMonth)
             const unit = tier.id === "free" ? "" : billing === "year" ? "/ 年" : "/ 月"
+            // 按当前月/年切换取对应 plan 行 id，避免年付误按月价成单（缺该周期套餐则不可下单）
+            const planIdForCycle = backend ? (billing === "year" ? backend.planIdYear : backend.planIdMonth) : null
             const emphasis = isRecommended
               ? "border-primary ring-2 ring-primary shadow-lg sm:scale-[1.02]"
               : isNext
                 ? "border-primary ring-1 ring-primary/40"
                 : "border-border"
             const dimmed = !isRecommended && !isNext && !isCurrent
-            const canBuy = tier.id !== "free" && !isCurrent && !isOwned && !!backend
+            const canBuy = tier.id !== "free" && !isCurrent && !isOwned && !!planIdForCycle
 
             return (
               <div
@@ -225,7 +233,10 @@ export default function MembershipPage() {
                 <button
                   type="button"
                   disabled={!canBuy}
-                  onClick={() => backend && setPending({ kind: "renew", id: backend.id, label: tier.name })}
+                  onClick={() =>
+                    planIdForCycle &&
+                    setPending({ kind: "renew", id: planIdForCycle, label: `${tier.name} · ${billing === "year" ? "年付" : "月付"}` })
+                  }
                   className={`mt-4 w-full rounded-xl py-2.5 text-sm font-medium transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-60 ${
                     isCurrent || isOwned
                       ? "border border-border bg-muted text-muted-foreground"
@@ -282,40 +293,34 @@ export default function MembershipPage() {
             买得越多 · 每积分越便宜
           </span>
         </div>
-        <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {creditPacks.map((pack) => (
-            <div
-              key={pack.id}
-              className={`relative flex flex-col rounded-2xl border bg-card p-4 ${
-                pack.popular ? "border-primary ring-1 ring-primary/40 shadow-sm" : "border-border"
-              }`}
-            >
-              {pack.popular && (
-                <span className="absolute -top-2.5 left-4 rounded-full bg-[oklch(0.95_0.04_250)] px-2.5 py-0.5 text-xs font-medium text-primary">
-                  超值之选
-                </span>
-              )}
-              <div className="flex items-baseline gap-1">
-                <span className="text-2xl font-bold text-foreground">{pack.credits.toLocaleString()}</span>
-                <span className="text-xs text-muted-foreground">积分</span>
+        {packs.length > 0 ? (
+          <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {packs.map((pack) => (
+              <div key={pack.id} className="relative flex flex-col rounded-2xl border border-border bg-card p-4">
+                <div className="flex items-baseline gap-1">
+                  <span className="text-2xl font-bold text-foreground">{pack.credits.toLocaleString()}</span>
+                  <span className="text-xs text-muted-foreground">积分</span>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  ¥{((pack.amountYuan / pack.credits) * 100).toFixed(1)} / 100 积分
+                </p>
+                <div className="mt-4 flex items-center justify-between">
+                  <span className="text-lg font-semibold text-foreground">¥{pack.amountYuan}</span>
+                  <button
+                    onClick={() => setPending({ kind: "recharge", id: pack.id, label: `${pack.credits.toLocaleString()} 积分` })}
+                    className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                  >
+                    立即充值
+                  </button>
+                </div>
               </div>
-              <p className="mt-1 text-xs text-muted-foreground">{pack.unit}</p>
-              <div className="mt-4 flex items-center justify-between">
-                <span className="text-lg font-semibold text-foreground">¥{pack.price}</span>
-                <button
-                  onClick={() => setPending({ kind: "recharge", id: pack.id, label: `${pack.credits.toLocaleString()} 积分` })}
-                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-                    pack.popular
-                      ? "gradient-brand text-white hover:opacity-90"
-                      : "border border-border bg-card text-foreground hover:bg-muted"
-                  }`}
-                >
-                  立即充值
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-5 rounded-2xl border border-border bg-card px-5 py-8 text-center text-sm text-muted-foreground">
+            暂无可用充值包
+          </p>
+        )}
       </section>
 
       {/* 积分消耗说明 */}

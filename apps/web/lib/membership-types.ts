@@ -16,6 +16,8 @@ export interface SubscriptionView {
 
 export interface PlanView {
   id: string
+  planIdMonth: string | null // 月付 plan 行 id（前端按计费周期下单，避免年付误按月价成单）
+  planIdYear: string | null // 年付 plan 行 id
   name: string
   tierId: TierId
   priceMonthCents: number
@@ -27,10 +29,18 @@ export interface PlanView {
   recommended: boolean
 }
 
+export interface RechargePackView {
+  id: string
+  credits: number
+  amountCents: number
+  amountYuan: number
+}
+
 export interface MembershipOverview {
   subscription: SubscriptionView
   balance: number
   plans: PlanView[]
+  rechargePacks: RechargePackView[] // 充值包目录（服务端定价为准；前端按 id 下单）
   progressive: { current: PlanView | null; next: PlanView | null }
 }
 

@@ -16,26 +16,13 @@ function appThatSets(setter: (c: any) => void) {
   return app
 }
 
-describe("spec308 getUserId 兼容两种鉴权写法", () => {
-  it("c.get('userId') 优先", async () => {
-    const app = appThatSets((c) => c.set("userId", "u-1"))
-    expect(await (await app.request("/")).json()).toEqual({ id: "u-1" })
-  })
-
-  it("回落 c.get('user').id", async () => {
+describe("spec308 getUserId", () => {
+  it("读 c.get('user').id", async () => {
     const app = appThatSets((c) => c.set("user", { id: "u-2" }))
     expect(await (await app.request("/")).json()).toEqual({ id: "u-2" })
   })
 
-  it("userId 存在时不被 user 覆盖", async () => {
-    const app = appThatSets((c) => {
-      c.set("user", { id: "u-user" })
-      c.set("userId", "u-direct")
-    })
-    expect(await (await app.request("/")).json()).toEqual({ id: "u-direct" })
-  })
-
-  it("都没有 → 抛错，路由转 401", async () => {
+  it("user 缺失 → 抛错，路由转 401", async () => {
     const app = appThatSets(() => {})
     expect((await app.request("/")).status).toBe(401)
   })

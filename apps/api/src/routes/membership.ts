@@ -9,7 +9,6 @@ import { authMiddleware } from "../middleware/auth"
 import { countOpenOrders, createOrder } from "../services/payment-orders"
 import { getMembershipOverview } from "../services/membership"
 import { getUserId } from "../lib/auth-user"
-import { toCamel } from "../lib/case"
 import { launchPayment, respondLaunch, paywaySchema, resolvePaymentDeps, MAX_OPEN_ORDERS_PER_USER, type PaymentRouteDeps } from "./payment"
 
 // 会员路由（架构 §6.2，spec305/308）：会员中心只读总览 + 手动续费下单（复用 spec304 单笔支付链路）。
@@ -22,7 +21,8 @@ export function membershipRoutes(deps: Partial<PaymentRouteDeps> = {}) {
   r.use("*", authMiddleware)
 
   // 会员中心总览（spec308，只读）：不依赖支付凭据——凭据缺失的环境也能查看会员/套餐/余额。
-  r.get("/", async (c) => c.json(toCamel(await getMembershipOverview(getUserId(c)))))
+  // 服务层已手工产出 camelCase 契约对象，无需再过 toCamel。
+  r.get("/", async (c) => c.json(await getMembershipOverview(getUserId(c))))
 
   // 以下为下单路径：支付凭据未配置则整体 503（gate 与 payment 路由同源 getPayment，不半开）。
   if (!resolved) {

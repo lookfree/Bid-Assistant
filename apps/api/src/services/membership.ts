@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm"
 import { getDb } from "../db/client"
 import { plans, subscriptions } from "../db/schema"
 import { getBalance } from "./credits"
+import { getConfig } from "./config"
 import { centsToYuan } from "../lib/money"
 
 // 会员中心聚合（spec308，架构 §5.3）：当前订阅 + 积分余额 + 套餐列表 + 渐进式展示（当前档+下一档）。
@@ -12,6 +13,9 @@ const TIER_ORDER: TierId[] = ["free", "personal", "professional"]
 
 export interface PlanView {
   id: string
+  // 按计费周期分别给出 plan 行 id：前端月/年切换时用对应 id 下单，避免年付误按月价成单（钱相关）
+  planIdMonth: string | null
+  planIdYear: string | null
   name: string
   tierId: TierId
   priceMonthCents: number
@@ -22,6 +26,13 @@ export interface PlanView {
   features: { text: string; included: boolean }[]
   recommended: boolean
 }
+export interface RechargePackView {
+  id: string
+  credits: number
+  amountCents: number
+  amountYuan: number
+}
+type RechargePack = { id: string; amountCents: number; credits: number }
 export interface SubscriptionView {
   status: "active" | "past_due" | "expired" | "none"
   planId: string | null
@@ -34,6 +45,7 @@ export interface MembershipOverview {
   subscription: SubscriptionView
   balance: number
   plans: PlanView[]
+  rechargePacks: RechargePackView[] // 充值包目录（服务端定价为准；前端按 id 下单，消除前后端 id 不一致）
   progressive: { current: PlanView | null; next: PlanView | null }
 }
 
@@ -52,6 +64,8 @@ function buildPlanView(code: TierId, rows: PlanRow[]): PlanView {
   const rep = month ?? year ?? rows[0]!
   return {
     id: rep.id,
+    planIdMonth: month?.id ?? null,
+    planIdYear: year?.id ?? null,
     name: rep.name,
     tierId: code,
     priceMonthCents: month?.priceCents ?? 0,
@@ -110,11 +124,17 @@ export async function getMembershipOverview(userId: string): Promise<MembershipO
   const subscription = await loadSubscription(userId, planCode)
   if (subscription.planId) subscription.billingCycle = planCycle.get(subscription.planId) ?? null
   const balance = await getBalance(userId)
+  const rechargePacks = ((await getConfig<RechargePack[]>("recharge_packs")) ?? []).map((p) => ({
+    id: p.id,
+    credits: p.credits,
+    amountCents: p.amountCents,
+    amountYuan: centsToYuan(p.amountCents),
+  }))
 
   const current = byTier.get(subscription.tierId) ?? null
   const idx = TIER_ORDER.indexOf(subscription.tierId)
   const nextTier = idx >= 0 && idx < TIER_ORDER.length - 1 ? TIER_ORDER[idx + 1]! : null
   const next = nextTier ? (byTier.get(nextTier) ?? null) : null
 
-  return { subscription, balance, plans: list, progressive: { current, next } }
+  return { subscription, balance, plans: list, rechargePacks, progressive: { current, next } }
 }
