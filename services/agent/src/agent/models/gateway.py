@@ -78,3 +78,18 @@ class ModelGateway:
             return resp
         assert last_err is not None
         raise last_err
+
+
+_OVERRIDE_MAP = {
+    "provider": "model_default_provider",
+    "model": "model_default_model",
+    "fallbacks": "model_fallbacks",
+}
+
+
+def model_override_to_settings(sel: dict | None) -> dict:
+    """把 run 携带的 {provider,model,fallbacks} 映射为 Settings 字段；丢弃 None/缺失（spec311）。
+    结果可直接喂 Settings.model_copy(update=...) 覆盖 env 默认。"""
+    if not sel:
+        return {}
+    return {_OVERRIDE_MAP[k]: v for k, v in sel.items() if k in _OVERRIDE_MAP and v is not None}
