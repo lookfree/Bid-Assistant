@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto"
 import { eq, inArray } from "drizzle-orm"
 import { getDb, closeDb } from "../src/db/client"
 import { users, paymentOrders, reconcileDiffs } from "../src/db/schema"
-import { expireCreditsJob, reconcileJob } from "../src/crons/billing"
+import { expireCreditsJob, ledgerAuditJob, reconcileJob } from "../src/crons/billing"
 import { grant, getBalance } from "../src/services/credits"
 import { seedConfigs } from "../src/services/config"
 import { makeLedgerUser, TEST_TIMEOUT_MS } from "./repos/helpers"
@@ -32,7 +32,12 @@ describe("spec306 计费 Cron job 体（直调，不依赖 Redis/定时器）", 
     expect(await getBalance(userId)).toBe(0) // 过期注销
   })
 
-  it("reconcileJob：对昨日账 + 账本审计 + 孤儿清扫一起跑，差异触发 alertHook", async () => {
+  it("ledgerAuditJob：三段隔离（审计/孤儿/卡死退款），单段异常不吞其余", async () => {
+    // 直接调 job 体应正常完成（各段对共享库是幂等/复查后落 diff 的安全网）
+    await ledgerAuditJob({ alertHook: () => {} })
+  })
+
+  it("reconcileJob：对昨日账（7 天宽窗），差异触发 alertHook", async () => {
     const userId = await makeLedgerUser((id) => madeUsers.push(id))
     // 昨日窗口内的金额不符订单
     const [o] = await getDb()

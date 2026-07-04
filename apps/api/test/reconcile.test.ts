@@ -13,7 +13,8 @@ setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB（跑法：./test-on-mbp.sh t
 const madeUsers: string[] = []
 const madeOrders: string[] = []
 let userId = ""
-const BILL_DATE = "2026-07-04" // 测试统一对账日；订单 createdAt 落在该 UTC 窗口
+const day = 86_400_000
+const BILL_DATE = new Date().toISOString().slice(0, 10) // 对账日=今日 UTC（窗口向前含 7 天）
 
 beforeAll(async () => {
   await seedConfigs()
@@ -28,7 +29,7 @@ afterAll(async () => {
   await closeDb()
 })
 
-/** 直插订单（避开 createOrder 的开放单频控；对账测试要精确控制字段）。 */
+/** 直插订单（避开 createOrder 的开放单频控；对账测试要精确控制字段）。默认建单于 2 天前（满收敛账龄）。 */
 async function mkOrder(status: string, amountCents: number, extra: Partial<typeof paymentOrders.$inferInsert> = {}) {
   const [o] = await getDb()
     .insert(paymentOrders)
@@ -39,7 +40,7 @@ async function mkOrder(status: string, amountCents: number, extra: Partial<typeo
       status,
       clientSn: `rc-${randomUUID()}`,
       idempotencyKey: `rc-${randomUUID()}`,
-      createdAt: new Date(`${BILL_DATE}T08:00:00.000Z`), // 落在对账日窗口
+      createdAt: new Date(Date.now() - 2 * day), // 在 7 天对账窗内，且满足 unknown 收敛的 24h 账龄
       ...extra,
     })
     .returning()
@@ -59,13 +60,14 @@ function mockProvider(results: Record<string, Awaited<ReturnType<ReconcileProvid
 }
 
 const diffsOf = (orderId: string) => getDb().select().from(reconcileDiffs).where(eq(reconcileDiffs.orderId, orderId))
+const quiet = () => {}
 
 describe("spec306 对账（只读核对，差异落表幂等）", () => {
-  it("金额不符 → amount_mismatch（本地 1000 vs 通道 999）", async () => {
-    const o = await mkOrder("paid", 1000, { providerTradeNo: "T-am" })
+  it("金额不符 → amount_mismatch；晚结算单（建单在 7 天窗内非当日）也被扫到", async () => {
+    const o = await mkOrder("paid", 1000, { providerTradeNo: "T-am", createdAt: new Date(Date.now() - 5 * day) }) // 5 天前建单
     await runReconcile(BILL_DATE, {
       provider: mockProvider({ [o.clientSn]: { status: "paid", totalAmountCents: 999, sn: "T-am" } }),
-      alertHook: () => {},
+      alertHook: quiet,
     })
     const rows = await diffsOf(o.id)
     expect(rows).toHaveLength(1)
@@ -78,26 +80,40 @@ describe("spec306 对账（只读核对，差异落表幂等）", () => {
     const o = await mkOrder("paid", 500, { providerTradeNo: "T-sm" })
     await runReconcile(BILL_DATE, {
       provider: mockProvider({ [o.clientSn]: { status: "failed", totalAmountCents: 500 } }),
-      alertHook: () => {},
+      alertHook: quiet,
     })
-    const rows = await diffsOf(o.id)
-    expect(rows.map((r) => r.diffType)).toContain("status_mismatch")
+    expect((await diffsOf(o.id)).map((r) => r.diffType)).toContain("status_mismatch")
   })
 
-  it("unknown 清算：通道已付 → unknown_paid 差异；通道明确失败 → 订单收敛 failed", async () => {
+  it("本地 refunded 而通道仍 paid → status_mismatch（退款没到通道=单边账）；通道 refunded 则干净", async () => {
+    const bad = await mkOrder("refunded", 500, { providerTradeNo: "T-rf-bad" })
+    const ok = await mkOrder("refunded", 500, { providerTradeNo: "T-rf-ok" })
+    await runReconcile(BILL_DATE, {
+      provider: mockProvider({
+        [bad.clientSn]: { status: "paid", totalAmountCents: 500 },
+        [ok.clientSn]: { status: "refunded", totalAmountCents: 500 },
+      }),
+      alertHook: quiet,
+    })
+    expect((await diffsOf(bad.id)).map((r) => r.diffType)).toContain("status_mismatch")
+    expect(await diffsOf(ok.id)).toHaveLength(0)
+  })
+
+  it("unknown 清算：通道已付 → unknown_paid；满 24h 且通道失败 → 收敛 failed；新鲜 unknown 不收敛（迟到回调留门）", async () => {
     const oPaid = await mkOrder("unknown", 300)
-    const oFail = await mkOrder("unknown", 400)
+    const oFail = await mkOrder("unknown", 400) // 2 天前建单：满收敛账龄
+    const oFresh = await mkOrder("unknown", 200, { createdAt: new Date() }) // 刚建：不收敛
     await runReconcile(BILL_DATE, {
       provider: mockProvider({
         [oPaid.clientSn]: { status: "paid", totalAmountCents: 300, sn: "S-up" },
         [oFail.clientSn]: { status: "failed" },
+        [oFresh.clientSn]: { status: "failed" },
       }),
-      alertHook: () => {},
+      alertHook: quiet,
     })
     expect((await diffsOf(oPaid.id)).map((r) => r.diffType)).toContain("unknown_paid")
-    const [f] = await getDb().select().from(paymentOrders).where(eq(paymentOrders.id, oFail.id))
-    expect(f!.status).toBe("failed") // 对账唯一允许的订单写动作
-    expect(await diffsOf(oFail.id)).toHaveLength(0)
+    expect((await getDb().select().from(paymentOrders).where(eq(paymentOrders.id, oFail.id)))[0]!.status).toBe("failed")
+    expect((await getDb().select().from(paymentOrders).where(eq(paymentOrders.id, oFresh.id)))[0]!.status).toBe("unknown") // 24h 内不关门
   })
 
   it("本地已结算而通道查无（业务级拒绝）→ provider_missing；网络类异常跳过不落差异", async () => {
@@ -108,36 +124,27 @@ describe("spec306 对账（只读核对，差异落表幂等）", () => {
         [oMissing.clientSn]: new Error("收钱吧查询失败: ORDER_NOT_EXIST"),
         [oNet.clientSn]: new Error("收钱吧网关 HTTP 502: /upay/v2/query"),
       }),
-      alertHook: () => {},
+      alertHook: quiet,
     })
     expect((await diffsOf(oMissing.id)).map((r) => r.diffType)).toContain("provider_missing")
     expect(await diffsOf(oNet.id)).toHaveLength(0) // 网络抖动：下轮重试，不误报单边账
   })
 
-  it("对账一致 → 无差异；重复跑幂等不重复落 diff", async () => {
-    const o = await mkOrder("paid", 800, { providerTradeNo: "T-ok" })
+  it("持久差异不逐日重复落：同 (类型,主体) 只保留一行 open（换对账日重跑也不加行）", async () => {
+    const o = await mkOrder("paid", 1000, { providerTradeNo: "T-idem" })
     const deps = {
-      provider: mockProvider({ [o.clientSn]: { status: "paid", totalAmountCents: 800, sn: "T-ok" } }),
-      alertHook: () => {},
+      provider: mockProvider({ [o.clientSn]: { status: "paid", totalAmountCents: 1, sn: "T-idem" } }),
+      alertHook: quiet,
     }
     await runReconcile(BILL_DATE, deps)
-    expect(await diffsOf(o.id)).toHaveLength(0)
-
-    const oBad = await mkOrder("paid", 1000, { providerTradeNo: "T-idem" })
-    const badDeps = {
-      provider: mockProvider({
-        [o.clientSn]: { status: "paid", totalAmountCents: 800, sn: "T-ok" },
-        [oBad.clientSn]: { status: "paid", totalAmountCents: 1, sn: "T-idem" },
-      }),
-      alertHook: () => {},
-    }
-    await runReconcile(BILL_DATE, badDeps)
-    await runReconcile(BILL_DATE, badDeps) // 重复跑
-    expect(await diffsOf(oBad.id)).toHaveLength(1) // 同 (日,主体,类型) 只落一条
+    await runReconcile(BILL_DATE, deps) // 同日重跑
+    const nextDay = new Date(Date.now() + day).toISOString().slice(0, 10)
+    await runReconcile(nextDay, deps) // 换日重跑（持久问题）
+    expect(await diffsOf(o.id)).toHaveLength(1)
   })
 })
 
-describe("spec306 账本审计（缓存余额 vs Σ流水）", () => {
+describe("spec306 账本审计（缓存余额 vs Σ流水，复查后落 diff）", () => {
   it("缓存被写错 → ledger_mismatch + 返回不一致项；缓存正确不误报", async () => {
     const badUser = await makeLedgerUser((id) => madeUsers.push(id))
     await grant(badUser, 100, { idempotencyKey: `al-${badUser}` })
@@ -146,7 +153,7 @@ describe("spec306 账本审计（缓存余额 vs Σ流水）", () => {
     const goodUser = await makeLedgerUser((id) => madeUsers.push(id))
     await grant(goodUser, 50, { idempotencyKey: `al-${goodUser}` })
 
-    const bad = await auditLedger(BILL_DATE, () => {})
+    const bad = await auditLedger(BILL_DATE, quiet)
     const mine = bad.filter((b) => b.userId === badUser || b.userId === goodUser)
     expect(mine).toEqual([{ userId: badUser, cached: 80, actual: 100 }])
     const rows = await getDb()
@@ -158,38 +165,41 @@ describe("spec306 账本审计（缓存余额 vs Σ流水）", () => {
 })
 
 describe("spec306 孤儿 hold 清扫（spec302 C1：进程被杀冻结的预扣自动退还）", () => {
-  it("超时无了结的 hold → 自动 release 退还 + 落 orphan_hold；已了结/新鲜的 hold 不动", async () => {
+  it("超时无了结的 hold → 自动 release 退还 + 落 orphan_hold（subject=holdId）；已了结/新鲜的不动；重复跑幂等", async () => {
     const u = await makeLedgerUser((id) => madeUsers.push(id))
     await grant(u, 30, { idempotencyKey: `oh-${u}` })
-    // 孤儿：hold 后无了结，且已超 24h（回拨 createdAt 模拟）
     const { holdId: orphan } = await hold(u, "read", { idempotencyKey: `oh-h1-${u}` })
     await getDb()
       .update(creditTransactions)
       .set({ createdAt: new Date(Date.now() - 25 * 3600_000) })
       .where(eq(creditTransactions.id, orphan))
-    // 已了结：hold + settle（同样回拨，不该被清扫）
     const { holdId: settled } = await hold(u, "read", { idempotencyKey: `oh-h2-${u}` })
     await settle(settled, 10, { idempotencyKey: `oh-s2-${u}` })
     await getDb()
       .update(creditTransactions)
       .set({ createdAt: new Date(Date.now() - 25 * 3600_000) })
       .where(eq(creditTransactions.id, settled))
-    // 新鲜在途：不该被清扫
-    await hold(u, "read", { idempotencyKey: `oh-h3-${u}` })
+    await hold(u, "read", { idempotencyKey: `oh-h3-${u}` }) // 新鲜在途：不清扫
 
-    const before = await getBalance(u) // 30 - 10(孤儿) - 10(已结) - 10(在途) = 0
-    expect(before).toBe(0)
-    const released = await releaseOrphanHolds(new Date(), { alertHook: () => {} })
+    expect(await getBalance(u)).toBe(0) // 30 - 10(孤儿) - 10(已结) - 10(在途)
+    const released = await releaseOrphanHolds(new Date(), { alertHook: quiet })
     expect(released).toBeGreaterThanOrEqual(1)
-    expect(await getBalance(u)).toBe(10) // 只有孤儿被退还 +10
+    expect(await getBalance(u)).toBe(10) // 只有孤儿被退还
 
     const rows = await getDb()
       .select()
       .from(reconcileDiffs)
       .where(and(eq(reconcileDiffs.userId, u), eq(reconcileDiffs.diffType, "orphan_hold")))
     expect(rows).toHaveLength(1)
+    expect(rows[0]!.subject).toBe(orphan) // 主体=holdId：同人同日多个孤儿各留一行
 
-    await releaseOrphanHolds(new Date(), { alertHook: () => {} }) // 重复跑幂等
+    await releaseOrphanHolds(new Date(), { alertHook: quiet }) // 幂等：没有真实退还就不重复留痕
     expect(await getBalance(u)).toBe(10)
+    expect(
+      await getDb()
+        .select()
+        .from(reconcileDiffs)
+        .where(and(eq(reconcileDiffs.userId, u), eq(reconcileDiffs.diffType, "orphan_hold"))),
+    ).toHaveLength(1)
   })
 })

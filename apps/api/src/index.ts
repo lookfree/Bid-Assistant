@@ -13,7 +13,7 @@ import { sqbCheckinJob } from "./services/payment/terminal"
 import { getPayment } from "./services/payment"
 import { paymentOrderSweepJob } from "./services/payment-orders"
 import { renewalCronJobs } from "./crons/renewal"
-import { creditExpireCronJob, reconcileCronJob } from "./crons/billing"
+import { creditExpireCronJob, ledgerAuditCronJob, reconcileCronJob } from "./crons/billing"
 
 const env = getEnv()
 
@@ -58,6 +58,7 @@ const cron = startCronRunner([
   ...(payment ? [sqbCheckinJob(payment.terminal), paymentOrderSweepJob(payment.provider), reconcileCronJob({ provider: payment.provider })] : []),
   ...renewalCronJobs(),
   creditExpireCronJob(), // 积分过期：不依赖支付凭据，始终注册（spec306）
+  ledgerAuditCronJob(), // 账本审计+孤儿 hold 清扫+卡死退款扫描：同样不依赖支付凭据（spec306）
 ])
 
 // 优雅关闭：先停 Cron 并等在途 tick 收尾，再归还 DB/Redis/S3 连接（顺序错了在途 tick 会打在已断连接上）。

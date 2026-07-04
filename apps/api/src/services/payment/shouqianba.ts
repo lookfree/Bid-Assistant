@@ -22,11 +22,18 @@ export type ShouqianbaDeps = {
 
 // order_status → PaymentResult.status 映射；未知状态一律 pending（钱可能已付，不敢判 failed）
 const FAILED_STATUSES = new Set(["CANCELED", "PAY_CANCELED", "EXPIRED", "PAY_ERROR"])
+const REFUNDED_STATUSES = new Set(["REFUNDED", "PARTIAL_REFUNDED"]) // 通道侧已退款（对账核对退款单）
 
 /** 通道报文 → PaymentResult 归一（查询响应与回调共用：金额转整数分只在这一处）。 */
 function normalizeResult(d: { order_status?: string; sn?: string; trade_no?: string; payway?: string; total_amount?: string }): PaymentResult {
   const status: PaymentResult["status"] =
-    d.order_status === "PAID" ? "paid" : FAILED_STATUSES.has(d.order_status ?? "") ? "failed" : "pending"
+    d.order_status === "PAID"
+      ? "paid"
+      : REFUNDED_STATUSES.has(d.order_status ?? "")
+        ? "refunded"
+        : FAILED_STATUSES.has(d.order_status ?? "")
+          ? "failed"
+          : "pending"
   const amount = d.total_amount != null ? Number(d.total_amount) : undefined
   return { status, sn: d.sn, tradeNo: d.trade_no, payway: d.payway, totalAmountCents: Number.isFinite(amount) ? amount : undefined }
 }

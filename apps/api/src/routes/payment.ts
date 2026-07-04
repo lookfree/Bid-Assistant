@@ -78,7 +78,11 @@ function notifyHandler(provider: PaymentProvider) {
       // 金额缺失/不符（→unknown 待对账）、重复回调（already_final no-op）都在 markPaid 内兜底；
       // 一律回 success 停止重发——重发不会改变金额事实，差异走 spec306 对账
       const r = parsed.result
-      await markPaid(order.id, { sn: r.sn, tradeNo: r.tradeNo, payway: r.payway, paidAmountCents: r.totalAmountCents })
+      const res = await markPaid(order.id, { sn: r.sn, tradeNo: r.tradeNo, payway: r.payway, paidAmountCents: r.totalAmountCents })
+      if (!res.paid && res.reason === "already_final" && ["failed", "refunded"].includes(order.status)) {
+        // 已收敛为终态的单收到 PAID：钱可能真到了而账进不去——必须留告警（人工/对账核实）
+        console.error(`[payment] 终态订单收到 PAID 信号 order=${order.id} status=${order.status} sn=${r.sn ?? ""}，需人工核实`)
+      }
     }
     return c.text("success")
   }

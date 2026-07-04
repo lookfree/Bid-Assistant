@@ -118,15 +118,18 @@ export async function hold(
 
 /** 失败全额退还：对 holdId 写 release(+N)，净=0。幂等；holdId 非 hold 类型则 no-op。
  *  了结行 ref=holdId：部分唯一索引「每个 hold 至多一条了结（settle/release）」在 DB 层
- *  杜绝 settle+release 双返还（成功结算后异常路径再补 release 会被吞掉）。 */
-export async function release(holdId: string, opts: { idempotencyKey: string }): Promise<void> {
+ *  杜绝 settle+release 双返还（成功结算后异常路径再补 release 会被吞掉）。
+ *  返回是否真的插入了退还行（false=幂等命中/已有了结/hold 不存在——调用方按需留痕，如孤儿清扫审计）。 */
+export async function release(holdId: string, opts: { idempotencyKey: string }): Promise<boolean> {
   const [h] = await getDb().select().from(creditTransactions).where(eq(creditTransactions.id, holdId))
-  if (!h || h.type !== "hold") return
-  await getDb()
+  if (!h || h.type !== "hold") return false
+  const inserted = await getDb()
     .insert(creditTransactions)
     .values({ userId: h.userId, type: "release", amount: -h.amount, ref: holdId, idempotencyKey: opts.idempotencyKey })
     .onConflictDoNothing() // 幂等键冲突或该 hold 已有了结 → no-op
-  await getBalance(h.userId)
+    .returning()
+  if (inserted.length > 0) await getBalance(h.userId)
+  return inserted.length > 0
 }
 
 /** 结算：对 holdId(已预扣 N) 按实际用量结算，净消耗=actualCost。

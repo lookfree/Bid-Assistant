@@ -85,12 +85,14 @@ export async function countOpenOrders(userId: string): Promise<number> {
 export async function markPaid(
   orderId: string,
   info: { sn?: string; tradeNo?: string; payway?: string; paidAmountCents?: number },
-  deps: { grantFn?: typeof credits.grant } = {},
+  // allowStale：spec310 对账修复入口专用（unknown_paid 差异人工确认后补入账，可能已超 7 天窗）；
+  // 常规通道（回调/轮询/扫单）一律不传——防囤单套利的纵深仍然生效
+  deps: { grantFn?: typeof credits.grant; allowStale?: boolean } = {},
 ): Promise<MarkPaidResult> {
   const [order] = await getDb().select().from(paymentOrders).where(eq(paymentOrders.id, orderId))
   if (!order) return { paid: false, reason: "not_found" }
 
-  if (Date.now() - order.createdAt.getTime() > STALE_PAYABLE_MS) {
+  if (!deps.allowStale && Date.now() - order.createdAt.getTime() > STALE_PAYABLE_MS) {
     console.error(
       `[payment] 超期订单收到支付信号（疑似囤单/极端迟到）order=${orderId} 创建于 ${order.createdAt.toISOString()}，不入账留人工对账`,
     )

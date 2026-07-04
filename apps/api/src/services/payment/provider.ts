@@ -2,7 +2,8 @@
 // 金额一律整数分；clientSn 是我方订单号（送通道、全局唯一）。
 
 export type PaymentResult = {
-  status: "paid" | "failed" | "pending"
+  // refunded=通道侧已退款（对账核对退款单用）；编排层（轮询/扫单）对 refunded 按非终态处理交对账
+  status: "paid" | "failed" | "pending" | "refunded"
   sn?: string // 通道订单号（收钱吧 sn）
   tradeNo?: string // 渠道单号（微信/支付宝 trade_no）
   payway?: string // 实际付款方式（对账用）
