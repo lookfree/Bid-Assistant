@@ -39,7 +39,8 @@ export async function createOrder(input: {
       creditsSnapshot: input.creditsSnapshot,
       planId: input.planId,
       cycleSnapshot: input.cycleSnapshot,
-      clientSn: `bid-${randomUUID()}`, // 我方订单号，送收钱吧，全局唯一
+      // 我方订单号，送收钱吧，全局唯一；≤32 字符（收钱吧 client_sn 上限，冒烟实测超限即拒单）
+      clientSn: `bid${Date.now().toString(36)}${randomUUID().replace(/-/g, "").slice(0, 14)}`,
       idempotencyKey: input.idempotencyKey,
     })
     .onConflictDoNothing({ target: paymentOrders.idempotencyKey })

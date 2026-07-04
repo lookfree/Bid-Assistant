@@ -12,7 +12,15 @@ export type GatewayJson = {
     error_message?: string
     terminal_sn?: string
     terminal_key?: string
-    data?: { order_status?: string; sn?: string; trade_no?: string; payway?: string; total_amount?: string }
+    data?: {
+      order_status?: string
+      sn?: string
+      trade_no?: string
+      payway?: string
+      total_amount?: string
+      qr_code?: string // 预下单返回：顾客扫的二维码原文
+      qr_code_image_url?: string // 预下单返回：现成二维码图片 URL
+    }
   }
 }
 

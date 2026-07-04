@@ -9,7 +9,7 @@ import { authMiddleware } from "../middleware/auth"
 import { getConfig } from "../services/config"
 import { countOpenOrders, createOrder, markPaid, pollUntilFinal } from "../services/payment-orders"
 import { getPayment } from "../services/payment"
-import type { PaymentProvider } from "../services/payment/provider"
+import type { PaymentProvider, Payway } from "../services/payment/provider"
 
 // 支付路由（架构 §6.1）：下单 → 跳转支付 URL（前端转二维码）→ 回调验签 + 后台轮询双通道 → 只入账一次。
 // 钱只在这一层动（§3.2）；金额/到账积分一律服务端从配置取快照，客户端字段全部忽略。
@@ -45,22 +45,26 @@ export function resolvePaymentDeps(deps: Partial<PaymentRouteDeps>, logTag: stri
 /** 用户开放订单上限：防刷单（每单都产生网关调用 + 6 分钟轮询，无限建单是对通道配额的放大攻击）。 */
 export const MAX_OPEN_ORDERS_PER_USER = 5
 
-/** 建好订单 → 生成跳转支付 URL + 启动后台轮询（充值/续费下单共用的收尾）。 */
+/** C 扫 B 下单入参校验：客户端二选一钱包（充值/续费共用）。 */
+export const paywaySchema = z.enum(["alipay", "wechat"])
+
+/** 建好订单 → 预下单出二维码 + 启动后台轮询（充值/续费下单共用的收尾）。 */
 export async function launchPayment(
   deps: PaymentRouteDeps,
   order: { id: string; clientSn: string },
   subject: string,
   amountCents: number,
-): Promise<{ orderId: string; payUrl: string }> {
-  const { payUrl } = await deps.provider.createPayment({
+  payway: Payway,
+): Promise<{ orderId: string; qrCode: string; qrImageUrl?: string }> {
+  const { qrCode, qrImageUrl } = await deps.provider.createPayment({
     clientSn: order.clientSn,
     amountCents,
     subject,
-    returnUrl: `${deps.baseUrl}/pay/result?orderId=${order.id}`,
+    payway,
     notifyUrl: `${deps.baseUrl}/api/payment${deps.provider.notifyPath}`,
   })
   deps.poll(order.id) // 回调 + 轮询双通道取终态（进程重启由滞留单扫描 Cron 兜底）
-  return { orderId: order.id, payUrl }
+  return { orderId: order.id, qrCode, qrImageUrl }
 }
 
 /** 通道回调处理（收钱吧服务器调用，无用户鉴权，验签放行）。 */
@@ -104,9 +108,9 @@ export function paymentRoutes(deps: Partial<PaymentRouteDeps> = {}) {
   // —— 以下路由需登录 ——
   r.use("*", authMiddleware)
 
-  // 充值下单：客户端只传 packId，金额/到账积分服务端从配置取并快照进订单
+  // 充值下单：客户端只传 packId + payway（钱包）；金额/到账积分服务端从配置取并快照进订单
   r.post("/recharge", async (c) => {
-    const parsed = z.object({ packId: z.string().min(1) }).safeParse(await c.req.json().catch(() => ({})))
+    const parsed = z.object({ packId: z.string().min(1), payway: paywaySchema }).safeParse(await c.req.json().catch(() => ({})))
     if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
     const packs = (await getConfig<RechargePack[]>("recharge_packs")) ?? []
     const pack = packs.find((p) => p.id === parsed.data.packId)
@@ -125,7 +129,7 @@ export function paymentRoutes(deps: Partial<PaymentRouteDeps> = {}) {
       creditsSnapshot: pack.credits, // 到账以下单快照为准（运营改包不影响在途单）
       idempotencyKey: `recharge:${userId}:${randomUUID()}`,
     })
-    return c.json(await launchPayment(resolved, order, "积分充值", pack.amountCents))
+    return c.json(await launchPayment(resolved, order, "积分充值", pack.amountCents, parsed.data.payway))
   })
 
   // 订单状态（前端支付页轮询显示用）：本人可查

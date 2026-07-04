@@ -1,17 +1,19 @@
 import { z } from "zod"
-import { wap2Sign, verifyRsaCallback } from "./shouqianba-sign"
+import { verifyRsaCallback } from "./shouqianba-sign"
 import { sqbPost } from "./gateway"
-import type { CallbackParse, PaymentProvider, PaymentResult } from "./provider"
+import type { CallbackParse, Payway, PaymentProvider, PaymentResult } from "./provider"
 
 // 收钱吧通道实现（架构 §6.0/§6.1）：无官方 SDK，HTTPS+JSON 直连网关。
-// 跳转支付（WAP2）走 wapGateway + 参数签名；查询/退款走 API 网关 + terminal body 签名；
-// 回调用收钱吧公钥 RSA 验签。端点路径以 doc.shouqianba.com 为准，Task 4 真实冒烟校验。
+// C 扫 B 预下单/查询/退款均走 API 网关 + terminal body 签名（Task4 真实冒烟校验通过：
+// precreate 返回 qr_code，query/refund 契约见各方法）；回调用收钱吧公钥 RSA 验签。
 
 export type ShouqianbaConfig = {
   gateway: string // API 网关 https://vsi-api.shouqianba.com
-  wapGateway: string // WAP2 跳转支付网关（如 https://qr.shouqianba.com/gateway）
   publicKey: string // 收钱吧回调验签公钥（PEM）
 }
+
+// 付款钱包 → 收钱吧 payway 整数码（Task4 冒烟确认：必填整数，1=支付宝 3=微信）
+const PAYWAY_CODE: Record<Payway, string> = { alipay: "1", wechat: "3" }
 
 export type ShouqianbaDeps = {
   cfg: ShouqianbaConfig
@@ -61,17 +63,22 @@ export function makeShouqianbaProvider(deps: ShouqianbaDeps): PaymentProvider {
     notifyPath: "/shouqianba/notify",
 
     async createPayment(opts) {
-      const { terminalSn, terminalKey } = await deps.getCredentials()
-      const params: Record<string, string> = {
-        terminal_sn: terminalSn,
-        client_sn: opts.clientSn,
+      // C 扫 B 预下单：返回顾客扫的二维码（qr_code 原文 + 现成图片 URL）
+      const json = await post("/upay/v2/precreate", {
+        client_sn: opts.clientSn, // ≤32 字符（createOrder 保证）
         total_amount: String(opts.amountCents), // 单位分
         subject: opts.subject,
-        return_url: opts.returnUrl,
+        payway: PAYWAY_CODE[opts.payway],
+        operator: "bidsaas",
         notify_url: opts.notifyUrl,
+      })
+      const biz = json.biz_response
+      if (json.result_code !== "200" || biz?.result_code !== "PRECREATE_SUCCESS") {
+        throw new Error(`收钱吧预下单失败: ${json.result_code} ${biz?.error_message ?? ""}`)
       }
-      const qs = new URLSearchParams({ ...params, sign: wap2Sign(params, terminalKey) })
-      return { payUrl: `${cfg.wapGateway}?${qs.toString()}` }
+      const data = biz.data ?? {}
+      if (!data.qr_code) throw new Error("收钱吧预下单成功但缺 qr_code")
+      return { qrCode: data.qr_code, qrImageUrl: data.qr_code_image_url }
     },
 
     async query(clientSn): Promise<PaymentResult> {

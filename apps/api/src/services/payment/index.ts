@@ -6,8 +6,6 @@ import type { PaymentProvider } from "./provider"
 // 支付装配入口（唯一组装点：路由与入口 Cron 共用，凭据判定只有一处 → 不半开）。
 // 凭据缺任一项返回 undefined，调用方整体跳过：入口不注册签到/扫单 Cron、路由 503 payment_unconfigured。
 
-const WAP_GATEWAY_DEFAULT = "https://qr.shouqianba.com/gateway"
-
 /** env 齐全才给终端配置；缺任一项视为未接入收钱吧。 */
 export function sqbTerminalConfigFromEnv(env: Env = getEnv()): SqbTerminalConfig | undefined {
   const { SQB_VENDOR_SN, SQB_VENDOR_KEY, SQB_APP_ID, SQB_ACTIVATION_CODE, SQB_DEVICE_ID, TERMINAL_KEY_SECRET } = env
@@ -39,7 +37,6 @@ export function getPayment(): PaymentAssembly | undefined {
   const provider = makeShouqianbaProvider({
     cfg: {
       gateway: env.SQB_GATEWAY,
-      wapGateway: WAP_GATEWAY_DEFAULT,
       publicKey: env.SQB_PUBLIC_KEY.replace(/\\n/g, "\n"), // env 里 PEM 以 \n 转义存放
     },
     getCredentials: () => terminal.getCredentials(),

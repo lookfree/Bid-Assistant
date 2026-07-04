@@ -56,11 +56,20 @@ describe("POST /api/payment/recharge", () => {
     expect(res.status).toBe(401)
   })
 
+  it("缺 payway → 400（C 扫 B 预下单必须二选一钱包）", async () => {
+    const res = await app.request("/api/payment/recharge", {
+      method: "POST",
+      headers: auth(token),
+      body: JSON.stringify({ packId: "pack_100" }),
+    })
+    expect(res.status).toBe(400)
+  })
+
   it("非法 packId → 400（服务端定价，不认客户端金额）", async () => {
     const res = await app.request("/api/payment/recharge", {
       method: "POST",
       headers: auth(token),
-      body: JSON.stringify({ packId: "no-such-pack" }),
+      body: JSON.stringify({ packId: "no-such-pack", payway: "alipay" }),
     })
     expect(res.status).toBe(400)
   })
@@ -70,7 +79,7 @@ describe("POST /api/payment/recharge", () => {
     const res = await app.request("/api/payment/recharge", {
       method: "POST",
       headers: auth(token),
-      body: JSON.stringify({ packId: "pack_bad" }),
+      body: JSON.stringify({ packId: "pack_bad", payway: "alipay" }),
     })
     expect(res.status).toBe(500)
     await setConfig("recharge_packs", [
@@ -79,15 +88,15 @@ describe("POST /api/payment/recharge", () => {
     ]) // 还原种子值
   })
 
-  it("命中充值包 → 建单（金额/积分快照）+ 返回 payUrl + 启动后台轮询；客户端金额字段被忽略", async () => {
+  it("命中充值包 → 建单（金额/积分快照）+ 返回 qrCode + 启动后台轮询；客户端金额字段被忽略", async () => {
     const res = await app.request("/api/payment/recharge", {
       method: "POST",
       headers: auth(token),
-      body: JSON.stringify({ packId: "pack_100", amountCents: 1, credits: 99999 }), // 恶意字段应被忽略
+      body: JSON.stringify({ packId: "pack_100", payway: "wechat", amountCents: 1, credits: 99999 }), // 恶意字段应被忽略
     })
     expect(res.status).toBe(200)
-    const body = (await res.json()) as { orderId: string; payUrl: string }
-    expect(body.payUrl).toContain("https://wap.test/gateway")
+    const body = (await res.json()) as { orderId: string; qrCode: string }
+    expect(body.qrCode).toContain("https://qr.alipay.com/")
     const row = await orderRow(body.orderId)
     expect(row!.userId).toBe(userId)
     expect(row!.type).toBe("recharge")

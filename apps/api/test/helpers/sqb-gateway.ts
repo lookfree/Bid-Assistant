@@ -35,17 +35,25 @@ export function fakeGateway(responses: Array<Record<string, unknown> | Error>) {
   return { calls, fetchFn }
 }
 
-/** 真 ShouqianbaProvider + 配套 RSA 签名器（payment-routes / membership-renew 共用）：
- *  路由测试走生产解析/验签路径，不手抄 mock。 */
+/** 真 ShouqianbaProvider（真 RSA 验签/解析）+ 配套回调签名器（payment-routes / membership-renew 共用）：
+ *  路由测试走生产解析/验签路径，不手抄 mock；预下单网关调用注入固定的 PRECREATE_SUCCESS 响应。 */
 export function makeSignedProvider(tag: string) {
   const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 })
+  const fetchFn = (async () =>
+    new Response(
+      JSON.stringify({
+        result_code: "200",
+        biz_response: { result_code: "PRECREATE_SUCCESS", data: { order_status: "CREATED", qr_code: `https://qr.alipay.com/${tag}`, qr_code_image_url: `https://api.shouqianba.com/upay/qrcode?content=${tag}` } },
+      }),
+      { status: 200 },
+    )) as unknown as typeof fetch
   const provider = makeShouqianbaProvider({
     cfg: {
       gateway: "https://sqb.test",
-      wapGateway: "https://wap.test/gateway",
       publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
     },
     getCredentials: async () => ({ terminalSn: `TSN-${tag}`, terminalKey: `tkey-${tag}` }),
+    fetchFn,
   })
   const signOf = (body: string) => createSign("RSA-SHA256").update(body, "utf8").sign(privateKey, "base64")
   return { provider, signOf }

@@ -59,7 +59,7 @@ describe("POST /api/membership/renew（服务端定价，复用 spec304 支付�
     const bad = await app.request("/api/membership/renew", {
       method: "POST",
       headers: auth(),
-      body: JSON.stringify({ planId: "not-a-uuid" }),
+      body: JSON.stringify({ planId: "not-a-uuid", payway: "alipay" }),
     })
     expect(bad.status).toBe(400)
   })
@@ -68,20 +68,20 @@ describe("POST /api/membership/renew（服务端定价，复用 spec304 支付�
     const res = await app.request("/api/membership/renew", {
       method: "POST",
       headers: auth(),
-      body: JSON.stringify({ planId: zeroPlanId }),
+      body: JSON.stringify({ planId: zeroPlanId, payway: "alipay" }),
     })
     expect(res.status).toBe(500)
   })
 
-  it("下单：服务端取价快照 + planId 落单 + payUrl + 启动轮询；客户端假金额被忽略", async () => {
+  it("下单：服务端取价快照 + planId 落单 + qrCode + 启动轮询；客户端假金额被忽略", async () => {
     const res = await app.request("/api/membership/renew", {
       method: "POST",
       headers: auth(),
-      body: JSON.stringify({ planId, amountCents: 1, priceCents: 1 }), // 恶意字段应被忽略
+      body: JSON.stringify({ planId, payway: "wechat", amountCents: 1, priceCents: 1 }), // 恶意字段应被忽略
     })
     expect(res.status).toBe(200)
-    const body = (await res.json()) as { orderId: string; payUrl: string }
-    expect(body.payUrl).toContain("https://wap.test/gateway")
+    const body = (await res.json()) as { orderId: string; qrCode: string }
+    expect(body.qrCode).toContain("https://qr.alipay.com/")
     const row = await orderRow(body.orderId)
     expect(row!.type).toBe("renewal")
     expect(row!.amountCents).toBe(2000) // plans 当前价快照
@@ -95,7 +95,7 @@ describe("POST /api/membership/renew（服务端定价，复用 spec304 支付�
     const res = await app.request("/api/membership/renew", {
       method: "POST",
       headers: auth(),
-      body: JSON.stringify({ planId }),
+      body: JSON.stringify({ planId, payway: "alipay" }),
     })
     const { orderId } = (await res.json()) as { orderId: string }
     const clientSn = (await orderRow(orderId))!.clientSn
@@ -137,7 +137,7 @@ describe("开放订单上限（防刷单/网关放大）", () => {
       const res = await app.request("/api/membership/renew", {
         method: "POST",
         headers: auth(),
-        body: JSON.stringify({ planId }),
+        body: JSON.stringify({ planId, payway: "alipay" }),
       })
       if (res.status === 429) got429 = true
       else expect(res.status).toBe(200)

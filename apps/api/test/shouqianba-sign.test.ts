@@ -1,8 +1,8 @@
 import { describe, it, expect } from "bun:test"
 import { createHash, generateKeyPairSync, createSign } from "node:crypto"
-import { md5BodySign, wap2Sign, verifyRsaCallback } from "../src/services/payment/shouqianba-sign"
+import { md5BodySign, verifyRsaCallback } from "../src/services/payment/shouqianba-sign"
 
-// 收钱吧两套签名 + 回调 RSA 验签（架构 §6.0/§6.1，spec304 Task 1）。
+// 收钱吧 API 网关签名 + 回调 RSA 验签（架构 §6.0/§6.1，spec304 Task 1）。
 // 纯函数、不打网络；向量用 MD5 已知值 + 测试内自签 RSA 密钥对。
 
 describe("md5BodySign（非支付接口：Authorization = sn + ' ' + MD5(body+key)）", () => {
@@ -15,26 +15,6 @@ describe("md5BodySign（非支付接口：Authorization = sn + ' ' + MD5(body+ke
     const body = '{"app_id":"appid","code":"00000000","device_id":"dev-1"}'
     const expected = createHash("md5").update(body + "vkey123", "utf8").digest("hex")
     expect(md5BodySign(body, "vkey123")).toBe(expected)
-  })
-})
-
-describe("wap2Sign（跳转支付：ASCII 升序 k=v&… + &key=terminalKey 的 MD5 大写）", () => {
-  it("按键 ASCII 升序拼接并大写 MD5", () => {
-    const sign = wap2Sign(
-      { total_amount: "1", client_sn: "abc", terminal_sn: "SN1" },
-      "tk",
-    )
-    const canonical = "client_sn=abc&terminal_sn=SN1&total_amount=1&key=tk"
-    expect(sign).toBe(createHash("md5").update(canonical, "utf8").digest("hex").toUpperCase())
-  })
-
-  it("剔除 sign/sign_type 与空值参数", () => {
-    const sign = wap2Sign(
-      { b: "2", a: "1", sign: "SHOULD_DROP", sign_type: "MD5", empty: "", omitted: undefined },
-      "tk",
-    )
-    const canonical = "a=1&b=2&key=tk"
-    expect(sign).toBe(createHash("md5").update(canonical, "utf8").digest("hex").toUpperCase())
   })
 })
 

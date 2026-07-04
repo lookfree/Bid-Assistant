@@ -7,7 +7,7 @@ import { plans } from "../db/schema"
 import type { User } from "../db/schema"
 import { authMiddleware } from "../middleware/auth"
 import { countOpenOrders, createOrder } from "../services/payment-orders"
-import { launchPayment, resolvePaymentDeps, MAX_OPEN_ORDERS_PER_USER, type PaymentRouteDeps } from "./payment"
+import { launchPayment, paywaySchema, resolvePaymentDeps, MAX_OPEN_ORDERS_PER_USER, type PaymentRouteDeps } from "./payment"
 
 // 会员路由（架构 §6.2，spec305）：手动续费下单 → 复用 spec304 单笔支付链路。
 // 服务端定价：客户端只传 planId，金额从 plans 当前价取并快照进订单；无任何签约/代扣路径。
@@ -27,7 +27,7 @@ export function membershipRoutes(deps: Partial<PaymentRouteDeps> = {}) {
 
   // 手动续费下单：金额=所选套餐当期价（服务端取价），支付成功由 markPaid renewal 分支续期+发当期积分
   r.post("/renew", async (c) => {
-    const parsed = z.object({ planId: z.string().uuid() }).safeParse(await c.req.json().catch(() => ({})))
+    const parsed = z.object({ planId: z.string().uuid(), payway: paywaySchema }).safeParse(await c.req.json().catch(() => ({})))
     if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
     const [plan] = await getDb()
       .select()
@@ -51,7 +51,7 @@ export function membershipRoutes(deps: Partial<PaymentRouteDeps> = {}) {
       creditsSnapshot: plan.grantCreditsPerCycle,
       idempotencyKey: `renewal:${userId}:${randomUUID()}`,
     })
-    return c.json(await launchPayment(resolved, order, `会员续费-${plan.name}`, plan.priceCents))
+    return c.json(await launchPayment(resolved, order, `会员续费-${plan.name}`, plan.priceCents, parsed.data.payway))
   })
 
   return r

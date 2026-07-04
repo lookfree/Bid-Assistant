@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test"
 import { createSign, generateKeyPairSync } from "node:crypto"
-import { md5BodySign, wap2Sign } from "../src/services/payment/shouqianba-sign"
+import { md5BodySign } from "../src/services/payment/shouqianba-sign"
 import { makeShouqianbaProvider } from "../src/services/payment/shouqianba"
 import { fakeGateway } from "./helpers/sqb-gateway"
 
@@ -13,35 +13,53 @@ const publicPem = publicKey.export({ type: "spki", format: "pem" }).toString()
 function makeProvider(responses: Array<Record<string, unknown>> = []) {
   const { calls, fetchFn } = fakeGateway(responses)
   const provider = makeShouqianbaProvider({
-    cfg: { gateway: "https://sqb.test", wapGateway: "https://wap.test/gateway", publicKey: publicPem },
+    cfg: { gateway: "https://sqb.test", publicKey: publicPem },
     getCredentials: async () => creds,
     fetchFn,
   })
   return { provider, calls }
 }
 
-describe("createPayment（WAP2 跳转支付 URL）", () => {
-  it("URL 含全部必备参数，sign 可用 wap2Sign 复算一致", async () => {
-    const { provider } = makeProvider()
-    const { payUrl } = await provider.createPayment({
+describe("createPayment（C 扫 B 预下单 /upay/v2/precreate → qr_code）", () => {
+  const precreateResp = {
+    result_code: "200",
+    biz_response: { result_code: "PRECREATE_SUCCESS", data: { order_status: "CREATED", qr_code: "https://qr.alipay.com/abc", qr_code_image_url: "https://api.shouqianba.com/upay/qrcode?content=x" } },
+  }
+
+  it("payway=alipay → 请求带整数码 1、terminal 签名，返回 qrCode + qrImageUrl", async () => {
+    const { provider, calls } = makeProvider([precreateResp])
+    const r = await provider.createPayment({
       clientSn: "order-1",
       amountCents: 100,
       subject: "积分充值",
-      returnUrl: "https://app.test/pay/return",
+      payway: "alipay",
       notifyUrl: "https://app.test/api/payment/shouqianba/notify",
     })
-    const u = new URL(payUrl)
-    expect(payUrl.startsWith("https://wap.test/gateway?")).toBe(true)
-    const q = Object.fromEntries(u.searchParams)
-    expect(q.terminal_sn).toBe("TSN9")
-    expect(q.client_sn).toBe("order-1")
-    expect(q.total_amount).toBe("100") // 单位分，整数字符串
-    expect(q.subject).toBe("积分充值")
-    expect(q.return_url).toBe("https://app.test/pay/return")
-    expect(q.notify_url).toBe("https://app.test/api/payment/shouqianba/notify")
-    // 签名可复算：对除 sign 外的全部参数用 terminal_key 做 wap2Sign
-    const { sign, ...rest } = q
-    expect(sign).toBe(wap2Sign(rest, "tkey9"))
+    expect(r).toEqual({ qrCode: "https://qr.alipay.com/abc", qrImageUrl: "https://api.shouqianba.com/upay/qrcode?content=x" })
+    const req = calls[0]!
+    expect(req.url).toBe("https://sqb.test/upay/v2/precreate")
+    const body = JSON.parse(req.body)
+    expect(body).toEqual({
+      terminal_sn: "TSN9",
+      client_sn: "order-1",
+      total_amount: "100",
+      subject: "积分充值",
+      payway: "1", // 支付宝
+      operator: "bidsaas",
+      notify_url: "https://app.test/api/payment/shouqianba/notify",
+    })
+    expect(req.auth).toBe(`TSN9 ${md5BodySign(req.body, "tkey9")}`)
+  })
+
+  it("payway=wechat → 整数码 3", async () => {
+    const { provider, calls } = makeProvider([precreateResp])
+    await provider.createPayment({ clientSn: "o", amountCents: 1, subject: "s", payway: "wechat", notifyUrl: "n" })
+    expect(JSON.parse(calls[0]!.body).payway).toBe("3")
+  })
+
+  it("预下单业务失败 → 抛错（不静默）", async () => {
+    const { provider } = makeProvider([{ result_code: "400", error_code: "INVALID_PARAMS", biz_response: null }])
+    await expect(provider.createPayment({ clientSn: "o", amountCents: 1, subject: "s", payway: "alipay", notifyUrl: "n" })).rejects.toThrow(/预下单失败/)
   })
 })
 

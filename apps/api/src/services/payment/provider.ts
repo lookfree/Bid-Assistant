@@ -15,17 +15,20 @@ export type CallbackParse =
   | { ok: true; clientSn: string; result: PaymentResult }
   | { ok: false; error: "bad_signature" | "bad_body" }
 
+/** 付款钱包：C 扫 B 预下单必须指定，前端二选一（收钱吧 payway 1=支付宝 3=微信）。 */
+export type Payway = "alipay" | "wechat"
+
 export interface PaymentProvider {
   /** 通道回调挂载路径（路由 + notify_url 拼接共用，换通道不改路由）。 */
   notifyPath: string
-  /** 生成顾客扫码的跳转支付 URL（前端转二维码）。 */
+  /** C 扫 B 预下单：返回顾客扫的二维码（qrCode 原文 + 现成图片 URL；前端二选一渲染）。 */
   createPayment(opts: {
     clientSn: string
     amountCents: number
     subject: string
-    returnUrl: string
+    payway: Payway
     notifyUrl: string
-  }): Promise<{ payUrl: string }>
+  }): Promise<{ qrCode: string; qrImageUrl?: string }>
   /** 查询交易终态（轮询/对账共用）。 */
   query(clientSn: string): Promise<PaymentResult>
   /** 退款（支持部分退款；refundSn 幂等）。业务失败返回 ok:false，不抛。 */
