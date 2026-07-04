@@ -31,13 +31,12 @@ App API 集成测试连远程真实 PG/Redis/MinIO，**在 mbp 上经 SSH 隧道
 
 ## 进度
 
-- **Phase 0–2**：账号鉴权 + App 骨架 → 智能体服务 + 读标 → 完整投标流水线（读标→提纲→正文→审查→述标→导出）。
-- **Phase 3 商业化（进行中）**：积分账本、收钱吧 C 扫 B 支付（真实 1 分钱冒烟已过）、到期提醒+手动续费、对账/退款/过期、推荐奖励引擎、C 端会员中心均已合并 `main`；运营后台（spec309/310）待建。
+- **App API（`apps/api`）· Phase 3 商业化**：积分账本、收钱吧 C 扫 B 支付（真实 1 分钱冒烟已过）、到期提醒+手动续费、对账/退款/过期、推荐奖励引擎、C 端会员中心均已合并 `main`。
+- **智能体服务（`services/agent`）/ 运营后台（`apps/admin`）**：建设中，详见 `docs/superpowers/plans`。
 
 ## 约定（铁律）
 
 - **钱只在 App API 动**：所有积分/支付变更走 `apps/api`；智能体服务只上报用量；每笔扣减/回调带幂等键；余额 = append-only `credit_transactions` 之和。
 - 金额全链路整数分，禁浮点存储。
-- 提交遵循 `CLAUDE.md`：英文 Conventional Commits、账号 `lookfree`、不加 `Co-Authored-By`。
 
 中间件连接见 `docs/superpowers/specs/2026-06-24-bid-assistant-saas-architecture.md` §14 与根 `.env.bidsaas.local`（不入库，模板 `.env.bidsaas.example`）。完整开发约定见 `CLAUDE.md`。
