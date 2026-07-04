@@ -15,8 +15,10 @@ export type CallbackParse =
   | { ok: true; clientSn: string; result: PaymentResult }
   | { ok: false; error: "bad_signature" | "bad_body" }
 
-/** 付款钱包：C 扫 B 预下单必须指定，前端二选一（收钱吧 payway 1=支付宝 3=微信）。 */
-export type Payway = "alipay" | "wechat"
+/** 付款钱包：C 扫 B 预下单必须指定，前端二选一（收钱吧 payway 1=支付宝 3=微信）。
+ *  单一真源：路由 zod 校验与 shouqianba 整数码映射都从这里派生，加钱包只改这一处。 */
+export const PAYWAYS = ["alipay", "wechat"] as const
+export type Payway = (typeof PAYWAYS)[number]
 
 export interface PaymentProvider {
   /** 通道回调挂载路径（路由 + notify_url 拼接共用，换通道不改路由）。 */

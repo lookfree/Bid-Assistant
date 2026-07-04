@@ -183,8 +183,8 @@ export interface Paged<T> { items: T[]; page: number; pageSize: number; total: n
 export function fetchMembership(): Promise<MembershipOverview>
 export function fetchCreditTransactions(page?: number, pageSize?: number): Promise<Paged<CreditTxView>>
 export function fetchOrders(page?: number, pageSize?: number): Promise<Paged<OrderView>>
-export function startRecharge(packCredits: number, amountCents: number): Promise<{ qrCode?: string; payUrl?: string; orderId: string }>  // → POST /api/payment/recharge (spec304)
-export function renewMembership(planId: string): Promise<{ orderId: string; payUrl: string }>  // → POST /api/membership/renew (spec305，扫码单笔)
+export function startRecharge(packCredits: number, amountCents: number): Promise<{ qrCode?: string; qrCode?: string; orderId: string }>  // → POST /api/payment/recharge (spec304)
+export function renewMembership(planId: string): Promise<{ orderId: string; qrCode: string }>  // → POST /api/membership/renew (spec305，扫码单笔)
 ```
 
 ---
@@ -281,8 +281,8 @@ export function renewMembership(planId: string): Promise<{ orderId: string; payU
    - `fetchMembership` 命中 `GET /api/membership`,带 `Authorization`(从既有 auth helper 取 token,沿用项目现有方式),返回体按 `MembershipOverview` 解析。
    - `fetchCreditTransactions(2, 20)` 拼出 `?page=2&pageSize=20`。
    - `fetchOrders` 同理。
-   - `startRecharge` → `POST /api/payment/recharge`,body `{ amountCents, credits }`(对齐 spec304 入参);返回 `{qrCode?,payUrl?,orderId}`。
-   - `renewMembership(planId)` → `POST /api/membership/renew`,body `{planId}`(对齐 spec305,金额服务端定价);返回 `{orderId, payUrl}`,前端把 payUrl 转二维码弹层供扫码。
+   - `startRecharge` → `POST /api/payment/recharge`,body `{ packId, payway }`(对齐 spec304 入参);返回 `{qrCode?,qrCode?,orderId}`。
+   - `renewMembership(planId)` → `POST /api/membership/renew`,body `{planId}`(对齐 spec305,金额服务端定价);返回 `{orderId, qrCode}`,前端把 qrCode 转二维码弹层供扫码。
    - 非 2xx → 抛错(含状态码),401 → 触发既有未登录处理(沿用项目约定)。
 2. `lib/membership-types.ts`:声明上文五个 camelCase 类型 + `Paged<T>`;**复用** `lib/plans.ts` 的 `type TierId`(`import type { TierId } from "@/lib/plans"`),避免重复定义档位枚举;`Feature` 复用 `lib/plans.ts` 的 `Feature`。
 3. `bun test`(红)→ 实现 → 绿。
@@ -306,8 +306,8 @@ export function renewMembership(planId: string): Promise<{ orderId: string; payU
    - 套餐:用 `overview.plans` 渲染完整对比;**渐进式区块**用 `overview.progressive.current` + `overview.progressive.next` 渲染「当前档 / 推荐升级到下一档」;`next===null` 时显示「已是最高档」。
    - 仍可复用 `lib/plans.ts` 的 `creditCosts`/`creditPacks`(消耗说明、充值包目录是产品静态文案,保留;但充值价格以接口/配置为准时优先接口)。
 3. **入口接线**:
-   - 升级/开通/续费按钮 → `renewMembership(plan.id)` → 拿 `payUrl` 展示扫码二维码弹层(spec305);支付结果轮询我方订单接口。
-   - 充值包 `buyPack` → `startRecharge(pack.credits, yuanToCents(pack.price))` → 用返回的 `qrCode`/`payUrl` 展示/跳转(spec304)。
+   - 升级/开通/续费按钮 → `renewMembership(plan.id)` → 拿 `qrCode` 展示扫码二维码弹层(spec305);支付结果轮询我方订单接口。
+   - 充值包 `buyPack` → `startRecharge(pack.credits, yuanToCents(pack.price))` → 用返回的 `qrCode`/`qrCode` 展示/跳转(spec304)。
    - 邀请入口 → 接 spec307 的**真实路由**:`GET /api/referral/code`(单数,取「我的邀请码」)+ `GET /api/referral/list`(邀请列表);并用环境开关 `NEXT_PUBLIC_REFERRAL_ENABLED` 守卫;开关关闭时按钮置灰/隐藏,**不**留死链。会员中心只**展示**「我的邀请码 + 邀请列表」,**不**做「输入邀请码绑定」——绑定在注册流程(Phase 0)完成,spec307 不产出任何 `/bind` 写接口,故此处**禁止**假设 `POST /api/referrals/bind` 之类路由。实现时若 spec307 已就绪则直接对接上述两个真实接口,否则保留入口 + flag 并在 PR 描述里标注「待 spec307」。
 4. 抽出纯逻辑(如 `pickProgressive`、`formatPeriodEnd`、`tierLabel`)到可测模块并写 `bun:test`。
 5. `bun test` 全绿 + 前端类型检查通过(`tsc --noEmit` 或项目既有 lint)。

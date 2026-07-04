@@ -7,11 +7,11 @@ import { paymentOrders } from "../db/schema"
 import type { User } from "../db/schema"
 import { authMiddleware } from "../middleware/auth"
 import { getConfig } from "../services/config"
-import { countOpenOrders, createOrder, markPaid, pollUntilFinal } from "../services/payment-orders"
+import { countOpenOrders, createOrder, markFinal, markPaid, pollUntilFinal } from "../services/payment-orders"
 import { getPayment } from "../services/payment"
-import type { PaymentProvider, Payway } from "../services/payment/provider"
+import { PAYWAYS, type PaymentProvider, type Payway } from "../services/payment/provider"
 
-// 支付路由（架构 §6.1）：下单 → 跳转支付 URL（前端转二维码）→ 回调验签 + 后台轮询双通道 → 只入账一次。
+// 支付路由（架构 §6.1）：下单 → C 扫 B 预下单出二维码 → 回调验签 + 后台轮询双通道 → 只入账一次。
 // 钱只在这一层动（§3.2）；金额/到账积分一律服务端从配置取快照，客户端字段全部忽略。
 // 通道报文解析/金额归一在 provider.parseCallback 内完成——路由不接触通道线格式。
 
@@ -24,7 +24,7 @@ function validPack(p: RechargePack | undefined): p is RechargePack {
 
 export type PaymentRouteDeps = {
   provider: PaymentProvider
-  baseUrl: string // 公网基址：notify_url / return_url 用（env PAYMENT_NOTIFY_BASE_URL）
+  baseUrl: string // 公网基址：notify_url 用（env PAYMENT_NOTIFY_BASE_URL）
   poll: (orderId: string) => void // 后台轮询启动器（fire-and-forget；测试注入捕获）
 }
 
@@ -45,26 +45,43 @@ export function resolvePaymentDeps(deps: Partial<PaymentRouteDeps>, logTag: stri
 /** 用户开放订单上限：防刷单（每单都产生网关调用 + 6 分钟轮询，无限建单是对通道配额的放大攻击）。 */
 export const MAX_OPEN_ORDERS_PER_USER = 5
 
-/** C 扫 B 下单入参校验：客户端二选一钱包（充值/续费共用）。 */
-export const paywaySchema = z.enum(["alipay", "wechat"])
+/** C 扫 B 下单入参校验：客户端二选一钱包（充值/续费共用）。真源在 provider.PAYWAYS。 */
+export const paywaySchema = z.enum(PAYWAYS)
 
-/** 建好订单 → 预下单出二维码 + 启动后台轮询（充值/续费下单共用的收尾）。 */
+export type LaunchResult = { ok: true; orderId: string; qrCode: string; qrImageUrl?: string } | { ok: false }
+
+/** 建好订单 → 预下单出二维码 + 启动后台轮询（充值/续费下单共用的收尾）。
+ *  预下单失败（网关抖动/拒单）时：通道从没收到这笔单，把刚建的订单收敛 failed 再返回 ok:false
+ *  ——否则孤儿 created 单既卡扫单 Cron（对通道查无的单反复查、收敛不掉），又白占用户开放单额度致 429 锁死。 */
 export async function launchPayment(
   deps: PaymentRouteDeps,
   order: { id: string; clientSn: string },
   subject: string,
   amountCents: number,
   payway: Payway,
-): Promise<{ orderId: string; qrCode: string; qrImageUrl?: string }> {
-  const { qrCode, qrImageUrl } = await deps.provider.createPayment({
-    clientSn: order.clientSn,
-    amountCents,
-    subject,
-    payway,
-    notifyUrl: `${deps.baseUrl}/api/payment${deps.provider.notifyPath}`,
-  })
+): Promise<LaunchResult> {
+  let created: { qrCode: string; qrImageUrl?: string }
+  try {
+    created = await deps.provider.createPayment({
+      clientSn: order.clientSn,
+      amountCents,
+      subject,
+      payway,
+      notifyUrl: `${deps.baseUrl}/api/payment${deps.provider.notifyPath}`,
+    })
+  } catch (err) {
+    console.error(`[payment] 预下单失败，订单收敛 failed order=${order.id}`, err)
+    await markFinal(order.id, "failed").catch(() => {}) // 通道没收到 → created→failed 安全
+    return { ok: false }
+  }
   deps.poll(order.id) // 回调 + 轮询双通道取终态（进程重启由滞留单扫描 Cron 兜底）
-  return { orderId: order.id, qrCode, qrImageUrl }
+  return { ok: true, orderId: order.id, qrCode: created.qrCode, qrImageUrl: created.qrImageUrl }
+}
+
+/** launchPayment 结果 → HTTP 响应（成功出二维码；预下单失败 502，客户端可换钱包/重试）。 */
+export function respondLaunch(c: Context, r: LaunchResult): Response {
+  if (!r.ok) return c.json({ error: "payment_gateway_error" }, 502)
+  return c.json({ orderId: r.orderId, qrCode: r.qrCode, qrImageUrl: r.qrImageUrl })
 }
 
 /** 通道回调处理（收钱吧服务器调用，无用户鉴权，验签放行）。 */
@@ -129,7 +146,7 @@ export function paymentRoutes(deps: Partial<PaymentRouteDeps> = {}) {
       creditsSnapshot: pack.credits, // 到账以下单快照为准（运营改包不影响在途单）
       idempotencyKey: `recharge:${userId}:${randomUUID()}`,
     })
-    return c.json(await launchPayment(resolved, order, "积分充值", pack.amountCents, parsed.data.payway))
+    return respondLaunch(c, await launchPayment(resolved, order, "积分充值", pack.amountCents, parsed.data.payway))
   })
 
   // 订单状态（前端支付页轮询显示用）：本人可查

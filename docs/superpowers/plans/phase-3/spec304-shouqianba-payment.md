@@ -2,6 +2,12 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **⚠️ 2026-07-04 真实冒烟定稿（本文档中 WAP2 相关草图已作废，以此为准）**：本商户是 **C 扫 B（顾客扫商户码）**，下单走 **`/upay/v2/precreate`**（terminal body 签名，同 query/refund），返回 `qr_code`（+ `qr_code_image_url`）给前端渲染二维码；**不是** WAP2 跳转 URL（`qr.shouqianba.com/gateway` + `wap2Sign`，对 C 扫 B 商户报参数错误）。
+> - `createPayment(opts:{clientSn, amountCents, subject, payway, notifyUrl}) -> {qrCode, qrImageUrl?}`；`payway: "alipay"|"wechat"`（→ 收钱吧整数码 1/3，前端二选一必填）。`wap2Sign`/`return_url`/WAP 网关已删。
+> - **`client_sn` ≤ 32 字符**（收钱吧硬限，`bid-<uuid>`=40 超限必被拒；实现用 `bid<base36ts><14hex>`）。
+> - 路由 `/recharge`、`/renew` 入参加 `payway`；返回 `{orderId, qrCode, qrImageUrl}`；预下单失败 → 502 且订单收敛 failed（不留孤儿 created）。
+> - 冒烟实证：激活 terminal_sn=100108240056336528 → precreate → 支付宝付 0.01 → query paid → refund → query refunded。详见 review-followups C4。
+
 **Goal:** 落地架构 §6.0/§6.1 的**收钱吧 C 扫 B 跳转支付**全链路：`PaymentProvider` 接口 + `ShouqianbaProvider`（终端激活/每日签到、WAP2 跳转支付 URL、查询、退款、回调 RSA 验签），以及充值/购买的下单 → 回调/轮询入账路由（`POST /api/payment/recharge`、`POST /api/payment/shouqianba/notify`、`GET /api/payment/orders/:id`）。下单建 `payment_orders`（status=created，client_sn 全局唯一）→ 拼跳转支付 URL 转二维码 → 用户微信/支付宝扫码付款 → **回调验签 + 轮询查询双通道**取终态 → 订单状态机置 paid（只一次）→ 调 spec302 `credits.grant({type:"purchase"})` 入账。**幂等关键**：回调可能重复、且与轮询并发，按收钱吧 `sn` + 订单状态机保证**只入账一次**；轮询窗口用尽仍无终态 → 订单置 `unknown` 待对账（spec306 清算）。
 
 **Architecture:** 支付层是 `PaymentProvider` 抽象（屏蔽通道差异），现行实现 `ShouqianbaProvider`；未来换通道只加实现、不动路由。收钱吧无 SDK：HTTPS+JSON 直连网关 `https://vsi-api.shouqianba.com`。**两套签名**：非支付接口（激活/签到/查询/退款）`Authorization: sn + " " + MD5(body + key)`（激活用 vendor 参数，其余用 terminal 参数）；跳转支付（WAP2）用「参数 ASCII 升序 `&` 拼接 + `&key=` + terminal_key 的 MD5 大写」。**终端凭证生命周期**：激活码 + device_id → 激活得 terminal_sn/terminal_key（落 `payment_terminals`，集群共享）→ 每日签到轮换 terminal_key（spec303 Cron 注册；签到失败保留旧 key 重试，极端情况重激活）。钱只在 App API 动（§3.2）；金额单位统一**分**。生产网关即真实交易：联调用**测试激活码**（对应测试商户号），支付后即退款。
@@ -68,8 +74,10 @@ apps/api/test/
 ### `PaymentProvider` 形态（Task 2 落地，此处为契约）
 
 ```typescript
+// C 扫 B 预下单（/upay/v2/precreate）：2026-07-04 真实冒烟定稿，取代原 WAP2 跳转方案。
+export type Payway = "alipay" | "wechat" // 前端二选一 → 收钱吧 payway 整数码 1/3
 export type PaymentResult = {
-  status: "paid" | "failed" | "pending"
+  status: "paid" | "failed" | "pending" | "refunded"
   sn?: string; tradeNo?: string; payway?: string
   totalAmountCents?: number // 通道实付金额（分）——金额铁律的比对来源
 }
@@ -81,8 +89,8 @@ export type CallbackParse =
 export interface PaymentProvider {
   /** 通道回调挂载路径（路由 + notify_url 拼接共用，换通道不改路由） */
   notifyPath: string
-  /** 生成顾客扫码的跳转支付 URL（前端转二维码）。amountCents 分；clientSn 我方订单号 */
-  createPayment(opts: { clientSn: string; amountCents: number; subject: string; returnUrl: string; notifyUrl: string }): Promise<{ payUrl: string }>
+  /** 生成顾客扫码的C 扫 B 预下单二维码 qr_code（前端渲染扫码）。amountCents 分；clientSn 我方订单号 */
+  createPayment(opts: { clientSn; amountCents; subject; payway: Payway; notifyUrl }): Promise<{ qrCode: string; qrImageUrl?: string }> // /upay/v2/precreate
   /** 查询交易终态（轮询/对账共用） */
   query(clientSn: string): Promise<PaymentResult>
   /** 退款（支持部分退款；refundSn 幂等） */

@@ -7,7 +7,7 @@ import { plans } from "../db/schema"
 import type { User } from "../db/schema"
 import { authMiddleware } from "../middleware/auth"
 import { countOpenOrders, createOrder } from "../services/payment-orders"
-import { launchPayment, paywaySchema, resolvePaymentDeps, MAX_OPEN_ORDERS_PER_USER, type PaymentRouteDeps } from "./payment"
+import { launchPayment, respondLaunch, paywaySchema, resolvePaymentDeps, MAX_OPEN_ORDERS_PER_USER, type PaymentRouteDeps } from "./payment"
 
 // 会员路由（架构 §6.2，spec305）：手动续费下单 → 复用 spec304 单笔支付链路。
 // 服务端定价：客户端只传 planId，金额从 plans 当前价取并快照进订单；无任何签约/代扣路径。
@@ -51,7 +51,7 @@ export function membershipRoutes(deps: Partial<PaymentRouteDeps> = {}) {
       creditsSnapshot: plan.grantCreditsPerCycle,
       idempotencyKey: `renewal:${userId}:${randomUUID()}`,
     })
-    return c.json(await launchPayment(resolved, order, `会员续费-${plan.name}`, plan.priceCents, parsed.data.payway))
+    return respondLaunch(c, await launchPayment(resolved, order, `会员续费-${plan.name}`, plan.priceCents, parsed.data.payway))
   })
 
   return r

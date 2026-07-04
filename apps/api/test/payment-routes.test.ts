@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bun:test"
-import { and, eq } from "drizzle-orm"
+import { and, desc, eq } from "drizzle-orm"
 import { Hono } from "hono"
 import { paymentRoutes } from "../src/routes/payment"
 import { createOrder } from "../src/services/payment-orders"
@@ -8,7 +8,7 @@ import { seedConfigs, setConfig } from "../src/services/config"
 import { getDb, closeDb } from "../src/db/client"
 import { users, paymentOrders, creditTransactions } from "../src/db/schema"
 import { uniquePhone, TEST_TIMEOUT_MS } from "./repos/helpers"
-import { makeSignedProvider } from "./helpers/sqb-gateway"
+import { makeSignedProvider, stubProvider } from "./helpers/sqb-gateway"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB（跑法：./test-on-mbp.sh test/payment-routes.test.ts）
 
@@ -104,6 +104,33 @@ describe("POST /api/payment/recharge", () => {
     expect(row!.creditsSnapshot).toBe(100)
     expect(row!.status).toBe("created")
     expect(polled).toContain(body.orderId) // 回调+轮询双通道
+  })
+
+  it("预下单失败 → 502 + 刚建的订单收敛 failed（不留孤儿 created 卡扫单/占开放单额度）", async () => {
+    const throwingProvider = stubProvider({
+      createPayment: async () => {
+        throw new Error("收钱吧预下单失败: 400 INVALID_PARAMS")
+      },
+    })
+    const failApp = new Hono()
+    let launched = ""
+    failApp.route("/api/payment", paymentRoutes({ provider: throwingProvider, baseUrl: "https://app.test", poll: (id) => void (launched = id) }))
+    const res = await failApp.request("/api/payment/recharge", {
+      method: "POST",
+      headers: auth(token),
+      body: JSON.stringify({ packId: "pack_100", payway: "alipay" }),
+    })
+    expect(res.status).toBe(502)
+    expect((await res.json()) as { error: string }).toEqual({ error: "payment_gateway_error" })
+    expect(launched).toBe("") // 预下单失败不启动轮询
+    // 该用户名下最新 recharge 单应为 failed（不是 created）
+    const [latest] = await getDb()
+      .select()
+      .from(paymentOrders)
+      .where(and(eq(paymentOrders.userId, userId), eq(paymentOrders.type, "recharge")))
+      .orderBy(desc(paymentOrders.createdAt))
+      .limit(1)
+    expect(latest!.status).toBe("failed")
   })
 })
 

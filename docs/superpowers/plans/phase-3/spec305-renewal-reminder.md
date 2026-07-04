@@ -27,7 +27,7 @@
 ```
 apps/api/src/
 ├── services/renewal.ts        # 新：到期提醒扫描 + 订阅状态推进 + 续费入账（markPaid renewal 分支调用）
-├── routes/membership.ts       # 改/新：POST /api/membership/renew（建 renewal 订单 → 返回 payUrl）
+├── routes/membership.ts       # 改/新：POST /api/membership/renew（建 renewal 订单 → 返回 qrCode 二维码）
 └── crons/renewal.ts           # 新：注册 remind-cron（每日）+ subscription-state-cron（每日）
 apps/api/test/
 ├── renewal-remind.test.ts     # 新：T-7/T-3/T-1 命中/去重/不打扰 past_due
@@ -42,7 +42,7 @@ apps/api/test/
 - **Consumes**：spec301 `subscriptions/plans/billing_configs`；spec302 `grant`；spec303 `registerCron`；spec304 `createOrder/markPaid/PaymentProvider`；Phase 0 短信服务。
 - **Produces（已按实现+review 定稿）**：
   - `renewOnPaid({orderId, userId, planId, creditsSnapshot, cycleSnapshot}, tx, deps?)`：markPaid(type=renewal) 事务内调用；权益以订单快照为准；订阅行 upsert+FOR UPDATE 串行化（subscriptions 一人一行唯一索引，迁移 0014）。
-  - `POST /api/membership/renew {planId}`（spec308 会员中心调）：服务端取价 + 权益快照（amountCents/cycleSnapshot/creditsSnapshot）落单；开放单上限 5（429）。
+  - `POST /api/membership/renew {planId, payway}`（spec308 会员中心调）：服务端取价 + 权益快照（amountCents/cycleSnapshot/creditsSnapshot）落单；开放单上限 5（429）。
   - `advanceSubscriptionStates(now)` / `scanRenewalReminders(now, {notify})`（notify 必传）；`renewalCronJobs({notify?})`——subscription-state 始终注册，renewal-remind 仅在提供 notify 渠道时注册。
   - 订单可支付窗 7 天（超期 PAID 拒入账 reason=stale_order，防囤旧价单套利）。
 
@@ -60,7 +60,7 @@ apps/api/test/
 
 - [ ] **Step 1: 失败测试 `renewal-remind.test.ts`** —— 命中 T-7/T-3/T-1 档各提醒一次；同档重复扫描去重；非 active 不提醒；天数档读配置。
 - [ ] **Step 2: 实现提醒扫描 + `crons/renewal.ts` 注册两个 Cron（spec303）**。
-- [ ] **Step 3: `POST /api/membership/renew {planId}`** —— 服务端取价建 renewal 订单 → 返回 `{orderId, payUrl}`（复用 spec304）；测试：客户端传假金额被忽略。
+- [ ] **Step 3: `POST /api/membership/renew {planId, payway}`** —— 服务端取价建 renewal 订单 → 返回 `{orderId, qrCode, qrImageUrl}`（C 扫 B 预下单二维码）（复用 spec304）；测试：客户端传假金额被忽略。
 - [ ] **Step 4: 提交** `feat(spec305): renewal reminder cron + renew route`
 
 ## Task 3: 接缝与合并
