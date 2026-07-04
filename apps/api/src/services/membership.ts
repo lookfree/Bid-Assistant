@@ -85,7 +85,9 @@ function buildPlanViews(allRows: PlanRow[]): { list: PlanView[]; byTier: Map<Tie
     if (r.status !== "active") continue // 下架档不入会员分组
     if (!r.code || !TIER_ORDER.includes(r.code as TierId)) continue // 非会员档（如纯充值）不入分组
     const tier = r.code as TierId
-    ;(grouped.get(tier) ?? grouped.set(tier, []).get(tier)!).push(r)
+    let arr = grouped.get(tier)
+    if (!arr) grouped.set(tier, (arr = []))
+    arr.push(r)
   }
   const byTier = new Map<TierId, PlanView>()
   for (const tier of TIER_ORDER) {
@@ -95,17 +97,19 @@ function buildPlanViews(allRows: PlanRow[]): { list: PlanView[]; byTier: Map<Tie
   return { list: TIER_ORDER.map((t) => byTier.get(t)).filter((p): p is PlanView => !!p), byTier }
 }
 
-/** 当前订阅视图：一人一订阅行（unique user_id），过期（状态或周期末<now）归一为 expired。 */
-async function loadSubscription(userId: string, planCode: Map<string, TierId>): Promise<SubscriptionView> {
+/** 当前订阅视图：一人一订阅行（unique user_id），过期（状态或周期末<now）归一为 expired。
+ *  档位/周期直接从已取的 allPlans 里按 planId 定位，免建全表映射。 */
+async function loadSubscription(userId: string, allPlans: PlanRow[]): Promise<SubscriptionView> {
   const [row] = await getDb().select().from(subscriptions).where(eq(subscriptions.userId, userId))
   if (!row) return { status: "none", planId: null, tierId: "free", billingCycle: null, currentPeriodStart: null, currentPeriodEnd: null }
+  const plan = allPlans.find((p) => p.id === row.planId)
   const expired = row.status === "expired" || (row.currentPeriodEnd != null && row.currentPeriodEnd.getTime() < Date.now())
   const status = expired ? "expired" : (row.status as "active" | "past_due")
   return {
     status,
     planId: row.planId,
-    tierId: planCode.get(row.planId) ?? "free",
-    billingCycle: null, // 由下方补齐（需 plan.billingCycle）
+    tierId: (plan?.code as TierId) ?? "free",
+    billingCycle: (plan?.billingCycle as "month" | "quarter" | "year") ?? null,
     currentPeriodStart: row.currentPeriodStart?.toISOString() ?? null,
     currentPeriodEnd: row.currentPeriodEnd?.toISOString() ?? null,
   }
@@ -113,18 +117,14 @@ async function loadSubscription(userId: string, planCode: Map<string, TierId>): 
 
 export async function getMembershipOverview(userId: string): Promise<MembershipOverview> {
   const allPlans = await getDb().select().from(plans)
-  const planCode = new Map<string, TierId>()
-  const planCycle = new Map<string, "month" | "quarter" | "year">()
-  for (const p of allPlans) {
-    if (p.code) planCode.set(p.id, p.code as TierId)
-    planCycle.set(p.id, p.billingCycle as "month" | "quarter" | "year")
-  }
-
   const { list, byTier } = buildPlanViews(allPlans)
-  const subscription = await loadSubscription(userId, planCode)
-  if (subscription.planId) subscription.billingCycle = planCycle.get(subscription.planId) ?? null
-  const balance = await getBalance(userId)
-  const rechargePacks = ((await getConfig<RechargePack[]>("recharge_packs")) ?? []).map((p) => ({
+  // 订阅/余额/充值包配置互不依赖，并行取（省往返）
+  const [subscription, balance, packsCfg] = await Promise.all([
+    loadSubscription(userId, allPlans),
+    getBalance(userId),
+    getConfig<RechargePack[]>("recharge_packs"),
+  ])
+  const rechargePacks = (packsCfg ?? []).map((p) => ({
     id: p.id,
     credits: p.credits,
     amountCents: p.amountCents,

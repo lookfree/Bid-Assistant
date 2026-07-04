@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react"
 import Link from "next/link"
 import { memberTiers, creditCosts, type TierId } from "@/lib/plans"
 import { fetchMembership, fetchOrders, startRecharge, renewMembership } from "@/lib/membership-api"
+import { api } from "@/lib/api"
 import type { MembershipOverview, OrderView, LaunchResponse, Payway } from "@/lib/membership-types"
 import { formatPeriodEnd, statusLabel, tierCardState, planPriceYuan, plansByTier } from "@/lib/membership-view"
 import { Check, X, Coins, Receipt, ArrowRight, Sparkles, Info, Infinity as InfinityIcon, TrendingUp } from "lucide-react"
@@ -471,7 +472,6 @@ function ReferralCard() {
     let alive = true
     ;(async () => {
       try {
-        const { api } = await import("@/lib/api")
         const c = await api.request<{ code: string }>("/api/referral/code")
         const l = await api.request<{ list: unknown[] }>("/api/referral/list")
         if (!alive) return

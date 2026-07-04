@@ -21,24 +21,24 @@ export async function listOrders(
   opts: { page: number; pageSize: number; offset: number },
 ): Promise<{ items: OrderView[]; total: number }> {
   const db = getDb()
-  const rows = await db
-    .select({
-      id: paymentOrders.id,
-      type: paymentOrders.type,
-      amountCents: paymentOrders.amountCents,
-      status: paymentOrders.status,
-      provider: paymentOrders.provider,
-      createdAt: paymentOrders.createdAt,
-    })
-    .from(paymentOrders)
-    .where(eq(paymentOrders.userId, userId))
-    .orderBy(desc(paymentOrders.createdAt))
-    .limit(opts.pageSize)
-    .offset(opts.offset)
-  const [c] = await db
-    .select({ n: sql<number>`count(*)` })
-    .from(paymentOrders)
-    .where(eq(paymentOrders.userId, userId))
+  // 行与总数互不依赖，并行取（省往返）
+  const [rows, [c]] = await Promise.all([
+    db
+      .select({
+        id: paymentOrders.id,
+        type: paymentOrders.type,
+        amountCents: paymentOrders.amountCents,
+        status: paymentOrders.status,
+        provider: paymentOrders.provider,
+        createdAt: paymentOrders.createdAt,
+      })
+      .from(paymentOrders)
+      .where(eq(paymentOrders.userId, userId))
+      .orderBy(desc(paymentOrders.createdAt))
+      .limit(opts.pageSize)
+      .offset(opts.offset),
+    db.select({ n: sql<number>`count(*)` }).from(paymentOrders).where(eq(paymentOrders.userId, userId)),
+  ])
   return {
     items: rows.map((r) => ({
       id: r.id,

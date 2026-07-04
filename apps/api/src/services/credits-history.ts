@@ -19,24 +19,24 @@ export async function listCreditTransactions(
   opts: { page: number; pageSize: number; offset: number },
 ): Promise<{ items: CreditTxView[]; total: number }> {
   const db = getDb()
-  const rows = await db
-    .select({
-      id: creditTransactions.id,
-      type: creditTransactions.type,
-      amount: creditTransactions.amount,
-      ref: creditTransactions.ref,
-      expireAt: creditTransactions.expireAt,
-      createdAt: creditTransactions.createdAt,
-    })
-    .from(creditTransactions)
-    .where(eq(creditTransactions.userId, userId))
-    .orderBy(desc(creditTransactions.createdAt))
-    .limit(opts.pageSize)
-    .offset(opts.offset)
-  const [c] = await db
-    .select({ n: sql<number>`count(*)` })
-    .from(creditTransactions)
-    .where(eq(creditTransactions.userId, userId))
+  // 行与总数互不依赖，并行取（省往返）
+  const [rows, [c]] = await Promise.all([
+    db
+      .select({
+        id: creditTransactions.id,
+        type: creditTransactions.type,
+        amount: creditTransactions.amount,
+        ref: creditTransactions.ref,
+        expireAt: creditTransactions.expireAt,
+        createdAt: creditTransactions.createdAt,
+      })
+      .from(creditTransactions)
+      .where(eq(creditTransactions.userId, userId))
+      .orderBy(desc(creditTransactions.createdAt))
+      .limit(opts.pageSize)
+      .offset(opts.offset),
+    db.select({ n: sql<number>`count(*)` }).from(creditTransactions).where(eq(creditTransactions.userId, userId)),
+  ])
   return {
     items: rows.map((r) => ({
       id: r.id,
