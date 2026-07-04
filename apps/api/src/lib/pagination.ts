@@ -16,6 +16,15 @@ export function parsePagination(query: Record<string, string | undefined>): {
   return { page, pageSize, offset: (page - 1) * pageSize }
 }
 
+/** 分页查询收尾：并行取「本页行」+「总数」，统一成 { items, total }（消除各处 Promise.all + Number(cnt!.n) 样板）。 */
+export async function pagedResult<T>(
+  itemsQuery: PromiseLike<T[]>,
+  countQuery: PromiseLike<{ n: number }[]>,
+): Promise<{ items: T[]; total: number }> {
+  const [items, [cnt]] = await Promise.all([itemsQuery, countQuery])
+  return { items, total: Number(cnt?.n ?? 0) }
+}
+
 /** 统一分页响应体：{ items, page, pageSize, total, hasMore }（hasMore = 本页尾未达总数）。 */
 export function pagedBody<T>(
   p: { page: number; pageSize: number; offset: number },

@@ -3,6 +3,7 @@ import { getDb } from "../../db/client"
 import { reconcileDiffs, paymentOrders } from "../../db/schema"
 import { markPaid } from "../payment-orders"
 import { writeAudit } from "../audit"
+import { pagedResult } from "../../lib/pagination"
 
 // 对账差异工作台（spec310，review-followups C12/C14）：列出 open 差异 → 人工处置 / unknown_paid 补入账。
 
@@ -13,11 +14,10 @@ export async function listDiffs(opts: { resolved?: string; diffType?: string; pa
   const conds: SQL[] = [eq(reconcileDiffs.resolved, opts.resolved ?? "open")] // 默认只看 open
   if (opts.diffType) conds.push(eq(reconcileDiffs.diffType, opts.diffType))
   const where = and(...conds)
-  const [items, [cnt]] = await Promise.all([
+  return pagedResult(
     db.select().from(reconcileDiffs).where(where).orderBy(sql`${reconcileDiffs.createdAt} desc`).limit(pageSize).offset((page - 1) * pageSize),
     db.select({ n: sql<number>`count(*)` }).from(reconcileDiffs).where(where),
-  ])
-  return { items, total: Number(cnt!.n) }
+  )
 }
 
 // 人工标记已处置（置 resolved）+ 审计留痕。

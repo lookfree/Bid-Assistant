@@ -1,6 +1,7 @@
 import { and, eq, sql, type SQL } from "drizzle-orm"
 import { getDb } from "../../db/client"
 import { creditTransactions, creditBalances } from "../../db/schema"
+import { pagedResult } from "../../lib/pagination"
 
 // 账本页服务（spec310）：按用户查流水（type 过滤 + 分页）+ 余额=Σ流水核对（缓存 vs 实算）。
 export async function listLedger(opts: { userId: string; type?: string; page?: number; pageSize?: number }) {
@@ -10,11 +11,10 @@ export async function listLedger(opts: { userId: string; type?: string; page?: n
   const conds: SQL[] = [eq(creditTransactions.userId, opts.userId)]
   if (opts.type) conds.push(eq(creditTransactions.type, opts.type))
   const where = and(...conds)
-  const [items, [cnt]] = await Promise.all([
+  return pagedResult(
     db.select().from(creditTransactions).where(where).orderBy(sql`${creditTransactions.createdAt} desc`).limit(pageSize).offset((page - 1) * pageSize),
     db.select({ n: sql<number>`count(*)` }).from(creditTransactions).where(where),
-  ])
-  return { items, total: Number(cnt!.n) }
+  )
 }
 
 // 余额核对：缓存 credit_balances vs Σ流水（单用户版对账，复用 spec306 思路）。

@@ -3,13 +3,14 @@ import { getDb } from "../../db/client"
 import { adminUsers, adminAuditLogs, type AdminRole } from "../../db/schema"
 import { writeAudit } from "../audit"
 import { hashPassword } from "../admin-auth"
+import { pagedResult } from "../../lib/pagination"
 
 // 系统页服务（spec310）：运营账号/角色 CRUD + 审计日志查询（admin_users/admin_audit_logs，spec309 表）。
 export async function listAdmins(opts: { page?: number; pageSize?: number }) {
   const db = getDb()
   const page = opts.page ?? 1
   const pageSize = opts.pageSize ?? 20
-  const [items, [cnt]] = await Promise.all([
+  return pagedResult(
     db
       .select({ id: adminUsers.id, username: adminUsers.username, role: adminUsers.role, status: adminUsers.status, createdAt: adminUsers.createdAt })
       .from(adminUsers)
@@ -17,8 +18,7 @@ export async function listAdmins(opts: { page?: number; pageSize?: number }) {
       .limit(pageSize)
       .offset((page - 1) * pageSize),
     db.select({ n: sql<number>`count(*)` }).from(adminUsers),
-  ])
-  return { items, total: Number(cnt!.n) } // 不返回 passwordHash
+  ) // 不返回 passwordHash
 }
 
 export async function createAdminAccount(input: { username: string; role: AdminRole; password: string }, opts: { operator: string }) {
@@ -53,9 +53,8 @@ export async function listAuditLogs(opts: { operator?: string; action?: string; 
   if (opts.from) conds.push(gte(adminAuditLogs.createdAt, opts.from))
   if (opts.to) conds.push(lte(adminAuditLogs.createdAt, opts.to))
   const where = conds.length ? and(...conds) : undefined
-  const [items, [cnt]] = await Promise.all([
+  return pagedResult(
     db.select().from(adminAuditLogs).where(where).orderBy(sql`${adminAuditLogs.createdAt} desc`).limit(pageSize).offset((page - 1) * pageSize),
     db.select({ n: sql<number>`count(*)` }).from(adminAuditLogs).where(where),
-  ])
-  return { items, total: Number(cnt!.n) }
+  )
 }

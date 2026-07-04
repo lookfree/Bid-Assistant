@@ -17,7 +17,7 @@ const DEV_PLACEHOLDER_PASSWORD = "ChangeMe-dev-only"
 
 // 首个 superadmin（账号/口令从 env 注入；缺省用开发占位）。
 // 生产环境拒绝用占位口令建全权账号——否则 well-known 凭据可被任何知道本仓库的人接管整个后台。
-export async function seedSuperadmin(env: { ADMIN_BOOTSTRAP_USERNAME?: string; ADMIN_BOOTSTRAP_PASSWORD?: string }): Promise<void> {
+export async function seedSuperadmin(env: { ADMIN_BOOTSTRAP_USERNAME?: string; ADMIN_BOOTSTRAP_PASSWORD?: string }): Promise<string> {
   const username = env.ADMIN_BOOTSTRAP_USERNAME ?? "admin"
   const password = env.ADMIN_BOOTSTRAP_PASSWORD ?? DEV_PLACEHOLDER_PASSWORD
   if (process.env.NODE_ENV === "production" && password === DEV_PLACEHOLDER_PASSWORD) {
@@ -27,4 +27,5 @@ export async function seedSuperadmin(env: { ADMIN_BOOTSTRAP_USERNAME?: string; A
     .insert(adminUsers)
     .values({ username, passwordHash: await hashPassword(password), role: "superadmin" })
     .onConflictDoNothing({ target: adminUsers.username })
+  return username // 供 bootstrap 日志用，避免各处重复默认值
 }

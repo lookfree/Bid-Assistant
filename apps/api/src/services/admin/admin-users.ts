@@ -3,6 +3,7 @@ import { getDb } from "../../db/client"
 import { users, subscriptions, userIdentities } from "../../db/schema"
 import { adminAdjust, getBalance } from "../credits"
 import { writeAudit } from "../audit"
+import { pagedResult } from "../../lib/pagination"
 
 // 用户页服务（spec310）：列表/搜索/详情/封禁解封/手动调积分。
 // 注意：C 端 users 无 email 字段——搜索匹配 nickname 或 user_identities.identifier（手机/微信）。
@@ -20,11 +21,10 @@ export async function listUsers(opts: { q?: string; page?: number; pageSize?: nu
         ),
       )
     : undefined
-  const [items, [cnt]] = await Promise.all([
+  return pagedResult(
     db.select().from(users).where(where).orderBy(users.createdAt).limit(pageSize).offset((page - 1) * pageSize),
     db.select({ n: sql<number>`count(*)` }).from(users).where(where),
-  ])
-  return { items, total: Number(cnt!.n) }
+  )
 }
 
 export async function getUserDetail(id: string) {

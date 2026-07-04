@@ -6,11 +6,10 @@ import { closeDb } from "../db/client"
 //   用法：bun run admin:bootstrap
 async function main() {
   await seedAdminRoles()
-  await seedSuperadmin({
+  const username = await seedSuperadmin({
     ADMIN_BOOTSTRAP_USERNAME: process.env.ADMIN_BOOTSTRAP_USERNAME,
     ADMIN_BOOTSTRAP_PASSWORD: process.env.ADMIN_BOOTSTRAP_PASSWORD,
   })
-  const username = process.env.ADMIN_BOOTSTRAP_USERNAME ?? "admin"
   console.log(`✓ admin bootstrap 完成：角色权限集就绪，首个 superadmin='${username}'（已存在则跳过）`)
   await closeDb()
 }
