@@ -8,6 +8,12 @@ import { makeSmsCodeService, type SmsLimits } from "./services/sms-code"
 import { createCaptchaVerifier } from "./services/captcha"
 import { createWechatOAuthClient } from "./services/wechat-oauth"
 import { makeWechatAuth } from "./services/wechat-auth"
+import { startCronRunner } from "./services/cron"
+import { sqbCheckinJob } from "./services/payment/terminal"
+import { getPayment } from "./services/payment"
+import { paymentOrderSweepJob } from "./services/payment-orders"
+import { renewalCronJobs } from "./crons/renewal"
+import { creditExpireCronJob, ledgerAuditCronJob, reconcileCronJob } from "./crons/billing"
 
 const env = getEnv()
 
@@ -42,10 +48,25 @@ const app = createApp({
   },
 })
 
-// 优雅关闭：归还 DB 连接池与 Redis 连接，避免重启/热重载泄漏。
+// Cron 注册（分布式锁保集群单实例执行）：
+// - 支付两个 job（每日签到 + 滞留单扫描）：gate 与路由同源 getPayment（不半开），缺凭据静默跳过；
+// - 订阅状态推进：不依赖支付凭据，始终注册；
+// - 到期提醒：通知渠道（短信模板/站内信）就绪后经 renewalCronJobs({ notify }) 接通——
+//   无渠道不注册并在 renewalCronJobs 内告警（console 假发送会白耗去重档位，review-followups spec305 C10）。
+const payment = getPayment()
+const cron = startCronRunner([
+  ...(payment ? [sqbCheckinJob(payment.terminal), paymentOrderSweepJob(payment.provider), reconcileCronJob({ provider: payment.provider })] : []),
+  ...renewalCronJobs(),
+  creditExpireCronJob(), // 积分过期：不依赖支付凭据，始终注册（spec306）
+  ledgerAuditCronJob(), // 账本审计+孤儿 hold 清扫+卡死退款扫描：同样不依赖支付凭据（spec306）
+])
+
+// 优雅关闭：先停 Cron 并等在途 tick 收尾，再归还 DB/Redis/S3 连接（顺序错了在途 tick 会打在已断连接上）。
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, () => {
-    void Promise.allSettled([closeDb(), closeRedis(), closeS3()]).finally(() => process.exit(0))
+    void (cron?.stopAll() ?? Promise.resolve())
+      .then(() => Promise.allSettled([closeDb(), closeRedis(), closeS3()]))
+      .finally(() => process.exit(0))
   })
 }
 

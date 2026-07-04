@@ -78,6 +78,55 @@
       "when": 1783054624577,
       "tag": "0010_hold_settlement_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1783069851813,
+      "tag": "0011_payment_order_credits_snapshot",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1783069852813,
+      "tag": "0012_payment_sweep_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1783069853813,
+      "tag": "0013_renewal_reminders",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1783069854813,
+      "tag": "0014_subscription_uq_cycle_snapshot",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1783069855813,
+      "tag": "0015_reconcile_diffs",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1783069856813,
+      "tag": "0016_refunds_cascade",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1783069857813,
+      "tag": "0017_reconcile_hardening",
+      "breakpoints": true
     }
   ]
 }

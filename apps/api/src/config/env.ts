@@ -67,6 +67,17 @@ const schema = z.object({
 
   // —— Agent Service（内部 REST，App 编排读标/后续全流程调它）——
   AGENT_BASE_URL: z.string().url().default("http://localhost:8090"),
+
+  // —— 收钱吧支付（凭据缺失时支付路由不挂载/签到 Cron 不注册；全走 env 不入库不进 git）——
+  SQB_GATEWAY: z.string().url().default("https://vsi-api.shouqianba.com"),
+  SQB_VENDOR_SN: z.string().optional(),
+  SQB_VENDOR_KEY: z.string().optional(),
+  SQB_APP_ID: z.string().optional(),
+  SQB_ACTIVATION_CODE: z.string().optional(),
+  SQB_DEVICE_ID: z.string().optional(),
+  SQB_PUBLIC_KEY: z.string().optional(), // 收钱吧回调验签公钥（PEM，\n 转义存放）
+  TERMINAL_KEY_SECRET: z.string().optional(), // terminal_key 落库 AES 密钥
+  PAYMENT_NOTIFY_BASE_URL: z.string().url().optional(), // 回调/返回地址的公网基址
 })
 
 export type Env = z.infer<typeof schema>

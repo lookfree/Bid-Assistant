@@ -203,7 +203,7 @@
 
 | # | 位置 | 问题 | 状态 | 说明 |
 |---|---|---|---|---|
-| C1 | 孤儿 hold 清扫 | 进程被杀（kill -9）在 hold 与了结之间 → 冻结积分无人回收 | **deferred → spec306** | 对账 Cron 加「扫无了结行且超时 X 的 hold → 自动 release」；有了结唯一索引后清扫绝对安全 |
+| C1 | 孤儿 hold 清扫 | ~~进程被杀在 hold 与了结之间 → 冻结积分无人回收~~ | **done（spec306）** | releaseOrphanHolds：扫 >24h 无了结 hold 自动 release + orphan_hold 差异留痕；ledger-audit Cron 每日跑（不依赖支付凭据） |
 | C2 | 用量→积分换算口径 | settle v1 按操作口径全额结算；agent_token_usage 真实用量换算待商业定价（如 token_credit_rate）定义 | deferred | 定价定稿后编排层改传真实用量即启用多退少补（机制已就绪并有测试） |
 
 ## spec303 · code-review（review 于 2026-07，Cron 调度器——billing job 的互斥地基）
@@ -214,3 +214,47 @@
 |---|---|---|---|---|
 | C3 | 入口停机顺序 | spec305/306 在 worker/api 入口接 startCronRunner 时，SIGTERM 须按 `stopAll() → await drain → closeRedis()` 收尾；乱序会让在途 tick 的释放/续租打在已断连接上（锁悬 300s）或 getRedis() 惰性重建连接 | **deferred → spec305/306 接线时** | stop 已返回 drain Promise，机制就绪，只差入口按序调用 |
 | L5 | cron 测试计时 | 真实计时器 + 毫秒级 sleep（watchdog 用例 ~2.3s、tick 用例 75ms 窗口断言 ≥2）；bun:test 假计时器支持不全，暂用真时 | accepted | 立即首跑已给阈值留足余量；CI 若出现 flake 再收紧（拉长窗口/注入续租间隔） |
+
+## spec304 · 实现留档（2026-07，收钱吧支付——Task 1–3 已完成，Task 4 真实冒烟待办）
+
+api 入口已按 C3 顺序接线（`startCronRunner([sqb-checkin]) → SIGTERM 时 stopAll → drain → close`）。两处有据可依的契约偏差：① **`payment_orders` 加列 `credits_snapshot`（迁移 0011）**——spec301 字段清单/规格文档无此列，但 spec300-index 资金约束要求「充值到账以命中 pack 的 credits 为准（**下单时快照**）」；回调可能在运营改充值包之后才到，无快照列则只能按当前配置反查 = 违背约束。会员单（purchase/renewal）此列为 NULL，spec308 按套餐发当期积分。② **`PaymentResult` 加 `totalAmountCents`**——计划 Interfaces 的契约无此字段，但「markPaid 前必须校验实付==订单快照」是铁律，查询/回调返回的实付金额必须能穿透 Provider 抽象。留档：
+
+| # | 位置 | 问题 | 状态 | 说明 |
+|---|---|---|---|---|
+| C4 | Task 4 真实冒烟 | ~~端点/字段按公开资料固化，本地无文档可核对~~ | **done（2026-07-04 生产冒烟）** | 1 分钱端到端实证通过（激活 terminal_sn=100108240056336528→precreate 出码→支付宝付→query paid→refund→query refunded）。**修了两个 bug**：① 产品用错——C 扫 B 应走 `/upay/v2/precreate`（返回 qr_code），非 WAP2 跳转网关；② `client_sn` 40 字符超收钱吧 32 上限，每单必被拒。commit 34d8714。/upay/v2/query、/upay/v2/refund、/terminal/activate 端点与响应字段实证正确无需改。payway 必填整数（1 支付宝/3 微信）→ /recharge、/renew 加 payway 参数 |
+| C5 | 金额不符订单滞留 | ~~amount_mismatch 不改状态，订单留 created 等对账~~ | **superseded（本轮 review 修复）** | spec306 明文不扫 created——留 created 即对账盲区。现 markPaid 对 mismatch/missing 一律置 unknown 进对账队列（见下方 spec304 code-review 段③） |
+
+## spec304 · code-review（review 于 2026-07，钱从严——收钱吧支付全链路；8 角度含安全对抗）
+
+背景：本 spec 初稿由越权 agent 产出，经用户确认走完整验收。安全对抗角度确认主攻击面 fail-closed（原文 RSA 验签/跨单重放被金额校验挡死/IDOR/服务端定价/GCM 随机 IV+验 tag/无密钥入日志）。修复六类资损路径：① **markPaid 的条件 UPDATE 与 grant 收进单事务**（4 角度交叉命中）——原实现 UPDATE 赢了之后 grant 抛错/进程被杀 → 订单 paid 但积分永远没发，且回调重试/轮询全被 already_final 短路、spec306 对账（paid==paid 金额也符）对此完全不可见；现在 grant 失败连状态一起回滚，任何通道重试都能重新驱动。② **paid 状态机起点扩为 created+unknown**——窗口尽头置 unknown 后迟到的 PAID 回调原来被 ack success 后丢弃（用户第 7 分钟扫码即中招）。③ **金额校验从「有金额才校验」改为「缺金额不入账」**，mismatch/missing 一律置 unknown 进对账队列并告警（原来只有一条 stderr，订单滞留 created——spec306 明文不扫 created）。④ **payment-order-sweep Cron**（每分钟扫超窗 created 单 → 问通道终态 → 补入账/关单/置 unknown）——进程重启会孤儿化 fire-and-forget 的 pollUntilFinal，这是它的结构性兜底。⑤ 配置消毒：recharge_packs 金额/积分必须正整数（credits:0 的包会「收钱不发积分」且原 >0 守卫让它静默 no-op）、payment_poll 非正数回落官方默认（fastSeconds=0 = 打爆网关的死循环）。⑥ 装配统一 getPayment() 单点（gate 含 PAYMENT_NOTIFY_BASE_URL，原来缺公网基址会签出相对路径 notify_url——回调永远到不了的半开态）；provider.parseCallback/notifyPath 收口线格式；terminal_key KDF 裸 SHA-256→scrypt；scripts/activate-terminal.ts 补运营激活入口（原来 activate() 是零调用死代码，全新环境支付必 500）。留档：
+
+| # | 位置 | 问题 | 状态 | 说明 |
+|---|---|---|---|---|
+| C6 | 退款护栏 | ~~provider.refund 裸传输无护栏~~ | **done（spec306）** | createRefund：行锁下 paid 前置 + 累计（含 pending）≤ 订单额 + renewal 拒退转人工（C9）+ 扣回超余额需确认；refundSn=refunds.id 通道幂等 |
+| C7 | 充值积分有效期 | 未读任何 *_expire_days，充值积分永不过期（expire_at NULL） | **decision（记录在案）** | billing-seed 无 purchase_expire_days 口径；grant/reward_expire_days 语义是赠送/奖励积分。「买的积分不过期」为当前产品决策；若定价改口需新增口径并只对新入账生效（append-only 不可回填） |
+| C8 | 入口停机 drain | SIGTERM 只 drain Cron tick，不 drain 在途 HTTP/poll；轮询孤儿已由扫单 Cron 结构性兜底 | accepted | 轮询丢失的单 ≤1 分钟内被 sweep 接管；HTTP 在途属 Bun serve 生命周期，Phase 4 部署课题 |
+| L6 | X-Forwarded-For | 跳转支付由顾客手机直连收钱吧，天然满足监管透传；服务端 query/refund 无顾客 IP 语义 | accepted | 计划自述「天然满足」，无需代码 |
+
+## spec305 · code-review（review 于 2026-07，钱从严——续费闭环；8 角度含安全对抗）
+
+修复六类问题：① **订阅行串行化**（4 角度交叉命中）——subscriptions 无 unique(user_id) 且 renewOnPaid 无行锁：并发两笔续费（不同订单，markPaid 单赢家只防同一单的双通道）读同一 base 双写同一个 +1 周期 → 付两周期得一周期（账本上两笔 grant 都在，资损不可见）；无订阅行时并发双 INSERT → 双活跃订阅。深修：unique(user_id)（迁移 0014，先清重复行）+ upsert 占位 + FOR UPDATE（spec302 lockUserBalanceRow 同款）；并发回归测试断言周期叠加 +2 月。② **权益快照**（3 角度）——只快照了价格，billingCycle/grantCreditsPerCycle 结算时实时读：运营改配置后旧价单拿新权益（年费改月费=付年价得一月，反向=套利）。深修：下单锁定全量「这笔钱买什么」（amountCents/cycleSnapshot/creditsSnapshot），结算只认快照；缺快照存量单回退+告警。③ **markPaid 按类型显式分发**——原来 recharge 分支按 creditsSnapshot 字段触发、renewal 按 type 触发，一张带快照的 renewal 单会被 purchase:/renewal: 两键各记一次=双发；createOrder 加类型不变式（renewal 必带 planId、recharge 禁带）。④ **提醒可靠性**——notify 无逐条隔离（一个坏号毒死整轮且档位被白耗）→ try/catch + 补偿删除去重行（下轮重试）；renewal_reminder_days 无形状校验（标量会 TypeError 永久断提醒）→ Array.isArray 回落；addMonths 本地时区运算（部署时区不同周期末漂移一天）→ 全 UTC。⑤ **反滥用**——/renew /recharge 开放单上限 5（每单=网关调用+6 分钟轮询，无限建单是对通道配额的放大攻击）；订单可支付窗 7 天（unknown 非终态是给真实迟到回调的门，不能变成囤旧价单等涨价的套利门；通道侧 4 分钟单有效期是第一道防线）。⑥ 扫单对持续结算失败（数据事故类）升级 unknown 进对账，不再每分钟空转到永远。留档：
+
+| # | 位置 | 问题 | 状态 | 说明 |
+|---|---|---|---|---|
+| C9 | spec306 退款 × 续费 | renewal 单退款只回扣积分不回退周期 = 退钱留会员 | **deferred → spec306** | spec306 计划已加决策口：默认 renewal 单拒绝自动退款转人工（保守），量起来再做周期回退 |
+| C10 | 提醒通知渠道 | renewal-remind Cron 未注册——短信模板（阿里云需申请续费提醒模板）/站内信未就绪；console 假发送会白耗去重档位故不上 | **deferred（等模板）** | 渠道就绪后入口 `renewalCronJobs({ notify })` 一行接通；启动时有告警日志提示未注册 |
+| L7 | 提醒 at-most-once 窄窗 | 「落去重行后、notify 前」进程崩溃会漏发该条（宁可漏一条不重复骚扰） | accepted | notify 运行时失败已有补偿删除重试；崩溃窄窗的彻底解需 outbox，当前量级不值 |
+| L8 | markPaid 双查订单 | notify/sweep 调用方已持订单行，markPaid 再按 PK 查一次 | accepted | PK 查询开销可忽略；传行参数增加 API 面（Simplicity First） |
+
+## spec306 · code-review（review 于 2026-07，钱从严——对账/退款/过期；8 角度）
+
+修复核心：① **退款歧义结果语义**（4 角度交叉命中最高危）——通道调用抛错（网络超时）时钱可能已退，原实现标 failed 且 failed 不占累计额度，重试会建新 refunds 行=新 refundSn，通道视为另一笔退款照付=**双退真钱**。深修：抛错保持 pending（占额度挡住重试）→ scanStuckRefunds 落 refund_stuck 差异转人工核对通道；只有通道明确 ok:false 才 failed。② **累计比例扣回**——逐笔按全额基数取整会放大误差（3 积分退两次 50% 被扣 4）；改为「目标=round(总入账×累计退款比例)−已扣回」。③ 部分退款不再翻转订单（退满才 refunded），剩余额度可继续退。④ 扣回超当前余额（用户已消费）默认拒绝，操作员携 allowNegativeBalance 确认后放行（防"花光再退款"白嫖无感知）。⑤ 对账加固：refunded 单核对通道退款态（退款没到通道原来每天静默过账）；对账窗拓宽到 7 天可支付窗（D 日建单 D+n 日才结算的单原来永远不落任何窗口）；unknown→failed 收敛加 24h 账龄（给迟到 PAID 留门）+ notify 对终态单收到 PAID 告警；差异去重下沉 DB 部分唯一索引 (diff_type,subject) WHERE open（并发不双记、持久问题不逐日重复落、孤儿 hold 按 holdId 各留痕）；账本审计候选复查后再落（双查询快照竞态假告警）。⑥ 职责拆分：ledger-audit Cron（审计+孤儿清扫+卡死退款扫描，三段隔离）**不依赖支付凭据始终注册**——原来被 getPayment gate 连坐，无凭据环境 C1 修复静默失效。⑦ markPaid 加 allowStale（spec310 修复 unknown_paid 专用——7 天防囤单护栏原来把对账要修的单也堵死）。留档：
+
+| # | 位置 | 问题 | 状态 | 说明 |
+|---|---|---|---|---|
+| C11 | 通道错误分类 | isBizQueryRejection 按抛错前缀「收钱吧查询失败」区分业务拒绝/网络抖动；refund_stuck 的人工核对亦需线上「退款查询」口径 | **deferred → Task4 冒烟校准** | 真实网关错误码拿到后收紧分类（误判方向是安全的：网络类不落 diff 只重试） |
+| C12 | 告警渠道 | 对账/审计差异 alertHook 默认 console.error，生产日志无人盯≈静默；unknown_paid 是「钱收了账没入」 | **deferred → spec310** | spec310 admin 后台是差异消费口；渠道就绪前每日 cron 日志有 diffs 计数 |
+| C13 | 账户注销 × 资金记录 | users 级联删会连坐 payment_orders/refunds（真实出入账记录）；当前仅测试删用户 | **deferred → 注销流程（Phase 4）** | 产品化注销必须先归档/匿名化资金记录再删行，不动 FK（reconcile_diffs 无 FK 已可幸存） |
+| C14 | spec310 契约缺口 | reconcile_diffs 有 resolved 列/open 索引，但 spec310 计划无差异列表页/resolve API/unknown_paid 修复入口（markPaid allowStale） | **deferred → spec310（计划已补注）** | 见 spec310 计划头部「实现契约核对」 |
+| L9 | 对账吞吐 | runReconcile 逐笔串行问通道（对通道限速友好）；auditLedger 全表两查询入内存 | accepted | 日单量到千级再上有界并发；用户到 10^5 再改 SQL JOIN 只回不一致行 |
+| L10 | >24h 长任务 hold | 孤儿清扫会退还超 24h 在途 hold，迟到 settle 被唯一索引吞掉=该次用量免费（非双记） | accepted | 编排任务分钟级收尾，24h 余量充足；若未来引入长任务需调 maxAgeMs |

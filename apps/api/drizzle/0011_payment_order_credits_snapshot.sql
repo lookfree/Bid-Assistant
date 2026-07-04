@@ -1,0 +1,2 @@
+ALTER TABLE "payment_orders" ADD COLUMN "credits_snapshot" integer;--> statement-breakpoint
+ALTER TABLE "payment_orders" ADD CONSTRAINT "payment_orders_credits_nonneg" CHECK ("payment_orders"."credits_snapshot" is null or "payment_orders"."credits_snapshot" >= 0);

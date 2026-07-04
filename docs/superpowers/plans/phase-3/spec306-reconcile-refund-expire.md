@@ -11,7 +11,7 @@
 
 **Architecture:**
 - **对账**：每日 `registerCron("reconcile", 1 天)` 调对账 job 体。job 扫当日（含 `unknown` 态存量）`payment_orders`，逐笔 `provider.query(clientSn)` 取收钱吧终态（`{sn, tradeNo, amountCents, status}`），比对**金额**与**状态**；差异（金额不符/状态不符/查无此单/本地 unknown 而通道已付）写入 **`reconcile_diffs` 表**并触发**告警钩子**（`alertHook`，默认 console.error，可注入）。积分账本独立审计：抽样/全量校验 `credit_balances.balance === Σ credit_transactions.amount`，不一致也落 diff。**对账只读不改账**（差异交由人工/退款流程处置），保证幂等可重复跑。
-- **退款**：本 spec 只产出 `createRefund(input, deps)` **service**（不建路由）。**退款唯一入口收口到 spec310 `POST /admin-api/refunds`（过 admin RBAC + 审计），由 spec310 取 admin 会话的 `operator` 传入并调用本 service。** 流程：①事务内建 `refunds(pending)` 并校验订单为 `paid`、退款额 ≤ 订单额；②调 `provider.refund({tradeNo, amountCents, outRequestNo})`；③成功 → `refunds.status=done` + `payment_orders.status=refunded` + （若该订单曾入账积分）写**负向 `refund_clawback` 积分流水**扣回；④失败 → `refunds.status=failed`。整个动作走**审计**（operator + 前后值）：service 内把 `operator` 落 `refunds` + 占位 audit；正式审计装置在 spec310 入口侧（admin RBAC + 审计）落地。
+- **退款**：本 spec 只产出 `createRefund(input, deps)` **service**（不建路由）。**退款唯一入口收口到 spec310 `POST /admin-api/refunds`（过 admin RBAC + 审计），由 spec310 取 admin 会话的 `operator` 传入并调用本 service。** 流程：①事务内建 `refunds(pending)` 并校验订单为 `paid`、退款额 ≤ 订单额；②调 `provider.refund({clientSn, refundSn, amountCents})`（refundSn=refunds.id，通道侧幂等）；③成功 → `refunds.status=done` + `payment_orders.status=refunded` + （若该订单曾入账积分）写**负向 `refund_clawback` 积分流水**扣回；④失败 → `refunds.status=failed`。整个动作走**审计**（operator + 前后值）：service 内把 `operator` 落 `refunds` + 占位 audit；正式审计装置在 spec310 入口侧（admin RBAC + 审计）落地。
 - **过期**：每日 `registerCron("credit_expire", 1 天)` 调 `credits.expireDue(now)`（spec302 已实现 FIFO 先过期先扣 + `expire:<grantId>` 幂等），写 `expire` 流水。Cron 体只是薄封装 + 日志。
 
 **Tech Stack:** Hono 4.12、Bun、Drizzle ORM、PostgreSQL（事务）、Zod、Redis（Cron 锁，经 spec303）、bun:test。
@@ -57,17 +57,19 @@ apps/api/test/
 - spec303 Cron（契约以 spec303 为准）：`registerCron(name: string, everyMs: number, jobFn: () => Promise<void>, opts?): { stop: () => Promise<void> }`（注册时立即首跑一次 tick，重复触发由业务幂等键去重；stop 返回在途 tick 的 drain Promise，停机须 await 后再 closeRedis）；`withCronLock<T>(name: string, fn: () => Promise<T>): Promise<T | undefined>`（`registerCron` 内部已用 `withCronLock` 包裹保证分布式单例，未抢到锁时跳过；本 spec 直接用 `registerCron`，拿到的 `{ stop }` 句柄用于关停，job 体单独导出供测试直调）。
 - spec302 账本：`credits.expireDue(now: Date) -> Promise<number>`；`credits.grant(userId, amount, opts)`（退款扣回积分用负向 amount，`type: "refund_clawback"`，spec301 已登记；**不借 spec302 的 `release`**——`release` 是 hold 退还净 0 语义，见 Task 2）。
 - spec304 支付：`PaymentProvider` 接口（含 `query`/`refund`）。本 spec **不另起一套** provider 接口，直接复用 spec304 的类型：
-  - `query(clientSn: string) -> Promise<{ status: "paid" | "failed" | "pending"; sn?: string; tradeNo?: string; payway?: string; amountCents?: number }>`（spec304 定义；对账补充消费 `amountCents` 字段做金额核对）。对账侧用 `Pick<PaymentProvider, "query">` 收窄，不自建 provider 接口。**收钱吧无账单拉取 API（以官方文档为准）——对账采用"逐笔查询核对"**；如后续开通商户后台对账单导出，再加可选的账单文件比对路径，`runReconcile` 签名不变。
-  - `refund(opts: { clientSn: string; refundSn: string; amountCents: number }) -> Promise<{ ok: boolean; error?: string }>`（spec304 已声明；refundSn 幂等）。
+  - `query(clientSn: string) -> Promise<PaymentResult>`（spec304 定义，字段 `totalAmountCents?: number` 为通道实付金额（分），对账用它做金额核对）。对账侧用 `Pick<PaymentProvider, "query">` 收窄，不自建 provider 接口。**收钱吧无账单拉取 API（以官方文档为准）——对账采用"逐笔查询核对"**；如后续开通商户后台对账单导出，再加可选的账单文件比对路径，`runReconcile` 签名不变。
+  - `refund(opts: { clientSn: string; refundSn: string; amountCents: number }) -> Promise<{ ok: boolean }>`（spec304 实契约；refundSn 幂等）。
 - 表（spec301）：`paymentOrders`（含 `clientSn/providerTradeNo/status(created/paid/failed/unknown/refunded)`）、`refunds`、`creditTransactions`、`creditBalances`。（无 `paymentAgreements`——不做自动续费）
 
-**产出（供 spec310 运营后台 / 告警消费）：**
-- `reconcileDiffs` 表对象。
-- `runReconcile(date: string, deps: { provider, alertHook? }) -> Promise<{ checked: number; diffs: number }>`（对账 job 体，可直调测试）。
-- `auditLedger() -> Promise<Array<{ userId: string; cached: number; actual: number }>>`（积分账本审计，返回不一致项）。
-- `createRefund(input: { orderId; amountCents; reason; operator }, deps: { provider }) -> Promise<{ refundId; status }>`（退款编排 service，可直调测试 + **被 spec310 `POST /admin-api/refunds` 调用**；本 spec 不建自有路由）。
-- `expireCreditsJob()`（过期 job 体）。
-- Cron 注册：`registerReconcileCron(deps)`、`registerCreditExpireCron()`。
+**产出（已按实现+review 定稿，本节即真实契约）：**
+- `reconcileDiffs` 表：diff_type ∈ {amount_mismatch, status_mismatch, unknown_paid, provider_missing, ledger_mismatch, orphan_hold, refund_stuck}；`subject` 列为去重主体（订单类=tradeNo、账本类=userId、孤儿=holdId、退款类=refundId），部分唯一索引 (diff_type, subject) WHERE resolved='open'——同问题只保留一行 open，人工 resolve 后再次检出才开新行。
+- `runReconcile(date, { provider, alertHook? }) -> { checked, diffs }`：扫 [date−7天, date+1天) 已结算单（7 天=可支付窗，晚结算单不漏）+ 全量存量 unknown；本地 refunded 也核对通道退款态；unknown 满 24h 且通道明确失败才收敛 failed（迟到 PAID 留门）。
+- `auditLedger(date?, alertHook?)`：余额 vs Σ流水双向核对，候选复查后落 diff（防在途交易假告警）。
+- `releaseOrphanHolds(now?, { maxAgeMs?, alertHook? })`：spec302 C1——>24h 无了结 hold 自动 release + orphan_hold 留痕（release 真插入才计）。
+- `scanStuckRefunds(now?, { maxAgeMs?, alertHook? })`：pending 超 1h 的退款单落 refund_stuck 转人工（**不自动重试**——换 refundSn 重试是通道双退路径）。
+- `createRefund({ orderId, amountCents, reason, operator, allowNegativeBalance? }, { provider }) -> { refundId, status: "done"|"failed"|"pending" }`：**pending=通道结果不明**（网络异常，占累计额度挡重试，待人工）；部分退款订单留 paid、退满才 refunded；扣回按累计比例；扣回超余额需 allowNegativeBalance。仅 spec310 `POST /admin-api/refunds` 调用。
+- Cron（`crons/billing.ts`，spec303 CronJob 工厂风格，startCronRunner 注册）：`creditExpireCronJob()` 与 `ledgerAuditCronJob({alertHook?})`（审计+孤儿+卡死退款，三段隔离）**始终注册**；`reconcileCronJob({provider, alertHook?})` 走 getPayment gate。job 体 `expireCreditsJob/ledgerAuditJob/reconcileJob` 均可直调测试。
+- unknown_paid 修复：spec310 人工确认后调 `markPaid(orderId, info, { allowStale: true })` 幂等补入账。
 
 ---
 
@@ -416,8 +418,9 @@ test("拒绝非法退款：订单非 paid / 超额", async () => {
 
 要点：
 - 入参 Zod 校验：`{ orderId: uuid, amountCents: int>0, reason: string, operator: string }`。
+- **type=renewal 单退款须同时处置订阅周期**（spec305 后 renewal 结算会顺延 current_period_end 并可复活状态）：只回扣积分不回退周期=退钱留会员。实现时二选一并落审计：①全额退款 → 周期回退一档（current_period_end 减一周期快照、必要时状态回落）；②仅允许人工处置（service 拒绝 renewal 单自动退款，转人工）。默认取 ②（保守），运营量起来再做 ①。
 - ①事务建 `refunds(pending)` + 校验：订单存在且 `status==="paid"`；`amountCents <= order.amountCents`（不满足抛错，不建 provider 调用）。
-- ②`out_request_no = refunds.id`（退款幂等键，同一退款重试不重复退）。调 `deps.provider.refund({ tradeNo: order.providerTradeNo, amountCents, outRequestNo })`。
+- ②`refundSn = refunds.id`（退款幂等键，同一退款重试不重复退）。调 `deps.provider.refund({ clientSn: order.clientSn, refundSn, amountCents })`（spec304 实契约：按我方订单号 client_sn 退款）。
 - ③成功（`ok`）：事务内 `refunds.status=done` + `payment_orders.status=refunded` + 若该订单曾入账积分（按 `ref===order.id` 查 `purchase/grant` 正向流水之和 > 0）则写**负向流水** `type:"refund_clawback"`（spec301 已登记的新类型，负向注销充值积分；**不借 `release`**，`release` 是 spec302 的 hold 退还净 0 语义）`amount: -clawback`（`idempotencyKey: refund_clawback:${refundId}`，幂等）。
 - ④失败：`refunds.status=failed`，不动订单/积分/协议。
 - **审计**：成功/失败都写审计（operator + 前值后值）。spec309 审计装置就绪则调 `audit.log({ operator, action:"refund", orderId, before, after })`；未就绪先留 `operator` 字段写进 `refunds` + 顶部 `TODO(spec309): 接 admin_audit_logs 审计装置`。
@@ -435,7 +438,7 @@ function auditLog(entry: { operator: string; action: string; orderId: string; be
 }
 
 export interface RefundProvider {
-  refund(args: { tradeNo: string; amountCents: number; outRequestNo: string }): Promise<{ ok: boolean; refundedCents?: number; error?: string }>;
+  refund(args: { clientSn: string; refundSn: string; amountCents: number }): Promise<{ ok: boolean }>; // spec304 实契约
 }
 
 const InputSchema = z.object({
@@ -468,7 +471,7 @@ export async function createRefund(
   // ② 调 provider（out_request_no = refundId，幂等）
   let result: { ok: boolean; refundedCents?: number; error?: string };
   try {
-    result = await deps.provider.refund({ tradeNo: order.providerTradeNo!, amountCents: input.amountCents, outRequestNo: refundId });
+    result = await deps.provider.refund({ clientSn: order.clientSn, refundSn: refundId, amountCents: input.amountCents });
   } catch (e) {
     result = { ok: false, error: (e as Error).message };
   }
@@ -648,16 +651,17 @@ test("reconcileJob：对账昨日并跑账本审计（mock provider）", async (
 
 - [ ] **Step 3: startup 接线**
 
-在 App 启动处（spec303 的 cron 初始化旁）调 `registerReconcileCron({ provider: getPaymentProvider() })` 与 `registerCreditExpireCron()`。provider 须是实现了 `query`/`refund` 的 spec304 实例（`ShouqianbaProvider` 两者皆有，无需适配器）。
+在 App 启动处并入 spec304 已有的 `const payment = getPayment()` 装配（`services/payment`，凭据不齐返回 undefined 整体跳过——不得绕过该 gate 半开）：payment 存在才注册 `registerReconcileCron({ provider: payment.provider })`；`registerCreditExpireCron()` 不依赖 provider，独立注册。
 
 ```typescript
 // apps/api/src/index.ts（或 cron 聚合 registerAllCrons()）
 import { registerReconcileCron } from "./cron/reconcile-job";
 import { registerCreditExpireCron } from "./cron/credit-expire-job";
-import { getPaymentProvider } from "./services/payment-provider";
+import { getPayment } from "./services/payment"; // spec304 唯一装配点
 
 export function registerBillingCrons() {
-  registerReconcileCron({ provider: getPaymentProvider() });
+  const payment = getPayment();
+  if (payment) registerReconcileCron({ provider: payment.provider }); // 凭据不齐整体跳过，不半开
   registerCreditExpireCron();
 }
 ```

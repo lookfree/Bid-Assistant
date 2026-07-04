@@ -9,7 +9,7 @@ import { InsufficientCreditsError } from "./credits-errors"
 // AI 操作两段式：hold(-N 预扣) → settle(多退少补) / release(全额退还)；全部带幂等键（DB 唯一约束兜底）。
 // 钱只在 App 层动；智能体只上报 usage（§3.2）。
 
-type Tx = Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0]
+export type Tx = Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0]
 
 /** Σ流水（事务内外通用）。 */
 async function sumBalance(dbOrTx: Tx | ReturnType<typeof getDb>, userId: string): Promise<number> {
@@ -26,17 +26,23 @@ async function lockUserBalanceRow(tx: Tx, userId: string): Promise<void> {
   await tx.execute(sql`select 1 from ${creditBalances} where ${creditBalances.userId} = ${userId} for update`)
 }
 
-/** 余额 = Σ流水；顺带刷新 credit_balances 缓存。 */
-export async function getBalance(userId: string): Promise<number> {
-  const balance = await sumBalance(getDb(), userId)
-  await getDb()
+/** Σ流水并刷新 credit_balances 缓存（事务内外通用）。 */
+async function refreshBalance(dbOrTx: Tx | ReturnType<typeof getDb>, userId: string): Promise<number> {
+  const balance = await sumBalance(dbOrTx, userId)
+  await dbOrTx
     .insert(creditBalances)
     .values({ userId, balance })
     .onConflictDoUpdate({ target: creditBalances.userId, set: { balance, updatedAt: new Date() } })
   return balance
 }
 
-/** 入账：赠送/充值/推荐奖励（带有效期批次与幂等键；重复入账被唯一约束忽略）。 */
+/** 余额 = Σ流水；顺带刷新 credit_balances 缓存。 */
+export async function getBalance(userId: string): Promise<number> {
+  return await refreshBalance(getDb(), userId)
+}
+
+/** 入账：赠送/充值/推荐奖励（带有效期批次与幂等键；重复入账被唯一约束忽略）。
+ *  可传 tx 并入调用方事务（如 markPaid 的「置 paid + 入账」原子提交，失败一起回滚）。 */
 export async function grant(
   userId: string,
   amount: number,
@@ -47,9 +53,11 @@ export async function grant(
     ref?: string
     idempotencyKey: string
   },
+  tx?: Tx,
 ): Promise<void> {
   if (amount <= 0) throw new Error(`grant 金额必须为正：${amount}`) // 钱从严：入账不允许 0/负
-  await getDb()
+  const db = tx ?? getDb()
+  const inserted = await db
     .insert(creditTransactions)
     .values({
       userId,
@@ -61,7 +69,8 @@ export async function grant(
       idempotencyKey: opts.idempotencyKey,
     })
     .onConflictDoNothing({ target: creditTransactions.idempotencyKey })
-  await getBalance(userId)
+    .returning()
+  if (inserted.length > 0) await refreshBalance(db, userId) // 幂等命中账没动，跳过全表求和
 }
 
 /** 预扣：N = credit_cost.<op> 配置。事务内锁 credit_balances 用户行作串行化点，
@@ -109,15 +118,18 @@ export async function hold(
 
 /** 失败全额退还：对 holdId 写 release(+N)，净=0。幂等；holdId 非 hold 类型则 no-op。
  *  了结行 ref=holdId：部分唯一索引「每个 hold 至多一条了结（settle/release）」在 DB 层
- *  杜绝 settle+release 双返还（成功结算后异常路径再补 release 会被吞掉）。 */
-export async function release(holdId: string, opts: { idempotencyKey: string }): Promise<void> {
+ *  杜绝 settle+release 双返还（成功结算后异常路径再补 release 会被吞掉）。
+ *  返回是否真的插入了退还行（false=幂等命中/已有了结/hold 不存在——调用方按需留痕，如孤儿清扫审计）。 */
+export async function release(holdId: string, opts: { idempotencyKey: string }): Promise<boolean> {
   const [h] = await getDb().select().from(creditTransactions).where(eq(creditTransactions.id, holdId))
-  if (!h || h.type !== "hold") return
-  await getDb()
+  if (!h || h.type !== "hold") return false
+  const inserted = await getDb()
     .insert(creditTransactions)
     .values({ userId: h.userId, type: "release", amount: -h.amount, ref: holdId, idempotencyKey: opts.idempotencyKey })
     .onConflictDoNothing() // 幂等键冲突或该 hold 已有了结 → no-op
-  await getBalance(h.userId)
+    .returning()
+  if (inserted.length > 0) await getBalance(h.userId)
+  return inserted.length > 0
 }
 
 /** 结算：对 holdId(已预扣 N) 按实际用量结算，净消耗=actualCost。

@@ -2,6 +2,7 @@ import { pgTable, uuid, text, integer, index, unique, check } from "drizzle-orm/
 import { sql } from "drizzle-orm"
 import { id, createdAt, tz } from "./columns"
 import { users } from "./users"
+import { plans } from "./plans"
 
 // 支付订单（收钱吧 C 扫 B）：金额一律整数分；服务端定价快照，不信客户端金额。
 export const paymentOrders = pgTable(
@@ -19,14 +20,23 @@ export const paymentOrders = pgTable(
     providerTradeNo: text("provider_trade_no"), // 收钱吧订单号 sn
     channelTradeNo: text("channel_trade_no"), // 微信/支付宝渠道单号 trade_no
     payway: text("payway"), // 实际付款方式（对账用）
+    // 下单时快照的到账积分（recharge=充值包 credits；renewal=套餐当期赠送积分）。
+    // 回调晚到/运营改配置也按快照入账——「这笔钱买什么」在下单时刻锁定；入账按 type 分发互不重复。
+    creditsSnapshot: integer("credits_snapshot"),
+    // renewal/purchase 单：续/购的套餐 + 下单时的计费周期快照（运营改周期不影响在途单）；recharge 为 NULL
+    planId: uuid("plan_id").references(() => plans.id),
+    cycleSnapshot: text("cycle_snapshot"), // month/quarter/year
     idempotencyKey: text("idempotency_key").notNull(), // 幂等键必填（nullable+unique 会被多 NULL 绕过）
     createdAt: createdAt(),
   },
   (t) => ({
     userIdx: index("payment_orders_user_idx").on(t.userId),
     statusIdx: index("payment_orders_status_idx").on(t.status), // 对账/清算按状态扫（unknown/created）
+    // 滞留单扫描 Cron 每分钟查 status='created' AND created_at<=cutoff：部分索引精确命中
+    sweepIdx: index("payment_orders_created_sweep_idx").on(t.createdAt).where(sql`${t.status} = 'created'`),
     idemUq: unique("payment_orders_idem_uq").on(t.idempotencyKey),
     amountPositive: check("payment_orders_amount_positive", sql`${t.amountCents} > 0`), // 钱从严：DB 层拒绝非正金额
+    creditsNonNegative: check("payment_orders_credits_nonneg", sql`${t.creditsSnapshot} is null or ${t.creditsSnapshot} >= 0`),
     typeCheck: check("payment_orders_type_check", sql`${t.type} in ('recharge','purchase','renewal')`),
     statusCheck: check("payment_orders_status_check",
       sql`${t.status} in ('created','paid','failed','unknown','refunded')`),
@@ -51,7 +61,7 @@ export const refunds = pgTable(
     id: id(),
     orderId: uuid("order_id")
       .notNull()
-      .references(() => paymentOrders.id),
+      .references(() => paymentOrders.id, { onDelete: "cascade" }), // 订单随用户级联删，退款单不能比订单活得久（审计凭据在 reconcile_diffs/audit）
     amountCents: integer("amount_cents").notNull(),
     reason: text("reason"),
     status: text("status").notNull().default("pending"), // pending/done/failed

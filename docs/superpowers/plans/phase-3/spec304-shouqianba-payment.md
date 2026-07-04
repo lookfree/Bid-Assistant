@@ -2,6 +2,12 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **⚠️ 2026-07-04 真实冒烟定稿（本文档中 WAP2 相关草图已作废，以此为准）**：本商户是 **C 扫 B（顾客扫商户码）**，下单走 **`/upay/v2/precreate`**（terminal body 签名，同 query/refund），返回 `qr_code`（+ `qr_code_image_url`）给前端渲染二维码；**不是** WAP2 跳转 URL（`qr.shouqianba.com/gateway` + `wap2Sign`，对 C 扫 B 商户报参数错误）。
+> - `createPayment(opts:{clientSn, amountCents, subject, payway, notifyUrl}) -> {qrCode, qrImageUrl?}`；`payway: "alipay"|"wechat"`（→ 收钱吧整数码 1/3，前端二选一必填）。`wap2Sign`/`return_url`/WAP 网关已删。
+> - **`client_sn` ≤ 32 字符**（收钱吧硬限，`bid-<uuid>`=40 超限必被拒；实现用 `bid<base36ts><14hex>`）。
+> - 路由 `/recharge`、`/renew` 入参加 `payway`；返回 `{orderId, qrCode, qrImageUrl}`；预下单失败 → 502 且订单收敛 failed（不留孤儿 created）。
+> - 冒烟实证：激活 terminal_sn=100108240056336528 → precreate → 支付宝付 0.01 → query paid → refund → query refunded。详见 review-followups C4。
+
 **Goal:** 落地架构 §6.0/§6.1 的**收钱吧 C 扫 B 跳转支付**全链路：`PaymentProvider` 接口 + `ShouqianbaProvider`（终端激活/每日签到、WAP2 跳转支付 URL、查询、退款、回调 RSA 验签），以及充值/购买的下单 → 回调/轮询入账路由（`POST /api/payment/recharge`、`POST /api/payment/shouqianba/notify`、`GET /api/payment/orders/:id`）。下单建 `payment_orders`（status=created，client_sn 全局唯一）→ 拼跳转支付 URL 转二维码 → 用户微信/支付宝扫码付款 → **回调验签 + 轮询查询双通道**取终态 → 订单状态机置 paid（只一次）→ 调 spec302 `credits.grant({type:"purchase"})` 入账。**幂等关键**：回调可能重复、且与轮询并发，按收钱吧 `sn` + 订单状态机保证**只入账一次**；轮询窗口用尽仍无终态 → 订单置 `unknown` 待对账（spec306 清算）。
 
 **Architecture:** 支付层是 `PaymentProvider` 抽象（屏蔽通道差异），现行实现 `ShouqianbaProvider`；未来换通道只加实现、不动路由。收钱吧无 SDK：HTTPS+JSON 直连网关 `https://vsi-api.shouqianba.com`。**两套签名**：非支付接口（激活/签到/查询/退款）`Authorization: sn + " " + MD5(body + key)`（激活用 vendor 参数，其余用 terminal 参数）；跳转支付（WAP2）用「参数 ASCII 升序 `&` 拼接 + `&key=` + terminal_key 的 MD5 大写」。**终端凭证生命周期**：激活码 + device_id → 激活得 terminal_sn/terminal_key（落 `payment_terminals`，集群共享）→ 每日签到轮换 terminal_key（spec303 Cron 注册；签到失败保留旧 key 重试，极端情况重激活）。钱只在 App API 动（§3.2）；金额单位统一**分**。生产网关即真实交易：联调用**测试激活码**（对应测试商户号），支付后即退款。
@@ -13,9 +19,9 @@
 见 `spec300-index.md`。本 spec 关键（**资金正确性铁律，逐条有测试**）：
 - **钱只在 App API 动**（§3.2）：下单、验签、改订单状态、入账全在 App 层。
 - **服务端定价**：客户端只传 `packId`/`planId`，**金额一律由服务端从配置取并快照进订单**；任何来自客户端的金额字段一律忽略。
-- **金额一致性校验**：markPaid 前必须校验回调/查询返回的实付金额 == 订单快照金额（分），不一致 → 不入账、置 `amount_mismatch` 告警并进对账队列。
+- **金额一致性校验**：markPaid 前必须校验回调/查询返回的实付金额 == 订单快照金额（分）；**金额缺失同样不入账**（必须校验，不是有金额才校验）。不符/缺失 → 不入账、告警、订单置 `unknown` 进对账队列（spec306 扫 unknown）。
 - **金额只用整数分**：全链路 integer，禁止浮点/元字符串参与计算（仅展示层格式化）。
-- **状态机唯一赢家**：`created → paid` 用条件 UPDATE（`WHERE status='created'`）原子推进，回调与轮询并发时只有一个赢家入账。
+- **状态机唯一赢家**：`→ paid` 用条件 UPDATE（`WHERE status IN ('created','unknown')`）原子推进，回调与轮询并发时只有一个赢家；unknown 非终态——窗口尽头置 unknown 后迟到的有效 PAID 仍要入账。**置 paid 与 grant 在同一事务**（grant 失败整体回滚，通道重试可重新驱动）。
 - **接口事实以官方文档为准**：本计划只固化已从收钱吧资料（`docs/收钱吧接口文档`，含 C 扫 B-PRO 最佳实践 V1.6.6 + 回调签名方案 + 验收 xlsx）实证的机制（网关域名/两套签名/轮询节奏/终端生命周期/RSA 验签）；具体端点路径与字段名开发时对照 doc.shouqianba.com 线上文档，不在设计文档里臆造。
 - **上线前配合收钱吧验收**（资料含官方验收用例 xlsx）：异常流程（重复回调/掉线/超时/退款）逐项过。
 - **回调必须验签**：用收钱吧公钥做 `SHA256WithRSA` 验签（`Authorization` 头带 Base64 签名，body 原文为被签内容）；验签失败一律拒绝、不改任何状态。
@@ -59,25 +65,38 @@ apps/api/test/
   - 账本（spec302）：`grant(userId, amount, {type:"purchase", ref, idempotencyKey, expireAt?})`。
   - Cron（spec303）：`registerCron("sqb-checkin", daily, ...)`（每日签到轮换 terminal_key）。
   - 鉴权（Phase 0）：`authMiddleware`。
-- **Produces（供 spec305/306/308/310 依赖）**：
-  - `PaymentProvider` 接口 + `getPaymentProvider()`；`ShouqianbaProvider.query/refund`（spec306 对账/退款复用）。
-  - 订单服务 `createOrder(userId, type, amountCents, snapshot)` / `markPaid(orderId, {sn, tradeNo, payway})`（状态机，spec305 续费复用）/ `pollUntilFinal(orderId)`。
-  - 路由 `POST /api/payment/recharge`、`POST /api/payment/shouqianba/notify`、`GET /api/payment/orders/:id`（spec308 会员中心调）。
+- **Produces（供 spec305/306/308/310 依赖；已按实现+review 定稿，本节即真实契约）**：
+  - `getPayment(): { provider, terminal, baseUrl } | undefined`（`services/payment`，唯一装配点：终端凭据 + SQB_PUBLIC_KEY + PAYMENT_NOTIFY_BASE_URL 全齐才给，缺任一整体关闭不半开）；`ShouqianbaProvider.query/refund`（spec306 对账/退款复用）。
+  - 订单服务（`services/payment-orders`）：`createOrder({userId, type, amountCents, creditsSnapshot?, idempotencyKey})`；`markPaid(orderId, {sn?, tradeNo?, payway?, paidAmountCents?}) -> MarkPaidResult`（`{paid, reason?: "not_found"|"amount_missing"|"amount_mismatch"|"already_final"}`；paidAmountCents 缺失/不符不入账置 unknown；UPDATE+grant 同事务，spec305 续费复用）；`pollUntilFinal(orderId, {provider, sleepFn?})`；`sweepStaleCreatedOrders(provider, now?)` + `paymentOrderSweepJob(provider): CronJob`（滞留单扫描，治轮询孤儿——spec306 对账不扫 created，此 job 是结构性兜底）。
+  - 路由 `POST /api/payment/recharge`、`POST /api/payment{provider.notifyPath}`、`GET /api/payment/orders/:id`（spec308 会员中心调）。
+  - 运维：`scripts/activate-terminal.ts`（一次性终端激活入口）。
 
 ### `PaymentProvider` 形态（Task 2 落地，此处为契约）
 
 ```typescript
-export type PaymentResult = { status: "paid" | "failed" | "pending"; sn?: string; tradeNo?: string; payway?: string }
+// C 扫 B 预下单（/upay/v2/precreate）：2026-07-04 真实冒烟定稿，取代原 WAP2 跳转方案。
+export type Payway = "alipay" | "wechat" // 前端二选一 → 收钱吧 payway 整数码 1/3
+export type PaymentResult = {
+  status: "paid" | "failed" | "pending" | "refunded"
+  sn?: string; tradeNo?: string; payway?: string
+  totalAmountCents?: number // 通道实付金额（分）——金额铁律的比对来源
+}
+
+export type CallbackParse =
+  | { ok: true; clientSn: string; result: PaymentResult }
+  | { ok: false; error: "bad_signature" | "bad_body" }
 
 export interface PaymentProvider {
-  /** 生成顾客扫码的跳转支付 URL（前端转二维码）。amountCents 分；clientSn 我方订单号 */
-  createPayment(opts: { clientSn: string; amountCents: number; subject: string; returnUrl: string; notifyUrl: string }): Promise<{ payUrl: string }>
+  /** 通道回调挂载路径（路由 + notify_url 拼接共用，换通道不改路由） */
+  notifyPath: string
+  /** 生成顾客扫码的C 扫 B 预下单二维码 qr_code（前端渲染扫码）。amountCents 分；clientSn 我方订单号 */
+  createPayment(opts: { clientSn; amountCents; subject; payway: Payway; notifyUrl }): Promise<{ qrCode: string; qrImageUrl?: string }> // /upay/v2/precreate
   /** 查询交易终态（轮询/对账共用） */
   query(clientSn: string): Promise<PaymentResult>
   /** 退款（支持部分退款；refundSn 幂等） */
   refund(opts: { clientSn: string; refundSn: string; amountCents: number }): Promise<{ ok: boolean }>
-  /** 回调验签：body 原文 + Authorization 头签名 → 布尔 */
-  verifyCallback(rawBody: string, authorization: string): boolean
+  /** 回调验签 + 报文解析归一（路由只消费 PaymentResult，不接触通道线格式；验签失败 bad_signature） */
+  parseCallback(rawBody: string, authorization: string): CallbackParse
 }
 ```
 
