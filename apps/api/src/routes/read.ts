@@ -8,6 +8,7 @@ import type { User } from "../db/schema"
 import { authMiddleware } from "../middleware/auth"
 import * as billing from "../services/billing-stub"
 import * as client from "../services/agent-client"
+import { getAgentModel } from "../services/agent-client"
 
 // 编排依赖可注入（mock 测编排次序），默认用真实 billing-stub / agent-client。
 export type ReadDeps = {
@@ -43,11 +44,13 @@ export function readRoutes(deps: Partial<ReadDeps> = {}) {
     const hold = await preDeduct(userId, "read", threadId) // 真账本预扣（ref=threadId，一次读标一个 thread）
     if (!hold.ok) return c.json({ error: "insufficient" }, 402)
 
+    const model = await getAgentModel() // 运营后台可配的 agent 模型选择（spec311）
     const { run_id } = await createRun({
       agentType: "bidding_agent",
       threadId,
       // 契约统一 { text, file_key, step }：text 为按步指令，key 也写进 text（避免 agent 端 input.text 落空）
       input: { text: `请对招标文件读标，key=${fileKey}`, file_key: fileKey, step: "read" },
+      model,
     })
     await getDb()
       .insert(agentRuns)

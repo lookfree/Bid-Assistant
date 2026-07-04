@@ -8,6 +8,7 @@ import type { User } from "../db/schema"
 import { authMiddleware } from "../middleware/auth"
 import * as billing from "../services/billing-stub"
 import * as client from "../services/agent-client"
+import { getAgentModel } from "../services/agent-client"
 import { toCamel } from "../lib/case"
 import { presignGet } from "../storage/s3"
 
@@ -105,7 +106,8 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const input = { text: `${STEP_TEXT[step as Step]}，key=${p.tenderFileKey}`, file_key: p.tenderFileKey, step }
     let run_id: string
     try {
-      ;({ run_id } = await createRun({ agentType: "bidding_agent", threadId: p.threadId, input }))
+      const model = await getAgentModel() // 运营后台可配的 agent 模型选择（spec311）
+      ;({ run_id } = await createRun({ agentType: "bidding_agent", threadId: p.threadId, input, model }))
       await getDb().update(projectSteps).set({ runId: run_id }).where(eq(projectSteps.id, s.id))
     } catch (e) {
       // agent 服务不可达等：释放占位行为 failed，可立即重试
