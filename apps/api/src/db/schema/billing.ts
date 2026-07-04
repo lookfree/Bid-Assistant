@@ -15,15 +15,42 @@ export const referrals = pgTable(
     code: text("code").notNull(), // 邀请码（绑邀请人）
     status: text("status").notNull().default("pending"), // pending/bound/frozen（frozen=风控冻结）
     rewardState: text("reward_state").notNull().default("pending"), // pending/unlocked/capped
+    deviceHash: text("device_hash"), // 注册设备指纹（风控查重，spec307）
+    signupIp: text("signup_ip"), // 注册 IP（同 IP 段集中时段风控，spec307）
+    frozenReason: text("frozen_reason"), // 冻结原因（duplicate_device/same_ip_burst/...）
     createdAt: createdAt(),
   },
   (t) => ({
     inviterIdx: index("referrals_inviter_idx").on(t.inviterId),
     inviteeUq: unique("referrals_invitee_uq").on(t.inviteeId),
+    ipIdx: index("referrals_signup_ip_idx").on(t.signupIp), // 同 IP 集中时段风控扫描
     // reward_state 走发奖金钱路径（referral_reward 流水），typo 会让奖励永不解锁——同 CHECK 口径
     statusCheck: check("referrals_status_check", sql`${t.status} in ('pending','bound','frozen')`),
     rewardCheck: check("referrals_reward_state_check", sql`${t.rewardState} in ('pending','unlocked','capped')`),
   }),
+)
+
+// 每用户唯一一个邀请码（生成即持久化；码全局唯一）。
+export const referralCodes = pgTable("referral_codes", {
+  userId: uuid("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  code: text("code").notNull().unique(),
+  createdAt: createdAt(),
+})
+
+// 风控审计：异常邀请冻结留痕（原因 + 前后值明细）。inviteeId 不设 FK——审计凭据须比被邀请人活得久。
+export const referralRiskAudits = pgTable(
+  "referral_risk_audits",
+  {
+    id: id(),
+    referralId: uuid("referral_id"), // 关联 referrals（建关系前命中也记，可空）
+    inviteeId: uuid("invitee_id"),
+    reason: text("reason").notNull(), // duplicate_phone/duplicate_device/same_ip_burst
+    detail: jsonb("detail").$type<Record<string, unknown>>().default({}),
+    createdAt: createdAt(),
+  },
+  (t) => ({ inviteeIdx: index("referral_risk_invitee_idx").on(t.inviteeId) }),
 )
 
 // 单一权威键值配置表：运营注入数值，开发只读 + 种子写（不覆盖已改值）。

@@ -20,8 +20,8 @@ async function sumBalance(dbOrTx: Tx | ReturnType<typeof getDb>, userId: string)
   return Number(row?.total ?? 0)
 }
 
-/** 锁用户余额行作串行化点（不存在先 upsert 兜底建行）。hold/expire 共用。 */
-async function lockUserBalanceRow(tx: Tx, userId: string): Promise<void> {
+/** 锁用户余额行作串行化点（不存在先 upsert 兜底建行）。hold/expire/推荐发奖封顶共用。 */
+export async function lockUserBalanceRow(tx: Tx, userId: string): Promise<void> {
   await tx.insert(creditBalances).values({ userId, balance: 0 }).onConflictDoNothing({ target: creditBalances.userId })
   await tx.execute(sql`select 1 from ${creditBalances} where ${creditBalances.userId} = ${userId} for update`)
 }

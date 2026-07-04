@@ -8,6 +8,7 @@ import { readRoutes } from "./routes/read"
 import { projectRoutes } from "./routes/projects"
 import { paymentRoutes } from "./routes/payment"
 import { membershipRoutes } from "./routes/membership"
+import { referralRoutes } from "./routes/referral"
 import type { SmsCodeService } from "./services/sms-code"
 import type { makeWechatAuth } from "./services/wechat-auth"
 
@@ -61,5 +62,6 @@ export function createApp(deps: AppDeps) {
   app.route("/api/projects", projectRoutes()) // 全流程按步编排（spec207），自带 authMiddleware
   app.route("/api/payment", paymentRoutes()) // 收钱吧支付（spec304）；notify 验签放行，其余自带 authMiddleware
   app.route("/api/membership", membershipRoutes()) // 会员续费（spec305）；自带 authMiddleware
+  app.route("/api/referral", referralRoutes()) // 推荐奖励（spec307）；自带 authMiddleware
   return app
 }
