@@ -61,7 +61,7 @@ export const refunds = pgTable(
     id: id(),
     orderId: uuid("order_id")
       .notNull()
-      .references(() => paymentOrders.id),
+      .references(() => paymentOrders.id, { onDelete: "cascade" }), // 订单随用户级联删，退款单不能比订单活得久（审计凭据在 reconcile_diffs/audit）
     amountCents: integer("amount_cents").notNull(),
     reason: text("reason"),
     status: text("status").notNull().default("pending"), // pending/done/failed

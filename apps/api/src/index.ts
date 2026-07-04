@@ -13,6 +13,7 @@ import { sqbCheckinJob } from "./services/payment/terminal"
 import { getPayment } from "./services/payment"
 import { paymentOrderSweepJob } from "./services/payment-orders"
 import { renewalCronJobs } from "./crons/renewal"
+import { creditExpireCronJob, reconcileCronJob } from "./crons/billing"
 
 const env = getEnv()
 
@@ -54,8 +55,9 @@ const app = createApp({
 //   无渠道不注册并在 renewalCronJobs 内告警（console 假发送会白耗去重档位，review-followups spec305 C10）。
 const payment = getPayment()
 const cron = startCronRunner([
-  ...(payment ? [sqbCheckinJob(payment.terminal), paymentOrderSweepJob(payment.provider)] : []),
+  ...(payment ? [sqbCheckinJob(payment.terminal), paymentOrderSweepJob(payment.provider), reconcileCronJob({ provider: payment.provider })] : []),
   ...renewalCronJobs(),
+  creditExpireCronJob(), // 积分过期：不依赖支付凭据，始终注册（spec306）
 ])
 
 // 优雅关闭：先停 Cron 并等在途 tick 收尾，再归还 DB/Redis/S3 连接（顺序错了在途 tick 会打在已断连接上）。
