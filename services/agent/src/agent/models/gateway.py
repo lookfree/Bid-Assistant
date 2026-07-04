@@ -88,8 +88,15 @@ _OVERRIDE_MAP = {
 
 
 def model_override_to_settings(sel: dict | None) -> dict:
-    """把 run 携带的 {provider,model,fallbacks} 映射为 Settings 字段；丢弃 None/缺失（spec311）。
-    结果可直接喂 Settings.model_copy(update=...) 覆盖 env 默认。"""
+    """把 run 携带的 {provider,model,fallbacks} 映射为 Settings 字段；覆盖 env 默认（spec311）。
+    空串/None/缺失 → 丢弃（继承 env，默认配置即 no-op）；未知 provider → 丢弃（避免 run 时 KeyError）。"""
     if not sel:
         return {}
-    return {_OVERRIDE_MAP[k]: v for k, v in sel.items() if k in _OVERRIDE_MAP and v is not None}
+    out: dict = {}
+    for k, v in sel.items():
+        if k not in _OVERRIDE_MAP or not v:
+            continue
+        if k == "provider" and v not in PROVIDERS:
+            continue
+        out[_OVERRIDE_MAP[k]] = v
+    return out

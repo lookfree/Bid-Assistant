@@ -56,6 +56,7 @@ async def process_run(run_id: str) -> None:
 
     model = meta.get("model")
     override = model_override_to_settings(model)
+    # 有 per-run override 才新建 gateway；否则复用模块级单例 _gateway（零额外开销）
     gateway = ModelGateway(settings.model_copy(update=override)) if override else _gateway
     ctx = RunContext(run_id=run_id, agent_type=agent_type, thread_id=thread_id,
                      recorder=rec, gateway=gateway, redis=r)

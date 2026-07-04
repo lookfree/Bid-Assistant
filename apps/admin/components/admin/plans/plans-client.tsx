@@ -52,6 +52,7 @@ export const PROVIDER_OPTIONS = [
 export function toAgentModelForm(cfg: unknown): AgentModelForm {
   const c = (cfg && typeof cfg === "object" ? cfg : {}) as Record<string, unknown>
   return {
+    // 未知/缺失 provider 兜底为 deepseek（默认家），不报错
     provider: typeof c.provider === "string" ? c.provider : "deepseek",
     model: typeof c.model === "string" ? c.model : "",
     fallbacks: typeof c.fallbacks === "string" ? c.fallbacks : "",

@@ -5,7 +5,17 @@ from agent.routes.runs import CreateRunBody
 def test_override_maps_and_drops_none():
     out = model_override_to_settings({"provider": "qwen", "model": None, "fallbacks": "glm:glm-4-flash"})
     assert out == {"model_default_provider": "qwen", "model_fallbacks": "glm:glm-4-flash"}
-    # model=None 被丢弃，不覆盖
+
+
+def test_default_seed_is_noop_empty_fallbacks_inherit_env():
+    # Critical: 默认 seed {deepseek, null, ""} 只设 provider，空 fallbacks 继承 env（不清空故障转移链）
+    out = model_override_to_settings({"provider": "deepseek", "model": None, "fallbacks": ""})
+    assert out == {"model_default_provider": "deepseek"}
+
+
+def test_unknown_provider_dropped():
+    out = model_override_to_settings({"provider": "gpt", "model": "x", "fallbacks": ""})
+    assert out == {"model_default_model": "x"}  # provider 未知被丢弃，继承 env provider
 
 
 def test_override_none_returns_empty():
