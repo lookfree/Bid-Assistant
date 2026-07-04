@@ -11,6 +11,7 @@ import { ordersRouter, refundsRouter } from "./orders"
 import { ledgerRouter } from "./ledger"
 import { plansRouter } from "./plans"
 import { systemRouter } from "./system"
+import { diffsRouter } from "./diffs"
 
 // admin-api 路由组（spec309/310）：与 C 端业务路由完全分组隔离，不复用 C 端 authMiddleware。
 // 生产经反代按子域 admin.<域名> 路由到 apps/admin 前端。
@@ -54,6 +55,7 @@ export function adminRoutes(deps: { resolveRefundProvider?: () => RefundProvider
   authed.route("/refunds", refundsRouter(deps.resolveRefundProvider ?? defaultResolveRefundProvider))
   authed.route("/ledger", ledgerRouter)
   authed.route("/plans", plansRouter) // 含 /configs
+  authed.route("/diffs", diffsRouter) // 对账差异工作台
   authed.route("/", systemRouter) // /admins、/audit-logs
   r.route("/", authed)
 
