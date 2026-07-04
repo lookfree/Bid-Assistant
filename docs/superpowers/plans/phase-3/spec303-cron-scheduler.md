@@ -185,9 +185,7 @@ test("两实例并发抢同一锁，只有一个 fn 执行", async () => {
 ```bash
 cd apps/api && bun test test/cron-lock.test.ts
 git add apps/api/src/services/cron.ts apps/api/test/cron-lock.test.ts
-git commit -m "feat(spec303): withCronLock(SET NX EX 抢锁 + Lua CAS 释放 + watchdog 续租)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec303): withCronLock(SET NX EX 抢锁 + Lua CAS 释放 + watchdog 续租)"
 ```
 
 ---
@@ -268,9 +266,7 @@ test("某次 jobFn 抛错不影响后续 tick（吞错自愈）", async () => {
 ```bash
 cd apps/api && bun test test/cron-tick.test.ts
 git add apps/api/src/services/cron.ts apps/api/test/cron-tick.test.ts
-git commit -m "feat(spec303): registerCron(setInterval tick + 每 tick 抢锁执行, 吞错自愈)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec303): registerCron(setInterval tick + 每 tick 抢锁执行, 吞错自愈)"
 ```
 
 ---
@@ -349,9 +345,7 @@ test("startCronRunner 注册多个 job 都按周期触发, stopAll 全停", asyn
 ```bash
 cd apps/api && bun test test/cron-tick.test.ts
 git add apps/api/src/services/cron.ts apps/api/test/cron-tick.test.ts
-git commit -m "feat(spec303): startCronRunner(启动批量注册 CronJob + stopAll 优雅停机)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec303): startCronRunner(启动批量注册 CronJob + stopAll 优雅停机)"
 ```
 
 ---
@@ -373,9 +367,7 @@ Expected: 全部 PASS（抢锁互斥 / Lua CAS / tick 周期 / startCronRunner /
 ```bash
 cd "/Users/wuhoujin/Documents/projects/Bid Assistant"
 git checkout main
-git merge --no-ff phase3/spec303-cron-scheduler -m "merge spec303: Redis 分布式单例 Cron(withCronLock/registerCron/startCronRunner)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git merge --no-ff phase3/spec303-cron-scheduler -m "merge spec303: Redis 分布式单例 Cron(withCronLock/registerCron/startCronRunner)"
 git push origin main
 ```
 

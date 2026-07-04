@@ -60,7 +60,7 @@ STEP_COST 常量                    ──▶    billing_configs 的「操作→
 **承接 Phase 0-2（不重述，见各 index）**
 - App 层 **Hono 4.12 + Bun + Drizzle ORM + PostgreSQL(public schema) + Zod**；测试 `bun test`。
 - bidsaas 库：计费/账本/订阅全部落 **public schema**（drizzle）；Redis（库 3、前缀 `bid:`）做 Cron 锁与缓存。
-- 频繁提交；提交信息附 `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`；`main` 上先开分支。
+- 频繁提交（提交信息遵循仓库 CLAUDE.md 规范：英文 Conventional Commits、账号 `lookfree`、不加 `Co-Authored-By`）；`main` 上先开分支。
 
 **钱相关铁律（§3.2 / §5.1，贯穿全程）**
 - **钱只在 App API 动**；智能体服务只上报 usage（Phase 1/2 已就位的 `agent_token_usage`）。

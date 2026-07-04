@@ -329,9 +329,7 @@ cd apps/api && bun run drizzle-kit generate && bun test test/reconcile.test.ts
 
 ```bash
 git add apps/api/src/db/schema/reconcile.ts apps/api/src/services/reconcile.ts apps/api/drizzle apps/api/test/reconcile.test.ts
-git commit -m "feat(spec306): 对账(账单 vs orders 金额/状态/单边账 + 账本审计) + reconcile_diffs 表
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec306): 对账(账单 vs orders 金额/状态/单边账 + 账本审计) + reconcile_diffs 表"
 ```
 
 ---
@@ -515,9 +513,7 @@ export async function createRefund(
 ```bash
 cd apps/api && bun test test/refunds.test.ts
 git add apps/api/src/services/refunds.ts apps/api/test/refunds.test.ts
-git commit -m "feat(spec306): 退款编排(pending→done/failed + 订单 refunded + 扣回积分 + 审计占位)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec306): 退款编排(pending→done/failed + 订单 refunded + 扣回积分 + 审计占位)"
 ```
 
 ---
@@ -597,9 +593,7 @@ export function registerCreditExpireCron(): { stop: () => Promise<void> } {
 ```bash
 cd apps/api && bun test test/credit-expire-job.test.ts
 git add apps/api/src/cron/credit-expire-job.ts apps/api/test/credit-expire-job.test.ts
-git commit -m "feat(spec306): 积分过期 Cron(registerCron credit_expire → credits.expireDue)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec306): 积分过期 Cron(registerCron credit_expire → credits.expireDue)"
 ```
 
 ---
@@ -671,9 +665,7 @@ export function registerBillingCrons() {
 ```bash
 cd apps/api && bun test
 git add apps/api/src/cron/reconcile-job.ts apps/api/src/index.ts apps/api/test/reconcile.test.ts
-git commit -m "feat(spec306): 对账 Cron 注册 + startup 接线(registerBillingCrons)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec306): 对账 Cron 注册 + startup 接线(registerBillingCrons)"
 cd "/Users/wuhoujin/Documents/projects/Bid Assistant"
 git checkout main && git merge --no-ff phase3/spec306-reconcile-refund-expire -m "merge spec306: 对账 + 退款 + 积分过期"
 git push origin main

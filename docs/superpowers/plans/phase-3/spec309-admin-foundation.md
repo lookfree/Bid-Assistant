@@ -23,7 +23,7 @@
 - 鉴权/权限不通过返回 **401（未认证）/ 403（越权）**，语义区分。
 - 敏感操作**一律留审计**（`admin_audit_logs`，操作人/时间/前后值）——本 spec 交付 `writeAudit` 装置，spec310 调用。
 - 仓储/路由测试为**集成测试**，连真库 `bidsaas`，须 `--env-file=../../.env.bidsaas.local` 运行并自清理。
-- TDD（先写失败测试）；`bun test` + `typecheck` 全绿；`main` 上先开分支再改；提交信息结尾附 `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`。
+- TDD（先写失败测试）；`bun test` + `typecheck` 全绿；`main` 上先开分支再改；提交信息遵循仓库 CLAUDE.md 规范（英文 Conventional Commits、账号 `lookfree`、不加 `Co-Authored-By`）。
 - 分支：`phase3/spec309-admin-foundation`。
 
 ---
@@ -195,9 +195,7 @@ Expected: 四行。
 cd apps/api && bun run typecheck
 cd "/Users/wuhoujin/Documents/projects/Bid Assistant"
 git add apps/api/src/db/schema/admin.ts apps/api/src/db/schema/index.ts apps/api/drizzle
-git commit -m "feat(spec309): admin_users/admin_roles/admin_sessions/admin_audit_logs schema + 迁移
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec309): admin_users/admin_roles/admin_sessions/admin_audit_logs schema + 迁移"
 ```
 
 ---
@@ -372,9 +370,7 @@ export async function revokeAdminSession(id: string): Promise<void> {
 cd apps/api && bun --env-file=../../.env.bidsaas.local test test/repos/admin-users.test.ts test/repos/admin-sessions.test.ts
 cd "/Users/wuhoujin/Documents/projects/Bid Assistant"
 git add apps/api/src/repos/admin-users.ts apps/api/src/repos/admin-sessions.ts apps/api/test/repos/admin-users.test.ts apps/api/test/repos/admin-sessions.test.ts
-git commit -m "feat(spec309): admin 用户/会话仓储（独立于 C 端）+ 集成测试
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec309): admin 用户/会话仓储（独立于 C 端）+ 集成测试"
 ```
 
 ---
@@ -475,9 +471,7 @@ export function hasPermission(role: AdminRole, perm: Permission): boolean {
 cd apps/api && bun test test/services/rbac.test.ts
 cd "/Users/wuhoujin/Documents/projects/Bid Assistant"
 git add apps/api/src/services/rbac.ts apps/api/test/services/rbac.test.ts
-git commit -m "feat(spec309): RBAC 角色→权限映射（superadmin/ops/finance/support）+ 单测
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec309): RBAC 角色→权限映射（superadmin/ops/finance/support）+ 单测"
 ```
 
 ---
@@ -560,9 +554,7 @@ export async function writeAudit(input: {
 cd apps/api && bun --env-file=../../.env.bidsaas.local test test/services/audit.test.ts
 cd "/Users/wuhoujin/Documents/projects/Bid Assistant"
 git add apps/api/src/services/audit.ts apps/api/test/services/audit.test.ts
-git commit -m "feat(spec309): 审计装置 writeAudit（前后值入 admin_audit_logs）+ 集成测试
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec309): 审计装置 writeAudit（前后值入 admin_audit_logs）+ 集成测试"
 ```
 
 ---
@@ -674,9 +666,7 @@ export function requirePermission(perm: Permission) {
 cd apps/api && bun run typecheck
 cd "/Users/wuhoujin/Documents/projects/Bid Assistant"
 git add apps/api/src/services/admin-auth.ts apps/api/src/middleware/admin-auth.ts
-git commit -m "feat(spec309): admin 登录服务(密码哈希+opaque token) + RBAC 中间件(requireAdmin/requirePermission)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec309): admin 登录服务(密码哈希+opaque token) + RBAC 中间件(requireAdmin/requirePermission)"
 ```
 
 ---
@@ -815,9 +805,7 @@ r.get("/__test_finance_only", requireAdmin("finance"), (c) => c.json({ ok: true 
 cd apps/api && bun --env-file=../../.env.bidsaas.local test test/routes/admin-auth.test.ts
 cd "/Users/wuhoujin/Documents/projects/Bid Assistant"
 git add apps/api/src/routes/admin apps/api/src/app.ts apps/api/test/routes/admin-auth.test.ts
-git commit -m "feat(spec309): admin-api 路由组(login/logout/me)+挂载 + 越权/隔离端到端测试
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec309): admin-api 路由组(login/logout/me)+挂载 + 越权/隔离端到端测试"
 ```
 
 ---
@@ -896,9 +884,7 @@ describe("admin seed", () => {
 cd apps/api && bun --env-file=../../.env.bidsaas.local test test/admin-seed.test.ts
 cd "/Users/wuhoujin/Documents/projects/Bid Assistant"
 git add apps/api/src/config/admin-seed.ts apps/api/test/admin-seed.test.ts
-git commit -m "feat(spec309): admin 种子（角色权限集 + 首个 superadmin，env 注入，幂等）
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec309): admin 种子（角色权限集 + 首个 superadmin，env 注入，幂等）"
 ```
 
 ---
@@ -1010,9 +996,7 @@ cd apps/admin && bun test test/admin-token-store.test.ts
 cd ../api && bun --env-file=../../.env.bidsaas.local test && bun run typecheck
 cd "/Users/wuhoujin/Documents/projects/Bid Assistant"
 git add apps/admin/lib apps/admin/components apps/admin/app/login apps/admin/test
-git commit -m "feat(spec309): apps/admin 前端接入骨架（独立 token-store/api-client/登录页/RequireAdmin）
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec309): apps/admin 前端接入骨架（独立 token-store/api-client/登录页/RequireAdmin）"
 git checkout main
 git merge --no-ff phase3/spec309-admin-foundation -m "merge spec309: 运营后台地基（admin 身份+RBAC+审计）"
 git push origin main
@@ -1030,4 +1014,4 @@ git push origin main
 - [ ] 接入骨架：admin-api 路由组挂在 `/admin-api/*`、与 C 端路由分组隔离；`apps/admin` 独立 token-store（key `bid.admin.token`，与 C 端隔离）+ api-client + 登录页 + RequireAdmin；生产子域 `admin.<域名>` 部署对齐 spec001/007 双子域。
 - [ ] 测试要点全覆盖：admin 登录签发独立会话；`requireAdmin(role)` 拒绝越权角色返回 403；`writeAudit` 记录前后值；**C 端 token 不能访问 admin-api**（401）。
 - [ ] 种子：`seedAdminRoles` + `seedSuperadmin`（env 注入、幂等）；首个 superadmin 建后可登录。
-- [ ] `bun test`（App API 集成 + admin 前端单测）+ `typecheck` 全绿；迁移可复跑；`main` 上先开分支 `phase3/spec309-admin-foundation` 再改，合并附 Co-Authored-By。
+- [ ] `bun test`（App API 集成 + admin 前端单测）+ `typecheck` 全绿；迁移可复跑；`main` 上先开分支 `phase3/spec309-admin-foundation` 再改，提交遵循仓库 CLAUDE.md 规范（不加 `Co-Authored-By`）。

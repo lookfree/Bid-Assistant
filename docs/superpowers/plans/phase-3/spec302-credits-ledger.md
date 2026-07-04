@@ -121,9 +121,7 @@ test("余额 = Σ流水, grant 幂等", async () => {
 ```bash
 cd apps/api && bun test test/credits.test.ts
 git add apps/api/src/services/credits.ts apps/api/src/services/credits-errors.ts apps/api/test/credits.test.ts
-git commit -m "feat(spec302): 账本 getBalance(Σ流水)+grant(幂等入账)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec302): 账本 getBalance(Σ流水)+grant(幂等入账)"
 ```
 
 ---

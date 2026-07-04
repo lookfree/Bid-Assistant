@@ -151,9 +151,7 @@ test("未登录访问 admin-api → 401", async () => {
 ```bash
 cd apps/api && bun test test/admin-system.test.ts
 git add apps/api/src/routes/admin/index.ts apps/api/src/app.ts apps/api/test/admin-system.test.ts
-git commit -m "feat(spec310): admin-api 路由地基(adminApiRouter + requireAdmin 统一套 + 401 冒烟)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec310): admin-api 路由地基(adminApiRouter + requireAdmin 统一套 + 401 冒烟)"
 ```
 
 ---
@@ -255,9 +253,7 @@ overviewRouter.get("/", async (c) => c.json(await computeOverview()));
 ```bash
 cd apps/api && bun test test/admin-overview.test.ts
 git add apps/api/src/services/admin/overview.ts apps/api/src/routes/admin/overview.ts apps/api/test/admin-overview.test.ts
-git commit -m "feat(spec310): 概览页 GET /admin-api/overview(关键指标聚合)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec310): 概览页 GET /admin-api/overview(关键指标聚合)"
 ```
 
 ---
@@ -440,9 +436,7 @@ usersRouter.post("/:id/credits", requirePermission("credit.adjust"), async (c) =
 ```bash
 cd apps/api && bun test test/admin-users.test.ts
 git add apps/api/src/services/admin/admin-users.ts apps/api/src/routes/admin/users.ts apps/api/src/db/schema/users.ts apps/api/drizzle apps/api/test/admin-users.test.ts
-git commit -m "feat(spec310): 用户页(列表/搜索/详情/封禁解封/手动调积分 → credits.grant + 审计 + RBAC)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec310): 用户页(列表/搜索/详情/封禁解封/手动调积分 → credits.grant + 审计 + RBAC)"
 ```
 
 ---
@@ -587,9 +581,7 @@ refundsRouter.post("/", requirePermission("refund.write"), async (c) => {
 ```bash
 cd apps/api && bun test test/admin-orders.test.ts
 git add apps/api/src/services/admin/admin-orders.ts apps/api/src/routes/admin/orders.ts apps/api/src/routes/admin/index.ts apps/api/test/admin-orders.test.ts
-git commit -m "feat(spec310): 订单页(列表/详情/退款审批 → spec306 createRefund + 审计 + finance/support RBAC)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec310): 订单页(列表/详情/退款审批 → spec306 createRefund + 审计 + finance/support RBAC)"
 ```
 
 ---
@@ -680,9 +672,7 @@ ledgerRouter.get("/:userId/check", async (c) => c.json(await checkBalance(c.req.
 ```bash
 cd apps/api && bun test test/admin-ledger.test.ts
 git add apps/api/src/services/admin/ledger.ts apps/api/src/routes/admin/ledger.ts apps/api/test/admin-ledger.test.ts
-git commit -m "feat(spec310): 账本页(流水查询 + 余额=Σ流水核对)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec310): 账本页(流水查询 + 余额=Σ流水核对)"
 ```
 
 ---
@@ -854,9 +844,7 @@ plansRouter.put("/configs/:key", requirePermission("config.write"), async (c) =>
 ```bash
 cd apps/api && bun test test/admin-plans-configs.test.ts
 git add apps/api/src/services/config.ts apps/api/src/services/admin/admin-plans.ts apps/api/src/routes/admin/plans.ts apps/api/test/admin-plans-configs.test.ts
-git commit -m "feat(spec310): 套餐&配置页(plans CRUD + billing_configs 可视化管理 setConfig 即生效 + 审计前后值 + RBAC)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec310): 套餐&配置页(plans CRUD + billing_configs 可视化管理 setConfig 即生效 + 审计前后值 + RBAC)"
 ```
 
 ---
@@ -996,9 +984,7 @@ systemRouter.get("/audit-logs", requirePermission("audit.read"), async (c) => {
 ```bash
 cd apps/api && bun test
 git add apps/api/src/services/admin/admin-accounts.ts apps/api/src/routes/admin/system.ts apps/api/test/admin-system.test.ts
-git commit -m "feat(spec310): 系统页(运营账号/角色管理 + 审计日志查询 + admin.manage/audit.read RBAC)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec310): 系统页(运营账号/角色管理 + 审计日志查询 + admin.manage/audit.read RBAC)"
 cd "/Users/wuhoujin/Documents/projects/Bid Assistant"
 git checkout main && git merge --no-ff phase3/spec310-admin-pages -m "merge spec310: 运营后台功能页(6 页接真实接口 + 配置管理 + 退款审批 + 审计)"
 git push origin main

@@ -100,9 +100,7 @@ cd apps/api && bun run drizzle-kit generate
 
 ```bash
 git add apps/api/src/db/schema/plans.ts apps/api/drizzle apps/api/test/billing-schema.test.ts
-git commit -m "feat(spec301): plans/subscriptions 表
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec301): plans/subscriptions 表"
 ```
 
 ---
@@ -166,9 +164,7 @@ test("credit_transactions 幂等键唯一 + 追加", async () => {
 ```bash
 cd apps/api && bun run drizzle-kit generate && bun test test/billing-schema.test.ts
 git add apps/api/src/db/schema/credits.ts apps/api/drizzle apps/api/test/billing-schema.test.ts
-git commit -m "feat(spec301): credit_transactions(append-only+幂等) / credit_balances
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec301): credit_transactions(append-only+幂等) / credit_balances"
 ```
 
 ---
@@ -230,9 +226,7 @@ export const refunds = pgTable("refunds", {
 ```bash
 cd apps/api && bun run drizzle-kit generate && bun test test/billing-schema.test.ts
 git add apps/api/src/db/schema/payments.ts apps/api/drizzle apps/api/test/billing-schema.test.ts
-git commit -m "feat(spec301): payment_orders/payment_terminals/refunds 表
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec301): payment_orders/payment_terminals/refunds 表"
 ```
 
 ---
@@ -275,9 +269,7 @@ export const billingConfigs = pgTable("billing_configs", {
 ```bash
 cd apps/api && bun run drizzle-kit generate && bun test test/billing-schema.test.ts
 git add apps/api/src/db/schema/billing.ts apps/api/drizzle apps/api/test/billing-schema.test.ts
-git commit -m "feat(spec301): referrals/billing_configs 表
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(spec301): referrals/billing_configs 表"
 ```
 
 ---
