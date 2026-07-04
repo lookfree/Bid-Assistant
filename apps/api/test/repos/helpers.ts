@@ -1,6 +1,10 @@
+import { randomBytes } from "node:crypto"
 import { createUserWithIdentity } from "../../src/repos/users"
+import { createAdmin } from "../../src/repos/admin-users"
+import { createAdminSession } from "../../src/repos/admin-sessions"
+import { hashAdminToken, hashPassword } from "../../src/services/admin-auth"
 import { getDb } from "../../src/db/client"
-import { users, plans, subscriptions, paymentOrders, type User } from "../../src/db/schema"
+import { users, plans, subscriptions, paymentOrders, type User, type AdminRole } from "../../src/db/schema"
 import { eq } from "drizzle-orm"
 
 // 集成测试连远程 bidsaas（公网往返较慢），统一放宽默认超时（各测试文件 setDefaultTimeout 用）。
@@ -92,4 +96,29 @@ export async function makeTestOrder(
     } as typeof paymentOrders.$inferInsert)
     .returning()
   return o!
+}
+
+// —— spec310 运营后台测试夹具 ——
+let admSeq = 0
+/** 建指定角色的 admin + 有效会话，返回可展开进请求头的凭证（+adminId 供清理）。 */
+export async function makeAdminSession(
+  role: AdminRole,
+  register: (id: string) => void,
+): Promise<{ headers: Record<string, string>; adminId: string; token: string }> {
+  const admin = await createAdmin({
+    username: `adm_${role}_${Date.now().toString(36)}_${admSeq++}`,
+    passwordHash: await hashPassword("test-pass"),
+    role,
+  })
+  register(admin.id)
+  const token = randomBytes(24).toString("hex")
+  await createAdminSession({ adminId: admin.id, tokenHash: hashAdminToken(token), expiresAt: new Date(Date.now() + 3600_000) })
+  return { headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" }, adminId: admin.id, token }
+}
+
+/** 建 C 端用户（可指定 nickname，供 users 搜索测试）。 */
+export async function makeUserWithNickname(register: (id: string) => void, nickname?: string): Promise<string> {
+  const [u] = await getDb().insert(users).values({ nickname: nickname ?? `u_${Date.now().toString(36)}` }).returning()
+  register(u!.id)
+  return u!.id
 }

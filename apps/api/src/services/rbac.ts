@@ -21,7 +21,8 @@ export type Permission = (typeof PERMISSIONS)[number]
 export const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
   superadmin: [...PERMISSIONS],
   finance: ["order.read", "refund.write", "ledger.read", "audit.read"],
-  ops: ["user.read", "user.write", "plan.write", "ledger.read", "audit.read"],
+  ops: ["user.read", "user.write", "plan.write", "config.write", "ledger.read", "audit.read"], // ops 管用户/套餐/配置（spec310 角色模型）
+
   support: ["user.read", "order.read", "ledger.read"], // 只读 + 客服
 }
 
