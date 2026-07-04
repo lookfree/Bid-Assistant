@@ -356,6 +356,9 @@ git commit -m "feat(agent): per-run model override from request body (spec311)"
   - `type AgentModelForm = { provider: string; model: string; fallbacks: string }`
   - `toAgentModelForm(cfg: unknown): AgentModelForm` — 把 config 值（`model` 可能为 null）规整成表单（null→""）。
   - `fromAgentModelForm(f: AgentModelForm): { provider: string; model: string | null; fallbacks: string }` — 空 model→null。
+  - `PROVIDER_OPTIONS`（下拉友好标签，provider 键不变）：
+    `[{ value: "deepseek", label: "DeepSeek" }, { value: "qwen", label: "阿里千问（通义千问）" }, { value: "glm", label: "智谱 GLM" }]`
+    （阿里千问 = 现有 `qwen` provider（DashScope，key `dashscope_api_key`），无需新增 provider。）
 
 - [ ] **Step 1: 写失败测试**（纯映射）
 
@@ -381,7 +384,7 @@ Expected: FAIL（函数未定义）
 
 - [ ] **Step 3: 实现映射 + 分区 UI**
 
-在 `plans-client.tsx` 导出上述两个纯函数；新增「智能体模型」卡片：provider 用 `<select>`（选项 `deepseek`/`qwen`/`glm`）、model 与 fallbacks 用 `<Input>`，保存调 `adminApi PUT /plans/configs/agent_model`（沿用页面既有配置保存模式与 `config.write` 按钮禁用逻辑）。model 展示用 `toAgentModelForm`，保存用 `fromAgentModelForm`。
+在 `plans-client.tsx` 导出上述纯函数与 `PROVIDER_OPTIONS`；新增「智能体模型」卡片：provider 用 `<select>`（渲染 `PROVIDER_OPTIONS` 的 `label`，`value` 为 provider 键）、model 与 fallbacks 用 `<Input>`，保存调 `adminApi PUT /plans/configs/agent_model`（沿用页面既有配置保存模式与 `config.write` 按钮禁用逻辑）。model 展示用 `toAgentModelForm`，保存用 `fromAgentModelForm`。
 
 - [ ] **Step 4: 跑测试 + typecheck**
 
