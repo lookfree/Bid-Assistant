@@ -26,6 +26,9 @@ export function renewalCronJobs(deps: { notify?: (n: ReminderNotice) => Promise<
         await scanRenewalReminders(new Date(), { notify })
       },
     })
+  } else {
+    // 告警与注册状态放同一分支：渠道接通后此日志自然消失，不会变成两处失同步的假话
+    console.warn("[cron] renewal-remind 未注册：提醒通知渠道未配置（待短信模板/站内信就绪）")
   }
   return jobs
 }

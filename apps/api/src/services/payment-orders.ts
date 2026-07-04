@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { and, eq, inArray, lte } from "drizzle-orm"
+import { and, count, eq, inArray, lte } from "drizzle-orm"
 import { getDb } from "../db/client"
 import { paymentOrders } from "../db/schema"
 import { getConfig, pickPositive } from "./config"
@@ -63,11 +63,11 @@ const STALE_PAYABLE_MS = 7 * 24 * 60 * 60 * 1000
 
 /** 用户当前开放（created）订单数：下单频控用——created 单会被扫单 Cron 在窗口后收敛，天然退火。 */
 export async function countOpenOrders(userId: string): Promise<number> {
-  const rows = await getDb()
-    .select({ id: paymentOrders.id })
+  const [row] = await getDb()
+    .select({ n: count() })
     .from(paymentOrders)
     .where(and(eq(paymentOrders.userId, userId), eq(paymentOrders.status, "created")))
-  return rows.length
+  return Number(row?.n ?? 0)
 }
 
 /**

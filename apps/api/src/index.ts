@@ -51,8 +51,7 @@ const app = createApp({
 // - 支付两个 job（每日签到 + 滞留单扫描）：gate 与路由同源 getPayment（不半开），缺凭据静默跳过；
 // - 订阅状态推进：不依赖支付凭据，始终注册；
 // - 到期提醒：通知渠道（短信模板/站内信）就绪后经 renewalCronJobs({ notify }) 接通——
-//   无渠道不注册（console 假发送会白耗 renewal_reminders 去重档位，见 review-followups spec305 C10）。
-console.warn("[cron] renewal-remind 未注册：提醒通知渠道未配置（待短信模板/站内信就绪）")
+//   无渠道不注册并在 renewalCronJobs 内告警（console 假发送会白耗去重档位，review-followups spec305 C10）。
 const payment = getPayment()
 const cron = startCronRunner([
   ...(payment ? [sqbCheckinJob(payment.terminal), paymentOrderSweepJob(payment.provider)] : []),

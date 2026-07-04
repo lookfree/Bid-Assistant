@@ -4,7 +4,8 @@ import { getDb, closeDb } from "../src/db/client"
 import { users, plans, subscriptions } from "../src/db/schema"
 import { scanRenewalReminders, type ReminderNotice } from "../src/services/renewal"
 import { seedConfigs, setConfig } from "../src/services/config"
-import { makeLedgerUser, TEST_TIMEOUT_MS } from "./repos/helpers"
+import { makeTestPlan, makeTestSubscription, TEST_TIMEOUT_MS } from "./repos/helpers"
+import { DAY_MS } from "../src/services/renewal"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB（跑法：./test-on-mbp.sh test/renewal-remind.test.ts）
 
@@ -14,12 +15,7 @@ let planId = ""
 
 beforeAll(async () => {
   await seedConfigs() // renewal_reminder_days = [7,3,1]
-  const [p] = await getDb()
-    .insert(plans)
-    .values({ name: "测试月卡-remind", priceCents: 1000, billingCycle: "month" })
-    .returning()
-  planId = p!.id
-  madePlans.push(planId)
+  planId = await makeTestPlan((id) => madePlans.push(id), { name: "测试月卡-remind" })
 })
 
 afterAll(async () => {
@@ -29,15 +25,8 @@ afterAll(async () => {
   await closeDb()
 })
 
-const day = 86_400_000
-const mkSub = async (status: string, endOffsetMs: number) => {
-  const userId = await makeLedgerUser((id) => madeUsers.push(id))
-  const [s] = await getDb()
-    .insert(subscriptions)
-    .values({ userId, planId, status, currentPeriodEnd: new Date(Date.now() + endOffsetMs) })
-    .returning()
-  return s!
-}
+const day = DAY_MS
+const mkSub = (status: string, endOffsetMs: number) => makeTestSubscription((id) => madeUsers.push(id), planId, status, endOffsetMs)
 
 /** 只统计本测试建的订阅（远程共享库可能有其他到期订阅）。 */
 const capture = () => {

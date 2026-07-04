@@ -2,14 +2,13 @@ import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bu
 import { and, eq } from "drizzle-orm"
 import { Hono } from "hono"
 import { paymentRoutes } from "../src/routes/payment"
-import { createSign, generateKeyPairSync } from "node:crypto"
 import { createOrder } from "../src/services/payment-orders"
-import { makeShouqianbaProvider } from "../src/services/payment/shouqianba"
 import { loginWithPhone } from "../src/services/auth"
 import { seedConfigs, setConfig } from "../src/services/config"
 import { getDb, closeDb } from "../src/db/client"
 import { users, paymentOrders, creditTransactions } from "../src/db/schema"
 import { uniquePhone, TEST_TIMEOUT_MS } from "./repos/helpers"
+import { makeSignedProvider } from "./helpers/sqb-gateway"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB（跑法：./test-on-mbp.sh test/payment-routes.test.ts）
 
@@ -19,18 +18,8 @@ let otherToken = ""
 let otherUserId = ""
 const polled: string[] = []
 
-// 真 ShouqianbaProvider（凭证注入、真 RSA 验签/报文解析——路由测试走生产解析路径，不用手抄 mock）
-const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 })
-const provider = makeShouqianbaProvider({
-  cfg: {
-    gateway: "https://sqb.test",
-    wapGateway: "https://wap.test/gateway",
-    publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
-  },
-  getCredentials: async () => ({ terminalSn: "TSN-RT", terminalKey: "tkey-rt" }),
-})
-/** 收钱吧侧对 body 原文的 RSA 签名（Authorization 头）。 */
-const signOf = (body: string) => createSign("RSA-SHA256").update(body, "utf8").sign(privateKey, "base64")
+// 真 ShouqianbaProvider + RSA 签名器（共享 helper：路由测试走生产解析/验签路径，不手抄 mock）
+const { provider, signOf } = makeSignedProvider("RT")
 
 const app = new Hono()
 app.route("/api/payment", paymentRoutes({ provider, baseUrl: "https://app.test", poll: (id) => void polled.push(id) }))

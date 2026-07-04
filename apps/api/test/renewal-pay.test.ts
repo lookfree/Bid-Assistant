@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bun:test"
-import { and, eq, inArray } from "drizzle-orm"
+import { eq, inArray } from "drizzle-orm"
 import { getDb, closeDb } from "../src/db/client"
 import { users, plans, subscriptions, creditTransactions, paymentOrders } from "../src/db/schema"
 import { createOrder, markPaid } from "../src/services/payment-orders"
 import { seedConfigs } from "../src/services/config"
-import { makeLedgerUser, TEST_TIMEOUT_MS } from "./repos/helpers"
+import { makeLedgerUser, makeTestPlan, TEST_TIMEOUT_MS } from "./repos/helpers"
+import { DAY_MS } from "../src/services/renewal"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB（跑法：./test-on-mbp.sh test/renewal-pay.test.ts）
 
@@ -14,12 +15,7 @@ let planId = ""
 
 beforeAll(async () => {
   await seedConfigs()
-  const [p] = await getDb()
-    .insert(plans)
-    .values({ name: "测试月卡-pay", priceCents: 1000, billingCycle: "month", grantCreditsPerCycle: 100 })
-    .returning()
-  planId = p!.id
-  madePlans.push(planId)
+  planId = await makeTestPlan((id) => madePlans.push(id), { name: "测试月卡-pay" })
 })
 
 afterAll(async () => {
@@ -28,7 +24,7 @@ afterAll(async () => {
   await closeDb()
 })
 
-const day = 86_400_000
+const day = DAY_MS
 const mkUser = () => makeLedgerUser((id) => madeUsers.push(id))
 const mkRenewalOrder = (userId: string, key: string) =>
   createOrder({
@@ -45,7 +41,7 @@ const renewalGrants = (orderId: string) =>
   getDb()
     .select()
     .from(creditTransactions)
-    .where(and(eq(creditTransactions.idempotencyKey, `renewal:${orderId}`)))
+    .where(eq(creditTransactions.idempotencyKey, `renewal:${orderId}`))
 
 describe("spec305 续费入账（markPaid type=renewal 分支，续期+发积分同事务恰好一次）", () => {
   it("未过期续费：从 current_period_end 顺延一周期（不吞剩余天数），发当期积分一次", async () => {

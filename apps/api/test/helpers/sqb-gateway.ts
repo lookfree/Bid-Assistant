@@ -1,3 +1,5 @@
+import { createSign, generateKeyPairSync } from "node:crypto"
+import { makeShouqianbaProvider } from "../../src/services/payment/shouqianba"
 import type { PaymentProvider } from "../../src/services/payment/provider"
 
 // 收钱吧 mock 网关（payment-terminal / payment-provider 测试共用）：
@@ -31,4 +33,20 @@ export function fakeGateway(responses: Array<Record<string, unknown> | Error>) {
     return new Response(JSON.stringify(next), { status: 200 })
   }) as typeof fetch
   return { calls, fetchFn }
+}
+
+/** 真 ShouqianbaProvider + 配套 RSA 签名器（payment-routes / membership-renew 共用）：
+ *  路由测试走生产解析/验签路径，不手抄 mock。 */
+export function makeSignedProvider(tag: string) {
+  const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 })
+  const provider = makeShouqianbaProvider({
+    cfg: {
+      gateway: "https://sqb.test",
+      wapGateway: "https://wap.test/gateway",
+      publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
+    },
+    getCredentials: async () => ({ terminalSn: `TSN-${tag}`, terminalKey: `tkey-${tag}` }),
+  })
+  const signOf = (body: string) => createSign("RSA-SHA256").update(body, "utf8").sign(privateKey, "base64")
+  return { provider, signOf }
 }
