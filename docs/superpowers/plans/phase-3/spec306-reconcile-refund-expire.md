@@ -61,13 +61,15 @@ apps/api/test/
   - `refund(opts: { clientSn: string; refundSn: string; amountCents: number }) -> Promise<{ ok: boolean }>`（spec304 实契约；refundSn 幂等）。
 - 表（spec301）：`paymentOrders`（含 `clientSn/providerTradeNo/status(created/paid/failed/unknown/refunded)`）、`refunds`、`creditTransactions`、`creditBalances`。（无 `paymentAgreements`——不做自动续费）
 
-**产出（供 spec310 运营后台 / 告警消费）：**
-- `reconcileDiffs` 表对象。
-- `runReconcile(date: string, deps: { provider, alertHook? }) -> Promise<{ checked: number; diffs: number }>`（对账 job 体，可直调测试）。
-- `auditLedger() -> Promise<Array<{ userId: string; cached: number; actual: number }>>`（积分账本审计，返回不一致项）。
-- `createRefund(input: { orderId; amountCents; reason; operator }, deps: { provider }) -> Promise<{ refundId; status }>`（退款编排 service，可直调测试 + **被 spec310 `POST /admin-api/refunds` 调用**；本 spec 不建自有路由）。
-- `expireCreditsJob()`（过期 job 体）。
-- Cron 注册：`registerReconcileCron(deps)`、`registerCreditExpireCron()`。
+**产出（已按实现+review 定稿，本节即真实契约）：**
+- `reconcileDiffs` 表：diff_type ∈ {amount_mismatch, status_mismatch, unknown_paid, provider_missing, ledger_mismatch, orphan_hold, refund_stuck}；`subject` 列为去重主体（订单类=tradeNo、账本类=userId、孤儿=holdId、退款类=refundId），部分唯一索引 (diff_type, subject) WHERE resolved='open'——同问题只保留一行 open，人工 resolve 后再次检出才开新行。
+- `runReconcile(date, { provider, alertHook? }) -> { checked, diffs }`：扫 [date−7天, date+1天) 已结算单（7 天=可支付窗，晚结算单不漏）+ 全量存量 unknown；本地 refunded 也核对通道退款态；unknown 满 24h 且通道明确失败才收敛 failed（迟到 PAID 留门）。
+- `auditLedger(date?, alertHook?)`：余额 vs Σ流水双向核对，候选复查后落 diff（防在途交易假告警）。
+- `releaseOrphanHolds(now?, { maxAgeMs?, alertHook? })`：spec302 C1——>24h 无了结 hold 自动 release + orphan_hold 留痕（release 真插入才计）。
+- `scanStuckRefunds(now?, { maxAgeMs?, alertHook? })`：pending 超 1h 的退款单落 refund_stuck 转人工（**不自动重试**——换 refundSn 重试是通道双退路径）。
+- `createRefund({ orderId, amountCents, reason, operator, allowNegativeBalance? }, { provider }) -> { refundId, status: "done"|"failed"|"pending" }`：**pending=通道结果不明**（网络异常，占累计额度挡重试，待人工）；部分退款订单留 paid、退满才 refunded；扣回按累计比例；扣回超余额需 allowNegativeBalance。仅 spec310 `POST /admin-api/refunds` 调用。
+- Cron（`crons/billing.ts`，spec303 CronJob 工厂风格，startCronRunner 注册）：`creditExpireCronJob()` 与 `ledgerAuditCronJob({alertHook?})`（审计+孤儿+卡死退款，三段隔离）**始终注册**；`reconcileCronJob({provider, alertHook?})` 走 getPayment gate。job 体 `expireCreditsJob/ledgerAuditJob/reconcileJob` 均可直调测试。
+- unknown_paid 修复：spec310 人工确认后调 `markPaid(orderId, info, { allowStale: true })` 幂等补入账。
 
 ---
 

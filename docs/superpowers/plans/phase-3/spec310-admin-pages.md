@@ -17,6 +17,8 @@
 
 **Tech Stack:** Hono 4.12、Bun、Drizzle ORM、PostgreSQL、Zod、bun:test。前端原型为 admin-front（静态/SPA，按原型技术栈，本 spec 不约束其框架，只约束接口契约）。
 
+> **实现契约核对（spec306 落地后）**：① 退款入口调 `createRefund`（`services/refunds`）——注意三态返回 `done|failed|pending`（pending=通道结果不明转人工，不可自动重试）；入参含 `allowNegativeBalance`（扣回超余额时操作员确认）。② 必须补 **reconcile_diffs 差异工作台**：列表（扫 resolved='open'，按 diff_type/subject）、`PATCH resolve`、以及 unknown_paid 的修复动作（人工核实通道后调 `markPaid(orderId, info, { allowStale: true })` 幂等补入账）。③ 差异告警渠道（alertHook）在本 spec 接后台通知（review-followups C12）。
+
 ## Global Constraints
 
 见 `spec300-index.md`。本 spec 关键：
