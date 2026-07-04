@@ -28,4 +28,7 @@ export const BILLING_SEED: Record<string, unknown> = {
   renewal_reminder_days: [7, 3, 1], // 到期提醒天数档（T-7/T-3/T-1）
   renewal_grace_days: 3, // past_due 宽限期（天）
   payment_poll: { windowMinutes: 6, fastSeconds: 3, slowSeconds: 10 }, // 收钱吧结果轮询窗口（官方规范）
+  // 智能体模型选择（spec311）：运营后台可配，覆盖 agent env 默认；API Key 仍在 env。
+  // provider ∈ deepseek/qwen/glm；model=null 用 provider 默认模型；fallbacks 形如 "qwen:qwen-plus,glm:glm-4-flash"
+  agent_model: { provider: "deepseek", model: null, fallbacks: "" },
 }
