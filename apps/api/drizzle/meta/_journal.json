@@ -148,6 +148,13 @@
       "when": 1783069858815,
       "tag": "0020_admin_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1783069858816,
+      "tag": "0021_admin_adjust_credit_type",
+      "breakpoints": true
     }
   ]
 }

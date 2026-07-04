@@ -12,7 +12,8 @@ export const creditTransactions = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     // grant(赠送) | purchase(充值) | hold(预扣) | settle(结算) | release(退还) |
-    // expire(过期) | referral_reward(推荐奖励) | refund_clawback(退款注销已入账积分，负向)
+    // expire(过期) | referral_reward(推荐奖励) | refund_clawback(退款注销已入账积分，负向) |
+    // admin_adjust(运营手动调整，±，spec310)
     type: text("type").notNull(),
     amount: integer("amount").notNull(), // ± 积分（integer）
     sourceBatch: text("source_batch"), // 来源批次（FIFO 过期用）
@@ -27,7 +28,7 @@ export const creditTransactions = pgTable(
     idemUq: unique("credit_tx_idem_uq").on(t.idempotencyKey), // 幂等：同键只入一次
     // 钱表从严：type 拼错静默入库会破坏对账口径，DB 层白名单兜底
     typeCheck: check("credit_tx_type_check",
-      sql`${t.type} in ('grant','purchase','hold','settle','release','expire','referral_reward','refund_clawback')`),
+      sql`${t.type} in ('grant','purchase','hold','settle','release','expire','referral_reward','refund_clawback','admin_adjust')`),
   }),
 )
 
