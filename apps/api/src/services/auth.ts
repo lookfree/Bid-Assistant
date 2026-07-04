@@ -1,12 +1,13 @@
-import { randomBytes, createHash } from "node:crypto"
+import { randomBytes } from "node:crypto"
 import { findUserByIdentity, createOrGetOnConflict, getUserById } from "../repos/users"
 import { createSession, findValidSession, revokeSession } from "../repos/sessions"
+import { sha256Hex } from "./crypto"
 import type { User } from "../db/schema"
 
 // 会话令牌只以 sha256 哈希入库（sessions.token_hash）；原始不透明令牌只发给客户端，DB 不留明文。
-// createSession 与 findValidSession 两侧必须用同一哈希。
+// createSession 与 findValidSession 两侧必须用同一哈希（与 admin 共用 sha256Hex，防漂移）。
 export function hashToken(token: string): string {
-  return createHash("sha256").update(token).digest("hex")
+  return sha256Hex(token)
 }
 
 /** 签发 32 字节不透明令牌，DB 只存其 sha256 哈希；落 sessions（可撤销）。手机号/微信等各登录方式共用。 */

@@ -1,7 +1,7 @@
 import { Hono } from "hono"
 import { z } from "zod"
 import { loginAdmin, logoutAdmin } from "../../services/admin-auth"
-import { requireAdmin } from "../../middleware/admin-auth"
+import { requireAdmin, bearer } from "../../middleware/admin-auth"
 import type { AdminUser } from "../../db/schema"
 
 // admin-api 路由组（spec309）：与 C 端业务路由完全分组隔离，不复用 C 端 authMiddleware。
@@ -23,8 +23,7 @@ export function adminRoutes() {
 
   // 鉴权：登出（撤销当前 admin session）
   r.post("/logout", requireAdmin(), async (c) => {
-    const h = c.req.header("Authorization") ?? ""
-    await logoutAdmin(h.startsWith("Bearer ") ? h.slice(7) : "")
+    await logoutAdmin(bearer(c))
     return c.body(null, 204)
   })
 
