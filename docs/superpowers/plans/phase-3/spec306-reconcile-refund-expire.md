@@ -416,6 +416,7 @@ test("拒绝非法退款：订单非 paid / 超额", async () => {
 
 要点：
 - 入参 Zod 校验：`{ orderId: uuid, amountCents: int>0, reason: string, operator: string }`。
+- **type=renewal 单退款须同时处置订阅周期**（spec305 后 renewal 结算会顺延 current_period_end 并可复活状态）：只回扣积分不回退周期=退钱留会员。实现时二选一并落审计：①全额退款 → 周期回退一档（current_period_end 减一周期快照、必要时状态回落）；②仅允许人工处置（service 拒绝 renewal 单自动退款，转人工）。默认取 ②（保守），运营量起来再做 ①。
 - ①事务建 `refunds(pending)` + 校验：订单存在且 `status==="paid"`；`amountCents <= order.amountCents`（不满足抛错，不建 provider 调用）。
 - ②`refundSn = refunds.id`（退款幂等键，同一退款重试不重复退）。调 `deps.provider.refund({ clientSn: order.clientSn, refundSn, amountCents })`（spec304 实契约：按我方订单号 client_sn 退款）。
 - ③成功（`ok`）：事务内 `refunds.status=done` + `payment_orders.status=refunded` + 若该订单曾入账积分（按 `ref===order.id` 查 `purchase/grant` 正向流水之和 > 0）则写**负向流水** `type:"refund_clawback"`（spec301 已登记的新类型，负向注销充值积分；**不借 `release`**，`release` 是 spec302 的 hold 退还净 0 语义）`amount: -clawback`（`idempotencyKey: refund_clawback:${refundId}`，幂等）。

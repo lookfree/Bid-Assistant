@@ -67,6 +67,8 @@ lib/membership-types.ts            # Task4 新增:后端出参 TS 类型(Members
 
 ---
 
+> **实现契约核对（spec305 落地后）**：首购与续费统一走 `POST /api/membership/renew`（type=renewal 单；renewOnPaid 对无订阅行用户直接建新订阅）——payment_orders 的 `purchase` 类型**不用于会员**；订单历史视图可用 `payment_orders.plan_id / cycle_snapshot / credits_snapshot` 呈现续费明细。SubscriptionView 无 autoRenew 字段。
+
 ## Interfaces
 
 ### App 层公共 helper(Task0)
@@ -108,7 +110,7 @@ export interface SubscriptionView {
   planId: string | null
   tierId: "free" | "personal" | "professional"
   billingCycle: "month" | "quarter" | "year" | null
-  autoRenew: boolean
+  // （无 autoRenew——2026-07 决策不做自动续费，spec305 已按手动续费实现）
   currentPeriodStart: string | null   // ISO
   currentPeriodEnd: string | null      // ISO,到期时间
 }
@@ -210,8 +212,8 @@ export function renewMembership(planId: string): Promise<{ orderId: string; payU
 
 **TDD 步骤**:
 1. 写 `test/services/membership.test.ts`(用真实测试库/事务回滚 fixture,种入 `plans`(free/personal/professional 三档)、可选 `subscriptions`、`credit_balances`/流水):
-   - **未订阅用户**:`getMembershipOverview` 返回 `subscription.status==="none"`、`tierId==="free"`、`autoRenew===false`、`currentPeriodEnd===null`;`balance` 来自 `getBalance`;`plans.length===3`;`progressive.current.tierId==="free"`、`progressive.next.tierId==="personal"`。
-   - **personal 订阅 active**:`subscription.tierId==="personal"`、`status==="active"`、`currentPeriodEnd` 为 ISO 串、`autoRenew` 透传;`progressive.current.tierId==="personal"`、`progressive.next.tierId==="professional"`。
+   - **未订阅用户**:`getMembershipOverview` 返回 `subscription.status==="none"`、`tierId==="free"`、`currentPeriodEnd===null`;`balance` 来自 `getBalance`;`plans.length===3`;`progressive.current.tierId==="free"`、`progressive.next.tierId==="personal"`。
+   - **personal 订阅 active**:`subscription.tierId==="personal"`、`status==="active"`、`currentPeriodEnd` 为 ISO 串;`progressive.current.tierId==="personal"`、`progressive.next.tierId==="professional"`。
    - **professional 订阅**:`progressive.next===null`(已最高档)。
    - **过期订阅**(`status==="expired"` 或 `currentPeriodEnd < now`):降级展示,`tierId` 仍读 plan 但 `status` 为 `expired`;`progressive.current` 取该档。
    - 金额字段:`priceMonthYuan` 与 `priceMonthCents` 一致换算(用 Task0 `centsToYuan`)。
@@ -300,7 +302,7 @@ export function renewMembership(planId: string): Promise<{ orderId: string; payU
    - 用 `useEffect` + `fetchMembership()` 加载 `MembershipOverview`,`fetchOrders()` 加载订单,`fetchCreditTransactions()` 加载流水(各带 loading/error/空态)。
 2. **真实渲染**:
    - 余额:`overview.balance`(替换 `credits` 初值)。
-   - 订阅状态:`overview.subscription`(档位 `tierId`/`status`/`currentPeriodEnd` 到期日/`autoRenew` 开关态/`billingCycle`)。
+   - 订阅状态:`overview.subscription`(档位 `tierId`/`status`/`currentPeriodEnd` 到期日/`billingCycle`)。
    - 套餐:用 `overview.plans` 渲染完整对比;**渐进式区块**用 `overview.progressive.current` + `overview.progressive.next` 渲染「当前档 / 推荐升级到下一档」;`next===null` 时显示「已是最高档」。
    - 仍可复用 `lib/plans.ts` 的 `creditCosts`/`creditPacks`(消耗说明、充值包目录是产品静态文案,保留;但充值价格以接口/配置为准时优先接口)。
 3. **入口接线**:
