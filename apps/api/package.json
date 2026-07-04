@@ -8,7 +8,8 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "db:generate": "bun --env-file=../../.env.bidsaas.local run drizzle-kit generate",
-    "db:migrate": "bun --env-file=../../.env.bidsaas.local run drizzle-kit migrate"
+    "db:migrate": "bun --env-file=../../.env.bidsaas.local run drizzle-kit migrate",
+    "admin:bootstrap": "bun --env-file=../../.env.bidsaas.local run src/scripts/bootstrap-admin.ts"
   },
   "dependencies": {
     "@alicloud/dysmsapi20170525": "^4.5.1",

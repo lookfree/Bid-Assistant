@@ -31,6 +31,24 @@
 
 ---
 
+## 实现校正（与现有代码库对齐 —— 以下覆盖本文档后续示例代码）
+
+本文档草拟于施工前，示例代码若与代码库现状不符，**一律以下列为准**：
+
+1. **DB 句柄用 `getDb()`**（非 `db`）；schema 从 barrel `../db/schema` 导入（非深路径 `../src/db/schema/xxx`）；测试收尾 `closeDb()`。
+2. **手动调积分不能走 `grant`**：spec302 `grant` 拒绝非正金额（`amount<=0` 抛错），负向扣积分会失败。**新增 `credits.adminAdjust(userId, signedAmount, {ref, idempotencyKey})`**（签名金额、事务内 `lockUserBalanceRow` 串行化、负向校验不扣穿到负余额、幂等），并给 `credit_transactions` 加 `admin_adjust` 类型（迁移 0021）。`adminGrantCredits` 调它。
+3. **调积分幂等键必须客户端提供**：用 `Date.now()` 拼键会让双击/重试各生成新键 → 重复给钱/扣钱。`POST /users/:id/credits` body 必带 `idempotencyKey`（前端每次调整弹窗生成一个 UUID）。
+4. **`getPaymentProvider()` 不存在**：退款 provider 经 `resolvePaymentDeps({}, tag)?.provider` 从 env 解析。退款路由做成 `refundsRouter(resolveProvider)` 工厂（生产传 env 解析器、测试注入 mock），无凭据 → 503。退款成功后**审计失败只记日志、不回报 422**（否则运营重试会二次退真钱）。
+5. **`users` 已有 `status`（active/banned）**：Task 2 无需加列/迁移。**`users` 无 email 字段**（email/phone 在 `user_identities`）：`listUsers` 搜索匹配 `nickname` + 子查询 `user_identities.identifier`。
+6. **`routes/admin/index.ts` 已由 spec309 建（`adminRoutes()` 含 login/logout/me）**：本 spec **扩展**它——功能子路由挂在一个 `authed` 子 app（`authed.use("*", requireAdmin())`）上，`/login` 保持公开（先注册优先匹配）。不新建 `adminApiRouter`。
+7. **RBAC 给 `ops` 补 `config.write`**：spec309 rbac 原未含，但本 spec 角色模型「ops 管用户/套餐/配置」需要。
+8. **分页统一**：路由用 spec308 的 `parsePagination`（pageSize 上限 100 + 校验，非裸 `Number()`）+ `pagedBody`（补 `hasMore`）；列表服务返回 `{items,total}`。
+9. **测试连真库经 mbp 隧道跑**（`./test-on-mbp.sh`，非本机直连）；**自建 Hono 挂 `adminRoutes()`**（`app.ts` 导出 `createApp` 非 `app`）；会话夹具 `makeAdminSession(role, register)` 在 `test/repos/helpers.ts`（建 admin+会话返回请求头）。
+10. **差异工作台审计 action 用 `diff.resolve`/`diff.fix_unknown_paid`**（权限仍 `refund.write`），不复用 `refund.write` 作 action。
+11. **提交规范**：英文 Conventional Commits、账号 `lookfree`、不加 `Co-Authored-By`。
+
+---
+
 ## File Structure
 
 ```

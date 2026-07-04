@@ -73,6 +73,25 @@ export async function grant(
   if (inserted.length > 0) await refreshBalance(db, userId) // 幂等命中账没动，跳过全表求和
 }
 
+/** 运营手动调积分（spec310）：签名金额（正加/负扣，非 0），带幂等键。
+ *  事务内锁用户行串行化：负向在锁内校验不越扣到负余额（防误操作扣穿）。 */
+export async function adminAdjust(userId: string, amount: number, opts: { ref?: string; idempotencyKey: string }): Promise<void> {
+  if (!Number.isInteger(amount) || amount === 0) throw new Error(`运营调整金额须为非 0 整数：${amount}`)
+  await getDb().transaction(async (tx) => {
+    await lockUserBalanceRow(tx, userId)
+    if (amount < 0) {
+      const bal = await sumBalance(tx, userId)
+      if (bal + amount < 0) throw new Error(`扣减 ${-amount} 超过当前余额 ${bal}`) // 钱从严：不扣穿到负
+    }
+    const inserted = await tx
+      .insert(creditTransactions)
+      .values({ userId, type: "admin_adjust", amount, ref: opts.ref, idempotencyKey: opts.idempotencyKey })
+      .onConflictDoNothing({ target: creditTransactions.idempotencyKey })
+      .returning()
+    if (inserted.length > 0) await refreshBalance(tx, userId)
+  })
+}
+
 /** 预扣：N = credit_cost.<op> 配置。事务内锁 credit_balances 用户行作串行化点，
  *  校验余额≥N 后写 hold(-N)。余额不足抛 InsufficientCreditsError。
  *  为什么锁用户行而非流水行：新用户首扣时 credit_transactions 无行可锁（谓词锁缺口），
