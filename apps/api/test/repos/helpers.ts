@@ -1,6 +1,6 @@
 import { createUserWithIdentity } from "../../src/repos/users"
 import { getDb } from "../../src/db/client"
-import { users, plans, subscriptions, type User } from "../../src/db/schema"
+import { users, plans, subscriptions, paymentOrders, type User } from "../../src/db/schema"
 import { eq } from "drizzle-orm"
 
 // 集成测试连远程 bidsaas（公网往返较慢），统一放宽默认超时（各测试文件 setDefaultTimeout 用）。
@@ -68,4 +68,27 @@ export async function makeTestSubscription(
     .values({ userId, planId, status, currentPeriodEnd: endOffsetMs == null ? null : new Date(Date.now() + endOffsetMs) })
     .returning()
   return s!
+}
+
+/** 支付/对账测试共用：直插订单（绕过 createOrder 的频控与类型不变式，测试需精确控制字段）。 */
+export async function makeTestOrder(
+  userId: string,
+  status: string,
+  amountCents: number,
+  extra: Record<string, unknown> = {},
+): Promise<typeof paymentOrders.$inferSelect> {
+  const { randomUUID } = await import("node:crypto")
+  const [o] = await getDb()
+    .insert(paymentOrders)
+    .values({
+      userId,
+      type: "recharge",
+      amountCents,
+      status,
+      clientSn: `t-${randomUUID()}`,
+      idempotencyKey: `t-${randomUUID()}`,
+      ...extra,
+    } as typeof paymentOrders.$inferInsert)
+    .returning()
+  return o!
 }

@@ -6,7 +6,7 @@ import { users, paymentOrders, reconcileDiffs } from "../src/db/schema"
 import { expireCreditsJob, ledgerAuditJob, reconcileJob } from "../src/crons/billing"
 import { grant, getBalance } from "../src/services/credits"
 import { seedConfigs } from "../src/services/config"
-import { makeLedgerUser, TEST_TIMEOUT_MS } from "./repos/helpers"
+import { makeLedgerUser, makeTestOrder, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB（跑法：./test-on-mbp.sh test/billing-crons.test.ts）
 
@@ -40,20 +40,11 @@ describe("spec306 计费 Cron job 体（直调，不依赖 Redis/定时器）", 
   it("reconcileJob：对昨日账（7 天宽窗），差异触发 alertHook", async () => {
     const userId = await makeLedgerUser((id) => madeUsers.push(id))
     // 昨日窗口内的金额不符订单
-    const [o] = await getDb()
-      .insert(paymentOrders)
-      .values({
-        userId,
-        type: "recharge",
-        amountCents: 1000,
-        status: "paid",
-        clientSn: `bc-${randomUUID()}`,
-        idempotencyKey: `bc-${randomUUID()}`,
-        providerTradeNo: `T-${randomUUID().slice(0, 8)}`,
-        createdAt: new Date(Date.now() - 86400_000),
-      })
-      .returning()
-    madeOrders.push(o!.id)
+    const o = await makeTestOrder(userId, "paid", 1000, {
+      providerTradeNo: `T-${randomUUID().slice(0, 8)}`,
+      createdAt: new Date(Date.now() - 86400_000),
+    })
+    madeOrders.push(o.id)
 
     let alerts = 0
     await reconcileJob({

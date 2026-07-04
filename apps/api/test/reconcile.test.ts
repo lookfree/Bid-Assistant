@@ -1,12 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bun:test"
-import { randomUUID } from "node:crypto"
 import { and, eq, inArray } from "drizzle-orm"
 import { getDb, closeDb } from "../src/db/client"
 import { users, paymentOrders, reconcileDiffs, creditTransactions, creditBalances } from "../src/db/schema"
 import { runReconcile, auditLedger, releaseOrphanHolds, type ReconcileProvider } from "../src/services/reconcile"
 import { grant, hold, settle, getBalance } from "../src/services/credits"
 import { seedConfigs } from "../src/services/config"
-import { makeLedgerUser, TEST_TIMEOUT_MS } from "./repos/helpers"
+import { makeLedgerUser, makeTestOrder, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB（跑法：./test-on-mbp.sh test/reconcile.test.ts）
 
@@ -29,23 +28,11 @@ afterAll(async () => {
   await closeDb()
 })
 
-/** 直插订单（避开 createOrder 的开放单频控；对账测试要精确控制字段）。默认建单于 2 天前（满收敛账龄）。 */
+/** 默认建单于 2 天前：在 7 天对账窗内，且满足 unknown 收敛的 24h 账龄。 */
 async function mkOrder(status: string, amountCents: number, extra: Partial<typeof paymentOrders.$inferInsert> = {}) {
-  const [o] = await getDb()
-    .insert(paymentOrders)
-    .values({
-      userId,
-      type: "recharge",
-      amountCents,
-      status,
-      clientSn: `rc-${randomUUID()}`,
-      idempotencyKey: `rc-${randomUUID()}`,
-      createdAt: new Date(Date.now() - 2 * day), // 在 7 天对账窗内，且满足 unknown 收敛的 24h 账龄
-      ...extra,
-    })
-    .returning()
-  madeOrders.push(o!.id)
-  return o!
+  const o = await makeTestOrder(userId, status, amountCents, { createdAt: new Date(Date.now() - 2 * day), ...extra })
+  madeOrders.push(o.id)
+  return o
 }
 
 /** 按 clientSn 返回可控查询结果；未配置的 clientSn 返回 pending（不产生差异）。 */

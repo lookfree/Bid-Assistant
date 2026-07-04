@@ -1,7 +1,7 @@
 import type { CronJob } from "../services/cron"
 import { expireDue } from "../services/credits"
 import { DAY_MS } from "../services/renewal"
-import { runReconcile, auditLedger, releaseOrphanHolds, scanStuckRefunds, type ReconcileProvider, type AlertHook } from "../services/reconcile"
+import { runReconcile, auditLedger, releaseOrphanHolds, scanStuckRefunds, toBillDate, type ReconcileProvider, type AlertHook } from "../services/reconcile"
 
 // spec306 每日 Cron（spec303 startCronRunner 注册，集群单实例执行；注册即首跑，业务幂等去重）：
 // - credit-expire / ledger-audit：纯账本关切，不依赖支付凭据，**始终注册**
@@ -42,7 +42,7 @@ export function ledgerAuditCronJob(deps: { alertHook?: AlertHook } = {}): CronJo
 
 /** 对账 job 体（可直调测试）：对昨日（UTC）账（窗口内已结算单 + 全量存量 unknown）。 */
 export async function reconcileJob(deps: { provider: ReconcileProvider; alertHook?: AlertHook }): Promise<void> {
-  const date = new Date(Date.now() - DAY_MS).toISOString().slice(0, 10)
+  const date = toBillDate(new Date(Date.now() - DAY_MS))
   const r = await runReconcile(date, deps)
   console.info(`[cron:reconcile] ${date} checked=${r.checked} diffs=${r.diffs}`)
 }

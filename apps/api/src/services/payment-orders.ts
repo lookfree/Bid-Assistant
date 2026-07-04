@@ -58,8 +58,9 @@ export type MarkPaidResult = {
 /** paid 状态机可推进的起点：created（正常）、unknown（窗口尽头/金额异常后迟到的有效支付）。 */
 const PAYABLE_STATUSES = ["created", "unknown"]
 
-/** 订单可支付窗（下单起 7 天）：unknown 非终态是为真实迟到回调留的门，不能顺带变成囤旧价单的套利门。 */
-const STALE_PAYABLE_MS = 7 * 24 * 60 * 60 * 1000
+/** 订单可支付窗（下单起 7 天）：unknown 非终态是为真实迟到回调留的门，不能顺带变成囤旧价单的套利门。
+ *  对账窗（reconcile）与此同源——调窗口只改这一处。 */
+export const STALE_PAYABLE_MS = 7 * 24 * 60 * 60 * 1000
 
 /** 用户当前开放（created）订单数：下单频控用——created 单会被扫单 Cron 在窗口后收敛，天然退火。 */
 export async function countOpenOrders(userId: string): Promise<number> {

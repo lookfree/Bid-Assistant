@@ -35,6 +35,20 @@ const InputSchema = z.object({
 export type RefundInput = z.infer<typeof InputSchema>
 
 type Order = typeof paymentOrders.$inferSelect
+type DbOrTx = Tx | ReturnType<typeof getDb>
+
+/** 该订单已入账的正向积分总额（充值到账等，ref=order.id）。 */
+async function sumGrantedCredits(db: DbOrTx, orderId: string): Promise<number> {
+  const [row] = await db
+    .select({ total: sql<number>`coalesce(sum(${creditTransactions.amount}), 0)` })
+    .from(creditTransactions)
+    .where(and(eq(creditTransactions.ref, orderId), sql`${creditTransactions.amount} > 0`))
+  return Number(row?.total ?? 0)
+}
+
+/** 扣回目标（累计口径）：round(总入账 × 累计退款比例)。公式只此一处，预检与落账口径一致。 */
+const clawbackTarget = (granted: number, refundedCents: number, orderAmountCents: number): number =>
+  Math.round((granted * refundedCents) / orderAmountCents)
 
 /** ① 事务：行锁下校验（paid/非 renewal/累计额）+ 建 pending。校验不过抛错，不触发通道调用。 */
 async function validateAndCreatePending(input: RefundInput): Promise<{ order: Order; refundId: string; doneBefore: number }> {
@@ -72,11 +86,7 @@ async function settleRefundDone(tx: Tx, order: Order, refundId: string, input: R
     await tx.update(paymentOrders).set({ status: "refunded" }).where(and(eq(paymentOrders.id, order.id), eq(paymentOrders.status, "paid")))
   }
 
-  const [granted] = await tx
-    .select({ total: sql<number>`coalesce(sum(${creditTransactions.amount}), 0)` })
-    .from(creditTransactions)
-    .where(and(eq(creditTransactions.ref, order.id), sql`${creditTransactions.amount} > 0`))
-  const grantedCredits = Number(granted?.total ?? 0)
+  const grantedCredits = await sumGrantedCredits(tx, order.id)
   if (grantedCredits <= 0) return false
 
   const [clawed] = await tx
@@ -84,8 +94,8 @@ async function settleRefundDone(tx: Tx, order: Order, refundId: string, input: R
     .from(creditTransactions)
     .where(and(eq(creditTransactions.ref, order.id), eq(creditTransactions.type, "refund_clawback")))
   const alreadyClawed = -Number(clawed?.total ?? 0)
-  // 累计口径：目标扣回 = round(总入账 × 累计退款比例)；本笔 = 目标 − 已扣回（取整误差不随笔数累积/放大）
-  const clawback = Math.round((grantedCredits * doneTotal) / order.amountCents) - alreadyClawed
+  // 累计口径：本笔 = 目标 − 已扣回（取整误差不随笔数累积/放大）
+  const clawback = clawbackTarget(grantedCredits, doneTotal, order.amountCents) - alreadyClawed
   if (clawback <= 0) return false
 
   await tx
@@ -113,11 +123,7 @@ export async function createRefund(rawInput: RefundInput, deps: { provider: Refu
   // 扣回护栏前置估算：全额/部分退款要扣的积分若超当前余额（用户已花掉），默认拒绝——操作员须显式确认
   if (!input.allowNegativeBalance) {
     const balance = await getBalance(order.userId)
-    const [granted] = await getDb()
-      .select({ total: sql<number>`coalesce(sum(${creditTransactions.amount}), 0)` })
-      .from(creditTransactions)
-      .where(and(eq(creditTransactions.ref, order.id), sql`${creditTransactions.amount} > 0`))
-    const estimate = Math.round((Number(granted?.total ?? 0) * input.amountCents) / order.amountCents)
+    const estimate = clawbackTarget(await sumGrantedCredits(getDb(), order.id), input.amountCents, order.amountCents)
     if (estimate > balance) {
       await getDb().update(refunds).set({ status: "failed" }).where(eq(refunds.id, refundId)) // 未触发通道调用，failed 安全
       throw new Error(`扣回积分 ${estimate} 超过当前余额 ${balance}（用户已消费）：需操作员确认后携 allowNegativeBalance 重试`)

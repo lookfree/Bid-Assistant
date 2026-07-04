@@ -5,10 +5,9 @@ import { getDb, closeDb } from "../src/db/client"
 import { users, plans, paymentOrders, refunds, creditTransactions, reconcileDiffs } from "../src/db/schema"
 import { createRefund, type RefundProvider } from "../src/services/refunds"
 import { scanStuckRefunds } from "../src/services/reconcile"
-import { hold, settle } from "../src/services/credits"
-import { getBalance, grant } from "../src/services/credits"
+import { getBalance, grant, hold, settle } from "../src/services/credits"
 import { seedConfigs } from "../src/services/config"
-import { makeLedgerUser, makeTestPlan, TEST_TIMEOUT_MS } from "./repos/helpers"
+import { makeLedgerUser, makeTestOrder, makeTestPlan, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB（跑法：./test-on-mbp.sh test/refunds.test.ts）
 
@@ -29,22 +28,8 @@ afterAll(async () => {
 
 const mkUser = () => makeLedgerUser((id) => madeUsers.push(id))
 
-async function mkPaidOrder(userId: string, amountCents: number, extra: Partial<typeof paymentOrders.$inferInsert> = {}) {
-  const [o] = await getDb()
-    .insert(paymentOrders)
-    .values({
-      userId,
-      type: "recharge",
-      amountCents,
-      status: "paid",
-      clientSn: `rf-${randomUUID()}`,
-      idempotencyKey: `rf-${randomUUID()}`,
-      providerTradeNo: `T-${randomUUID().slice(0, 8)}`,
-      ...extra,
-    })
-    .returning()
-  return o!
-}
+const mkPaidOrder = (userId: string, amountCents: number, extra: Partial<typeof paymentOrders.$inferInsert> = {}) =>
+  makeTestOrder(userId, "paid", amountCents, { providerTradeNo: `T-${randomUUID().slice(0, 8)}`, ...extra })
 
 const okProvider = (calls: Array<{ clientSn: string; refundSn: string; amountCents: number }> = []): RefundProvider => ({
   refund: async (a) => {

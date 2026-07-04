@@ -2,6 +2,8 @@ import { and, eq, gte, inArray, lt, lte, sql } from "drizzle-orm"
 import { getDb } from "../db/client"
 import { paymentOrders, refunds, reconcileDiffs, creditTransactions, creditBalances } from "../db/schema"
 import * as credits from "./credits"
+import { DAY_MS } from "./renewal"
+import { STALE_PAYABLE_MS } from "./payment-orders"
 import type { PaymentProvider } from "./payment/provider"
 
 // 对账（架构 §6.3，spec306）：以通道为镜子核对本地账。**只读不改账**，差异落表交人工/退款流程处置。
@@ -16,9 +18,10 @@ export type ReconcileProvider = Pick<PaymentProvider, "query">
 export type AlertHook = (msg: string, detail: unknown) => void
 
 const defaultAlert: AlertHook = (msg, detail) => console.error(`[reconcile] ${msg}`, detail)
-const DAY_MS = 86_400_000
-/** 订单可支付窗（与 payment-orders STALE_PAYABLE_MS 同口径）：晚结算订单最多滞后 7 天才终态。 */
-const PAYABLE_WINDOW_MS = 7 * DAY_MS
+/** 对账日/差异日期的统一口径：UTC YYYY-MM-DD。 */
+export const toBillDate = (d: Date): string => d.toISOString().slice(0, 10)
+/** 订单可支付窗（同源 payment-orders）：晚结算订单最多滞后此窗才终态，对账窗必须≥它才不漏晚结算单。 */
+const PAYABLE_WINDOW_MS = STALE_PAYABLE_MS
 /** unknown 收敛 failed 的最小账龄：给迟到回调留门。 */
 const UNKNOWN_CONVERGE_MIN_AGE_MS = DAY_MS
 
@@ -111,7 +114,7 @@ export async function runReconcile(
     .from(paymentOrders)
     .where(and(gte(paymentOrders.createdAt, windowStart), lt(paymentOrders.createdAt, dayEnd), inArray(paymentOrders.status, ["paid", "refunded"])))
   const unknowns = await getDb().select().from(paymentOrders).where(eq(paymentOrders.status, "unknown"))
-  const targets = [...new Map([...settled, ...unknowns].map((o) => [o.id, o])).values()]
+  const targets = [...settled, ...unknowns] // 两集合按状态天然不相交（paid/refunded vs unknown）
 
   let diffs = 0
   for (const o of targets) {
@@ -123,7 +126,7 @@ export async function runReconcile(
 /** 积分账本独立审计：缓存余额 vs Σ流水，双向核对（含「有缓存无流水」的孤儿缓存行）。
  *  候选不一致先**单用户复查**再落 diff——两次全表查询非同一快照，在途交易会造成一闪而过的假差异。 */
 export async function auditLedger(
-  date: string = new Date().toISOString().slice(0, 10),
+  date: string = toBillDate(new Date()),
   alertHook: AlertHook = defaultAlert,
 ): Promise<Array<{ userId: string; cached: number; actual: number }>> {
   const sums = await getDb()
@@ -183,7 +186,7 @@ export async function releaseOrphanHolds(
       const didRelease = await credits.release(h.id, { idempotencyKey: `orphan_release:${h.id}` })
       if (!didRelease) continue // 迟到 settle 赢了/幂等命中/行已删：没有真实退还，不留痕
       await recordDiff(
-        { billDate: now.toISOString().slice(0, 10), diffType: "orphan_hold", subject: h.id, userId: h.userId, localValue: h.id, billValue: String(-h.amount) },
+        { billDate: toBillDate(now), diffType: "orphan_hold", subject: h.id, userId: h.userId, localValue: h.id, billValue: String(-h.amount) },
         alert,
       )
       released++
@@ -194,9 +197,9 @@ export async function releaseOrphanHolds(
   return released
 }
 
-/** 卡死退款扫描：pending 超过 maxAge（默认 1h）说明进程在「建单→通道调用→落账」中间死过——
- *  通道侧结果不明（可能已退可能没退），**不自动重试**（换 refundSn 重试是通道侧双退的经典路径），
- *  落 refund_stuck 差异转人工核对通道后处置。 */
+/** 卡死退款扫描：pending 超过 maxAge（默认 1h）的两种成因——① createRefund 通道调用抛错（结果不明，
+ *  主动留 pending 交本扫描）；② 进程在「建单→通道调用→落账」中间崩溃。两者通道侧都可能已实际退款，
+ *  **不自动重试**（换 refundSn 重试是通道侧双退的经典路径），落 refund_stuck 差异转人工核对通道后处置。 */
 export async function scanStuckRefunds(
   now: Date = new Date(),
   opts: { maxAgeMs?: number; alertHook?: AlertHook } = {},
@@ -211,7 +214,7 @@ export async function scanStuckRefunds(
   for (const r of stuck) {
     found += await recordDiff(
       {
-        billDate: now.toISOString().slice(0, 10),
+        billDate: toBillDate(now),
         diffType: "refund_stuck",
         subject: r.id,
         orderId: r.orderId,
