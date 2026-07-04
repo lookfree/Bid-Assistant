@@ -5,7 +5,25 @@ services:
     image: bid-api:${TAG}
     restart: unless-stopped
     env_file: [.env.deploy.local]
+    environment:
+      AGENT_BASE_URL: "http://agent-api:8090" # App 经 docker 网络访问 agent（读标/推进 run）
     expose: ["8080"]
+    depends_on: [agent-api]
+
+  # 智能体服务（同一镜像双进程）：api 提供 /agents/*/runs + SSE；worker 消费 Redis 流跑工作流
+  agent-api:
+    build: { context: .., dockerfile: services/agent/Dockerfile }
+    image: bid-agent:${TAG}
+    restart: unless-stopped
+    env_file: [.env.deploy.local]
+    expose: ["8090"]
+
+  agent-worker:
+    image: bid-agent:${TAG} # 复用 agent-api 构建的镜像
+    restart: unless-stopped
+    env_file: [.env.deploy.local]
+    command: ["uv", "run", "python", "-m", "agent.main_worker"] # worker 角色覆盖默认 api CMD
+    depends_on: [agent-api]
 
   web:
     build:
