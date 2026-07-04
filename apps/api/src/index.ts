@@ -13,7 +13,8 @@ import { sqbCheckinJob } from "./services/payment/terminal"
 import { getPayment } from "./services/payment"
 import { paymentOrderSweepJob } from "./services/payment-orders"
 import { renewalCronJobs } from "./crons/renewal"
-import { creditExpireCronJob, ledgerAuditCronJob, reconcileCronJob, referralUnlockSweepCronJob } from "./crons/billing"
+import { creditExpireCronJob, ledgerAuditCronJob, reconcileCronJob } from "./crons/billing"
+import { referralUnlockSweepCronJob } from "./crons/referral"
 
 const env = getEnv()
 

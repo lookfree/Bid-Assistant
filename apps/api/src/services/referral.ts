@@ -12,6 +12,7 @@ import { assessRisk, freezeAndAudit } from "./referral-risk"
 // 奖励是积分账本一笔 referral_reward 流水，走 spec302 credits.grant 的幂等键 + 有效期，不另起发放逻辑。
 
 const DAY_MS = 86_400_000
+const SWEEP_BATCH = 1000 // 单次重扫上限：有界 tick，超量下轮续扫（daily cron）
 // 去掉易混 O/0/I/1 的 6 位大写字母数字码
 const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
@@ -112,10 +113,12 @@ async function unlockAndReward(referralId: string): Promise<void> {
   const inviterPaid = await grantReward({ userId: r.inviterId, amount: rules.inviterReward, referralId, role: "inviter", cap: rules.capPerUser, expireDays })
   const inviteePaid = await grantReward({ userId: r.inviteeId, amount: rules.inviteeReward, referralId, role: "invitee", cap: rules.capPerUser, expireDays })
   // 合并结果决定 referral 级状态：任一方发出=unlocked；双方都封顶（或额度为 0）=capped（R6）。
+  // WHERE rewardState='pending' 兜住并发（markPaid 钩子 + R3 sweep 同窗）：first-writer-wins，
+  // 第二次（读到已封顶累计→双 false）不把已 unlocked 降级成 capped（发奖幂等键防重复给钱，此处只防状态误标）。
   await getDb()
     .update(referrals)
     .set({ rewardState: inviterPaid || inviteePaid ? "unlocked" : "capped" })
-    .where(eq(referrals.id, referralId))
+    .where(and(eq(referrals.id, referralId), eq(referrals.rewardState, "pending")))
 }
 
 /**
@@ -189,29 +192,22 @@ export async function onInviteeFirstPaid(inviteeId: string): Promise<void> {
 }
 
 /**
- * 对账重扫（R3）：markPaid 里 onInviteeFirstPaid 是提交后 best-effort，抛错只 console.error，
- * 重试时 markPaid 已 already_final 不再触发 → pending 无人重扫、已挣得的奖励永久丢失。
- * Cron 定期扫「bound+pending 且被邀请人已有 paid 单」的关系，重驱钩子（幂等）兜底。返回处理条数。
+ * 对账重扫（R3）：解锁发奖有两条正常路径（延迟=markPaid 钩子；立即=bindByCode 内 unlockAndReward），
+ * 二者都是提交后 best-effort/事务外，抛错或进程崩溃会把关系留在 bound+pending、奖励永久丢失。
+ * Cron 兜底重驱 unlockAndReward（幂等）：延迟模式需被邀请人已有 paid 单；立即模式无条件补发（A4）。返回处理条数。
  */
 export async function sweepPendingReferralUnlocks(): Promise<number> {
   const rules = await getRules()
-  if (rules.unlockOn !== "invitee_first_paid") return 0 // 立即发模式无 pending 待扫
   const db = getDb()
-  const rows = await db
-    .select({ inviteeId: referrals.inviteeId })
-    .from(referrals)
-    .where(
-      and(
-        eq(referrals.status, "bound"),
-        eq(referrals.rewardState, "pending"),
-        isNotNull(referrals.inviteeId),
-        inArray(referrals.inviteeId, db.select({ id: paymentOrders.userId }).from(paymentOrders).where(eq(paymentOrders.status, "paid"))),
-      ),
-    )
+  const base = and(eq(referrals.status, "bound"), eq(referrals.rewardState, "pending"), isNotNull(referrals.inviteeId))
+  const where =
+    rules.unlockOn === "invitee_first_paid"
+      ? and(base, inArray(referrals.inviteeId, db.select({ id: paymentOrders.userId }).from(paymentOrders).where(eq(paymentOrders.status, "paid"))))
+      : base
+  const rows = await db.select({ id: referrals.id }).from(referrals).where(where).limit(SWEEP_BATCH) // 有界（A3）
   let n = 0
   for (const row of rows) {
-    if (!row.inviteeId) continue
-    await onInviteeFirstPaid(row.inviteeId) // 幂等：内部守卫 pending + credits.grant 幂等键
+    await unlockAndReward(row.id) // 幂等：内部守卫 pending + grant 幂等键 + 状态更新 WHERE pending 首写胜
     n++
   }
   return n

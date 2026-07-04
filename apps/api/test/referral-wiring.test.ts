@@ -112,5 +112,10 @@ describe("spec307 R1-R6 接线", () => {
     expect(r2!.rewardState).toBe("unlocked")
     expect(await getBalance(i2)).toBe(50) // 被邀请人拿到 50
     expect(await getBalance(inviter)).toBe(400) // 邀请人封在 400
+    // A1：再次重驱（sweep/钩子二次）不把 unlocked 降级成 capped（WHERE pending 首写胜 + 守卫）
+    await sweepPendingReferralUnlocks()
+    await onInviteeFirstPaid(i2)
+    expect((await getDb().select().from(referrals).where(eq(referrals.inviteeId, i2)))[0]!.rewardState).toBe("unlocked")
+    expect(await getBalance(i2)).toBe(50) // 未重复发
   })
 })

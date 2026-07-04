@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto"
 import { findUserByIdentity, createOrGetOnConflict, getUserById } from "../repos/users"
 import { bindByCode } from "./referral"
+import { InvalidCodeError as RefInvalidCodeError, SelfReferralError, DuplicateInviteeError } from "./referral-errors"
 import { createSession, findValidSession, revokeSession } from "../repos/sessions"
 import { sha256Hex } from "./crypto"
 import type { User } from "../db/schema"
@@ -78,7 +79,9 @@ export async function loginWithPhone(
     try {
       await bindByCode({ code: meta.referralCode, inviteeId: user.id, phone, deviceHash: meta.deviceHash, ip: meta.ip })
     } catch (e) {
-      console.error(`[auth] 推荐绑定失败（不阻断注册）invitee=${user.id}`, e instanceof Error ? e.message : e)
+      // 预期（坏码/自荐/重复绑定）是正常场景，静默；非预期（DB 故障/真 bug）醒目日志供告警——但都不阻断注册。
+      const expected = e instanceof RefInvalidCodeError || e instanceof SelfReferralError || e instanceof DuplicateInviteeError
+      if (!expected) console.error(`[auth] 推荐绑定异常（非预期，需排查；不阻断注册）invitee=${user.id}`, e)
     }
   }
   return { token, user, isNew }
