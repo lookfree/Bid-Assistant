@@ -5,6 +5,8 @@ import { referrals, referralRiskAudits, userIdentities } from "../db/schema"
 // 推荐防刷风控（spec307）：建关系前判定，命中即冻结（status=frozen 不进可发奖）+ 写审计留痕。
 // 阈值全读配置（referral_rules.riskMaxPerIpPerHour），代码不写死。
 
+const IP_BURST_WINDOW_MS = 3_600_000 // 同 IP 集中判定窗口：最近 1 小时
+
 export type RiskVerdict = { frozen: boolean; reason?: string }
 
 /** 风控判定（建关系前调）：设备查重 / 同 IP 段集中时段 / 手机号查重（同手机重复注册薅羊毛）。 */
@@ -35,7 +37,7 @@ export async function assessRisk(opts: {
   }
   // 同 IP 集中时段：最近 1 小时同 signup_ip 绑定数达阈值 → 冻结
   if (opts.ip) {
-    const since = new Date(Date.now() - 3600_000)
+    const since = new Date(Date.now() - IP_BURST_WINDOW_MS)
     const [c] = await db
       .select({ n: sql<number>`count(*)` })
       .from(referrals)

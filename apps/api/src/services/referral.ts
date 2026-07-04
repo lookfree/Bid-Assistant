@@ -1,8 +1,9 @@
+import { randomInt } from "node:crypto"
 import { and, eq, sql } from "drizzle-orm"
 import { getDb } from "../db/client"
 import { referralCodes, referrals, creditTransactions } from "../db/schema"
-import { getConfig } from "./config"
-import { grant } from "./credits"
+import { getConfig, pickNonNegative } from "./config"
+import { grant, lockUserBalanceRow, type Tx } from "./credits"
 import { DuplicateInviteeError, InvalidCodeError, SelfReferralError } from "./referral-errors"
 import { assessRisk, freezeAndAudit } from "./referral-risk"
 
@@ -30,7 +31,7 @@ async function getRules(): Promise<ReferralRules> {
 
 function genCode(len = 6): string {
   let s = ""
-  for (let i = 0; i < len; i++) s += ALPHABET[Math.floor(Math.random() * ALPHABET.length)]
+  for (let i = 0; i < len; i++) s += ALPHABET[randomInt(ALPHABET.length)] // 门控发钱绑定，用 crypto 随机（对齐 sms-code/auth 约定）
   return s
 }
 
@@ -56,9 +57,9 @@ export async function resolveInviter(code: string): Promise<string | undefined> 
   return row?.userId
 }
 
-/** 该用户累计 referral_reward 正向奖励之和（封顶判定用）。 */
-async function rewardedSoFar(userId: string): Promise<number> {
-  const [row] = await getDb()
+/** 该用户累计 referral_reward 正向奖励之和（封顶判定用；须在持锁事务内读，与发放同一串行化点）。 */
+async function rewardedSoFar(tx: Tx, userId: string): Promise<number> {
+  const [row] = await tx
     .select({ total: sql<number>`coalesce(sum(case when ${creditTransactions.amount} > 0 then ${creditTransactions.amount} else 0 end), 0)` })
     .from(creditTransactions)
     .where(and(eq(creditTransactions.userId, userId), eq(creditTransactions.type, "referral_reward")))
@@ -76,24 +77,34 @@ async function grantReward(opts: {
   expireDays: number
 }): Promise<boolean> {
   if (opts.amount <= 0) return false
-  const already = await rewardedSoFar(opts.userId)
-  if (already + opts.amount > opts.cap) {
-    await getDb().update(referrals).set({ rewardState: "capped" }).where(eq(referrals.id, opts.referralId))
-    return false
-  }
-  await grant(opts.userId, opts.amount, {
-    type: "referral_reward",
-    expireAt: opts.expireDays > 0 ? new Date(Date.now() + opts.expireDays * DAY_MS) : undefined,
-    ref: `referral:${opts.referralId}`,
-    idempotencyKey: `referral:${opts.referralId}:${opts.role}`, // 同关系同角色只发一次
+  // 封顶读+发放收进同一事务同一把用户行锁（spec302 串行化点）：否则同一 inviter 多个被邀请人
+  // 并发解锁会各自读到发放前的累计额、双双通过封顶判定而越发（两条 referralId 幂等键不同，防不住）。
+  return await getDb().transaction(async (tx) => {
+    await lockUserBalanceRow(tx, opts.userId)
+    const already = await rewardedSoFar(tx, opts.userId)
+    if (already + opts.amount > opts.cap) {
+      await tx.update(referrals).set({ rewardState: "capped" }).where(eq(referrals.id, opts.referralId))
+      return false
+    }
+    await grant(
+      opts.userId,
+      opts.amount,
+      {
+        type: "referral_reward",
+        expireAt: opts.expireDays > 0 ? new Date(Date.now() + opts.expireDays * DAY_MS) : undefined,
+        ref: `referral:${opts.referralId}`,
+        idempotencyKey: `referral:${opts.referralId}:${opts.role}`, // 同关系同角色只发一次
+      },
+      tx,
+    )
+    return true
   })
-  return true
 }
 
 /** 解锁并发双方奖励：给邀请人/被邀请人各发配置额度，任一方发出即置 reward_state=unlocked。 */
 async function unlockAndReward(referralId: string): Promise<void> {
   const rules = await getRules()
-  const expireDays = Number((await getConfig<number>("reward_expire_days")) ?? 0)
+  const expireDays = pickNonNegative(await getConfig<number>("reward_expire_days"), 0) // 钱相关：挡 NaN/负值静默采纳
   const [r] = await getDb().select().from(referrals).where(eq(referrals.id, referralId))
   if (!r || !r.inviteeId || r.rewardState !== "pending") return // 已解锁/封顶/无被邀请人 → 幂等返回
 
