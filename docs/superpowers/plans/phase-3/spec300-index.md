@@ -99,6 +99,12 @@ STEP_COST 常量                    ──▶    billing_configs 的「操作→
 
 ---
 
+## spec311：智能体模型运营后台可配（2026-07-05 追加）
+
+**目标**：agent 用哪个大模型（provider/model/fallbacks）由运营后台可视化配、即时生效，取代 env 写死。
+**依赖**：spec301 配置机制（`billing_configs`/`getConfig`/`setConfig`）、spec310 admin 通用配置端点（`PUT /plans/configs/:key`）、Phase 1-2 agent 模型网关。
+**要点**：App API 权威；`billing_configs` 键 `agent_model`；建 run 随请求体下发 `model` → agent `settings.model_copy` 覆盖 env 默认；API Key 仍留 env；缺省回退 env（向后兼容）。计划：`spec311-agent-model-config.md`。
+
 ## 执行方式
 
 每个 spec 用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 逐任务实现。spec 内步骤用 `- [ ]` 复选框跟踪。
