@@ -15,3 +15,11 @@ export function parsePagination(query: Record<string, string | undefined>): {
   const { page, pageSize } = paginationSchema.parse(query)
   return { page, pageSize, offset: (page - 1) * pageSize }
 }
+
+/** 统一分页响应体：{ items, page, pageSize, total, hasMore }（hasMore = 本页尾未达总数）。 */
+export function pagedBody<T>(
+  p: { page: number; pageSize: number; offset: number },
+  r: { items: T[]; total: number },
+): { items: T[]; page: number; pageSize: number; total: number; hasMore: boolean } {
+  return { items: r.items, page: p.page, pageSize: p.pageSize, total: r.total, hasMore: p.offset + r.items.length < r.total }
+}
