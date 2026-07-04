@@ -41,10 +41,10 @@ export function createApiClient(opts: ApiClientOptions) {
   const authApi = {
     sendSmsCode: (phone: string, captchaToken?: string) =>
       post<{ ok: true }>("/auth/sms/send", { phone, captchaToken }).then(() => undefined),
-    verifySmsCode: (phone: string, code: string, agreedToTerms?: boolean) =>
+    verifySmsCode: (phone: string, code: string, agreedToTerms?: boolean, referralCode?: string) =>
       post<{ token: string; isNew: boolean; user: { id: string; nickname: string | null } }>(
         "/auth/sms/verify",
-        { phone, code, agreedToTerms },
+        { phone, code, agreedToTerms, referralCode }, // referralCode：首次注册带邀请码 → 后端绑定推荐关系（spec307）
       ),
     me: () => request<{ id: string; nickname: string | null; status: string }>("/auth/me"),
     logout: () => post<{ ok: true }>("/auth/logout", {}).then(() => undefined),

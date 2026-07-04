@@ -1,7 +1,7 @@
 import { randomInt } from "node:crypto"
-import { and, eq, sql } from "drizzle-orm"
+import { and, eq, sql, isNotNull, inArray } from "drizzle-orm"
 import { getDb } from "../db/client"
-import { referralCodes, referrals, creditTransactions } from "../db/schema"
+import { referralCodes, referrals, creditTransactions, paymentOrders } from "../db/schema"
 import { getConfig, pickNonNegative } from "./config"
 import { grant, lockUserBalanceRow, type Tx } from "./credits"
 import { DuplicateInviteeError, InvalidCodeError, SelfReferralError } from "./referral-errors"
@@ -12,6 +12,7 @@ import { assessRisk, freezeAndAudit } from "./referral-risk"
 // 奖励是积分账本一笔 referral_reward 流水，走 spec302 credits.grant 的幂等键 + 有效期，不另起发放逻辑。
 
 const DAY_MS = 86_400_000
+const SWEEP_BATCH = 1000 // 单次重扫上限：有界 tick，超量下轮续扫（daily cron）
 // 去掉易混 O/0/I/1 的 6 位大写字母数字码
 const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
@@ -83,7 +84,8 @@ async function grantReward(opts: {
     await lockUserBalanceRow(tx, opts.userId)
     const already = await rewardedSoFar(tx, opts.userId)
     if (already + opts.amount > opts.cap) {
-      await tx.update(referrals).set({ rewardState: "capped" }).where(eq(referrals.id, opts.referralId))
+      // 封顶不在此标 capped：rewardState 是 referral 级单枚举，一方封顶写 capped 会覆盖另一方已发的 unlocked（R6）。
+      // 交给 unlockAndReward 按「双方合并结果」统一置：任一方发出=unlocked，双方都封顶才=capped。
       return false
     }
     await grant(
@@ -110,9 +112,13 @@ async function unlockAndReward(referralId: string): Promise<void> {
 
   const inviterPaid = await grantReward({ userId: r.inviterId, amount: rules.inviterReward, referralId, role: "inviter", cap: rules.capPerUser, expireDays })
   const inviteePaid = await grantReward({ userId: r.inviteeId, amount: rules.inviteeReward, referralId, role: "invitee", cap: rules.capPerUser, expireDays })
-  if (inviterPaid || inviteePaid) {
-    await getDb().update(referrals).set({ rewardState: "unlocked" }).where(eq(referrals.id, referralId))
-  }
+  // 合并结果决定 referral 级状态：任一方发出=unlocked；双方都封顶（或额度为 0）=capped（R6）。
+  // WHERE rewardState='pending' 兜住并发（markPaid 钩子 + R3 sweep 同窗）：first-writer-wins，
+  // 第二次（读到已封顶累计→双 false）不把已 unlocked 降级成 capped（发奖幂等键防重复给钱，此处只防状态误标）。
+  await getDb()
+    .update(referrals)
+    .set({ rewardState: inviterPaid || inviteePaid ? "unlocked" : "capped" })
+    .where(and(eq(referrals.id, referralId), eq(referrals.rewardState, "pending")))
 }
 
 /**
@@ -130,40 +136,46 @@ export async function bindByCode(opts: {
   const inviterId = await resolveInviter(opts.code)
   if (!inviterId) throw new InvalidCodeError(opts.code)
   if (inviterId === opts.inviteeId) throw new SelfReferralError()
-  const [dup] = await getDb().select({ id: referrals.id }).from(referrals).where(eq(referrals.inviteeId, opts.inviteeId))
-  if (dup) throw new DuplicateInviteeError(opts.inviteeId)
-
   const rules = await getRules()
-  const verdict = await assessRisk({
-    inviteeId: opts.inviteeId,
-    phone: opts.phone,
-    deviceHash: opts.deviceHash,
-    ip: opts.ip,
-    maxPerIpPerHour: rules.riskMaxPerIpPerHour,
-  })
-  const [ins] = await getDb()
-    .insert(referrals)
-    .values({
-      inviterId,
-      inviteeId: opts.inviteeId,
-      code: opts.code,
-      status: verdict.frozen ? "frozen" : "bound", // 冻结则不进入可发奖
-      rewardState: "pending",
-      deviceHash: opts.deviceHash,
-      signupIp: opts.ip,
-      frozenReason: verdict.reason,
-    })
-    .returning()
 
-  if (verdict.frozen) {
-    await freezeAndAudit({ referralId: ins!.id, inviteeId: opts.inviteeId, reason: verdict.reason!, detail: { ip: opts.ip, deviceHash: opts.deviceHash } })
-    return { referralId: ins!.id, rewarded: false, frozen: true }
-  }
+  // 风控判定 + 建关系收进同一事务；持 deviceHash advisory 锁串行化「同设备」并发绑定（R4：否则 N 个
+  // 并发绑定都在任一插入前读到零、全部通过风控）。发奖放事务外（grantReward 自带行锁，且需读已提交的关系行）。
+  const { referralId, frozen } = await getDb().transaction(async (tx) => {
+    if (opts.deviceHash) await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${opts.deviceHash}))`)
+    const [dup] = await tx.select({ id: referrals.id }).from(referrals).where(eq(referrals.inviteeId, opts.inviteeId))
+    if (dup) throw new DuplicateInviteeError(opts.inviteeId)
+    const verdict = await assessRisk(tx, {
+      inviteeId: opts.inviteeId,
+      phone: opts.phone,
+      deviceHash: opts.deviceHash,
+      ip: opts.ip,
+      maxPerIpPerHour: rules.riskMaxPerIpPerHour,
+    })
+    const [ins] = await tx
+      .insert(referrals)
+      .values({
+        inviterId,
+        inviteeId: opts.inviteeId,
+        code: opts.code,
+        status: verdict.frozen ? "frozen" : "bound", // 冻结则不进入可发奖
+        rewardState: "pending",
+        deviceHash: opts.deviceHash,
+        signupIp: opts.ip,
+        frozenReason: verdict.reason,
+      })
+      .returning()
+    if (verdict.frozen) {
+      await freezeAndAudit(tx, { referralId: ins!.id, inviteeId: opts.inviteeId, reason: verdict.reason!, detail: { ip: opts.ip, deviceHash: opts.deviceHash } })
+    }
+    return { referralId: ins!.id, frozen: verdict.frozen }
+  })
+
+  if (frozen) return { referralId, rewarded: false, frozen: true }
   if (!rules.unlockOn) {
-    await unlockAndReward(ins!.id) // 配置为立即发放
-    return { referralId: ins!.id, rewarded: true, frozen: false }
+    await unlockAndReward(referralId) // 配置为立即发放
+    return { referralId, rewarded: true, frozen: false }
   }
-  return { referralId: ins!.id, rewarded: false, frozen: false }
+  return { referralId, rewarded: false, frozen: false }
 }
 
 /**
@@ -177,6 +189,28 @@ export async function onInviteeFirstPaid(inviteeId: string): Promise<void> {
   const [r] = await getDb().select().from(referrals).where(eq(referrals.inviteeId, inviteeId))
   if (!r || r.status !== "bound" || r.rewardState !== "pending") return
   await unlockAndReward(r.id)
+}
+
+/**
+ * 对账重扫（R3）：解锁发奖有两条正常路径（延迟=markPaid 钩子；立即=bindByCode 内 unlockAndReward），
+ * 二者都是提交后 best-effort/事务外，抛错或进程崩溃会把关系留在 bound+pending、奖励永久丢失。
+ * Cron 兜底重驱 unlockAndReward（幂等）：延迟模式需被邀请人已有 paid 单；立即模式无条件补发（A4）。返回处理条数。
+ */
+export async function sweepPendingReferralUnlocks(): Promise<number> {
+  const rules = await getRules()
+  const db = getDb()
+  const base = and(eq(referrals.status, "bound"), eq(referrals.rewardState, "pending"), isNotNull(referrals.inviteeId))
+  const where =
+    rules.unlockOn === "invitee_first_paid"
+      ? and(base, inArray(referrals.inviteeId, db.select({ id: paymentOrders.userId }).from(paymentOrders).where(eq(paymentOrders.status, "paid"))))
+      : base
+  const rows = await db.select({ id: referrals.id }).from(referrals).where(where).limit(SWEEP_BATCH) // 有界（A3）
+  let n = 0
+  for (const row of rows) {
+    await unlockAndReward(row.id) // 幂等：内部守卫 pending + grant 幂等键 + 状态更新 WHERE pending 首写胜
+    n++
+  }
+  return n
 }
 
 /** 邀请列表 + 奖励状态（供 /api/referral/list 与会员中心 spec308）。 */
