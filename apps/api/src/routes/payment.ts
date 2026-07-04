@@ -7,7 +7,7 @@ import { paymentOrders } from "../db/schema"
 import type { User } from "../db/schema"
 import { authMiddleware } from "../middleware/auth"
 import { getConfig } from "../services/config"
-import { createOrder, markPaid, pollUntilFinal } from "../services/payment-orders"
+import { countOpenOrders, createOrder, markPaid, pollUntilFinal } from "../services/payment-orders"
 import { getPayment } from "../services/payment"
 import type { PaymentProvider } from "../services/payment/provider"
 
@@ -27,6 +27,23 @@ export type PaymentRouteDeps = {
   baseUrl: string // 公网基址：notify_url / return_url 用（env PAYMENT_NOTIFY_BASE_URL）
   poll: (orderId: string) => void // 后台轮询启动器（fire-and-forget；测试注入捕获）
 }
+
+/** 解析路由依赖（deps 覆盖 > getPayment 装配）：缺 provider/baseUrl → undefined，调用方整体 503 不半开。 */
+export function resolvePaymentDeps(deps: Partial<PaymentRouteDeps>, logTag: string): PaymentRouteDeps | undefined {
+  const assembled = deps.provider ? undefined : getPayment()
+  const provider = deps.provider ?? assembled?.provider
+  const baseUrl = deps.baseUrl ?? assembled?.baseUrl
+  if (!provider || !baseUrl) return undefined
+  const poll =
+    deps.poll ??
+    ((orderId: string) => {
+      void pollUntilFinal(orderId, { provider }).catch((err) => console.error(`[${logTag}] 轮询异常 order=${orderId}`, err))
+    })
+  return { provider, baseUrl, poll }
+}
+
+/** 用户开放订单上限：防刷单（每单都产生网关调用 + 6 分钟轮询，无限建单是对通道配额的放大攻击）。 */
+export const MAX_OPEN_ORDERS_PER_USER = 5
 
 /** 建好订单 → 生成跳转支付 URL + 启动后台轮询（充值/续费下单共用的收尾）。 */
 export async function launchPayment(
@@ -68,22 +85,15 @@ function notifyHandler(provider: PaymentProvider) {
 }
 
 export function paymentRoutes(deps: Partial<PaymentRouteDeps> = {}) {
-  const assembled = deps.provider ? undefined : getPayment()
-  const provider = deps.provider ?? assembled?.provider
-  const baseUrl = deps.baseUrl ?? assembled?.baseUrl
-
+  const resolved = resolvePaymentDeps(deps, "payment")
   const r = new Hono<{ Variables: { user: User } }>()
 
   // 凭据未配置的环境：支付能力整体关闭（503），不半开（gate 与入口 Cron 同源 getPayment）
-  if (!provider || !baseUrl) {
+  if (!resolved) {
     r.all("*", (c) => c.json({ error: "payment_unconfigured" }, 503))
     return r
   }
-  const poll =
-    deps.poll ??
-    ((orderId: string) => {
-      void pollUntilFinal(orderId, { provider }).catch((err) => console.error(`[payment] 轮询异常 order=${orderId}`, err))
-    })
+  const { provider } = resolved
 
   r.post(provider.notifyPath, notifyHandler(provider))
 
@@ -103,6 +113,7 @@ export function paymentRoutes(deps: Partial<PaymentRouteDeps> = {}) {
     }
 
     const userId = c.get("user").id
+    if ((await countOpenOrders(userId)) >= MAX_OPEN_ORDERS_PER_USER) return c.json({ error: "too_many_open_orders" }, 429)
     const order = await createOrder({
       userId,
       type: "recharge",
@@ -110,7 +121,7 @@ export function paymentRoutes(deps: Partial<PaymentRouteDeps> = {}) {
       creditsSnapshot: pack.credits, // 到账以下单快照为准（运营改包不影响在途单）
       idempotencyKey: `recharge:${userId}:${randomUUID()}`,
     })
-    return c.json(await launchPayment({ provider, baseUrl, poll }, order, "积分充值", pack.amountCents))
+    return c.json(await launchPayment(resolved, order, "积分充值", pack.amountCents))
   })
 
   // 订单状态（前端支付页轮询显示用）：本人可查

@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, integer, jsonb, index, unique, check } from "drizzle-orm/pg-core"
+import { pgTable, uuid, text, integer, jsonb, unique, uniqueIndex, check } from "drizzle-orm/pg-core"
 import { sql } from "drizzle-orm"
 import { id, createdAt, tz } from "./columns"
 import { users } from "./users"
@@ -38,7 +38,9 @@ export const subscriptions = pgTable(
     createdAt: createdAt(),
   },
   (t) => ({
-    userIdx: index("subscriptions_user_idx").on(t.userId),
+    // 一人一订阅行（当前周期唯一真相，历史在 payment_orders）：这也是续费入账的串行化前提——
+    // 并发首次续费靠它挡掉双 INSERT，renewOnPaid 再对该行 FOR UPDATE 排队
+    userUq: uniqueIndex("subscriptions_user_uq").on(t.userId),
     statusCheck: check("subscriptions_status_check", sql`${t.status} in ('active','past_due','expired')`),
   }),
 )

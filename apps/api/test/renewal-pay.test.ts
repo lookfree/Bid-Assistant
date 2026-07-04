@@ -31,7 +31,15 @@ afterAll(async () => {
 const day = 86_400_000
 const mkUser = () => makeLedgerUser((id) => madeUsers.push(id))
 const mkRenewalOrder = (userId: string, key: string) =>
-  createOrder({ userId, type: "renewal", amountCents: 1000, planId, idempotencyKey: `${key}-${userId}` })
+  createOrder({
+    userId,
+    type: "renewal",
+    amountCents: 1000,
+    planId,
+    cycleSnapshot: "month",
+    creditsSnapshot: 100, // 权益快照：下单时锁定（运营改套餐不影响在途单）
+    idempotencyKey: `${key}-${userId}`,
+  })
 const subOf = async (userId: string) => (await getDb().select().from(subscriptions).where(eq(subscriptions.userId, userId)))[0]
 const renewalGrants = (orderId: string) =>
   getDb()
@@ -51,9 +59,9 @@ describe("spec305 续费入账（markPaid type=renewal 分支，续期+发积分
 
     const sub = (await subOf(userId))!
     expect(sub.status).toBe("active")
-    // 顺延基准 = 旧 periodEnd（+1 自然月），剩余 10 天没被吞
+    // 顺延基准 = 旧 periodEnd（+1 自然月，UTC 口径），剩余 10 天没被吞
     const expected = new Date(oldEnd)
-    expected.setMonth(expected.getMonth() + 1)
+    expected.setUTCMonth(expected.getUTCMonth() + 1)
     expect(sub.currentPeriodEnd!.getTime()).toBe(expected.getTime())
     expect(sub.currentPeriodStart!.getTime()).toBe(oldEnd.getTime())
 
@@ -103,12 +111,63 @@ describe("spec305 续费入账（markPaid type=renewal 分支，续期+发积分
     expect(sub.planId).toBe(planId)
   })
 
-  it("renewal 单缺 plan_id → 抛错且整体回滚（订单不置 paid，可由重试重新驱动）", async () => {
+  it("renewal 单缺 planId 在下单即被拒（类型不变式，钱从严）", async () => {
     const userId = await mkUser()
-    const o = await createOrder({ userId, type: "renewal", amountCents: 1000, idempotencyKey: `rp-noplan-${userId}` })
-    await expect(markPaid(o.id, { sn: "s", paidAmountCents: 1000 })).rejects.toThrow(/plan_id/)
-    const [row] = await getDb().select().from(paymentOrders).where(eq(paymentOrders.id, o.id))
-    expect(row!.status).toBe("created") // 事务回滚：状态未动
+    await expect(createOrder({ userId, type: "renewal", amountCents: 1000, idempotencyKey: `rp-noplan-${userId}` })).rejects.toThrow(
+      /planId/,
+    )
+    await expect(
+      createOrder({ userId, type: "recharge", amountCents: 100, planId, idempotencyKey: `rp-rcplan-${userId}` }),
+    ).rejects.toThrow(/recharge/) // recharge 单带套餐同样被拒
+  })
+
+  it("并发两笔续费（不同订单）：周期正确叠加，不丢已付周期（订阅行锁串行化回归）", async () => {
+    const userId = await mkUser()
+    const oldEnd = new Date(Date.now() + 10 * day)
+    await getDb().insert(subscriptions).values({ userId, planId, status: "active", currentPeriodEnd: oldEnd })
+    const [o1, o2] = await Promise.all([mkRenewalOrder(userId, "rp-cc1"), mkRenewalOrder(userId, "rp-cc2")])
+    const results = await Promise.all([
+      markPaid(o1.id, { sn: "cc1", paidAmountCents: 1000 }),
+      markPaid(o2.id, { sn: "cc2", paidAmountCents: 1000 }),
+    ])
+    expect(results.filter((r) => r.paid)).toHaveLength(2) // 两笔都是有效支付
+    const sub = (await subOf(userId))!
+    // 付两周期得两周期：base 顺延两次（+2 自然月），而不是双写同一个 +1 月
+    const expected = new Date(oldEnd)
+    expected.setUTCMonth(expected.getUTCMonth() + 2)
+    expect(sub.currentPeriodEnd!.getTime()).toBe(expected.getTime())
+    expect((await renewalGrants(o1.id)).length + (await renewalGrants(o2.id)).length).toBe(2)
+  })
+
+  it("权益以下单快照为准：支付前运营改套餐（周期/积分）不影响在途单", async () => {
+    const userId = await mkUser()
+    const o = await mkRenewalOrder(userId, "rp-snap") // 快照：month/100
+    await getDb().update(plans).set({ grantCreditsPerCycle: 999, billingCycle: "year" }).where(eq(plans.id, planId))
+    try {
+      const before = Date.now()
+      const r = await markPaid(o.id, { sn: "snap", paidAmountCents: 1000 })
+      expect(r.paid).toBe(true)
+      const sub = (await subOf(userId))!
+      // 按快照延 1 个月（非改后的 1 年）
+      expect(sub.currentPeriodEnd!.getTime()).toBeLessThan(before + 32 * day)
+      const grants = await renewalGrants(o.id)
+      expect(grants[0]!.amount).toBe(100) // 按快照发 100（非改后的 999）
+    } finally {
+      await getDb().update(plans).set({ grantCreditsPerCycle: 100, billingCycle: "month" }).where(eq(plans.id, planId))
+    }
+  })
+
+  it("订单超可支付窗（7 天）后收到 PAID → 不入账（囤旧价单套利纵深防御）", async () => {
+    const userId = await mkUser()
+    const o = await mkRenewalOrder(userId, "rp-stale")
+    await getDb()
+      .update(paymentOrders)
+      .set({ createdAt: new Date(Date.now() - 8 * day) })
+      .where(eq(paymentOrders.id, o.id))
+    const r = await markPaid(o.id, { sn: "stale", paidAmountCents: 1000 })
+    expect(r).toEqual({ paid: false, reason: "stale_order" })
+    expect((await getDb().select().from(paymentOrders).where(eq(paymentOrders.id, o.id)))[0]!.status).toBe("created")
+    expect((await renewalGrants(o.id)).length).toBe(0)
   })
 
   it("续费金额校验沿用金额铁律：实付 != 套餐价不入账不续期", async () => {

@@ -97,6 +97,34 @@ describe("spec305 到期提醒（T-7/T-3/T-1 档，落库幂等去重）", () =>
     expect(cap.notices).toHaveLength(0)
   })
 
+  it("配置形状错误（标量而非数组）→ 回落默认档，不抛错断提醒", async () => {
+    await setConfig("renewal_reminder_days", 7) // 错误形状：标量
+    const cap = capture()
+    const sub = await mkSub("active", 2 * day)
+    cap.track(sub.id)
+    await scanRenewalReminders(new Date(), { notify: cap.notify }) // raw.filter 若被直接调用会 TypeError
+    expect(cap.notices).toHaveLength(1)
+    expect(cap.notices[0]!.tierDays).toBe(3) // 用的是默认 [7,3,1]
+    await setConfig("renewal_reminder_days", [7, 3, 1])
+  })
+
+  it("单条 notify 失败不毒死整轮：去重行回滚（下轮重试），其余订阅照常提醒", async () => {
+    const cap = capture()
+    const bad = await mkSub("active", 6 * day)
+    const good = await mkSub("active", 6 * day)
+    cap.track(bad.id)
+    cap.track(good.id)
+    const notify = async (n: ReminderNotice) => {
+      if (n.subscriptionId === bad.id) throw new Error("短信网关 500")
+      await cap.notify(n)
+    }
+    await scanRenewalReminders(new Date(), { notify })
+    expect(cap.notices.map((n) => n.subscriptionId)).toContain(good.id) // 后续订阅未被中断
+
+    await scanRenewalReminders(new Date(), { notify: cap.notify }) // 下一轮：坏号档位未被白耗，重试成功
+    expect(cap.notices.map((n) => n.subscriptionId)).toContain(bad.id)
+  })
+
   it("天数档读配置：改成 [10] 后 T-10 窗口生效", async () => {
     await setConfig("renewal_reminder_days", [10])
     const cap = capture()

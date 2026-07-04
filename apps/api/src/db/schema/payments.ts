@@ -20,11 +20,12 @@ export const paymentOrders = pgTable(
     providerTradeNo: text("provider_trade_no"), // 收钱吧订单号 sn
     channelTradeNo: text("channel_trade_no"), // 微信/支付宝渠道单号 trade_no
     payway: text("payway"), // 实际付款方式（对账用）
-    // 下单时快照的到账积分（recharge 命中充值包的 credits；回调晚到/运营改配置也按快照入账）。
-    // 会员单（purchase/renewal）不走积分快照 → NULL（spec308 按套餐发当期积分）。
+    // 下单时快照的到账积分（recharge=充值包 credits；renewal=套餐当期赠送积分）。
+    // 回调晚到/运营改配置也按快照入账——「这笔钱买什么」在下单时刻锁定；入账按 type 分发互不重复。
     creditsSnapshot: integer("credits_snapshot"),
-    // renewal/purchase 单：续/购的套餐（spec305 续期按此套餐周期与赠送积分入账）；recharge 为 NULL
+    // renewal/purchase 单：续/购的套餐 + 下单时的计费周期快照（运营改周期不影响在途单）；recharge 为 NULL
     planId: uuid("plan_id").references(() => plans.id),
+    cycleSnapshot: text("cycle_snapshot"), // month/quarter/year
     idempotencyKey: text("idempotency_key").notNull(), // 幂等键必填（nullable+unique 会被多 NULL 绕过）
     createdAt: createdAt(),
   },

@@ -31,6 +31,14 @@ export async function seedConfigs(): Promise<void> {
   await getDb().insert(billingConfigs).values(rows).onConflictDoNothing({ target: billingConfigs.key })
 }
 
+// 数值配置消毒（钱相关配置错值被静默采纳是事故放大器；pollConfig/宽限期/提醒档共用）
+export function pickPositive(v: unknown, dflt: number): number {
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : dflt
+}
+export function pickNonNegative(v: unknown, dflt: number): number {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : dflt
+}
+
 // 运营改配置（spec310 后台用）：upsert 同一张表
 export async function setConfig(key: string, value: unknown): Promise<void> {
   await getDb()

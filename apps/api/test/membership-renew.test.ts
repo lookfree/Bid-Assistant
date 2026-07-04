@@ -96,6 +96,8 @@ describe("POST /api/membership/renew（服务端定价，复用 spec304 支付�
     expect(row!.type).toBe("renewal")
     expect(row!.amountCents).toBe(2000) // plans 当前价快照
     expect(row!.planId).toBe(planId)
+    expect(row!.cycleSnapshot).toBe("month") // 权益快照：周期
+    expect(row!.creditsSnapshot).toBe(200) // 权益快照：当期积分
     expect(polled).toContain(body.orderId)
   })
 
@@ -134,5 +136,22 @@ describe("POST /api/membership/renew（服务端定价，复用 spec304 支付�
     expect((await getDb().select().from(subscriptions).where(eq(subscriptions.userId, userId)))[0]!.currentPeriodEnd!.getTime()).toBe(
       sub!.currentPeriodEnd!.getTime(), // 不重复续期
     )
+  })
+})
+
+// 放在最后：本用例会把该用户的开放单配额打满
+describe("开放订单上限（防刷单/网关放大）", () => {
+  it("created 单达到上限后继续下单 → 429", async () => {
+    let got429 = false
+    for (let i = 0; i < 8 && !got429; i++) {
+      const res = await app.request("/api/membership/renew", {
+        method: "POST",
+        headers: auth.Authorization(),
+        body: JSON.stringify({ planId }),
+      })
+      if (res.status === 429) got429 = true
+      else expect(res.status).toBe(200)
+    }
+    expect(got429).toBe(true) // 上限 5：最多 8 次内必触发
   })
 })

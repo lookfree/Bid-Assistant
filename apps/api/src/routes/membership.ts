@@ -6,31 +6,22 @@ import { getDb } from "../db/client"
 import { plans } from "../db/schema"
 import type { User } from "../db/schema"
 import { authMiddleware } from "../middleware/auth"
-import { createOrder, pollUntilFinal } from "../services/payment-orders"
-import { getPayment } from "../services/payment"
-import { launchPayment, type PaymentRouteDeps } from "./payment"
+import { countOpenOrders, createOrder } from "../services/payment-orders"
+import { launchPayment, resolvePaymentDeps, MAX_OPEN_ORDERS_PER_USER, type PaymentRouteDeps } from "./payment"
 
 // 会员路由（架构 §6.2，spec305）：手动续费下单 → 复用 spec304 单笔支付链路。
 // 服务端定价：客户端只传 planId，金额从 plans 当前价取并快照进订单；无任何签约/代扣路径。
 // spec308 会员中心的套餐列表/我的会员页在此文件扩展。
 
 export function membershipRoutes(deps: Partial<PaymentRouteDeps> = {}) {
-  const assembled = deps.provider ? undefined : getPayment()
-  const provider = deps.provider ?? assembled?.provider
-  const baseUrl = deps.baseUrl ?? assembled?.baseUrl
-
+  const resolved = resolvePaymentDeps(deps, "membership")
   const r = new Hono<{ Variables: { user: User } }>()
 
   // 凭据未配置的环境：支付能力整体关闭（503），gate 与 payment 路由同源 getPayment（不半开）
-  if (!provider || !baseUrl) {
+  if (!resolved) {
     r.all("*", (c) => c.json({ error: "payment_unconfigured" }, 503))
     return r
   }
-  const poll =
-    deps.poll ??
-    ((orderId: string) => {
-      void pollUntilFinal(orderId, { provider }).catch((err) => console.error(`[membership] 轮询异常 order=${orderId}`, err))
-    })
 
   r.use("*", authMiddleware)
 
@@ -49,14 +40,18 @@ export function membershipRoutes(deps: Partial<PaymentRouteDeps> = {}) {
     }
 
     const userId = c.get("user").id
+    if ((await countOpenOrders(userId)) >= MAX_OPEN_ORDERS_PER_USER) return c.json({ error: "too_many_open_orders" }, 429)
     const order = await createOrder({
       userId,
       type: "renewal",
-      amountCents: plan.priceCents, // 价格以下单快照为准（运营改价不影响在途单）
+      // 「这笔钱买什么」在下单时刻全量锁定：价格、周期、当期积分（运营改配置不影响在途单）
+      amountCents: plan.priceCents,
       planId: plan.id,
+      cycleSnapshot: plan.billingCycle,
+      creditsSnapshot: plan.grantCreditsPerCycle,
       idempotencyKey: `renewal:${userId}:${randomUUID()}`,
     })
-    return c.json(await launchPayment({ provider, baseUrl, poll }, order, `会员续费-${plan.name}`, plan.priceCents))
+    return c.json(await launchPayment(resolved, order, `会员续费-${plan.name}`, plan.priceCents))
   })
 
   return r

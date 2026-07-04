@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import { and, eq, inArray, lte } from "drizzle-orm"
 import { getDb } from "../db/client"
 import { paymentOrders } from "../db/schema"
-import { getConfig } from "./config"
+import { getConfig, pickPositive } from "./config"
 import * as credits from "./credits"
 import { renewOnPaid } from "./renewal"
 import type { CronJob } from "./cron"
@@ -24,8 +24,12 @@ export async function createOrder(input: {
   amountCents: number
   creditsSnapshot?: number
   planId?: string // renewal/purchase 单：续/购的套餐
+  cycleSnapshot?: string // renewal 单：下单时的计费周期快照
   idempotencyKey: string
 }): Promise<{ id: string; clientSn: string }> {
+  // 类型不变式（钱从严）：renewal 单没套餐无法结算（续什么？）；recharge 单带套餐说明调用方拿错了类型
+  if (input.type === "renewal" && !input.planId) throw new Error("renewal 单必须携带 planId")
+  if (input.type === "recharge" && input.planId) throw new Error("recharge 单不得携带 planId")
   const inserted = await getDb()
     .insert(paymentOrders)
     .values({
@@ -34,6 +38,7 @@ export async function createOrder(input: {
       amountCents: input.amountCents,
       creditsSnapshot: input.creditsSnapshot,
       planId: input.planId,
+      cycleSnapshot: input.cycleSnapshot,
       clientSn: `bid-${randomUUID()}`, // 我方订单号，送收钱吧，全局唯一
       idempotencyKey: input.idempotencyKey,
     })
@@ -47,21 +52,35 @@ export async function createOrder(input: {
 
 export type MarkPaidResult = {
   paid: boolean
-  reason?: "not_found" | "amount_missing" | "amount_mismatch" | "already_final"
+  reason?: "not_found" | "amount_missing" | "amount_mismatch" | "already_final" | "stale_order"
 }
 
 /** paid 状态机可推进的起点：created（正常）、unknown（窗口尽头/金额异常后迟到的有效支付）。 */
 const PAYABLE_STATUSES = ["created", "unknown"]
 
+/** 订单可支付窗（下单起 7 天）：unknown 非终态是为真实迟到回调留的门，不能顺带变成囤旧价单的套利门。 */
+const STALE_PAYABLE_MS = 7 * 24 * 60 * 60 * 1000
+
+/** 用户当前开放（created）订单数：下单频控用——created 单会被扫单 Cron 在窗口后收敛，天然退火。 */
+export async function countOpenOrders(userId: string): Promise<number> {
+  const rows = await getDb()
+    .select({ id: paymentOrders.id })
+    .from(paymentOrders)
+    .where(and(eq(paymentOrders.userId, userId), eq(paymentOrders.status, "created")))
+  return rows.length
+}
+
 /**
- * 置 paid + 入账（同一事务、只一次）：
+ * 置 paid + 入账（同一事务、只一次），入账按 order.type 分发（recharge=充值积分 / renewal=续期+当期积分）：
  * 1) 金额铁律：实付金额缺失（通道没给）或与快照不符 → 不入账，订单 created→unknown 进对账队列并告警；
- * 2) 条件 UPDATE `status IN (created,unknown) → paid` 原子推进，返回行数判定唯一赢家；
- * 3) 赢家在同事务内 grant 快照积分（幂等键 purchase:<orderId>）：grant 失败连状态一起回滚，
- *    通道重试/轮询/扫单可重新驱动——杜绝「订单 paid 但积分永远没发」的不可见资损。
- * 充值积分不设有效期（无 purchase_expire_days 口径，决策见 review-followups spec304）。
- * 会员激活（purchase/renewal 的订阅生效）留 TODO：spec308 会员中心接管。
- * deps.grantFn 仅测试注入（验证事务回滚），生产走 credits.grant。
+ * 2) 超期窗：订单创建超 STALE_PAYABLE_MS 后收到 PAID（疑似囤单套利/极端迟到）→ 不入账、告警留人工对账
+ *    （通道侧 WAP 单 4 分钟有效是第一道防线，此为纵深；决策见 review-followups spec305）；
+ * 3) 条件 UPDATE `status IN (created,unknown) → paid` 原子推进，返回行数判定唯一赢家；
+ * 4) 赢家在同事务内入账：grant/续期失败连状态一起回滚，通道重试/轮询/扫单可重新驱动
+ *    ——杜绝「订单 paid 但积分/周期永远没落」的不可见资损。
+ * 充值积分不设有效期（决策见 review-followups spec304 C7）；续费当期积分随周期作废（spec305）。
+ * spec308 首购（purchase）分支在此扩展。
+ * deps.grantFn 仅测试注入（验证事务回滚）——注意会替换**所有**入账路径（充值与续费）。
  */
 export async function markPaid(
   orderId: string,
@@ -71,6 +90,12 @@ export async function markPaid(
   const [order] = await getDb().select().from(paymentOrders).where(eq(paymentOrders.id, orderId))
   if (!order) return { paid: false, reason: "not_found" }
 
+  if (Date.now() - order.createdAt.getTime() > STALE_PAYABLE_MS) {
+    console.error(
+      `[payment] 超期订单收到支付信号（疑似囤单/极端迟到）order=${orderId} 创建于 ${order.createdAt.toISOString()}，不入账留人工对账`,
+    )
+    return { paid: false, reason: "stale_order" }
+  }
   if (info.paidAmountCents == null || info.paidAmountCents !== order.amountCents) {
     const reason = info.paidAmountCents == null ? "amount_missing" : "amount_mismatch"
     console.error(
@@ -89,19 +114,24 @@ export async function markPaid(
       .returning()
     if (winner.length === 0) return { paid: false, reason: "already_final" as const }
 
-    if (order.creditsSnapshot != null && order.creditsSnapshot > 0) {
+    // 入账按订单类型显式分发（不能按附带字段猜——creditsSnapshot 对 recharge/renewal 语义不同，
+    // 若两分支都按字段触发，一张带快照的 renewal 单会被 purchase:/renewal: 两个幂等键各记一次=双发）
+    if (order.type === "recharge" && order.creditsSnapshot != null && order.creditsSnapshot > 0) {
       await grantFn(
         order.userId,
         order.creditsSnapshot,
         { type: "purchase", sourceBatch: orderId, ref: orderId, idempotencyKey: `purchase:${orderId}` },
         tx, // 状态与入账同事务提交；幂等键是并发双保险
       )
-    }
-    if (order.type === "renewal") {
+    } else if (order.type === "renewal") {
       // 续期 + 发当期积分与置 paid 同事务（spec305）：失败整体回滚，通道重试重新驱动
-      await renewOnPaid({ orderId: order.id, userId: order.userId, planId: order.planId }, tx, deps)
+      await renewOnPaid(
+        { orderId: order.id, userId: order.userId, planId: order.planId, creditsSnapshot: order.creditsSnapshot, cycleSnapshot: order.cycleSnapshot },
+        tx,
+        deps,
+      )
     }
-    // TODO(spec308): purchase 单（首购会员）在此激活订阅
+    // TODO(spec308): purchase 单（首购会员）在此扩展分发
     return { paid: true }
   })
 }
@@ -120,11 +150,10 @@ const POLL_DEFAULTS: PollConfig = { windowMinutes: 6, fastSeconds: 3, slowSecond
 /** 轮询配置消毒：非正数/非有限值一律回落官方默认——fastSeconds=0 会变成打爆网关的死循环。 */
 async function pollConfig(): Promise<PollConfig> {
   const raw = await getConfig<Partial<PollConfig>>("payment_poll")
-  const pick = (v: number | undefined, dflt: number) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : dflt)
   return {
-    windowMinutes: pick(raw?.windowMinutes, POLL_DEFAULTS.windowMinutes),
-    fastSeconds: pick(raw?.fastSeconds, POLL_DEFAULTS.fastSeconds),
-    slowSeconds: pick(raw?.slowSeconds, POLL_DEFAULTS.slowSeconds),
+    windowMinutes: pickPositive(raw?.windowMinutes, POLL_DEFAULTS.windowMinutes),
+    fastSeconds: pickPositive(raw?.fastSeconds, POLL_DEFAULTS.fastSeconds),
+    slowSeconds: pickPositive(raw?.slowSeconds, POLL_DEFAULTS.slowSeconds),
   }
 }
 
@@ -192,12 +221,22 @@ export async function sweepStaleCreatedOrders(provider: PaymentProvider, now: Da
     .where(and(eq(paymentOrders.status, "created"), lte(paymentOrders.createdAt, cutoff)))
   let handled = 0
   for (const o of stale) {
+    let result
     try {
-      const outcome = await settleQueryResult(o.id, await provider.query(o.clientSn))
+      result = await provider.query(o.clientSn)
+    } catch (err) {
+      console.error(`[payment] 滞留单查询失败 order=${o.id}（下一轮重试）`, err)
+      continue // 网关抖动：留在 created，下一轮再问
+    }
+    try {
+      const outcome = await settleQueryResult(o.id, result)
       if (!outcome) await markFinal(o.id, "unknown") // 超窗仍 pending → 待对账
       handled++
     } catch (err) {
-      console.error(`[payment] 滞留单查询失败 order=${o.id}（下一轮重试）`, err)
+      // 结算持续失败（如 renewal 单数据事故）不能每分钟空转到永远：升级 unknown 进对账队列
+      // （unknown 仍可支付，修复后真实回调/对账可重新驱动）
+      console.error(`[payment] 滞留单结算失败，转 unknown 进对账 order=${o.id}`, err)
+      await markFinal(o.id, "unknown").catch(() => {})
     }
   }
   return handled
