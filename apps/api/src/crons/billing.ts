@@ -1,6 +1,7 @@
 import type { CronJob } from "../services/cron"
 import { expireDue } from "../services/credits"
 import { DAY_MS } from "../services/renewal"
+import { sweepPendingReferralUnlocks } from "../services/referral"
 import { runReconcile, auditLedger, releaseOrphanHolds, scanStuckRefunds, toBillDate, type ReconcileProvider, type AlertHook } from "../services/reconcile"
 
 // spec306 每日 Cron（spec303 startCronRunner 注册，集群单实例执行；注册即首跑，业务幂等去重）：
@@ -38,6 +39,16 @@ export async function ledgerAuditJob(deps: { alertHook?: AlertHook } = {}): Prom
 
 export function ledgerAuditCronJob(deps: { alertHook?: AlertHook } = {}): CronJob {
   return { name: "ledger-audit", everyMs: DAY_MS, jobFn: () => ledgerAuditJob(deps) }
+}
+
+/** 推荐奖励重扫 job 体（R3，可直调测试）：兜底 markPaid 钩子瞬时失败丢失的 pending 解锁。不依赖支付凭据。 */
+export async function referralUnlockSweepJob(): Promise<void> {
+  const n = await sweepPendingReferralUnlocks()
+  if (n > 0) console.info(`[cron:referral-unlock-sweep] 重驱解锁 ${n} 条`)
+}
+
+export function referralUnlockSweepCronJob(): CronJob {
+  return { name: "referral-unlock-sweep", everyMs: DAY_MS, jobFn: referralUnlockSweepJob }
 }
 
 /** 对账 job 体（可直调测试）：对昨日（UTC）账（窗口内已结算单 + 全量存量 unknown）。 */

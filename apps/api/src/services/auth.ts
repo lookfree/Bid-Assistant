@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto"
 import { findUserByIdentity, createOrGetOnConflict, getUserById } from "../repos/users"
+import { bindByCode } from "./referral"
 import { createSession, findValidSession, revokeSession } from "../repos/sessions"
 import { sha256Hex } from "./crypto"
 import type { User } from "../db/schema"
@@ -52,7 +53,7 @@ export class InvalidCodeError extends Error {
  */
 export async function loginWithPhone(
   phone: string,
-  meta: { userAgent?: string; ip?: string; agreedToTerms?: boolean },
+  meta: { userAgent?: string; ip?: string; agreedToTerms?: boolean; referralCode?: string; deviceHash?: string },
   ttlDays: number,
   consumeCode: () => Promise<boolean>,
 ): Promise<{ token: string; user: User; isNew: boolean }> {
@@ -71,6 +72,15 @@ export async function loginWithPhone(
     isNew = created.isNew
   }
   const token = await mintSession(user.id, meta, ttlDays)
+  // R1：首次注册且带邀请码 → 绑定推荐关系（spec307 引擎的注册入口）。
+  // 坏码/自荐/重复绑定/风控冻结都不得阻断注册，故吞错只留日志。deviceHash/ip 由路由服务端派生（R2）。
+  if (isNew && meta.referralCode) {
+    try {
+      await bindByCode({ code: meta.referralCode, inviteeId: user.id, phone, deviceHash: meta.deviceHash, ip: meta.ip })
+    } catch (e) {
+      console.error(`[auth] 推荐绑定失败（不阻断注册）invitee=${user.id}`, e instanceof Error ? e.message : e)
+    }
+  }
   return { token, user, isNew }
 }
 

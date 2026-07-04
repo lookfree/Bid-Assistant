@@ -2,6 +2,7 @@ import { Hono } from "hono"
 import { z } from "zod"
 import { authMiddleware } from "../middleware/auth"
 import { loginWithPhone, logout, TermsRequiredError, InvalidCodeError } from "../services/auth"
+import { sha256Hex } from "../services/crypto"
 import { normalizePhone } from "../util/phone"
 import type { SmsCodeService } from "../services/sms-code"
 
@@ -11,6 +12,7 @@ const verifySchema = z.object({
   phone: z.string().regex(phoneRe),
   code: z.string().regex(/^\d{6}$/),
   agreedToTerms: z.boolean().optional(), // 首次注册必须为 true
+  referralCode: z.string().min(1).max(16).optional(), // 首次注册带邀请码 → 绑定推荐关系（spec307 引擎入口，R1）
 })
 
 export type AuthRouteDeps = {
@@ -47,11 +49,14 @@ export function authRoutes(deps: AuthRouteDeps) {
     if (!body.success) return c.json({ error: "invalid_input" }, 400)
     const phone = normalizePhone(body.data.phone)
     const ip = clientIp((n) => c.req.header(n))
+    const userAgent = c.req.header("User-Agent")
+    // R2：设备指纹由服务端从 UA+IP 派生（客户端无法省略以绕过风控）；缺 UA/IP 本身即弱指纹。
+    const deviceHash = sha256Hex(`${userAgent ?? ""}|${ip ?? ""}`)
     try {
       // 验证码消费在 loginWithPhone 内、协议判定之后 → terms_required 不会烧掉码。
       const { token, user, isNew } = await loginWithPhone(
         phone,
-        { userAgent: c.req.header("User-Agent"), ip, agreedToTerms: body.data.agreedToTerms },
+        { userAgent, ip, agreedToTerms: body.data.agreedToTerms, referralCode: body.data.referralCode, deviceHash },
         deps.sessionTtlDays,
         () => deps.smsCode.verify(phone, body.data.code),
       )
