@@ -24,7 +24,7 @@ export async function listUsers(opts: { q?: string; page?: number; pageSize?: nu
     db.select().from(users).where(where).orderBy(users.createdAt).limit(pageSize).offset((page - 1) * pageSize),
     db.select({ n: sql<number>`count(*)` }).from(users).where(where),
   ])
-  return { items, total: Number(cnt!.n), page, pageSize }
+  return { items, total: Number(cnt!.n) }
 }
 
 export async function getUserDetail(id: string) {
@@ -49,12 +49,10 @@ export const banUser = (id: string, opts: { operator: string }) => setUserStatus
 export const unbanUser = (id: string, opts: { operator: string }) => setUserStatus(id, "active", opts.operator)
 
 // 手动调积分：走 spec302 credits.adminAdjust（签名金额，负向即扣减；grant 不收负值）+ 审计前后余额。
-export async function adminGrantCredits(id: string, opts: { amount: number; reason: string; operator: string; adminId: string }) {
+// 幂等键由调用方（前端每次调整生成一个稳定 UUID）提供——用时间戳会让双击/重试各生成新键 → 重复入账。
+export async function adminGrantCredits(id: string, opts: { amount: number; reason: string; operator: string; idempotencyKey: string }) {
   const before = await getBalance(id)
-  await adminAdjust(id, opts.amount, {
-    ref: `admin:${opts.reason}`,
-    idempotencyKey: `admin:${opts.adminId}:${Date.now()}:${opts.amount}`,
-  })
+  await adminAdjust(id, opts.amount, { ref: `admin:${opts.reason}`, idempotencyKey: `admin:${opts.idempotencyKey}` })
   const after = await getBalance(id)
   await writeAudit({
     operator: opts.operator,

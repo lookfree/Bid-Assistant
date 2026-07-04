@@ -16,7 +16,7 @@ export async function listOrders(opts: { status?: string; type?: string; userId?
     db.select().from(paymentOrders).where(where).orderBy(sql`${paymentOrders.createdAt} desc`).limit(pageSize).offset((page - 1) * pageSize),
     db.select({ n: sql<number>`count(*)` }).from(paymentOrders).where(where),
   ])
-  return { items, total: Number(cnt!.n), page, pageSize }
+  return { items, total: Number(cnt!.n) }
 }
 
 export async function getOrderDetail(id: string) {

@@ -14,7 +14,7 @@ export async function listLedger(opts: { userId: string; type?: string; page?: n
     db.select().from(creditTransactions).where(where).orderBy(sql`${creditTransactions.createdAt} desc`).limit(pageSize).offset((page - 1) * pageSize),
     db.select({ n: sql<number>`count(*)` }).from(creditTransactions).where(where),
   ])
-  return { items, total: Number(cnt!.n), page, pageSize }
+  return { items, total: Number(cnt!.n) }
 }
 
 // 余额核对：缓存 credit_balances vs Σ流水（单用户版对账，复用 spec306 思路）。

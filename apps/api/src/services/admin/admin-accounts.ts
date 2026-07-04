@@ -18,7 +18,7 @@ export async function listAdmins(opts: { page?: number; pageSize?: number }) {
       .offset((page - 1) * pageSize),
     db.select({ n: sql<number>`count(*)` }).from(adminUsers),
   ])
-  return { items, total: Number(cnt!.n), page, pageSize } // 不返回 passwordHash
+  return { items, total: Number(cnt!.n) } // 不返回 passwordHash
 }
 
 export async function createAdminAccount(input: { username: string; role: AdminRole; password: string }, opts: { operator: string }) {
@@ -57,5 +57,5 @@ export async function listAuditLogs(opts: { operator?: string; action?: string; 
     db.select().from(adminAuditLogs).where(where).orderBy(sql`${adminAuditLogs.createdAt} desc`).limit(pageSize).offset((page - 1) * pageSize),
     db.select({ n: sql<number>`count(*)` }).from(adminAuditLogs).where(where),
   ])
-  return { items, total: Number(cnt!.n), page, pageSize }
+  return { items, total: Number(cnt!.n) }
 }

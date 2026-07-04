@@ -46,18 +46,26 @@ describe("spec310 用户页", () => {
 
   it("手动加/扣积分：走 adminAdjust（±）+ 审计", async () => {
     const u = await makeUserWithNickname(regU)
-    const r1 = await adminGrantCredits(u, { amount: 200, reason: "补偿", operator: "ops", adminId: "adm1" })
+    const r1 = await adminGrantCredits(u, { amount: 200, reason: "补偿", operator: "ops", idempotencyKey: `k1-${u}` })
     expect(r1.balance).toBe(200)
-    const r2 = await adminGrantCredits(u, { amount: -30, reason: "扣回", operator: "ops", adminId: "adm1" })
+    const r2 = await adminGrantCredits(u, { amount: -30, reason: "扣回", operator: "ops", idempotencyKey: `k2-${u}` })
     expect(r2.balance).toBe(170)
     const logs = await getDb().select().from(adminAuditLogs).where(eq(adminAuditLogs.target, `user:${u}`))
     expect(logs.some((l) => l.action === "credit.adjust")).toBe(true)
   })
 
+  it("同幂等键重复调整只入账一次（防双击/重试重复给钱）", async () => {
+    const u = await makeUserWithNickname(regU)
+    const key = `dup-${u}`
+    await adminGrantCredits(u, { amount: 200, reason: "补偿", operator: "ops", idempotencyKey: key })
+    const again = await adminGrantCredits(u, { amount: 200, reason: "补偿", operator: "ops", idempotencyKey: key })
+    expect(again.balance).toBe(200) // 仍 200，未变 400
+  })
+
   it("扣积分超余额 → 拒绝（不扣穿到负）", async () => {
     const u = await makeUserWithNickname(regU)
-    await adminGrantCredits(u, { amount: 50, reason: "init", operator: "ops", adminId: "adm1" })
-    await expect(adminGrantCredits(u, { amount: -100, reason: "over", operator: "ops", adminId: "adm1" })).rejects.toThrow()
+    await adminGrantCredits(u, { amount: 50, reason: "init", operator: "ops", idempotencyKey: `i1-${u}` })
+    await expect(adminGrantCredits(u, { amount: -100, reason: "over", operator: "ops", idempotencyKey: `i2-${u}` })).rejects.toThrow()
   })
 
   it("support 调封禁路由 → 403", async () => {
