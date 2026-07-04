@@ -5,6 +5,7 @@ import { paymentOrders } from "../db/schema"
 import { getConfig, pickPositive } from "./config"
 import * as credits from "./credits"
 import { renewOnPaid } from "./renewal"
+import { onInviteeFirstPaid } from "./referral"
 import type { CronJob } from "./cron"
 import type { PaymentProvider } from "./payment/provider"
 
@@ -110,7 +111,7 @@ export async function markPaid(
   }
 
   const grantFn = deps.grantFn ?? credits.grant
-  return await getDb().transaction(async (tx) => {
+  const result = await getDb().transaction(async (tx) => {
     const winner = await tx
       .update(paymentOrders)
       .set({ status: "paid", providerTradeNo: info.sn, channelTradeNo: info.tradeNo, payway: info.payway })
@@ -136,8 +137,14 @@ export async function markPaid(
       )
     }
     // TODO(spec308): purchase 单（首购会员）在此扩展分发
-    return { paid: true }
+    return { paid: true as const }
   })
+
+  if (result.paid) {
+    // 被邀请人首次付费 → 推荐延迟解锁（spec307，事务外 best-effort：幂等，失败不影响支付已成的事实）
+    await onInviteeFirstPaid(order.userId).catch((err) => console.error(`[payment] 推荐解锁钩子失败 user=${order.userId}`, err))
+  }
+  return result
 }
 
 /** 非 paid 去向（failed=通道明确取消/过期；unknown=窗口尽头或金额异常，待对账）：仅从 created 推进。 */
