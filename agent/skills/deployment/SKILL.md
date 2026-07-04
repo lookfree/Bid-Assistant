@@ -5,6 +5,27 @@ description: 部署/运维/联调本系统时使用——服务器 60.205.160.74
 
 # 部署与运维
 
+## 两套部署环境（基本规则，2026-07-04 定）
+
+全量部署 = **api + web + admin + agent + nginx 五个服务**（缺 agent 不算全量）。两套环境，都用 Docker：
+
+| 维度 | 🖥️ 开发环境 = **mbp** | ☁️ 测试环境 = **aliyun 60.205.160.74** |
+|---|---|---|
+| 定位 | 开发自测、快速验证 | 集成测试、试用 |
+| 访问 | 在 mbp 本机浏览器 localhost（`app.localhost`/`admin.localhost`/`api.localhost`） | 公网 IP / 真实域名 |
+| 运行 | Docker Desktop | Docker |
+| **数据层 PG/Redis/MinIO** | **远程连 aliyun 60.205.160.74** | **同机连 127.0.0.1** |
+| **数据隔离（分库）** | PG=`bidsaas_dev` + 独立 Redis DB index + 独立 MinIO bucket | PG=`bidsaas`、默认 Redis/bucket（与集成测试共用） |
+| 代码上机 | **git clone origin/main → `git pull` 增量部署** | 同左 |
+| 秘钥 | `deploy/.env.deploy.local`（每环境一份，gitignored） | 同左 |
+
+**铁律：**
+1. **数据层只有一套物理实例，在 aliyun 60.205.160.74**（PG/Redis/MinIO 全在这台）。mbp 开发环境**远程连**它；aliyun 测试环境**同机连**（`127.0.0.1`）。
+2. **dev 与 test 分库隔离**：mbp 开发环境写 `bidsaas_dev` + 独立 Redis index + 独立 bucket，**绝不写 `bidsaas`**（那是测试/集成测试库；`test-on-mbp.sh` 也写它）。和钱相关从严，开发自测不许污染测试数据。
+3. 代码经 git clone 上机（版本可追溯），`deploy/deploy.sh` 的 `git pull` 才成立。
+
+> **已知开发待办**：agent 用哪个大模型现在是 env 写死（`config.py` 的 `model_default_provider`，默认 deepseek）。产品要求**改成运营后台可配**（像 `billing_configs` 那样存 DB、admin 可视化改）。见 `docs/review-followups.md`。
+
 ## 主机
 
 - **服务器 `60.205.160.74`**（Alibaba Cloud Linux / x86，PG + Redis + MinIO 同机）。root 免密经 mbp 跳板（凭据不写文件）。同机连库须 `export DATABASE_URL` 用 `127.0.0.1`、`REDIS_HOST=127.0.0.1`、`MINIO_ENDPOINT=http://127.0.0.1:9000`。
@@ -12,8 +33,9 @@ description: 部署/运维/联调本系统时使用——服务器 60.205.160.74
 
 ## 数据与中间件拓扑
 
-- PostgreSQL 库 `bidsaas`，三 schema：`public`（App 业务+积分账本，Drizzle）/ `langgraph`（检查点）/ `agent`（观测）。
-- Redis 前缀 `bid:`（Cron 分布式锁 + 缓存）。MinIO bucket `bidsaas`（招标文件/导出产物）。
+- **PG/Redis/MinIO 全部物理在 aliyun 60.205.160.74**（唯一一套实例）。开发环境远程连、测试环境同机连，见上「两套部署环境」。
+- PostgreSQL：测试库 `bidsaas` / 开发库 `bidsaas_dev`，各三 schema：`public`（App 业务+积分账本，Drizzle）/ `langgraph`（检查点）/ `agent`（观测）。
+- Redis 前缀 `bid:`（Cron 分布式锁 + 缓存），dev 用独立 DB index。MinIO bucket `bidsaas`（招标文件/导出产物），dev 用独立 bucket。
 
 ## 集成测试 & 迁移 —— 必经 mbp SSH 隧道
 
