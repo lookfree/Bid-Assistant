@@ -11,6 +11,7 @@ import { membershipRoutes } from "./routes/membership"
 import { referralRoutes } from "./routes/referral"
 import { creditsRoutes } from "./routes/credits"
 import { ordersRoutes } from "./routes/orders"
+import { adminRoutes } from "./routes/admin"
 import type { SmsCodeService } from "./services/sms-code"
 import type { makeWechatAuth } from "./services/wechat-auth"
 
@@ -67,5 +68,6 @@ export function createApp(deps: AppDeps) {
   app.route("/api/referral", referralRoutes()) // 推荐奖励（spec307）；自带 authMiddleware
   app.route("/api/credits", creditsRoutes()) // 积分流水分页（spec308）；自带 authMiddleware
   app.route("/api/orders", ordersRoutes()) // 我的订单分页（spec308）；自带 authMiddleware
+  app.route("/admin-api", adminRoutes()) // 运营后台（spec309）；独立 admin 身份/RBAC，与 C 端完全隔离
   return app
 }
