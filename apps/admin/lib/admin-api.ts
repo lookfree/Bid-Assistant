@@ -61,7 +61,19 @@ export const adminApi = {
       req<Paged<ApiLedgerTx>>(`/ledger${qs(p)}`),
     check: (userId: string) => req<{ cached: number; actual: number; match: boolean }>(`/ledger/${userId}/check`),
   },
-  overview: () => req<ApiOverview>("/overview"),
+  overview: {
+    get: () => req<ApiOverview>("/overview"),
+    trend: (days = 14) => req<ApiTrendPoint[]>(`/overview/trend?days=${days}`),
+  },
+  system: {
+    admins: (p: { page?: number; pageSize?: number } = {}) => req<Paged<ApiAdmin>>(`/admins${qs(p)}`),
+    createAdmin: (body: { username: string; role: string; password: string }) =>
+      req<ApiAdmin>("/admins", { method: "POST", body: JSON.stringify(body) }),
+    updateAdmin: (id: string, patch: { role?: string; status?: string }) =>
+      req<ApiAdmin>(`/admins/${id}`, { method: "PUT", body: JSON.stringify(patch) }),
+    auditLogs: (p: { page?: number; pageSize?: number } = {}) => req<Paged<ApiAuditLog>>(`/audit-logs${qs(p)}`),
+    rbac: () => req<{ permissions: string[]; roles: Record<string, string[]> }>("/rbac"),
+  },
 }
 
 export type Paged<T> = { items: T[]; total: number; page: number; pageSize: number; hasMore: boolean }
@@ -70,6 +82,9 @@ export type ApiUserDetail = ApiUser & { subscription: { planId: string; status: 
 export type ApiOrder = { id: string; userId: string; type: string; amountCents: number; status: string; provider: string | null; payway: string | null; providerTradeNo: string | null; createdAt: string }
 export type ApiLedgerTx = { id: string; userId: string; type: string; amount: number; ref: string | null; createdAt: string; expireAt: string | null }
 export type ApiOverview = { totalUsers: number; payingUsers: number; todayRevenueCents: number; creditTxCount: number; creditTxSumToday: number; activeProjects: number }
+export type ApiTrendPoint = { date: string; revenue: number; credits: number }
+export type ApiAdmin = { id: string; username: string; role: string; status: string; createdAt?: string }
+export type ApiAuditLog = { id: string; operator: string; action: string; target: string | null; before: unknown; after: unknown; createdAt: string }
 
 // 查询串：跳过 undefined/空，encodeURIComponent。
 function qs(p: Record<string, unknown>): string {

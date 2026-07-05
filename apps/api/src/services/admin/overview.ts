@@ -38,3 +38,40 @@ export async function computeOverview(): Promise<OverviewMetrics> {
     activeProjects: Number(proj!.n),
   }
 }
+
+export interface TrendPoint {
+  date: string // MM/DD
+  revenue: number // 元
+  credits: number // 当日积分流水净额
+}
+
+/** 近 days 天每日营收（已支付单，元）+ 积分流水净额，补齐连续日期（无数据补 0）。趋势图用。 */
+export async function computeTrend(days = 14): Promise<TrendPoint[]> {
+  const db = getDb()
+  const since = new Date()
+  since.setHours(0, 0, 0, 0)
+  since.setDate(since.getDate() - (days - 1))
+  const dayExpr = (col: unknown) => sql<string>`to_char(${col}, 'MM/DD')`
+  const [rev, cr] = await Promise.all([
+    db
+      .select({ d: dayExpr(paymentOrders.createdAt), s: sql<number>`coalesce(sum(${paymentOrders.amountCents}),0)` })
+      .from(paymentOrders)
+      .where(and(eq(paymentOrders.status, "paid"), gte(paymentOrders.createdAt, since)))
+      .groupBy(dayExpr(paymentOrders.createdAt)),
+    db
+      .select({ d: dayExpr(creditTransactions.createdAt), s: sql<number>`coalesce(sum(${creditTransactions.amount}),0)` })
+      .from(creditTransactions)
+      .where(gte(creditTransactions.createdAt, since))
+      .groupBy(dayExpr(creditTransactions.createdAt)),
+  ])
+  const revMap = new Map(rev.map((r) => [r.d, Number(r.s)]))
+  const crMap = new Map(cr.map((r) => [r.d, Number(r.s)]))
+  const out: TrendPoint[] = []
+  const d = new Date(since)
+  for (let i = 0; i < days; i++) {
+    const key = `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`
+    out.push({ date: key, revenue: Math.round((revMap.get(key) ?? 0) / 100), credits: crMap.get(key) ?? 0 })
+    d.setDate(d.getDate() + 1)
+  }
+  return out
+}
