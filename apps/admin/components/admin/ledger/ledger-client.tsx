@@ -1,7 +1,8 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { ShieldCheck, CheckCircle2 } from "lucide-react"
+import { toast } from "sonner"
 
 import {
   Card,
@@ -28,56 +29,134 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { TablePagination } from "@/components/admin/table-pagination"
 import { LedgerTypeBadge } from "@/components/admin/status-badges"
-import {
-  balanceFromLedger,
-  ledger,
-  users,
-  type LedgerType,
-} from "@/lib/mock-data"
+import { type LedgerType } from "@/lib/mock-data"
+import { adminApi, type ApiLedgerTx } from "@/lib/admin-api"
 
 const PAGE_SIZE = 10
-const userOptions = users.map((u) => ({ id: u.id, name: u.name }))
+
+// 账本流水行：真实 /ledger 列表不带用户名/批次/幂等键，缺失字段用安全占位符。
+interface LedgerRow {
+  id: string
+  userName: string
+  type: string
+  amount: number
+  batch: string
+  ref: string
+  createdAt: string
+}
+
+function apiLedgerToRow(l: ApiLedgerTx, userName: string): LedgerRow {
+  return {
+    id: l.id,
+    userName,
+    type: l.type,
+    amount: l.amount,
+    batch: "-",
+    ref: l.ref ?? "-",
+    createdAt: l.createdAt.slice(0, 19).replace("T", " "),
+  }
+}
 
 export function LedgerClient() {
-  const [userId, setUserId] = useState("U100237")
+  const [userOptions, setUserOptions] = useState<{ id: string; name: string }[]>([])
+  const [userId, setUserId] = useState("")
   const [type, setType] = useState("all")
   const [page, setPage] = useState(1)
+  const [rows, setRows] = useState<LedgerRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [check, setCheck] = useState<{ cached: number; actual: number; match: boolean } | null>(null)
 
-  const filtered = useMemo(() => {
-    return ledger
-      .filter((l) => (userId === "all" ? true : l.userId === userId))
-      .filter((l) => (type === "all" ? true : l.type === type))
-      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
-  }, [userId, type])
+  // 加载真实用户列表，作为用户选择器，默认选中第一个真实用户。
+  useEffect(() => {
+    async function loadUsers() {
+      try {
+        const res = await adminApi.users.list({ pageSize: 100 })
+        const opts = res.items.map((u) => ({ id: u.id, name: u.nickname ?? u.phone ?? u.id }))
+        setUserOptions(opts)
+        if (opts.length > 0) setUserId(opts[0].id)
+      } catch {
+        toast.error("加载用户失败")
+      }
+    }
+    void loadUsers()
+  }, [])
 
-  const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+  const currentUserName = userOptions.find((u) => u.id === userId)?.name ?? userId
 
-  const currentUser = users.find((u) => u.id === userId)
-  const computed = userId === "all" ? null : balanceFromLedger(userId)
-  const matched = currentUser ? computed === currentUser.points : true
+  // 按用户 + 类型加载流水（真实接口按用户维度查询，不支持“全部用户”）。
+  useEffect(() => {
+    if (!userId) return
+    let alive = true
+    async function loadLedger() {
+      setLoading(true)
+      try {
+        const res = await adminApi.ledger.list({ userId, type: type === "all" ? undefined : type, pageSize: 100 })
+        if (!alive) return
+        setRows(res.items.map((l) => apiLedgerToRow(l, currentUserName)))
+      } catch {
+        if (alive) toast.error("加载流水失败")
+      } finally {
+        if (alive) setLoading(false)
+      }
+    }
+    void loadLedger()
+    return () => {
+      alive = false
+    }
+  }, [userId, type, currentUserName])
+
+  // 余额核对：缓存余额 vs 流水之和实算。
+  useEffect(() => {
+    if (!userId) {
+      setCheck(null)
+      return
+    }
+    let alive = true
+    adminApi.ledger
+      .check(userId)
+      .then((res) => {
+        if (alive) setCheck(res)
+      })
+      .catch(() => {
+        if (alive) setCheck(null)
+      })
+    return () => {
+      alive = false
+    }
+  }, [userId])
+
+  const sorted = useMemo(
+    () => [...rows].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)),
+    [rows]
+  )
+  const paged = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
 
   return (
     <div className="flex flex-col gap-6">
-      {userId !== "all" && currentUser && (
+      {userId && check && (
         <Alert className="border-primary/30 bg-primary/5">
           <ShieldCheck />
           <AlertTitle className="flex items-center gap-2">
             账本可审计 · 余额核对
-            {matched ? (
+            {check.match ? (
               <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
-                <CheckCircle2 className="size-3.5" /> 已对平
+                <CheckCircle2 className="size-3.5" /> 一致
               </span>
             ) : (
               <span className="text-xs font-medium text-destructive">
-                存在差异
+                不一致
               </span>
             )}
           </AlertTitle>
           <AlertDescription>
             <span className="font-mono">
-              {currentUser.name} 余额 = 流水之和 ={" "}
+              {currentUserName} 缓存余额{" "}
               <span className="font-semibold text-foreground">
-                {computed?.toLocaleString()}
+                {check.cached.toLocaleString()}
+              </span>{" "}
+              · 实际（流水之和）{" "}
+              <span className="font-semibold text-foreground">
+                {check.actual.toLocaleString()}
               </span>{" "}
               积分
             </span>
@@ -94,7 +173,7 @@ export function LedgerClient() {
             <Select
               value={userId}
               onValueChange={(v) => {
-                setUserId(v ?? "all")
+                if (v) setUserId(v)
                 setPage(1)
               }}
             >
@@ -102,7 +181,6 @@ export function LedgerClient() {
                 <SelectValue placeholder="选择用户" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">全部用户</SelectItem>
                 {userOptions.map((u) => (
                   <SelectItem key={u.id} value={u.id}>
                     {u.name}（{u.id}）
@@ -135,7 +213,7 @@ export function LedgerClient() {
               size="sm"
               className="sm:ml-auto"
               onClick={() => {
-                setUserId("all")
+                if (userOptions.length > 0) setUserId(userOptions[0].id)
                 setType("all")
                 setPage(1)
               }}
@@ -155,7 +233,6 @@ export function LedgerClient() {
                   <TableHead className="text-right">金额（±）</TableHead>
                   <TableHead>来源批次</TableHead>
                   <TableHead>关联 run / 订单</TableHead>
-                  <TableHead>幂等键</TableHead>
                   <TableHead>时间</TableHead>
                 </TableRow>
               </TableHeader>
@@ -181,9 +258,6 @@ export function LedgerClient() {
                     <TableCell className="font-mono text-xs text-muted-foreground">
                       {l.ref}
                     </TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">
-                      {l.idempotencyKey}
-                    </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       {l.createdAt}
                     </TableCell>
@@ -192,10 +266,10 @@ export function LedgerClient() {
                 {paged.length === 0 && (
                   <TableRow>
                     <TableCell
-                      colSpan={8}
+                      colSpan={7}
                       className="h-24 text-center text-muted-foreground"
                     >
-                      没有匹配的流水
+                      {loading ? "加载中…" : "没有匹配的流水"}
                     </TableCell>
                   </TableRow>
                 )}
@@ -205,7 +279,7 @@ export function LedgerClient() {
           <TablePagination
             page={page}
             pageSize={PAGE_SIZE}
-            total={filtered.length}
+            total={sorted.length}
             onPageChange={setPage}
           />
         </CardContent>
