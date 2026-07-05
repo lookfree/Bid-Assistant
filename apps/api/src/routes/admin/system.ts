@@ -3,10 +3,16 @@ import { z } from "zod"
 import { requirePermission } from "../../middleware/admin-auth"
 import { parsePagination, pagedBody } from "../../lib/pagination"
 import { listAdmins, createAdminAccount, updateAdminAccount, listAuditLogs } from "../../services/admin/admin-accounts"
+import { ROLE_PERMISSIONS, PERMISSIONS } from "../../services/rbac"
 import type { AdminUser } from "../../db/schema"
 
 // 系统页（spec310）：运营账号管理=admin.manage（仅 superadmin）；审计日志查询=audit.read。
 export const systemRouter = new Hono<{ Variables: { admin: AdminUser } }>()
+
+// 角色权限矩阵（spec313）：系统的固定 RBAC，供后台权限页真实展示（非 mock）。
+systemRouter.get("/rbac", requirePermission("admin.manage"), (c) =>
+  c.json({ permissions: PERMISSIONS, roles: ROLE_PERMISSIONS }),
+)
 
 systemRouter.get("/admins", requirePermission("admin.manage"), async (c) => {
   let pg
