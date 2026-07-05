@@ -70,6 +70,9 @@ export function LedgerTypeBadge({ type }: { type: LedgerType }) {
     settle: "bg-primary/10 text-primary",
     release: "bg-violet-100 text-violet-700",
     expire: "bg-muted text-muted-foreground",
+    referral_reward: "bg-pink-100 text-pink-700",
+    refund_clawback: "bg-orange-100 text-orange-700",
+    admin_adjust: "bg-indigo-100 text-indigo-700",
   }
   return (
     <Badge variant="secondary" className={cn("font-mono", styles[type])}>

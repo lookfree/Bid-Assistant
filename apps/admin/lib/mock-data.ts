@@ -190,7 +190,7 @@ export const users: UserRow[] = [
 ]
 
 // ---------------- 积分账本（只追加） ----------------
-export type LedgerType = "grant" | "purchase" | "hold" | "settle" | "release" | "expire"
+export type LedgerType = "grant" | "purchase" | "hold" | "settle" | "release" | "expire" | "referral_reward" | "refund_clawback" | "admin_adjust"
 
 export const ledgerTypeLabel: Record<LedgerType, string> = {
   grant: "赠送",
@@ -199,6 +199,9 @@ export const ledgerTypeLabel: Record<LedgerType, string> = {
   settle: "结算",
   release: "退还",
   expire: "过期",
+  referral_reward: "推荐奖励",
+  refund_clawback: "退款回收",
+  admin_adjust: "手动调整",
 }
 
 export interface LedgerEntry {
