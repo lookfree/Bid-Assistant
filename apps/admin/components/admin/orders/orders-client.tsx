@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Search, RotateCcw } from "lucide-react"
 import { toast } from "sonner"
 
@@ -47,11 +47,37 @@ import {
 } from "@/components/admin/status-badges"
 import {
   orderTypeLabel,
-  orders as seedOrders,
   type OrderRow,
+  type OrderType,
+  type OrderStatus,
 } from "@/lib/mock-data"
+import { adminApi, type ApiOrder } from "@/lib/admin-api"
 
 const PAGE_SIZE = 8
+
+// 真实 type/status 值未完全对齐前端展示口径，做安全映射/默认。
+const ORDER_STATUSES: OrderStatus[] = ["paid", "pending", "refunded", "failed"]
+
+function apiTypeToOrderType(t: string): OrderType {
+  if (t === "recharge") return "recharge"
+  if (t === "subscription" || t === "renew") return "renew"
+  return "single"
+}
+
+// 列表接口未返回对账状态，默认 matched（真实对账另有差异工作台）。
+function apiOrderToRow(o: ApiOrder): OrderRow {
+  return {
+    id: o.id,
+    userId: o.userId,
+    company: "-",
+    type: apiTypeToOrderType(o.type),
+    amount: o.amountCents / 100,
+    status: ORDER_STATUSES.includes(o.status as OrderStatus) ? (o.status as OrderStatus) : "pending",
+    alipayTradeNo: o.providerTradeNo ?? "-",
+    reconcile: "matched",
+    createdAt: o.createdAt.slice(0, 19).replace("T", " "),
+  }
+}
 
 function Info({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -63,12 +89,28 @@ function Info({ label, value }: { label: string; value: React.ReactNode }) {
 }
 
 export function OrdersClient() {
-  const [data, setData] = useState<OrderRow[]>(seedOrders)
+  const [data, setData] = useState<OrderRow[]>([])
+  const [loading, setLoading] = useState(true)
   const [keyword, setKeyword] = useState("")
   const [type, setType] = useState("all")
   const [statusF, setStatusF] = useState("all")
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<OrderRow | null>(null)
+
+  async function load() {
+    setLoading(true)
+    try {
+      const res = await adminApi.orders.list({ pageSize: 100 })
+      setData(res.items.map(apiOrderToRow))
+    } catch {
+      toast.error("加载订单失败")
+    } finally {
+      setLoading(false)
+    }
+  }
+  useEffect(() => {
+    void load()
+  }, [])
 
   const filtered = useMemo(() => {
     return data.filter((o) => {
@@ -93,13 +135,20 @@ export function OrdersClient() {
     }
   }
 
-  function refund(orderId: string) {
-    setData((prev) =>
-      prev.map((o) =>
-        o.id === orderId ? { ...o, status: "refunded" } : o
-      )
-    )
-    setSelected(null)
+  async function refund(orderId: string, amountCents: number, reason: string) {
+    try {
+      await adminApi.orders.refund({
+        orderId,
+        amountCents,
+        reason,
+        idempotencyKey: crypto.randomUUID(),
+      })
+      toast.success(`已发起退款：${orderId}`)
+      setSelected(null)
+      await load()
+    } catch {
+      toast.error("退款失败")
+    }
   }
 
   return (
@@ -189,7 +238,7 @@ export function OrdersClient() {
                     colSpan={7}
                     className="h-24 text-center text-muted-foreground"
                   >
-                    没有匹配的订单
+                    {loading ? "加载中…" : "没有匹配的订单"}
                   </TableCell>
                 </TableRow>
               )}
@@ -220,7 +269,7 @@ function OrderDetailDialog({
 }: {
   order: OrderRow | null
   onOpenChange: (open: boolean) => void
-  onRefund: (orderId: string) => void
+  onRefund: (orderId: string, amountCents: number, reason: string) => void
 }) {
   if (!order) return null
   return (
@@ -249,10 +298,9 @@ function OrderDetailDialog({
           {order.status === "paid" ? (
             <RefundDialog
               order={order}
-              onConfirm={() => {
-                onRefund(order.id)
-                toast.success(`已发起退款：${order.id}`)
-              }}
+              onConfirm={(amountCents, reason) =>
+                onRefund(order.id, amountCents, reason)
+              }
             />
           ) : (
             <Button variant="outline" disabled>
@@ -271,7 +319,7 @@ function RefundDialog({
   onConfirm,
 }: {
   order: OrderRow
-  onConfirm: () => void
+  onConfirm: (amountCents: number, reason: string) => void
 }) {
   const [open, setOpen] = useState(false)
   const [amount, setAmount] = useState(String(order.amount))
@@ -287,7 +335,7 @@ function RefundDialog({
       toast.error("请填写退款原因")
       return
     }
-    onConfirm()
+    onConfirm(Math.round(amt * 100), reason)
     setOpen(false)
   }
 

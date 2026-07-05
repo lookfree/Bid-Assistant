@@ -1,7 +1,8 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Search } from "lucide-react"
+import { toast } from "sonner"
 
 import {
   Card,
@@ -32,17 +33,55 @@ import {
   TierBadge,
 } from "@/components/admin/status-badges"
 import { UserDetailSheet } from "@/components/admin/users/user-detail-sheet"
-import { type UserRow, users as seedUsers } from "@/lib/mock-data"
+import type { UserRow, MemberTier, AccountStatus } from "@/lib/mock-data"
+import { adminApi, type ApiUser } from "@/lib/admin-api"
 
 const PAGE_SIZE = 8
 
+// plans.code(free/personal/professional) → 前端档位（pro）。
+const TIER_MAP: Record<string, MemberTier> = { free: "free", personal: "personal", professional: "pro" }
+
+// 真实用户 → 列表行。列表接口没有的字段（公司/自动续费/项目数/订阅明细）合理默认，详情页再拉全。
+function apiUserToRow(u: ApiUser): UserRow {
+  const tier: MemberTier = (u.tier ? TIER_MAP[u.tier] : undefined) ?? "free"
+  return {
+    id: u.id,
+    phone: u.phone ?? "-",
+    name: u.nickname ?? "未命名用户",
+    company: "-",
+    registeredAt: u.createdAt?.slice(0, 10) ?? "-",
+    tier,
+    points: u.balance ?? 0,
+    autoRenew: false,
+    status: (u.status as AccountStatus) ?? "active",
+    projects: 0,
+    subscription: { plan: tier, period: "月付", startAt: "-", nextRenewAt: "-", amount: 0 },
+  }
+}
+
 export function UsersClient() {
-  const [data, setData] = useState<UserRow[]>(seedUsers)
+  const [data, setData] = useState<UserRow[]>([])
+  const [loading, setLoading] = useState(true)
   const [keyword, setKeyword] = useState("")
   const [tier, setTier] = useState<string>("all")
   const [status, setStatus] = useState<string>("all")
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<UserRow | null>(null)
+
+  async function load() {
+    setLoading(true)
+    try {
+      const res = await adminApi.users.list({ pageSize: 100 })
+      setData(res.items.map(apiUserToRow))
+    } catch {
+      toast.error("加载用户失败")
+    } finally {
+      setLoading(false)
+    }
+  }
+  useEffect(() => {
+    void load()
+  }, [])
 
   const filtered = useMemo(() => {
     return data.filter((u) => {
@@ -68,32 +107,29 @@ export function UsersClient() {
     }
   }
 
-  function adjustPoints(userId: string, delta: number) {
-    setData((prev) =>
-      prev.map((u) =>
-        u.id === userId ? { ...u, points: u.points + delta } : u
-      )
-    )
-    setSelected((prev) =>
-      prev && prev.id === userId
-        ? { ...prev, points: prev.points + delta }
-        : prev
-    )
+  async function adjustPoints(userId: string, delta: number) {
+    try {
+      await adminApi.users.grantCredits(userId, { amount: delta, reason: "运营手动调整", idempotencyKey: crypto.randomUUID() })
+      toast.success(`已调整 ${delta > 0 ? "+" : ""}${delta} 积分`)
+      setSelected((prev) => (prev && prev.id === userId ? { ...prev, points: prev.points + delta } : prev))
+      await load()
+    } catch {
+      toast.error("调整积分失败（可能余额不足）")
+    }
   }
 
-  function toggleBan(userId: string) {
-    setData((prev) =>
-      prev.map((u) =>
-        u.id === userId
-          ? { ...u, status: u.status === "active" ? "banned" : "active" }
-          : u
-      )
-    )
-    setSelected((prev) =>
-      prev && prev.id === userId
-        ? { ...prev, status: prev.status === "active" ? "banned" : "active" }
-        : prev
-    )
+  async function toggleBan(userId: string) {
+    const u = data.find((x) => x.id === userId)
+    if (!u) return
+    try {
+      if (u.status === "active") await adminApi.users.ban(userId)
+      else await adminApi.users.unban(userId)
+      toast.success(u.status === "active" ? "已封禁" : "已解封")
+      setSelected((prev) => (prev && prev.id === userId ? { ...prev, status: prev.status === "active" ? "banned" : "active" } : prev))
+      await load()
+    } catch {
+      toast.error("操作失败")
+    }
   }
 
   return (
@@ -201,7 +237,7 @@ export function UsersClient() {
                     colSpan={7}
                     className="h-24 text-center text-muted-foreground"
                   >
-                    没有匹配的用户
+                    {loading ? "加载中…" : "没有匹配的用户"}
                   </TableCell>
                 </TableRow>
               )}

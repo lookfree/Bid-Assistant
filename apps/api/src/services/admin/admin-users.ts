@@ -21,8 +21,24 @@ export async function listUsers(opts: { q?: string; page?: number; pageSize?: nu
         ),
       )
     : undefined
+  // 列表页需要手机号（user_identities）、会员档（subscription→plans.code）、余额（credit_balances 缓存）——
+  // 相关子查询按需取，避免 N+1；tier/phone/balance 缺省为 null/0（未绑手机/无订阅/无流水）。
   return pagedResult(
-    db.select().from(users).where(where).orderBy(users.createdAt).limit(pageSize).offset((page - 1) * pageSize),
+    db
+      .select({
+        id: users.id,
+        status: users.status,
+        nickname: users.nickname,
+        createdAt: users.createdAt,
+        phone: sql<string | null>`(select ui.identifier from user_identities ui where ui.user_id = ${users.id} and ui.provider = 'phone' limit 1)`,
+        tier: sql<string | null>`(select p.code from subscriptions s join plans p on p.id = s.plan_id where s.user_id = ${users.id} and s.status = 'active' limit 1)`,
+        balance: sql<number>`coalesce((select b.balance from credit_balances b where b.user_id = ${users.id}), 0)`,
+      })
+      .from(users)
+      .where(where)
+      .orderBy(users.createdAt)
+      .limit(pageSize)
+      .offset((page - 1) * pageSize),
     db.select({ n: sql<number>`count(*)` }).from(users).where(where),
   )
 }
