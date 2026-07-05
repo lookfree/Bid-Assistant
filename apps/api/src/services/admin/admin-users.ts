@@ -30,7 +30,7 @@ export async function listUsers(opts: { q?: string; page?: number; pageSize?: nu
         status: users.status,
         nickname: users.nickname,
         createdAt: users.createdAt,
-        phone: sql<string | null>`(select ui.identifier from user_identities ui where ui.user_id = ${users.id} and ui.type = 'phone' limit 1)`,
+        phone: sql<string | null>`(select ui.identifier from user_identities ui where ui.user_id = ${users.id} and ui.provider = 'phone' limit 1)`,
         tier: sql<string | null>`(select p.code from subscriptions s join plans p on p.id = s.plan_id where s.user_id = ${users.id} and s.status = 'active' limit 1)`,
         balance: sql<number>`coalesce((select b.balance from credit_balances b where b.user_id = ${users.id}), 0)`,
       })
