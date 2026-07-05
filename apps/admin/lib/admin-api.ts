@@ -31,13 +31,17 @@ export const adminApi = {
   me: () => req<{ admin: AdminMe }>("/me"),
   logout: () => req<void>("/logout", { method: "POST" }),
   plans: {
-    // 套餐&配置页（spec310）：GET 全量配置 / PUT 单 key（如 agent_model，需 config.write）。
+    // 套餐&配置页（spec310）：GET 全量配置 / PUT 单 key（如 agent_model / credit_cost.*，需 config.write）。
     getConfigs: () => req<Record<string, unknown>>("/plans/configs"),
     setConfig: (key: string, value: unknown) =>
       req<{ ok: true }>(`/plans/configs/${key}`, {
         method: "PUT",
         body: JSON.stringify({ value }),
       }),
+    // 套餐档位（plans 表，每档每 cycle 一行）：列表 + 改价/额度（需 plan.write）。价格=钱，谨慎。
+    list: () => req<ApiPlan[]>("/plans"),
+    update: (id: string, patch: { priceCents?: number; grantCreditsPerCycle?: number; status?: string }) =>
+      req<{ ok: true }>(`/plans/${id}`, { method: "PUT", body: JSON.stringify(patch) }),
   },
   // 以下为真实数据接线（spec312）：dev/test 不再用 mock。返回体统一分页 { items,total,page,pageSize,hasMore }。
   users: {
@@ -85,6 +89,7 @@ export type ApiOverview = { totalUsers: number; payingUsers: number; todayRevenu
 export type ApiTrendPoint = { date: string; revenue: number; credits: number }
 export type ApiAdmin = { id: string; username: string; role: string; status: string; createdAt?: string }
 export type ApiAuditLog = { id: string; operator: string; action: string; target: string | null; before: unknown; after: unknown; createdAt: string }
+export type ApiPlan = { id: string; name: string; code: string | null; priceCents: number; billingCycle: string; grantCreditsPerCycle: number; status: string; features: Record<string, unknown>; limits: Record<string, unknown> }
 
 // 查询串：跳过 undefined/空，encodeURIComponent。
 function qs(p: Record<string, unknown>): string {
