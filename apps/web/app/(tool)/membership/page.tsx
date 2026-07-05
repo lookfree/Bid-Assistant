@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react"
 import Link from "next/link"
-import { memberTiers, creditCosts, type TierId } from "@/lib/plans"
+import { memberTiers, type TierId } from "@/lib/plans"
 import { fetchMembership, fetchOrders, startRecharge, renewMembership } from "@/lib/membership-api"
 import { api } from "@/lib/api"
 import type { MembershipOverview, OrderView, LaunchResponse, Payway } from "@/lib/membership-types"
@@ -332,7 +332,7 @@ export default function MembershipPage() {
           <span className="text-xs text-muted-foreground">按篇幅 · 字数 · 功能分档计费</span>
         </div>
         <ul className="divide-y divide-border">
-          {creditCosts.map((c) => (
+          {(overview?.creditCosts ?? []).map((c) => (
             <li key={c.feature} className="flex items-center justify-between gap-3 px-5 py-3">
               <div className="min-w-0">
                 <p className="text-sm font-medium text-foreground">{c.feature}</p>

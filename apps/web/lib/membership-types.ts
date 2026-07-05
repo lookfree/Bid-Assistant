@@ -36,11 +36,20 @@ export interface RechargePackView {
   amountYuan: number
 }
 
+export interface CreditCostView {
+  key: string
+  feature: string
+  desc: string
+  value: number
+  cost: string // 展示串，如 "20 积分 / 份"
+}
+
 export interface MembershipOverview {
   subscription: SubscriptionView
   balance: number
   plans: PlanView[]
   rechargePacks: RechargePackView[] // 充值包目录（服务端定价为准；前端按 id 下单）
+  creditCosts: CreditCostView[] // 积分消耗口径 9 项（运营后台可配，实时）
   progressive: { current: PlanView | null; next: PlanView | null }
 }
 

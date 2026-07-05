@@ -2,7 +2,8 @@ import { eq } from "drizzle-orm"
 import { getDb } from "../db/client"
 import { plans, subscriptions } from "../db/schema"
 import { getBalance } from "./credits"
-import { getConfig } from "./config"
+import { getConfig, getConfigs } from "./config"
+import { buildCreditCosts, type CreditCostItem } from "../config/credit-cost-items"
 import { centsToYuan } from "../lib/money"
 
 // 会员中心聚合（spec308，架构 §5.3）：当前订阅 + 积分余额 + 套餐列表 + 渐进式展示（当前档+下一档）。
@@ -46,6 +47,7 @@ export interface MembershipOverview {
   balance: number
   plans: PlanView[]
   rechargePacks: RechargePackView[] // 充值包目录（服务端定价为准；前端按 id 下单，消除前后端 id 不一致）
+  creditCosts: CreditCostItem[] // 积分消耗口径 9 项（credit_cost.* 实时值，运营后台可改）
   progressive: { current: PlanView | null; next: PlanView | null }
 }
 
@@ -118,12 +120,14 @@ async function loadSubscription(userId: string, allPlans: PlanRow[]): Promise<Su
 export async function getMembershipOverview(userId: string): Promise<MembershipOverview> {
   const allPlans = await getDb().select().from(plans)
   const { list, byTier } = buildPlanViews(allPlans)
-  // 订阅/余额/充值包配置互不依赖，并行取（省往返）
-  const [subscription, balance, packsCfg] = await Promise.all([
+  // 订阅/余额/充值包配置/积分口径互不依赖，并行取（省往返）
+  const [subscription, balance, packsCfg, costCfg] = await Promise.all([
     loadSubscription(userId, allPlans),
     getBalance(userId),
     getConfig<RechargePack[]>("recharge_packs"),
+    getConfigs("credit_cost."),
   ])
+  const creditCosts = buildCreditCosts(costCfg)
   const rechargePacks = (packsCfg ?? []).map((p) => ({
     id: p.id,
     credits: p.credits,
@@ -136,5 +140,5 @@ export async function getMembershipOverview(userId: string): Promise<MembershipO
   const nextTier = idx >= 0 && idx < TIER_ORDER.length - 1 ? TIER_ORDER[idx + 1]! : null
   const next = nextTier ? (byTier.get(nextTier) ?? null) : null
 
-  return { subscription, balance, plans: list, rechargePacks, progressive: { current, next } }
+  return { subscription, balance, plans: list, rechargePacks, creditCosts, progressive: { current, next } }
 }

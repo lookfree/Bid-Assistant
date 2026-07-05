@@ -26,13 +26,17 @@ import { Separator } from "@/components/ui/separator"
 import { adminApi, AdminApiError, type ApiPlan } from "@/lib/admin-api"
 
 // 积分口径的 6 项真实能力（后端 config key = credit_cost.<op>），种子默认各 10 积分。
+// 积分口径 9 项以 C 端 membership「积分消耗说明」为准（key 对齐后端 credit_cost.<key>）。
 const CREDIT_COST_OPS: { key: string; label: string; desc: string }[] = [
-  { key: "read", label: "读标", desc: "解析招标文件并提取要点" },
-  { key: "outline", label: "提纲", desc: "生成投标文件章节提纲" },
-  { key: "content", label: "正文", desc: "生成投标文件正文内容" },
-  { key: "review", label: "审查", desc: "废标风险点扫描" },
-  { key: "present", label: "述标", desc: "生成述标 PPT" },
-  { key: "export", label: "导出", desc: "导出为 Word / PDF" },
+  { key: "read", label: "招标解读", desc: "识别评分点与关键条款" },
+  { key: "outline", label: "提纲生成", desc: "技术标 + 商务标大纲" },
+  { key: "content_short", label: "标书生成（短篇）", desc: "单章 ≤ 2000 字" },
+  { key: "content_long", label: "标书生成（长篇）", desc: "单章 > 2000 字" },
+  { key: "rewrite", label: "逐章重写 / 改写", desc: "针对单章润色重写" },
+  { key: "review", label: "废标风险审查", desc: "全文风险体检 + 整改建议" },
+  { key: "dedupe", label: "标书查重", desc: "多维指纹比对" },
+  { key: "present", label: "述标演示生成", desc: "标书提炼为述标/答辩 PPT" },
+  { key: "export", label: "导出 Word / PDF", desc: "整本投标文件导出" },
 ]
 const DEFAULT_CREDIT_COST = 10
 
