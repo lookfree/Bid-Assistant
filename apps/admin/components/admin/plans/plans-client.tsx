@@ -51,6 +51,22 @@ type PlanForm = {
   billingCycle: string
   priceYuan: number
   grantCreditsPerCycle: number
+  features: Record<string, unknown>
+}
+
+// 权益中文标签（参考产品定价图）：仅展示已开启项。
+export const FEATURE_LABELS: Record<string, string> = {
+  export: "导出 Word/PDF",
+  riskReview: "废标风险审查",
+  dedupe: "标书查重",
+  rewrite: "逐章重写/一键改写",
+  fullDedupe: "全维度指纹查重",
+  pptTemplate: "企业 PPT 模板",
+  priorityQueue: "优先算力队列",
+  longHistory: "历史项目长期保存",
+}
+export function enabledFeatureLabels(features: Record<string, unknown>): string[] {
+  return Object.keys(FEATURE_LABELS).filter((k) => features[k] === true).map((k) => FEATURE_LABELS[k])
 }
 
 function toCreditCosts(configs: Record<string, unknown>): CreditCosts {
@@ -70,6 +86,7 @@ function toPlanForms(apiPlans: ApiPlan[]): PlanForm[] {
     billingCycle: p.billingCycle,
     priceYuan: p.priceCents / 100,
     grantCreditsPerCycle: p.grantCreditsPerCycle,
+    features: p.features ?? {},
   }))
 }
 
@@ -252,6 +269,7 @@ export function PlansClient() {
                   <TableHead>计费周期</TableHead>
                   <TableHead>价格(元)</TableHead>
                   <TableHead>每周期赠送积分</TableHead>
+                  <TableHead className="min-w-64">权限</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -278,6 +296,16 @@ export function PlansClient() {
                         value={plan.grantCreditsPerCycle}
                         onChange={(e) => updatePlanCredits(plan.id, e.target.value)}
                       />
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex flex-wrap gap-1">
+                        {enabledFeatureLabels(plan.features).map((label) => (
+                          <Badge key={label} variant="secondary" className="font-normal">
+                            {label}
+                          </Badge>
+                        ))}
+                        {enabledFeatureLabels(plan.features).length === 0 && <span className="text-xs text-muted-foreground">—</span>}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
