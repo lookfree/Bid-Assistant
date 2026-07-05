@@ -1,6 +1,6 @@
 "use client"
 
-import { Fragment, useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 import { Search, ShieldCheck } from "lucide-react"
 import {
@@ -23,42 +23,19 @@ import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import {
-  opsAccounts,
-  roleLabel,
-  permissionGroups,
-  rolePermissions,
-  auditLogs,
-  type RoleKey,
-} from "@/lib/mock-data"
 import { TablePagination } from "@/components/admin/table-pagination"
+import { adminApi, type ApiAdmin, type ApiAuditLog } from "@/lib/admin-api"
 
-const roleKeys = Object.keys(roleLabel) as RoleKey[]
+// 角色 → 中文标签。真实角色枚举固定为 superadmin/finance/ops/support（apps/api AdminRole）。
+const ROLE_LABEL: Record<string, string> = {
+  superadmin: "超级管理员",
+  ops: "运营",
+  finance: "财务",
+  support: "客服",
+}
+const ROLE_ORDER = ["superadmin", "finance", "ops", "support"]
 
 export function SystemClient() {
-  const [perms, setPerms] = useState<Record<RoleKey, Set<string>>>(() => {
-    const init = {} as Record<RoleKey, Set<string>>
-    roleKeys.forEach((r) => (init[r] = new Set(rolePermissions[r])))
-    return init
-  })
-
-  function togglePerm(role: RoleKey, permKey: string, value: boolean) {
-    setPerms((prev) => {
-      const next = { ...prev, [role]: new Set(prev[role]) }
-      if (value) next[role].add(permKey)
-      else next[role].delete(permKey)
-      return next
-    })
-    toast.success("权限已更新")
-  }
-
   return (
     <div className="flex flex-col gap-6">
       <div>
@@ -79,7 +56,7 @@ export function SystemClient() {
           <AccountsTab />
         </TabsContent>
         <TabsContent value="roles" className="mt-4">
-          <RolesTab perms={perms} onToggle={togglePerm} />
+          <RolesTab />
         </TabsContent>
         <TabsContent value="audit" className="mt-4">
           <AuditTab />
@@ -90,11 +67,32 @@ export function SystemClient() {
 }
 
 function AccountsTab() {
+  const [accounts, setAccounts] = useState<ApiAdmin[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let alive = true
+    async function load() {
+      try {
+        const res = await adminApi.system.admins({ pageSize: 100 })
+        if (alive) setAccounts(res.items)
+      } catch {
+        if (alive) toast.error("加载运营账号失败")
+      } finally {
+        if (alive) setLoading(false)
+      }
+    }
+    void load()
+    return () => {
+      alive = false
+    }
+  }, [])
+
   return (
     <Card>
       <CardHeader>
         <CardTitle>运营账号</CardTitle>
-        <CardDescription>共 {opsAccounts.length} 个内部账号。</CardDescription>
+        <CardDescription>共 {accounts.length} 个内部账号。</CardDescription>
       </CardHeader>
       <CardContent>
         <Table>
@@ -102,35 +100,32 @@ function AccountsTab() {
             <TableRow>
               <TableHead>账号</TableHead>
               <TableHead>角色</TableHead>
-              <TableHead>最近登录</TableHead>
+              <TableHead>创建时间</TableHead>
               <TableHead>状态</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {opsAccounts.map((op) => (
+            {accounts.map((op) => (
               <TableRow key={op.id}>
                 <TableCell>
                   <div className="flex items-center gap-3">
                     <Avatar className="size-8">
                       <AvatarFallback className="bg-accent text-accent-foreground text-xs">
-                        {op.name.slice(0, 1)}
+                        {op.username.slice(0, 1).toUpperCase()}
                       </AvatarFallback>
                     </Avatar>
-                    <div className="flex flex-col">
-                      <span className="text-sm font-medium text-foreground">
-                        {op.name}
-                      </span>
-                      <span className="text-xs text-muted-foreground">{op.email}</span>
-                    </div>
+                    <span className="text-sm font-medium text-foreground">
+                      {op.username}
+                    </span>
                   </div>
                 </TableCell>
                 <TableCell>
                   <Badge variant="secondary" className="font-normal">
-                    {roleLabel[op.role]}
+                    {ROLE_LABEL[op.role] ?? op.role}
                   </Badge>
                 </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
-                  {op.lastLogin}
+                  {op.createdAt?.slice(0, 10) ?? "-"}
                 </TableCell>
                 <TableCell>
                   <Badge
@@ -146,6 +141,19 @@ function AccountsTab() {
                 </TableCell>
               </TableRow>
             ))}
+            {loading ? (
+              <TableRow>
+                <TableCell colSpan={4} className="h-24 text-center text-muted-foreground">
+                  加载中…
+                </TableCell>
+              </TableRow>
+            ) : accounts.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={4} className="h-24 text-center text-muted-foreground">
+                  暂无运营账号
+                </TableCell>
+              </TableRow>
+            ) : null}
           </TableBody>
         </Table>
       </CardContent>
@@ -153,19 +161,41 @@ function AccountsTab() {
   )
 }
 
-function RolesTab({
-  perms,
-  onToggle,
-}: {
-  perms: Record<RoleKey, Set<string>>
-  onToggle: (role: RoleKey, permKey: string, value: boolean) => void
-}) {
+function RolesTab() {
+  const [permissions, setPermissions] = useState<string[]>([])
+  const [roles, setRoles] = useState<Record<string, string[]>>({})
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let alive = true
+    async function load() {
+      try {
+        const res = await adminApi.system.rbac()
+        if (alive) {
+          setPermissions(res.permissions)
+          setRoles(res.roles)
+        }
+      } catch {
+        if (alive) toast.error("加载角色权限失败")
+      } finally {
+        if (alive) setLoading(false)
+      }
+    }
+    void load()
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  // 列顺序固定为 superadmin/finance/ops/support；只渲染真实返回里存在的角色。
+  const roleKeys = useMemo(() => ROLE_ORDER.filter((r) => r in roles), [roles])
+
   return (
     <Card>
       <CardHeader>
         <CardTitle>角色权限矩阵 (RBAC)</CardTitle>
         <CardDescription>
-          勾选每个角色可执行的操作。超级管理员默认拥有全部权限。
+          只读展示各角色的真实权限。权限由后端把关，此矩阵没有可持久化的开关，勾选状态不可编辑。
         </CardDescription>
       </CardHeader>
       <CardContent className="overflow-x-auto">
@@ -177,7 +207,7 @@ function RolesTab({
                 <TableHead key={r} className="text-center">
                   <div className="flex flex-col items-center gap-1">
                     <span className="font-medium text-foreground">
-                      {roleLabel[r]}
+                      {ROLE_LABEL[r] ?? r}
                     </span>
                     {r === "superadmin" && (
                       <ShieldCheck className="size-3.5 text-primary" />
@@ -188,40 +218,33 @@ function RolesTab({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {permissionGroups.map((group) => (
-              <Fragment key={group.group}>
-                <TableRow className="bg-muted/40 hover:bg-muted/40">
-                  <TableCell
-                    colSpan={roleKeys.length + 1}
-                    className="py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground"
-                  >
-                    {group.group}
-                  </TableCell>
-                </TableRow>
-                {group.perms.map((perm) => (
-                  <TableRow key={perm.key}>
-                    <TableCell className="text-sm font-medium text-foreground">
-                      {perm.name}
+            {permissions.map((perm) => (
+              <TableRow key={perm}>
+                <TableCell className="text-sm font-medium text-foreground">
+                  {perm}
+                </TableCell>
+                {roleKeys.map((r) => {
+                  const checked = roles[r]?.includes(perm) ?? false
+                  return (
+                    <TableCell key={r} className="text-center">
+                      <div className="flex justify-center">
+                        <Switch checked={checked} disabled />
+                      </div>
                     </TableCell>
-                    {roleKeys.map((r) => {
-                      const locked = r === "superadmin"
-                      const checked = locked || perms[r].has(perm.key)
-                      return (
-                        <TableCell key={r} className="text-center">
-                          <div className="flex justify-center">
-                            <Switch
-                              checked={checked}
-                              disabled={locked}
-                              onCheckedChange={(v) => onToggle(r, perm.key, v)}
-                            />
-                          </div>
-                        </TableCell>
-                      )
-                    })}
-                  </TableRow>
-                ))}
-              </Fragment>
+                  )
+                })}
+              </TableRow>
             ))}
+            {!loading && permissions.length === 0 && (
+              <TableRow>
+                <TableCell
+                  colSpan={roleKeys.length + 1}
+                  className="h-24 text-center text-muted-foreground"
+                >
+                  暂无权限数据
+                </TableCell>
+              </TableRow>
+            )}
           </TableBody>
         </Table>
       </CardContent>
@@ -232,21 +255,40 @@ function RolesTab({
 const PAGE_SIZE = 8
 
 function AuditTab() {
+  const [logs, setLogs] = useState<ApiAuditLog[]>([])
+  const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState("")
-  const [action, setAction] = useState("all")
   const [page, setPage] = useState(1)
 
+  useEffect(() => {
+    let alive = true
+    async function load() {
+      try {
+        const res = await adminApi.system.auditLogs({ pageSize: 100 })
+        if (alive) setLogs(res.items)
+      } catch {
+        if (alive) toast.error("加载审计日志失败")
+      } finally {
+        if (alive) setLoading(false)
+      }
+    }
+    void load()
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  // 真实 action 是英文点分字符串（如 refund.done），不再有 mock 的中文枚举可筛选，仅保留关键词搜索。
   const filtered = useMemo(() => {
-    return auditLogs.filter((log) => {
-      const matchQuery =
-        !query ||
-        log.operator.includes(query) ||
-        log.target.includes(query) ||
-        log.detail.includes(query)
-      const matchAction = action === "all" || log.action === action
-      return matchQuery && matchAction
-    })
-  }, [query, action])
+    const kw = query.trim()
+    if (!kw) return logs
+    return logs.filter(
+      (log) =>
+        log.operator.includes(kw) ||
+        (log.target ?? "").includes(kw) ||
+        log.action.includes(kw)
+    )
+  }, [logs, query])
 
   const total = filtered.length
   const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
@@ -260,38 +302,17 @@ function AuditTab() {
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              placeholder="搜索操作人 / 对象 / 详情"
-              className="pl-9"
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value)
-                setPage(1)
-              }}
-            />
-          </div>
-          <Select
-            value={action}
-            onValueChange={(v) => {
-              setAction(v ?? "all")
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="搜索操作人 / 操作 / 对象"
+            className="pl-9 sm:max-w-xs"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value)
               setPage(1)
             }}
-          >
-            <SelectTrigger className="w-full sm:w-44">
-              <SelectValue placeholder="操作类型" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">全部操作</SelectItem>
-              <SelectItem value="改套餐">改套餐</SelectItem>
-              <SelectItem value="调积分">调积分</SelectItem>
-              <SelectItem value="退款">退款</SelectItem>
-              <SelectItem value="封禁">封禁</SelectItem>
-              <SelectItem value="改积分口径">改积分口径</SelectItem>
-            </SelectContent>
-          </Select>
+          />
         </div>
 
         <Table>
@@ -301,23 +322,18 @@ function AuditTab() {
               <TableHead>操作人</TableHead>
               <TableHead>操作</TableHead>
               <TableHead>对象</TableHead>
-              <TableHead>详情</TableHead>
-              <TableHead>结果</TableHead>
+              <TableHead>变更前</TableHead>
+              <TableHead>变更后</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {paged.map((log) => (
               <TableRow key={log.id}>
                 <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
-                  {log.at}
+                  {log.createdAt}
                 </TableCell>
                 <TableCell className="text-sm font-medium text-foreground">
-                  <div className="flex flex-col">
-                    <span>{log.operator}</span>
-                    <span className="text-xs font-normal text-muted-foreground">
-                      {roleLabel[log.role]}
-                    </span>
-                  </div>
+                  {log.operator}
                 </TableCell>
                 <TableCell>
                   <Badge variant="secondary" className="font-normal">
@@ -325,32 +341,29 @@ function AuditTab() {
                   </Badge>
                 </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
-                  {log.target}
+                  {log.target ?? "-"}
                 </TableCell>
-                <TableCell className="max-w-72 truncate text-sm text-muted-foreground">
-                  {log.detail}
+                <TableCell className="max-w-48 truncate text-xs text-muted-foreground">
+                  {log.before != null ? JSON.stringify(log.before) : "-"}
                 </TableCell>
-                <TableCell>
-                  <Badge
-                    variant="outline"
-                    className={
-                      log.result === "成功"
-                        ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                        : "border-destructive/30 bg-destructive/10 text-destructive"
-                    }
-                  >
-                    {log.result}
-                  </Badge>
+                <TableCell className="max-w-48 truncate text-xs text-muted-foreground">
+                  {log.after != null ? JSON.stringify(log.after) : "-"}
                 </TableCell>
               </TableRow>
             ))}
-            {paged.length === 0 && (
+            {loading ? (
+              <TableRow>
+                <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+                  加载中…
+                </TableCell>
+              </TableRow>
+            ) : paged.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
                   没有匹配的日志记录
                 </TableCell>
               </TableRow>
-            )}
+            ) : null}
           </TableBody>
         </Table>
 
