@@ -40,7 +40,7 @@ export const adminApi = {
       }),
     // 套餐档位（plans 表，每档每 cycle 一行）：列表 + 改价/额度（需 plan.write）。价格=钱，谨慎。
     list: () => req<ApiPlan[]>("/plans"),
-    update: (id: string, patch: { priceCents?: number; grantCreditsPerCycle?: number; status?: string }) =>
+    update: (id: string, patch: { priceCents?: number; grantCreditsPerCycle?: number; status?: string; features?: Record<string, unknown> }) =>
       req<{ ok: true }>(`/plans/${id}`, { method: "PUT", body: JSON.stringify(patch) }),
   },
   // 以下为真实数据接线（spec312）：dev/test 不再用 mock。返回体统一分页 { items,total,page,pageSize,hasMore }。

@@ -21,6 +21,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Switch } from "@/components/ui/switch"
 import { Separator } from "@/components/ui/separator"
 import { adminApi, AdminApiError, type ApiPlan } from "@/lib/admin-api"
 
@@ -182,6 +183,10 @@ export function PlansClient() {
     )
   }
 
+  function updatePlanFeature(id: string, key: string, value: boolean) {
+    setPlanForms((prev) => prev.map((p) => (p.id === id ? { ...p, features: { ...p.features, [key]: value } } : p)))
+  }
+
   async function save() {
     if (!costs || !savedCosts) return
     setSaving(true)
@@ -189,15 +194,21 @@ export function PlansClient() {
       const changedCostOps = CREDIT_COST_OPS.filter(({ key }) => costs[key] !== savedCosts[key])
       const changedPlans = planForms.filter((p) => {
         const s = savedPlanForms.find((sp) => sp.id === p.id)
-        return !s || s.priceYuan !== p.priceYuan || s.grantCreditsPerCycle !== p.grantCreditsPerCycle
+        return (
+          !s ||
+          s.priceYuan !== p.priceYuan ||
+          s.grantCreditsPerCycle !== p.grantCreditsPerCycle ||
+          JSON.stringify(s.features) !== JSON.stringify(p.features)
+        )
       })
       await Promise.all([
         ...changedCostOps.map(({ key }) => adminApi.plans.setConfig(`credit_cost.${key}`, costs[key])),
         ...changedPlans.map((p) =>
-          // 元→分：仅在此处 ×100 并 Math.round，从不存浮点分。
+          // 元→分：仅在此处 ×100 并 Math.round，从不存浮点分。features(权益开关)一并落库。
           adminApi.plans.update(p.id, {
             priceCents: Math.round(p.priceYuan * 100),
             grantCreditsPerCycle: p.grantCreditsPerCycle,
+            features: p.features,
           }),
         ),
       ])
@@ -298,13 +309,13 @@ export function PlansClient() {
                       />
                     </TableCell>
                     <TableCell>
-                      <div className="flex flex-wrap gap-1">
-                        {enabledFeatureLabels(plan.features).map((label) => (
-                          <Badge key={label} variant="secondary" className="font-normal">
-                            {label}
-                          </Badge>
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                        {Object.entries(FEATURE_LABELS).map(([key, label]) => (
+                          <label key={key} className="flex items-center gap-2 text-xs">
+                            <Switch checked={plan.features[key] === true} onCheckedChange={(v) => updatePlanFeature(plan.id, key, v)} />
+                            <span className="text-muted-foreground">{label}</span>
+                          </label>
                         ))}
-                        {enabledFeatureLabels(plan.features).length === 0 && <span className="text-xs text-muted-foreground">—</span>}
                       </div>
                     </TableCell>
                   </TableRow>
