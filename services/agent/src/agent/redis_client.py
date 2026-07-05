@@ -19,6 +19,11 @@ def get_redis() -> redis.Redis:
             password=settings.redis_password,
             db=settings.redis_db,
             decode_responses=True,
+            # 阻塞读（worker xread block=5000 / agent-api stream block=1000）必须给 socket_timeout > block：
+            # WAN 上无 deadline 的纯阻塞 socket 会被中间件静默掐断，redis-py 干等到 TCP 超时（实测 ~63s）才报
+            # "Timeout reading from socket"。socket_timeout=10s 让阻塞读到点正常返回；keepalive 探活死连接。
+            socket_timeout=10,
+            socket_keepalive=True,
         )
     return _client
 
