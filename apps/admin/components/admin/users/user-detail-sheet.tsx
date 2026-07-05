@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Ban, ShieldCheck, Coins } from "lucide-react"
 import { toast } from "sonner"
 
@@ -40,11 +40,8 @@ import {
   LedgerTypeBadge,
   TierBadge,
 } from "@/components/admin/status-badges"
-import {
-  balanceFromLedger,
-  ledger,
-  type UserRow,
-} from "@/lib/mock-data"
+import type { UserRow, LedgerType } from "@/lib/mock-data"
+import { adminApi, type ApiLedgerTx, type ApiUserDetail } from "@/lib/admin-api"
 
 interface Props {
   user: UserRow | null
@@ -62,146 +59,129 @@ function InfoItem({ label, value }: { label: string; value: React.ReactNode }) {
   )
 }
 
-export function UserDetailSheet({
-  user,
-  onOpenChange,
-  onAdjustPoints,
-  onToggleBan,
-}: Props) {
-  if (!user) return null
-  const flows = ledger.filter((l) => l.userId === user.id)
-  const balance = balanceFromLedger(user.id)
-
+export function UserDetailSheet({ user, onOpenChange, onAdjustPoints, onToggleBan }: Props) {
   return (
     <Sheet open={!!user} onOpenChange={onOpenChange}>
-      <SheetContent className="w-full gap-0 overflow-y-auto sm:max-w-xl">
-        <SheetHeader>
-          <SheetTitle className="flex items-center gap-2">
-            {user.name}
-            <TierBadge tier={user.tier} />
-            <AccountStatusBadge status={user.status} />
-          </SheetTitle>
-          <SheetDescription>
-            {user.id} · {user.phone} · {user.company}
-          </SheetDescription>
-        </SheetHeader>
-
-        <div className="flex flex-col gap-6 px-4 pb-4">
-          <section className="grid grid-cols-2 gap-4 rounded-lg border bg-muted/30 p-4">
-            <InfoItem
-              label="积分余额"
-              value={
-                <span className="text-base text-primary">
-                  {user.points.toLocaleString()}
-                </span>
-              }
-            />
-            <InfoItem label="项目数" value={user.projects} />
-            <InfoItem label="自动续费" value={user.autoRenew ? "已开启" : "未开启"} />
-            <InfoItem label="注册时间" value={user.registeredAt} />
-          </section>
-
-          <section className="flex flex-col gap-3">
-            <h3 className="text-sm font-semibold">订阅信息</h3>
-            <div className="grid grid-cols-2 gap-4 rounded-lg border p-4">
-              <InfoItem label="当前套餐" value={<TierBadge tier={user.subscription.plan} />} />
-              <InfoItem label="计费周期" value={user.subscription.period} />
-              <InfoItem label="开始日期" value={user.subscription.startAt} />
-              <InfoItem label="下次续费" value={user.subscription.nextRenewAt} />
-              <InfoItem
-                label="订阅金额"
-                value={`¥${user.subscription.amount.toLocaleString()}`}
-              />
-            </div>
-          </section>
-
-          <section className="flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold">积分流水</h3>
-              <span className="text-xs text-muted-foreground">
-                余额核对 ：流水之和 ={" "}
-                <span className="font-mono font-medium text-foreground">
-                  {balance.toLocaleString()}
-                </span>
-              </span>
-            </div>
-            <div className="overflow-hidden rounded-lg border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>类型</TableHead>
-                    <TableHead className="text-right">金额</TableHead>
-                    <TableHead>关联</TableHead>
-                    <TableHead>时间</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {flows.map((f) => (
-                    <TableRow key={f.id}>
-                      <TableCell>
-                        <LedgerTypeBadge type={f.type} />
-                      </TableCell>
-                      <TableCell
-                        className={`text-right font-mono tabular-nums ${
-                          f.amount >= 0 ? "text-emerald-600" : "text-destructive"
-                        }`}
-                      >
-                        {f.amount > 0 ? "+" : ""}
-                        {f.amount.toLocaleString()}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs text-muted-foreground">
-                        {f.ref}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {f.createdAt}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  {flows.length === 0 && (
-                    <TableRow>
-                      <TableCell
-                        colSpan={4}
-                        className="h-16 text-center text-sm text-muted-foreground"
-                      >
-                        暂无积分流水
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </div>
-          </section>
-        </div>
-
-        <Separator />
-        <SheetFooter className="flex-row justify-end gap-2">
-          <AdjustPointsDialog
-            user={user}
-            onConfirm={(delta) => onAdjustPoints(user.id, delta)}
-          />
-          {user.status === "active" ? (
-            <BanDialog
-              userName={user.name}
-              onConfirm={() => {
-                onToggleBan(user.id)
-                toast.success(`已封禁用户 ${user.name}`)
-              }}
-            />
-          ) : (
-            <Button
-              variant="outline"
-              onClick={() => {
-                onToggleBan(user.id)
-                toast.success(`已解封用户 ${user.name}`)
-              }}
-            >
-              <ShieldCheck data-icon="inline-start" />
-              解封账号
-            </Button>
-          )}
-        </SheetFooter>
-      </SheetContent>
+      {user ? <DetailBody user={user} onAdjustPoints={onAdjustPoints} onToggleBan={onToggleBan} /> : null}
     </Sheet>
+  )
+}
+
+// 真实数据（spec312）：积分流水/余额核对/订阅信息按 user.id 现拉。
+function DetailBody({
+  user,
+  onAdjustPoints,
+  onToggleBan,
+}: {
+  user: UserRow
+  onAdjustPoints: (userId: string, delta: number) => void
+  onToggleBan: (userId: string) => void
+}) {
+  const [flows, setFlows] = useState<ApiLedgerTx[]>([])
+  const [sub, setSub] = useState<ApiUserDetail["subscription"] | undefined>(undefined)
+  useEffect(() => {
+    let alive = true
+    adminApi.ledger.list({ userId: user.id, pageSize: 100 }).then((r) => alive && setFlows(r.items)).catch(() => alive && setFlows([]))
+    adminApi.users.detail(user.id).then((d) => alive && setSub(d.subscription)).catch(() => alive && setSub(null))
+    return () => {
+      alive = false
+    }
+  }, [user.id])
+  const ledgerSum = flows.reduce((s, f) => s + f.amount, 0)
+
+  return (
+    <SheetContent className="w-full gap-0 overflow-y-auto sm:max-w-xl">
+      <SheetHeader>
+        <SheetTitle className="flex items-center gap-2">
+          {user.name}
+          <TierBadge tier={user.tier} />
+          <AccountStatusBadge status={user.status} />
+        </SheetTitle>
+        <SheetDescription>
+          {user.id} · {user.phone}
+        </SheetDescription>
+      </SheetHeader>
+
+      <div className="flex flex-col gap-6 px-4 pb-4">
+        <section className="grid grid-cols-2 gap-4 rounded-lg border bg-muted/30 p-4">
+          <InfoItem label="积分余额" value={<span className="text-base text-primary">{user.points.toLocaleString()}</span>} />
+          <InfoItem label="注册时间" value={user.registeredAt} />
+        </section>
+
+        <section className="flex flex-col gap-3">
+          <h3 className="text-sm font-semibold">订阅信息</h3>
+          <div className="rounded-lg border p-4 text-sm">
+            {sub === undefined ? (
+              <span className="text-muted-foreground">加载中…</span>
+            ) : sub ? (
+              <div className="grid grid-cols-2 gap-4">
+                <InfoItem label="套餐档位" value={<TierBadge tier={user.tier} />} />
+                <InfoItem label="订阅状态" value={sub.status} />
+                {sub.currentPeriodEnd && <InfoItem label="当前周期至" value={sub.currentPeriodEnd.slice(0, 10)} />}
+              </div>
+            ) : (
+              <span className="text-muted-foreground">无有效订阅（当前为免费用户）</span>
+            )}
+          </div>
+        </section>
+
+        <section className="flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold">积分流水</h3>
+            <span className="text-xs text-muted-foreground">
+              流水之和 = <span className="font-mono font-medium text-foreground">{ledgerSum.toLocaleString()}</span>
+            </span>
+          </div>
+          <div className="overflow-hidden rounded-lg border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>类型</TableHead>
+                  <TableHead className="text-right">金额</TableHead>
+                  <TableHead>关联</TableHead>
+                  <TableHead>时间</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {flows.map((f) => (
+                  <TableRow key={f.id}>
+                    <TableCell>
+                      <LedgerTypeBadge type={f.type as LedgerType} />
+                    </TableCell>
+                    <TableCell className={`text-right font-mono tabular-nums ${f.amount >= 0 ? "text-emerald-600" : "text-destructive"}`}>
+                      {f.amount > 0 ? "+" : ""}
+                      {f.amount.toLocaleString()}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs text-muted-foreground">{f.ref?.slice(0, 12) ?? "-"}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{f.createdAt?.slice(0, 16)?.replace("T", " ")}</TableCell>
+                  </TableRow>
+                ))}
+                {flows.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={4} className="h-16 text-center text-sm text-muted-foreground">
+                      暂无积分流水
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </section>
+      </div>
+
+      <Separator />
+      <SheetFooter className="flex-row justify-end gap-2">
+        <AdjustPointsDialog user={user} onConfirm={(delta) => onAdjustPoints(user.id, delta)} />
+        {user.status === "active" ? (
+          <BanDialog userName={user.name} onConfirm={() => onToggleBan(user.id)} />
+        ) : (
+          <Button variant="outline" onClick={() => onToggleBan(user.id)}>
+            <ShieldCheck data-icon="inline-start" />
+            解封账号
+          </Button>
+        )}
+      </SheetFooter>
+    </SheetContent>
   )
 }
 
