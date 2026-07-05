@@ -1,6 +1,6 @@
 import { and, eq, ilike, or, inArray, sql } from "drizzle-orm"
 import { getDb } from "../../db/client"
-import { users, subscriptions, userIdentities } from "../../db/schema"
+import { users, subscriptions, userIdentities, plans, creditBalances } from "../../db/schema"
 import { adminAdjust, getBalance } from "../credits"
 import { writeAudit } from "../audit"
 import { pagedResult } from "../../lib/pagination"
@@ -21,26 +21,33 @@ export async function listUsers(opts: { q?: string; page?: number; pageSize?: nu
         ),
       )
     : undefined
-  // 列表页需要手机号（user_identities）、会员档（subscription→plans.code）、余额（credit_balances 缓存）——
-  // 相关子查询按需取，避免 N+1；tier/phone/balance 缺省为 null/0（未绑手机/无订阅/无流水）。
-  return pagedResult(
-    db
-      .select({
-        id: users.id,
-        status: users.status,
-        nickname: users.nickname,
-        createdAt: users.createdAt,
-        phone: sql<string | null>`(select ui.identifier from user_identities ui where ui.user_id = ${users.id} and ui.provider = 'phone' limit 1)`,
-        tier: sql<string | null>`(select p.code from subscriptions s join plans p on p.id = s.plan_id where s.user_id = ${users.id} and s.status = 'active' limit 1)`,
-        balance: sql<number>`coalesce((select b.balance from credit_balances b where b.user_id = ${users.id}), 0)`,
-      })
-      .from(users)
-      .where(where)
-      .orderBy(users.createdAt)
-      .limit(pageSize)
-      .offset((page - 1) * pageSize),
+  const { items, total } = await pagedResult(
+    db.select().from(users).where(where).orderBy(users.createdAt).limit(pageSize).offset((page - 1) * pageSize),
     db.select({ n: sql<number>`count(*)` }).from(users).where(where),
   )
+  const ids = items.map((u) => u.id)
+  if (ids.length === 0) return { items: [] as (typeof items[number] & { phone: string | null; tier: string | null; balance: number })[], total }
+  // 列表页补全手机号（user_identities）/ 会员档（subscription→plans.code）/ 余额（credit_balances 缓存）——
+  // 各一条按 id 批量查，避免相关子查询列歧义与 N+1；缺省 null/0（未绑手机/无订阅/无流水）。
+  const [phones, subs, bals] = await Promise.all([
+    db
+      .select({ userId: userIdentities.userId, identifier: userIdentities.identifier })
+      .from(userIdentities)
+      .where(and(eq(userIdentities.provider, "phone"), inArray(userIdentities.userId, ids))),
+    db
+      .select({ userId: subscriptions.userId, code: plans.code })
+      .from(subscriptions)
+      .innerJoin(plans, eq(plans.id, subscriptions.planId))
+      .where(and(eq(subscriptions.status, "active"), inArray(subscriptions.userId, ids))),
+    db.select({ userId: creditBalances.userId, balance: creditBalances.balance }).from(creditBalances).where(inArray(creditBalances.userId, ids)),
+  ])
+  const phoneMap = new Map(phones.map((p) => [p.userId, p.identifier]))
+  const tierMap = new Map(subs.map((s) => [s.userId, s.code]))
+  const balMap = new Map(bals.map((b) => [b.userId, b.balance]))
+  return {
+    items: items.map((u) => ({ ...u, phone: phoneMap.get(u.id) ?? null, tier: tierMap.get(u.id) ?? null, balance: balMap.get(u.id) ?? 0 })),
+    total,
+  }
 }
 
 export async function getUserDetail(id: string) {
