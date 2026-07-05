@@ -19,25 +19,59 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Input } from "@/components/ui/input"
-import { Switch } from "@/components/ui/switch"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
-import { adminApi, AdminApiError } from "@/lib/admin-api"
-import {
-  planConfigs as seedPlans,
-  pointRules as seedRules,
-  type PlanConfig,
-  type PointRule,
-} from "@/lib/mock-data"
+import { adminApi, AdminApiError, type ApiPlan } from "@/lib/admin-api"
 
-const featureLabels: Record<keyof PlanConfig["features"], string> = {
-  rewrite: "智能重写",
-  dedupe: "查重检测",
-  export: "高级导出",
-  priority: "优先队列",
+// 积分口径的 6 项真实能力（后端 config key = credit_cost.<op>），种子默认各 10 积分。
+const CREDIT_COST_OPS: { key: string; label: string; desc: string }[] = [
+  { key: "read", label: "读标", desc: "解析招标文件并提取要点" },
+  { key: "outline", label: "提纲", desc: "生成投标文件章节提纲" },
+  { key: "content", label: "正文", desc: "生成投标文件正文内容" },
+  { key: "review", label: "审查", desc: "废标风险点扫描" },
+  { key: "present", label: "述标", desc: "生成述标 PPT" },
+  { key: "export", label: "导出", desc: "导出为 Word / PDF" },
+]
+const DEFAULT_CREDIT_COST = 10
+
+const BILLING_CYCLE_LABELS: Record<string, string> = {
+  month: "月付",
+  quarter: "季付",
+  year: "年付",
 }
-const featureKeys = Object.keys(featureLabels) as (keyof PlanConfig["features"])[]
+
+type CreditCosts = Record<string, number>
+
+// 套餐表单行：价格用元展示编辑，提交时才 ×100 转分（Math.round，绝不存浮点分）。
+type PlanForm = {
+  id: string
+  name: string
+  code: string | null
+  billingCycle: string
+  priceYuan: number
+  grantCreditsPerCycle: number
+}
+
+function toCreditCosts(configs: Record<string, unknown>): CreditCosts {
+  const costs: CreditCosts = {}
+  for (const { key } of CREDIT_COST_OPS) {
+    const v = configs[`credit_cost.${key}`]
+    costs[key] = typeof v === "number" && Number.isFinite(v) ? v : DEFAULT_CREDIT_COST
+  }
+  return costs
+}
+
+function toPlanForms(apiPlans: ApiPlan[]): PlanForm[] {
+  return apiPlans.map((p) => ({
+    id: p.id,
+    name: p.name,
+    code: p.code,
+    billingCycle: p.billingCycle,
+    priceYuan: p.priceCents / 100,
+    grantCreditsPerCycle: p.grantCreditsPerCycle,
+  }))
+}
 
 // 智能体模型配置（spec311）：provider/model/fallbacks，model 允许留空回落服务商默认。
 export type AgentModelForm = { provider: string; model: string; fallbacks: string }
@@ -67,54 +101,111 @@ export function fromAgentModelForm(
 }
 
 export function PlansClient() {
-  const [plans, setPlans] = useState<PlanConfig[]>(() =>
-    seedPlans.map((p) => ({ ...p, features: { ...p.features } })),
-  )
-  const [rules, setRules] = useState<PointRule[]>(() =>
-    seedRules.map((r) => ({ ...r })),
-  )
-  const [dirty, setDirty] = useState(false)
+  // 积分口径 costs：null 表示尚未加载完成（避免加载前误判 dirty）。
+  const [costs, setCosts] = useState<CreditCosts | null>(null)
+  const [savedCosts, setSavedCosts] = useState<CreditCosts | null>(null)
+  const [planForms, setPlanForms] = useState<PlanForm[]>([])
+  const [savedPlanForms, setSavedPlanForms] = useState<PlanForm[]>([])
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
 
-  function updatePlan(tier: string, patch: Partial<PlanConfig>) {
-    setPlans((prev) =>
-      prev.map((p) => (p.tier === tier ? { ...p, ...patch } : p)),
-    )
-    setDirty(true)
+  // 从真实后端拉取积分口径 + 套餐列表，mount 与 reset() 共用。
+  async function loadData(isAlive: () => boolean) {
+    setLoading(true)
+    try {
+      const [configs, apiPlans] = await Promise.all([
+        adminApi.plans.getConfigs(),
+        adminApi.plans.list(),
+      ])
+      if (!isAlive()) return
+      const c = toCreditCosts(configs)
+      setCosts(c)
+      setSavedCosts(c)
+      const pf = toPlanForms(apiPlans)
+      setPlanForms(pf)
+      setSavedPlanForms(pf)
+    } catch {
+      if (isAlive()) toast.error("加载套餐与积分口径配置失败")
+    } finally {
+      if (isAlive()) setLoading(false)
+    }
   }
 
-  function updateFeature(
-    tier: string,
-    key: keyof PlanConfig["features"],
-    value: boolean,
-  ) {
-    setPlans((prev) =>
-      prev.map((p) =>
-        p.tier === tier
-          ? { ...p, features: { ...p.features, [key]: value } }
-          : p,
-      ),
-    )
-    setDirty(true)
-  }
+  useEffect(() => {
+    let alive = true
+    loadData(() => alive)
+    return () => {
+      alive = false
+    }
+  }, [])
 
-  function updateRule(key: string, cost: number) {
-    setRules((prev) => prev.map((r) => (r.key === key ? { ...r, cost } : r)))
-    setDirty(true)
-  }
+  const dirty =
+    costs !== null &&
+    savedCosts !== null &&
+    (JSON.stringify(costs) !== JSON.stringify(savedCosts) ||
+      JSON.stringify(planForms) !== JSON.stringify(savedPlanForms))
 
-  function save() {
-    setDirty(false)
-    toast.success("配置已保存并生效", {
-      description: "套餐档位与积分口径已更新，新规则即时对所有用户生效。",
+  function updateCost(key: string, raw: string) {
+    setCosts((prev) => {
+      if (!prev) return prev
+      const n = Math.max(0, Math.floor(Number(raw) || 0))
+      return { ...prev, [key]: n }
     })
   }
 
-  function reset() {
-    setPlans(seedPlans.map((p) => ({ ...p, features: { ...p.features } })))
-    setRules(seedRules.map((r) => ({ ...r })))
-    setDirty(false)
-    toast.info("已还原为上次保存的配置")
+  function updatePlanPrice(id: string, raw: string) {
+    const n = Math.max(0, Number(raw) || 0)
+    setPlanForms((prev) => prev.map((p) => (p.id === id ? { ...p, priceYuan: n } : p)))
   }
+
+  function updatePlanCredits(id: string, raw: string) {
+    const n = Math.max(0, Math.floor(Number(raw) || 0))
+    setPlanForms((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, grantCreditsPerCycle: n } : p)),
+    )
+  }
+
+  async function save() {
+    if (!costs || !savedCosts) return
+    setSaving(true)
+    try {
+      const changedCostOps = CREDIT_COST_OPS.filter(({ key }) => costs[key] !== savedCosts[key])
+      const changedPlans = planForms.filter((p) => {
+        const s = savedPlanForms.find((sp) => sp.id === p.id)
+        return !s || s.priceYuan !== p.priceYuan || s.grantCreditsPerCycle !== p.grantCreditsPerCycle
+      })
+      await Promise.all([
+        ...changedCostOps.map(({ key }) => adminApi.plans.setConfig(`credit_cost.${key}`, costs[key])),
+        ...changedPlans.map((p) =>
+          // 元→分：仅在此处 ×100 并 Math.round，从不存浮点分。
+          adminApi.plans.update(p.id, {
+            priceCents: Math.round(p.priceYuan * 100),
+            grantCreditsPerCycle: p.grantCreditsPerCycle,
+          }),
+        ),
+      ])
+      setSavedCosts(costs)
+      setSavedPlanForms(planForms)
+      toast.success("配置已保存并生效", {
+        description: "套餐档位与积分口径已更新，新规则即时对所有用户生效。",
+      })
+    } catch (e) {
+      toast.error(
+        e instanceof AdminApiError && e.status === 403
+          ? "无权限：需要 plan.write / config.write 权限"
+          : "保存失败，请重试",
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function reset() {
+    await loadData(() => true)
+    toast.info("已还原为服务器上次保存的配置")
+  }
+
+  const disableActions = !dirty || saving || loading
 
   return (
     <div className="flex flex-col gap-6">
@@ -131,11 +222,11 @@ export function PlansClient() {
               有未保存的更改
             </Badge>
           )}
-          <Button variant="outline" size="sm" onClick={reset} disabled={!dirty}>
+          <Button variant="outline" size="sm" onClick={reset} disabled={disableActions}>
             <RotateCcw data-icon="inline-start" />
             还原
           </Button>
-          <Button size="sm" onClick={save} disabled={!dirty}>
+          <Button size="sm" onClick={save} disabled={disableActions}>
             <Save data-icon="inline-start" />
             保存并生效
           </Button>
@@ -145,90 +236,54 @@ export function PlansClient() {
       <Card>
         <CardHeader>
           <CardTitle>会员档位</CardTitle>
-          <CardDescription>
-            价格、周期、每月赠送积分、并行项目数与权益开关。
-          </CardDescription>
+          <CardDescription>价格与每周期赠送积分，按套餐+计费周期逐行展示。</CardDescription>
         </CardHeader>
         <CardContent className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="min-w-24">档位</TableHead>
-                <TableHead>月付价(￥)</TableHead>
-                <TableHead>年付价(￥)</TableHead>
-                <TableHead>每月赠送积分</TableHead>
-                <TableHead>并行项目数</TableHead>
-                {featureKeys.map((k) => (
-                  <TableHead key={k} className="text-center">
-                    {featureLabels[k]}
-                  </TableHead>
-                ))}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {plans.map((plan) => (
-                <TableRow key={plan.tier}>
-                  <TableCell className="font-medium text-foreground">
-                    {plan.name}
-                  </TableCell>
-                  <TableCell>
-                    <Input
-                      type="number"
-                      className="h-9 w-24"
-                      value={plan.monthly}
-                      onChange={(e) =>
-                        updatePlan(plan.tier, { monthly: Number(e.target.value) })
-                      }
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <Input
-                      type="number"
-                      className="h-9 w-24"
-                      value={plan.yearly}
-                      onChange={(e) =>
-                        updatePlan(plan.tier, { yearly: Number(e.target.value) })
-                      }
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <Input
-                      type="number"
-                      className="h-9 w-28"
-                      value={plan.monthlyPoints}
-                      onChange={(e) =>
-                        updatePlan(plan.tier, {
-                          monthlyPoints: Number(e.target.value),
-                        })
-                      }
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <Input
-                      type="number"
-                      className="h-9 w-20"
-                      value={plan.parallelProjects}
-                      onChange={(e) =>
-                        updatePlan(plan.tier, {
-                          parallelProjects: Number(e.target.value),
-                        })
-                      }
-                    />
-                  </TableCell>
-                  {featureKeys.map((k) => (
-                    <TableCell key={k} className="text-center">
-                      <div className="flex justify-center">
-                        <Switch
-                          checked={plan.features[k]}
-                          onCheckedChange={(v) => updateFeature(plan.tier, k, v)}
-                        />
-                      </div>
-                    </TableCell>
-                  ))}
+          {loading ? (
+            <p className="text-sm text-muted-foreground">加载中…</p>
+          ) : planForms.length === 0 ? (
+            <p className="text-sm text-muted-foreground">暂无套餐，去数据库/种子创建</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="min-w-24">档位</TableHead>
+                  <TableHead>代码</TableHead>
+                  <TableHead>计费周期</TableHead>
+                  <TableHead>价格(元)</TableHead>
+                  <TableHead>每周期赠送积分</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {planForms.map((plan) => (
+                  <TableRow key={plan.id}>
+                    <TableCell className="font-medium text-foreground">{plan.name}</TableCell>
+                    <TableCell className="text-muted-foreground">{plan.code ?? "-"}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {BILLING_CYCLE_LABELS[plan.billingCycle] ?? plan.billingCycle}
+                    </TableCell>
+                    <TableCell>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        className="h-9 w-28"
+                        value={plan.priceYuan}
+                        onChange={(e) => updatePlanPrice(plan.id, e.target.value)}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <Input
+                        type="number"
+                        className="h-9 w-28"
+                        value={plan.grantCreditsPerCycle}
+                        onChange={(e) => updatePlanCredits(plan.id, e.target.value)}
+                      />
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
         </CardContent>
       </Card>
 
@@ -240,30 +295,32 @@ export function PlansClient() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-x-8 sm:grid-cols-2">
-            {rules.map((rule, i) => (
-              <div key={rule.key}>
-                <div className="flex items-center justify-between gap-4 py-3">
-                  <div className="flex flex-col">
-                    <span className="text-sm font-medium text-foreground">
-                      {rule.name}
-                    </span>
-                    <span className="text-xs text-muted-foreground">{rule.desc}</span>
+          {loading || !costs ? (
+            <p className="text-sm text-muted-foreground">加载中…</p>
+          ) : (
+            <div className="grid gap-x-8 sm:grid-cols-2">
+              {CREDIT_COST_OPS.map((op, i) => (
+                <div key={op.key}>
+                  <div className="flex items-center justify-between gap-4 py-3">
+                    <div className="flex flex-col">
+                      <span className="text-sm font-medium text-foreground">{op.label}</span>
+                      <span className="text-xs text-muted-foreground">{op.desc}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="number"
+                        className="h-9 w-24 text-right"
+                        value={costs[op.key]}
+                        onChange={(e) => updateCost(op.key, e.target.value)}
+                      />
+                      <span className="text-sm text-muted-foreground">积分</span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Input
-                      type="number"
-                      className="h-9 w-24 text-right"
-                      value={rule.cost}
-                      onChange={(e) => updateRule(rule.key, Number(e.target.value))}
-                    />
-                    <span className="text-sm text-muted-foreground">积分</span>
-                  </div>
+                  {i < CREDIT_COST_OPS.length - 1 && <Separator />}
                 </div>
-                {i < rules.length - 1 && <Separator />}
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 
