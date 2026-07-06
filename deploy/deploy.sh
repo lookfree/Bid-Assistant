@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# 在目标机执行：拉最新代码 → 跑 DB 迁移（一次性容器，独立于服务启动）→ 起/更新服务。
+# 在目标机执行：拉最新代码 → 构建 → 跑 DB 迁移（一次性容器，独立于服务启动）→ 起/更新服务。
 set -euo pipefail
 cd "$(dirname "$0")"
+
+# 全部逻辑包进函数：bash 解析完整个函数体才执行，
+# 避免第 1 步 git pull 更新本脚本后、bash 继续按旧文件偏移读到错乱指令。
+main() {
 
 # 1) 拉代码（就地构建；或改为 CI 推镜像后 pull 镜像）
 git -C .. pull --ff-only
@@ -20,3 +24,6 @@ docker compose --env-file .env.deploy.local run --rm api bun run db:seed
 # 4) 起/更新服务（镜像已在第 2 步构建，此处直接滚动更新）
 docker compose --env-file .env.deploy.local up -d
 docker compose ps
+
+}
+main "$@"
