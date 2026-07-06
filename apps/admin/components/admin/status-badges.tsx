@@ -42,6 +42,7 @@ export function OrderStatusBadge({ status }: { status: OrderStatus }) {
     pending: "bg-amber-100 text-amber-700",
     refunded: "bg-muted text-muted-foreground",
     failed: "bg-destructive/10 text-destructive",
+    unknown: "bg-orange-100 text-orange-700",
   }
   return (
     <Badge variant="secondary" className={styles[status]}>

@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "db:generate": "bun --env-file=../../.env.bidsaas.local run drizzle-kit generate",
     "db:migrate": "bun --env-file=../../.env.bidsaas.local run drizzle-kit migrate",
+    "db:seed": "bun --env-file=../../.env.bidsaas.local run src/scripts/seed.ts",
     "admin:bootstrap": "bun --env-file=../../.env.bidsaas.local run src/scripts/bootstrap-admin.ts"
   },
   "dependencies": {

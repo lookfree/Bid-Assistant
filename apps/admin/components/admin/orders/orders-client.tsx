@@ -55,13 +55,15 @@ import { adminApi, type ApiOrder } from "@/lib/admin-api"
 
 const PAGE_SIZE = 8
 
-// 真实 type/status 值未完全对齐前端展示口径，做安全映射/默认。
-const ORDER_STATUSES: OrderStatus[] = ["paid", "pending", "refunded", "failed"]
+// 真实 status ∈ created/paid/failed/unknown/refunded：created→pending(待支付)语义一致；
+// unknown(结果待核对，需人工对账)单列，不再被折叠进 pending 而隐藏。
+const ORDER_STATUSES: OrderStatus[] = ["paid", "pending", "refunded", "failed", "unknown"]
 
+// 真实 payment_orders.type ∈ recharge/purchase/renewal（DB check 约束）。
 function apiTypeToOrderType(t: string): OrderType {
   if (t === "recharge") return "recharge"
-  if (t === "subscription" || t === "renew") return "renew"
-  return "single"
+  if (t === "renewal") return "renew"
+  return "single" // purchase 及其他 → 单次
 }
 
 // 列表接口未返回对账状态，默认 matched（真实对账另有差异工作台）。
@@ -135,13 +137,13 @@ export function OrdersClient() {
     }
   }
 
-  async function refund(orderId: string, amountCents: number, reason: string) {
+  async function refund(orderId: string, amountCents: number, reason: string, idempotencyKey: string) {
     try {
       await adminApi.orders.refund({
         orderId,
         amountCents,
         reason,
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey,
       })
       toast.success(`已发起退款：${orderId}`)
       setSelected(null)
@@ -186,6 +188,7 @@ export function OrdersClient() {
               <SelectItem value="pending">待支付</SelectItem>
               <SelectItem value="refunded">已退款</SelectItem>
               <SelectItem value="failed">支付失败</SelectItem>
+              <SelectItem value="unknown">结果待核对</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -269,7 +272,7 @@ function OrderDetailDialog({
 }: {
   order: OrderRow | null
   onOpenChange: (open: boolean) => void
-  onRefund: (orderId: string, amountCents: number, reason: string) => void
+  onRefund: (orderId: string, amountCents: number, reason: string, idempotencyKey: string) => void
 }) {
   if (!order) return null
   return (
@@ -298,8 +301,8 @@ function OrderDetailDialog({
           {order.status === "paid" ? (
             <RefundDialog
               order={order}
-              onConfirm={(amountCents, reason) =>
-                onRefund(order.id, amountCents, reason)
+              onConfirm={(amountCents, reason, idemKey) =>
+                onRefund(order.id, amountCents, reason, idemKey)
               }
             />
           ) : (
@@ -319,11 +322,12 @@ function RefundDialog({
   onConfirm,
 }: {
   order: OrderRow
-  onConfirm: (amountCents: number, reason: string) => void
+  onConfirm: (amountCents: number, reason: string, idempotencyKey: string) => void
 }) {
   const [open, setOpen] = useState(false)
   const [amount, setAmount] = useState(String(order.amount))
   const [reason, setReason] = useState("")
+  const [idemKey, setIdemKey] = useState(() => crypto.randomUUID()) // 稳定幂等键：同一退款对话框会话复用，防重复提交双退
 
   function submit() {
     const amt = Number(amount)
@@ -335,12 +339,18 @@ function RefundDialog({
       toast.error("请填写退款原因")
       return
     }
-    onConfirm(Math.round(amt * 100), reason)
+    onConfirm(Math.round(amt * 100), reason, idemKey)
     setOpen(false)
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o)
+        if (o) setIdemKey(crypto.randomUUID()) // 每次打开=新退款意图，换新键
+      }}
+    >
       <DialogTrigger
         render={
           <Button variant="destructive">

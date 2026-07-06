@@ -70,9 +70,6 @@ export const FEATURE_LABELS: Record<string, string> = {
   priorityQueue: "优先算力队列",
   longHistory: "历史项目长期保存",
 }
-export function enabledFeatureLabels(features: Record<string, unknown>): string[] {
-  return Object.keys(FEATURE_LABELS).filter((k) => features[k] === true).map((k) => FEATURE_LABELS[k])
-}
 
 function toCreditCosts(configs: Record<string, unknown>): CreditCosts {
   const costs: CreditCosts = {}

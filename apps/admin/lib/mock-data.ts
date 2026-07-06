@@ -245,7 +245,7 @@ export function balanceFromLedger(userId: string): number {
 
 // ---------------- 订单与对账 ----------------
 export type OrderType = "recharge" | "single" | "renew"
-export type OrderStatus = "paid" | "pending" | "refunded" | "failed"
+export type OrderStatus = "paid" | "pending" | "refunded" | "failed" | "unknown"
 export type ReconcileStatus = "matched" | "diff"
 
 export const orderTypeLabel: Record<OrderType, string> = {
@@ -258,6 +258,7 @@ export const orderStatusLabel: Record<OrderStatus, string> = {
   pending: "待支付",
   refunded: "已退款",
   failed: "支付失败",
+  unknown: "结果待核对",
 }
 
 export interface OrderRow {

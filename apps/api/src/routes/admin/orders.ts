@@ -28,7 +28,7 @@ ordersRouter.get("/", async (c) => {
 })
 ordersRouter.get("/:id", async (c) => c.json(await getOrderDetail(c.req.param("id"))))
 
-const RefundBody = z.object({ orderId: z.string().uuid(), amount: z.number().int().positive(), reason: z.string().min(1), allowNegativeBalance: z.boolean().optional() })
+const RefundBody = z.object({ orderId: z.string().uuid(), amount: z.number().int().positive(), reason: z.string().min(1), allowNegativeBalance: z.boolean().optional(), idempotencyKey: z.string().min(1).optional() })
 
 // 退款唯一入口（spec306 已删自建路由）：工厂注入 provider 解析器（生产从 env 解析、测试注入 mock）。
 export function refundsRouter(resolveProvider: () => RefundProvider | undefined) {
@@ -41,7 +41,7 @@ export function refundsRouter(resolveProvider: () => RefundProvider | undefined)
     let res
     try {
       res = await createRefund(
-        { orderId: parsed.data.orderId, amountCents: parsed.data.amount, reason: parsed.data.reason, operator: c.var.admin.username, allowNegativeBalance: parsed.data.allowNegativeBalance },
+        { orderId: parsed.data.orderId, amountCents: parsed.data.amount, reason: parsed.data.reason, operator: c.var.admin.username, allowNegativeBalance: parsed.data.allowNegativeBalance, idempotencyKey: parsed.data.idempotencyKey },
         { provider },
       )
     } catch (e) {

@@ -33,6 +33,7 @@ const ARTIFACT_NAME: Record<string, string> = { docx: "投标文件.docx", pptx:
 export type ProjectDeps = {
   preDeduct: typeof billing.preDeduct
   settle: typeof billing.settle
+  settleContent: typeof billing.settleContent
   settleFailed: typeof billing.settleFailed
   createRun: typeof client.createRun
   relayStream: typeof client.relayStream
@@ -40,9 +41,24 @@ export type ProjectDeps = {
   presignGet: typeof presignGet
 }
 
+// content 步产出各章正文的最大字数（剥 HTML 标签后）——决定 content_short/long 分档。
+// agent 的 _RESULT_KEY['content']='chapters'，故 run.result 即 { <章id>: html }。
+function maxChapterChars(result: unknown): number {
+  if (!result || typeof result !== "object") return 0
+  let max = 0
+  for (const v of Object.values(result as Record<string, unknown>)) {
+    if (typeof v === "string") {
+      const len = v.replace(/<[^>]+>/g, "").length
+      if (len > max) max = len
+    }
+  }
+  return max
+}
+
 export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
   const preDeduct = deps.preDeduct ?? billing.preDeduct
   const settle = deps.settle ?? billing.settle
+  const settleContent = deps.settleContent ?? billing.settleContent
   const settleFailed = deps.settleFailed ?? billing.settleFailed
   const createRun = deps.createRun ?? client.createRun
   const relayStream = deps.relayStream ?? client.relayStream
@@ -96,8 +112,9 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     }
 
     // 真账本预扣（spec302）：ref=占位行 id（该次步进的稳定标识，幂等键随之稳定）。
+    // 按真实配置键扣费：content 步预扣按上档 content_long（结算再落篇幅档），其余步用同名 credit_cost.<step>。
     // 余额不足 → 释放占位行，402。
-    const hold = await preDeduct(userId, step, s.id)
+    const hold = await preDeduct(userId, billing.holdOpForStep(step), s.id)
     if (!hold.ok) {
       await getDb().update(projectSteps).set({ status: "failed" }).where(eq(projectSteps.id, s.id))
       return c.json({ error: "insufficient" }, 402)
@@ -149,6 +166,9 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     let cost = 0
     if (failed) {
       await settleFailed(stepRow.id, hold.holdId!)
+    } else if (step === "content") {
+      // 按篇幅落档：任一章 > 阈值 → 长篇（足额 content_long）；否则短篇 content_short（退差额）。
+      cost = await settleContent(stepRow.id, hold.holdId!, hold.hold, maxChapterChars(run.result))
     } else {
       cost = await settle(stepRow.id, hold.holdId!, hold.hold)
     }

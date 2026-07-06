@@ -51,7 +51,11 @@ export async function computeTrend(days = 14): Promise<TrendPoint[]> {
   const since = new Date()
   since.setHours(0, 0, 0, 0)
   since.setDate(since.getDate() - (days - 1))
-  const dayExpr = (col: unknown) => sql<string>`to_char(${col}, 'MM/DD')`
+  // SQL 与 JS 都锚定同一时区(Asia/Shanghai)分桶,否则 to_char(会话TZ) 与 new Date(NodeTZ) 会把
+  // 临近午夜的单归到不同日 → 边界日数据丢失/错位。
+  const TZ = "Asia/Shanghai"
+  const dayExpr = (col: unknown) => sql<string>`to_char(${col} AT TIME ZONE ${TZ}, 'MM/DD')`
+  const fmtDay = new Intl.DateTimeFormat("en-US", { timeZone: TZ, month: "2-digit", day: "2-digit" })
   const [rev, cr] = await Promise.all([
     db
       .select({ d: dayExpr(paymentOrders.createdAt), s: sql<number>`coalesce(sum(${paymentOrders.amountCents}),0)` })
@@ -69,7 +73,7 @@ export async function computeTrend(days = 14): Promise<TrendPoint[]> {
   const out: TrendPoint[] = []
   const d = new Date(since)
   for (let i = 0; i < days; i++) {
-    const key = `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`
+    const key = fmtDay.format(d) // MM/DD in TZ，与 SQL to_char(... AT TIME ZONE TZ) 对齐
     out.push({ date: key, revenue: Math.round((revMap.get(key) ?? 0) / 100), credits: crMap.get(key) ?? 0 })
     d.setDate(d.getDate() + 1)
   }

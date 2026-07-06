@@ -55,8 +55,15 @@ export async function getUserDetail(id: string) {
   const [u] = await db.select().from(users).where(eq(users.id, id))
   if (!u) throw new Error("用户不存在")
   const [sub] = await db.select().from(subscriptions).where(and(eq(subscriptions.userId, id), eq(subscriptions.status, "active")))
+  const [ph] = await db
+    .select({ identifier: userIdentities.identifier })
+    .from(userIdentities)
+    .where(and(eq(userIdentities.userId, id), eq(userIdentities.provider, "phone")))
+    .limit(1)
+  const [tierRow] = sub ? await db.select({ code: plans.code }).from(plans).where(eq(plans.id, sub.planId)) : []
   const balance = await getBalance(id)
-  return { ...u, subscription: sub ?? null, balance }
+  // phone/tier 与 listUsers、ApiUserDetail 契约对齐（详情也带手机号/会员档）
+  return { ...u, phone: ph?.identifier ?? null, tier: tierRow?.code ?? null, subscription: sub ?? null, balance }
 }
 
 // 封禁/解封同属 user.write 权限；读旧 status → 更新 → 审计前后值。

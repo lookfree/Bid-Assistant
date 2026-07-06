@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, integer, index, unique, check } from "drizzle-orm/pg-core"
+import { pgTable, uuid, text, integer, index, unique, uniqueIndex, check } from "drizzle-orm/pg-core"
 import { sql } from "drizzle-orm"
 import { id, createdAt, tz } from "./columns"
 import { users } from "./users"
@@ -66,10 +66,12 @@ export const refunds = pgTable(
     reason: text("reason"),
     status: text("status").notNull().default("pending"), // pending/done/failed
     operator: text("operator"), // 运营操作人（admin）
+    idempotencyKey: text("idempotency_key"), // 退款幂等键（同意图重试去重，防部分退款重复退真钱）
     createdAt: createdAt(),
   },
   (t) => ({
     orderIdx: index("refunds_order_idx").on(t.orderId), // 按订单查退款（FK 不自动建索引）
+    idemUq: uniqueIndex("refunds_idempotency_key_uq").on(t.idempotencyKey).where(sql`${t.idempotencyKey} is not null`),
     amountPositive: check("refunds_amount_positive", sql`${t.amountCents} > 0`), // 退款金额同样必须为正
     statusCheck: check("refunds_status_check", sql`${t.status} in ('pending','done','failed')`),
   }),

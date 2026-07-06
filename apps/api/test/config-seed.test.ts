@@ -14,6 +14,9 @@ async function wipeSeedKeys() {
   for (const key of Object.keys(BILLING_SEED)) {
     await getDb().delete(billingConfigs).where(sql`${billingConfigs.key} = ${key}`)
   }
+  // 历史遗留孤儿键：口径从 content 拆成 content_short/long 后 content 不再入种子，
+  // 但 seedConfigs 只增不删，旧环境仍残留 credit_cost.content——本套按精确条数断言，先清掉。
+  await getDb().delete(billingConfigs).where(sql`${billingConfigs.key} = 'credit_cost.content'`)
 }
 
 beforeAll(wipeSeedKeys)
@@ -27,17 +30,18 @@ afterAll(async () => {
 describe("spec301 配置服务", () => {
   it("种子写入后可读操作积分口径与推荐规则", async () => {
     await seedConfigs()
-    expect(await getConfig<number>("credit_cost.read")).toBe(10)
+    expect(await getConfig<number>("credit_cost.read")).toBe(20)
     const rules = await getConfig<{ capPerUser: number }>("referral_rules")
     expect(rules?.capPerUser).toBe(500)
     const poll = await getConfig<{ windowMinutes: number }>("payment_poll")
     expect(poll?.windowMinutes).toBe(6) // 收钱吧官方轮询窗口
   })
 
-  it("getConfigs 前缀过滤：credit_cost.* 六步齐全", async () => {
+  it("getConfigs 前缀过滤：credit_cost.* 九项口径齐全", async () => {
     const costs = await getConfigs("credit_cost.")
-    expect(Object.keys(costs)).toHaveLength(6)
-    expect(costs["credit_cost.content"]).toBe(10)
+    expect(Object.keys(costs)).toHaveLength(9)
+    expect(costs["credit_cost.content_short"]).toBe(40)
+    expect(costs["credit_cost.content_long"]).toBe(80)
   })
 
   it("seedConfigs 不覆盖已存在的 key（运营改过的值保持）", async () => {

@@ -31,6 +31,7 @@ const InputSchema = z.object({
   reason: z.string(),
   operator: z.string().min(1),
   allowNegativeBalance: z.boolean().optional(), // 扣回>余额时需操作员显式确认
+  idempotencyKey: z.string().min(1).optional(), // 同意图重试去重（防部分退款重复退真钱）
 })
 export type RefundInput = z.infer<typeof InputSchema>
 
@@ -51,10 +52,17 @@ const clawbackTarget = (granted: number, refundedCents: number, orderAmountCents
   Math.round((granted * refundedCents) / orderAmountCents)
 
 /** ① 事务：行锁下校验（paid/非 renewal/累计额）+ 建 pending。校验不过抛错，不触发通道调用。 */
-async function validateAndCreatePending(input: RefundInput): Promise<{ order: Order; refundId: string; doneBefore: number }> {
+async function validateAndCreatePending(
+  input: RefundInput,
+): Promise<{ order: Order; refundId: string; doneBefore: number; replayedStatus?: "pending" | "done" | "failed" }> {
   return await getDb().transaction(async (tx) => {
     const [order] = await tx.select().from(paymentOrders).where(eq(paymentOrders.id, input.orderId)).for("update")
     if (!order) throw new Error("订单不存在")
+    // 幂等重放：同 key 已有退款单 → 直接返回既有结果，不再新建/重扣（须在状态检查前，重放无视当前订单状态）
+    if (input.idempotencyKey) {
+      const [dup] = await tx.select().from(refunds).where(eq(refunds.idempotencyKey, input.idempotencyKey))
+      if (dup) return { order, refundId: dup.id, doneBefore: 0, replayedStatus: dup.status as "pending" | "done" | "failed" }
+    }
     if (order.status !== "paid") throw new Error(`订单状态非 paid：${order.status}`)
     if (order.type === "renewal") {
       // C9 决策：renewal 结算已顺延周期/复活状态，只退钱不回退周期=退钱留会员 → 转人工处置
@@ -70,10 +78,10 @@ async function validateAndCreatePending(input: RefundInput): Promise<{ order: Or
     }
     const [r] = await tx
       .insert(refunds)
-      .values({ orderId: order.id, amountCents: input.amountCents, reason: input.reason, status: "pending", operator: input.operator })
+      .values({ orderId: order.id, amountCents: input.amountCents, reason: input.reason, status: "pending", operator: input.operator, idempotencyKey: input.idempotencyKey ?? null })
       .returning()
     const doneBefore = rows.filter((x) => x.status === "done").reduce((s, x) => s + x.amountCents, 0)
-    return { order, refundId: r!.id, doneBefore }
+    return { order, refundId: r!.id, doneBefore, replayedStatus: undefined as "pending" | "done" | "failed" | undefined }
   })
 }
 
@@ -118,7 +126,8 @@ async function settleRefundDone(tx: Tx, order: Order, refundId: string, input: R
  */
 export async function createRefund(rawInput: RefundInput, deps: { provider: RefundProvider }): Promise<{ refundId: string; status: "done" | "failed" | "pending" }> {
   const input = InputSchema.parse(rawInput)
-  const { order, refundId, doneBefore } = await validateAndCreatePending(input)
+  const { order, refundId, doneBefore, replayedStatus } = await validateAndCreatePending(input)
+  if (replayedStatus) return { refundId, status: replayedStatus } // 幂等重放：返回既有退款结果，不再走通道/扣回
 
   // 扣回护栏前置估算：全额/部分退款要扣的积分若超当前余额（用户已花掉），默认拒绝——操作员须显式确认
   if (!input.allowNegativeBalance) {

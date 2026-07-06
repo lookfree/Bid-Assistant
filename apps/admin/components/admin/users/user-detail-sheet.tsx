@@ -79,15 +79,16 @@ function DetailBody({
 }) {
   const [flows, setFlows] = useState<ApiLedgerTx[]>([])
   const [sub, setSub] = useState<ApiUserDetail["subscription"] | undefined>(undefined)
+  const [ledgerSum, setLedgerSum] = useState<number | null>(null) // 权威全量流水之和（服务端 /check 求和，非本页 100 行）
   useEffect(() => {
     let alive = true
     adminApi.ledger.list({ userId: user.id, pageSize: 100 }).then((r) => alive && setFlows(r.items)).catch(() => alive && setFlows([]))
     adminApi.users.detail(user.id).then((d) => alive && setSub(d.subscription)).catch(() => alive && setSub(null))
+    adminApi.ledger.check(user.id).then((r) => alive && setLedgerSum(r.actual)).catch(() => alive && setLedgerSum(null))
     return () => {
       alive = false
     }
   }, [user.id])
-  const ledgerSum = flows.reduce((s, f) => s + f.amount, 0)
 
   return (
     <SheetContent className="w-full gap-0 overflow-y-auto sm:max-w-xl">
@@ -129,7 +130,7 @@ function DetailBody({
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold">积分流水</h3>
             <span className="text-xs text-muted-foreground">
-              流水之和 = <span className="font-mono font-medium text-foreground">{ledgerSum.toLocaleString()}</span>
+              流水之和 = <span className="font-mono font-medium text-foreground">{ledgerSum === null ? "…" : ledgerSum.toLocaleString()}</span>
             </span>
           </div>
           <div className="overflow-hidden rounded-lg border">

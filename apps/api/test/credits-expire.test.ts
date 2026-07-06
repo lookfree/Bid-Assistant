@@ -53,7 +53,7 @@ describe("spec302 FIFO 过期", () => {
   })
 
   it("在途 hold 不计入消耗：过期不被高估（漏过期回归）", async () => {
-    // BUG 行为：把在途 hold(-10) 当消耗 → 误以为早批已消耗 10 → 只过期 40
+    // BUG 行为：把在途 hold(read=20) 当消耗 → 误以为早批已消耗 20 → 只过期 30
     // 正确行为：在途 hold 不算消耗 → 早批全额过期 50
     const userId = await makeUser()
     await grant(userId, 50, { idempotencyKey: `early-${userId}`, expireAt: past() })
@@ -61,7 +61,7 @@ describe("spec302 FIFO 过期", () => {
     await hold(userId, "read", { ref: `r-${userId}`, idempotencyKey: `h-${userId}` }) // 在途，未 settle/release
     const expired = await expireDue(new Date())
     expect(expired).toBe(50)
-    expect(await getBalance(userId)).toBe(40) // 100 - hold 10 - expire 50
+    expect(await getBalance(userId)).toBe(30) // 100 - hold 20(read) - expire 50
   })
 
   it("无到期批次时 expireDue 为 0；不带 expire_at 的入账永不过期", async () => {

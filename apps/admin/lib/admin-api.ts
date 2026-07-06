@@ -41,7 +41,7 @@ export const adminApi = {
     // 套餐档位（plans 表，每档每 cycle 一行）：列表 + 改价/额度（需 plan.write）。价格=钱，谨慎。
     list: () => req<ApiPlan[]>("/plans"),
     update: (id: string, patch: { priceCents?: number; grantCreditsPerCycle?: number; status?: string; features?: Record<string, unknown> }) =>
-      req<{ ok: true }>(`/plans/${id}`, { method: "PUT", body: JSON.stringify(patch) }),
+      req<ApiPlan>(`/plans/${id}`, { method: "PUT", body: JSON.stringify(patch) }),
   },
   // 以下为真实数据接线（spec312）：dev/test 不再用 mock。返回体统一分页 { items,total,page,pageSize,hasMore }。
   users: {
@@ -57,13 +57,17 @@ export const adminApi = {
     list: (p: { status?: string; type?: string; userId?: string; page?: number; pageSize?: number } = {}) =>
       req<Paged<ApiOrder>>(`/orders${qs(p)}`),
     detail: (id: string) => req<ApiOrder & { refunds: unknown[] }>(`/orders/${id}`),
+    // 后端 RefundBody 字段是 amount（=分）+ idempotencyKey（幂等去重）；此处映射 amountCents→amount。
     refund: (body: { orderId: string; amountCents: number; reason: string; idempotencyKey: string }) =>
-      req<{ ok: true }>("/refunds", { method: "POST", body: JSON.stringify(body) }),
+      req<{ refundId: string; status: string }>("/refunds", {
+        method: "POST",
+        body: JSON.stringify({ orderId: body.orderId, amount: body.amountCents, reason: body.reason, idempotencyKey: body.idempotencyKey }),
+      }),
   },
   ledger: {
     list: (p: { userId: string; type?: string; page?: number; pageSize?: number }) =>
       req<Paged<ApiLedgerTx>>(`/ledger${qs(p)}`),
-    check: (userId: string) => req<{ cached: number; actual: number; match: boolean }>(`/ledger/${userId}/check`),
+    check: (userId: string) => req<{ userId: string; cached: number; actual: number; consistent: boolean }>(`/ledger/${userId}/check`),
   },
   overview: {
     get: () => req<ApiOverview>("/overview"),

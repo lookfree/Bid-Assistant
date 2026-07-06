@@ -4,7 +4,7 @@ import { getDb, closeDb } from "../src/db/client"
 import { users } from "../src/db/schema"
 import { getBalance, grant, hold, release, settle } from "../src/services/credits"
 import { InsufficientCreditsError } from "../src/services/credits-errors"
-import { seedConfigs } from "../src/services/config"
+import { seedConfigs, setConfig } from "../src/services/config"
 import { makeLedgerUser, TEST_TIMEOUT_MS, expectConflict } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS)
@@ -13,7 +13,10 @@ const madeUsers: string[] = []
 const makeUser = () => makeLedgerUser((id) => madeUsers.push(id))
 
 beforeAll(async () => {
-  await seedConfigs() // credit_cost.read = 10（占位口径）
+  await seedConfigs()
+  // 钱路测试要确定：seedConfigs 对已存在键 onConflictDoNothing，不会把旧环境的值刷新成新默认，
+  // 故这里显式钉住本套断言依赖的口径值（read=20），与环境/文件执行顺序解耦。
+  await setConfig("credit_cost.read", 20)
 })
 
 afterAll(async () => {
@@ -37,12 +40,12 @@ describe("spec302 账本引擎", () => {
     const userId = await makeUser()
     await grant(userId, 30, { idempotencyKey: `g-${userId}` })
     const { holdId, amount } = await hold(userId, "read", { ref: `run-${userId}`, idempotencyKey: `h-${userId}` })
-    expect(amount).toBe(10)
-    expect(await getBalance(userId)).toBe(20)
+    expect(amount).toBe(20) // credit_cost.read 真实配置默认值
+    expect(await getBalance(userId)).toBe(10)
     // hold 幂等：同 key 返回原 holdId、不再扣
     const again = await hold(userId, "read", { ref: `run-${userId}`, idempotencyKey: `h-${userId}` })
     expect(again.holdId).toBe(holdId)
-    expect(await getBalance(userId)).toBe(20)
+    expect(await getBalance(userId)).toBe(10)
     await release(holdId, { idempotencyKey: `r-${userId}` })
     expect(await getBalance(userId)).toBe(30)
     await release(holdId, { idempotencyKey: `r-${userId}` }) // release 幂等
@@ -59,9 +62,9 @@ describe("spec302 账本引擎", () => {
   it("settle 多退少补：净消耗=实际用量；幂等", async () => {
     const userId = await makeUser()
     await grant(userId, 30, { idempotencyKey: `g-${userId}` })
-    const { holdId } = await hold(userId, "read", { ref: `run-${userId}`, idempotencyKey: `h-${userId}` }) // -10
-    await settle(holdId, 6, { idempotencyKey: `s-${userId}` }) // 实际 6 → 退 4
-    expect(await getBalance(userId)).toBe(24) // 30 -10 +4
+    const { holdId } = await hold(userId, "read", { ref: `run-${userId}`, idempotencyKey: `h-${userId}` }) // -20
+    await settle(holdId, 6, { idempotencyKey: `s-${userId}` }) // 实际 6 → 退 14
+    expect(await getBalance(userId)).toBe(24) // 30 -20 +14 = 30 - 实际6
     await settle(holdId, 6, { idempotencyKey: `s-${userId}` }) // 幂等
     expect(await getBalance(userId)).toBe(24)
   })
@@ -102,13 +105,13 @@ describe("spec302 账本引擎", () => {
     )
     const ids = new Set(results.map((r) => r.holdId))
     expect(ids.size).toBe(1)
-    expect(await getBalance(userId)).toBe(20) // 只扣一次
+    expect(await getBalance(userId)).toBe(10) // 只扣一次（30 - read 20）
   })
 
   it("并发首扣不超扣（锁 credit_balances 用户行作串行化点）", async () => {
-    // 余额恰够 1 次 hold：10 个并发只能成功 1 个，余额绝不为负
+    // 余额恰够 1 次 hold（read=20）：10 个并发只能成功 1 个，余额绝不为负
     const userId = await makeUser()
-    await grant(userId, 10, { idempotencyKey: `g-${userId}` })
+    await grant(userId, 20, { idempotencyKey: `g-${userId}` })
     const results = await Promise.allSettled(
       Array.from({ length: 10 }, (_, i) => hold(userId, "read", { idempotencyKey: `hc-${userId}-${i}` })),
     )

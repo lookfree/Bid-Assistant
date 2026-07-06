@@ -64,7 +64,7 @@ export function LedgerClient() {
   const [page, setPage] = useState(1)
   const [rows, setRows] = useState<LedgerRow[]>([])
   const [loading, setLoading] = useState(true)
-  const [check, setCheck] = useState<{ cached: number; actual: number; match: boolean } | null>(null)
+  const [check, setCheck] = useState<{ cached: number; actual: number; consistent: boolean } | null>(null)
 
   // 加载真实用户列表，作为用户选择器，默认选中第一个真实用户。
   useEffect(() => {
@@ -138,7 +138,7 @@ export function LedgerClient() {
           <ShieldCheck />
           <AlertTitle className="flex items-center gap-2">
             账本可审计 · 余额核对
-            {check.match ? (
+            {check.consistent ? (
               <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
                 <CheckCircle2 className="size-3.5" /> 一致
               </span>
