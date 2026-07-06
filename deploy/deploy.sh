@@ -23,6 +23,9 @@ docker compose --env-file .env.deploy.local run --rm api bun run db:seed
 
 # 4) 起/更新服务（镜像已在第 2 步构建，此处直接滚动更新）
 docker compose --env-file .env.deploy.local up -d
+
+# 5) 重启 nginx：容器重建后 IP 变化，nginx 启动期解析的 upstream 地址失效会 502
+docker compose --env-file .env.deploy.local restart nginx
 docker compose ps
 
 }
