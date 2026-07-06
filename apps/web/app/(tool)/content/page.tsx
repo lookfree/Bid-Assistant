@@ -7,11 +7,6 @@ import {
   Briefcase,
   Layers,
   Sparkles,
-  Bold,
-  Italic,
-  List,
-  ImagePlus,
-  Heading2,
   RefreshCw,
   Wand2,
   Download,
@@ -20,12 +15,14 @@ import {
   ShieldCheck,
   ShieldAlert,
   Loader2,
-  Library,
   Coins,
 } from "lucide-react"
 import { usePaywall } from "@/components/paywall"
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepBanner } from "@/components/tool/step-banner"
+import { DemoBanner } from "@/components/tool/demo-banner"
+import { NoProjectGuide } from "@/components/tool/no-project-guide"
+import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { LibraryPicker } from "@/components/tool/library-picker"
 import { useEscapeClose } from "@/hooks/use-escape-close"
 import { ApiError } from "@/lib/api-client"
@@ -37,8 +34,10 @@ import { type LibraryItem } from "@/lib/library"
 import { chapters as bidChapters } from "@/lib/sample-bid"
 import { deriveHealthReport } from "@/lib/risk-derive"
 import { useStep } from "@/lib/use-step"
+import { useDemoMode } from "@/lib/use-demo"
 import { artifactUrl, patchStep, runStep, stepResult } from "@/lib/project"
 import { ChatPanel } from "./chat-panel"
+import { EditorToolbar } from "./editor-toolbar"
 import { ChapterNav, type Chapter } from "./chapter-nav"
 import { CheckConfirm, CheckSummary, ExportConfirm } from "./check-dialogs"
 import { ExportMenu, type BidType } from "./export-menu"
@@ -75,24 +74,30 @@ function groupOf(id: string): Group {
 const EXPORT_COST = creditCosts.find((c) => c.feature.startsWith("导出"))?.value ?? 20
 
 export default function ContentPage() {
+  // 示例内容只允许在显式 demo 模式渲染；真实项目（projectId）永远优先
+  const isDemo = useDemoMode()
   const [bidType, setBidType] = useState<BidType>("tech")
-  const [data, setData] = useState(initialChapters)
+  // 章节树：demo 用示例初始树；真实项目从空开始，由 outline/content 结果构建
+  const [data, setData] = useState<Record<Group, Chapter[]>>(() =>
+    isDemo ? initialChapters : { tech: [], business: [] },
+  )
 
-  // 真实项目：outline 树 + content 各章 HTML → 覆盖示例正文；该步未跑则自动触发
+  // 真实项目：outline 树 + content 各章 HTML → 构建章节树；该步未跑则自动触发
   const { projectId, info, data: realBodies, running, error, errorStatus, start } = useStep<RealChapters>("content")
   useEffect(() => {
     if (projectId && info && !realBodies && !running && info.project.currentStep === "content") void start()
   }, [projectId, info, realBodies, running, start])
+  // outline 结果一到位就先建树（正文缺失章显示"待生成"占位），content 结果到位后填充各章 HTML
   useEffect(() => {
-    if (!realBodies || !info) return
+    if (!info) return
     const ol = stepResult<RealOutline>(info, "outline")
     if (!ol) return
     const build = (g: Group) =>
       ol.chapters
         .filter((c) => c.group === g)
-        .map((c) => ({ id: c.id, no: c.no, title: c.title, sourced: c.sourced, html: realBodies[c.id] ?? "" }))
+        .map((c) => ({ id: c.id, no: c.no, title: c.title, sourced: c.sourced, html: realBodies?.[c.id] ?? "" }))
     setData({ tech: build("tech"), business: build("business") })
-    setActiveId(ol.chapters[0]?.id ?? "t1")
+    setActiveId((prev) => (ol.chapters.some((c) => c.id === prev) ? prev : (ol.chapters[0]?.id ?? "")))
   }, [realBodies, info])
   const [activeId, setActiveId] = useState<string>("t1")
   const [chatOpen, setChatOpen] = useState(true)
@@ -154,7 +159,7 @@ export default function ContentPage() {
     saveEditor()
     setBidType(id)
     const newList = id === "full" ? [...data.tech, ...data.business] : data[id]
-    setActiveId(newList[0].id)
+    setActiveId(newList[0]?.id ?? "")
   }
 
   function selectChapter(id: string) {
@@ -200,11 +205,6 @@ export default function ContentPage() {
   function exec(cmd: string, value?: string) {
     editorRef.current?.focus()
     document.execCommand(cmd, false, value)
-  }
-
-  function insertImage() {
-    const url = "/professional-business-chart.png"
-    exec("insertHTML", `<img src="${url}" alt="示意图" class="my-3 rounded-lg border border-border max-w-full" />`)
   }
 
   /* 从资料库插入：把条目内容拼成 HTML 插入正文光标处 */
@@ -404,6 +404,34 @@ export default function ContentPage() {
   useEscapeClose(() => setReportOpen(false), reportOpen)
   useEscapeClose(() => setCheckConfirm(null), checkConfirm !== null)
 
+  // 非 demo 且无进行中项目：不渲染任何示例内容，引导上传 / 示例体验
+  if (!projectId && !isDemo)
+    return (
+      <div className="mx-auto flex h-[calc(100vh-4rem)] max-w-[1600px] flex-col px-4 py-5 sm:px-6 lg:px-8">
+        <FlowNav current="content" />
+        <NoProjectGuide />
+      </div>
+    )
+
+  // 真实项目：项目加载中 / 提纲缺失（章节树依赖 outline 结果）→ 占位，不回落示例
+  if (!active)
+    return (
+      <div className="mx-auto flex h-[calc(100vh-4rem)] max-w-[1600px] flex-col px-4 py-5 sm:px-6 lg:px-8">
+        <FlowNav current="content" />
+        <StepBanner
+          running={running}
+          error={error}
+          runningText="AI 写手团队正在按章撰写正文（多章并行，约 3–8 分钟）…"
+          onRetry={() => void start()}
+          action={errorStatus === 402 ? { href: "/membership", label: "去充值" } : undefined}
+        />
+        <StepPlaceholder
+          text={!info ? "正在加载项目…" : "先完成提纲步骤，生成章节结构后再撰写正文"}
+          action={info ? { href: "/outline", label: "前往提纲页" } : undefined}
+        />
+      </div>
+    )
+
   return (
     <div className="mx-auto flex h-[calc(100vh-4rem)] max-w-[1600px] flex-col px-4 py-5 sm:px-6 lg:px-8">
       <FlowNav current="content" />
@@ -414,6 +442,7 @@ export default function ContentPage() {
         onRetry={() => void start()}
         action={errorStatus === 402 ? { href: "/membership", label: "去充值" } : undefined}
       />
+      {isDemo && <DemoBanner />}
       {/* 头部 */}
       <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
@@ -478,30 +507,7 @@ export default function ContentPage() {
             <span className="mr-1 text-xs font-medium text-primary">{active.no}</span>
             <span className="mr-auto truncate text-sm font-semibold text-foreground">{active.title}</span>
             {/* 编辑工具栏 */}
-            <div className="flex items-center gap-0.5">
-              <ToolBtn onClick={() => exec("bold")} label="加粗">
-                <Bold className="size-4" />
-              </ToolBtn>
-              <ToolBtn onClick={() => exec("italic")} label="斜体">
-                <Italic className="size-4" />
-              </ToolBtn>
-              <ToolBtn onClick={() => exec("formatBlock", "<h3>")} label="小标题">
-                <Heading2 className="size-4" />
-              </ToolBtn>
-              <ToolBtn onClick={() => exec("insertUnorderedList")} label="列表">
-                <List className="size-4" />
-              </ToolBtn>
-              <ToolBtn onClick={insertImage} label="插入图片">
-                <ImagePlus className="size-4" />
-              </ToolBtn>
-              <button
-                onClick={() => setLibraryOpen(true)}
-                className="ml-1 inline-flex items-center gap-1.5 rounded-lg border border-primary/30 gradient-brand-soft px-2.5 py-1.5 text-xs font-medium text-primary transition-opacity hover:opacity-90"
-              >
-                <Library className="size-3.5" />
-                从资料库插入
-              </button>
-            </div>
+            <EditorToolbar exec={exec} onOpenLibrary={() => setLibraryOpen(true)} />
           </div>
 
           {active.html.trim() ? (
@@ -525,7 +531,8 @@ export default function ContentPage() {
                   ? "该章节对应招标文件要求，点击下方按钮由 AI 生成初稿后即可编辑。"
                   : "该章节为提纲新增内容，招标文件中无直接对应，建议结合自身情况补写。"}
               </p>
-              {isReal ? (
+              {projectId ? (
+                /* 真实项目不回落示例正文：引导走真实改写通道（content 生成中由顶部横幅提示进度） */
                 <p className="mt-5 max-w-xs rounded-xl border border-primary/20 gradient-brand-soft px-4 py-2.5 text-xs leading-relaxed text-primary">
                   在右侧 AI 助手中选中本章并输入指令，由 AI 生成/改写本章正文（{rewriteCost} 积分/次）
                 </p>
@@ -543,7 +550,7 @@ export default function ContentPage() {
 
           {active.html.trim() && (
             <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-2.5">
-              {isReal ? (
+              {projectId ? (
                 <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                   <RefreshCw className="size-3.5" />
                   重写本章可在右侧 AI 助手输入指令（{rewriteCost} 积分/次）
@@ -773,27 +780,5 @@ export default function ContentPage() {
         />
       )}
     </div>
-  )
-}
-
-function ToolBtn({
-  onClick,
-  label,
-  children,
-}: {
-  onClick: () => void
-  label: string
-  children: React.ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={label}
-      aria-label={label}
-      className="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-    >
-      {children}
-    </button>
   )
 }

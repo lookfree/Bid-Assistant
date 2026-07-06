@@ -5,7 +5,6 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
   Presentation,
-  Sparkles,
   Clock,
   Palette,
   Plus,
@@ -13,12 +12,7 @@ import {
   GripVertical,
   MessageSquareText,
   HelpCircle,
-  Library,
-  Send,
-  PanelRightClose,
-  PanelRightOpen,
   FileDown,
-  Wand2,
   X,
   ChevronRight,
   History,
@@ -27,6 +21,8 @@ import { usePaywall } from "@/components/paywall"
 import { CreditEstimate } from "@/components/credit-estimate"
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepBanner } from "@/components/tool/step-banner"
+import { DemoBanner } from "@/components/tool/demo-banner"
+import { NoProjectGuide } from "@/components/tool/no-project-guide"
 import { LibraryPicker } from "@/components/tool/library-picker"
 import { creditCosts } from "@/lib/plans"
 import { useMembership } from "@/lib/use-membership"
@@ -45,7 +41,9 @@ import {
 import { type LibraryItem } from "@/lib/library"
 import { ApiError } from "@/lib/api-client"
 import { useStep } from "@/lib/use-step"
+import { useDemoMode } from "@/lib/use-demo"
 import { artifactUrl, patchStep, runStep } from "@/lib/project"
+import { AiPanel } from "./ai-panel"
 import { EmptyState, DURATIONS, type Duration } from "./empty-state"
 import { TemplatePicker } from "./template-picker"
 import { LockedBlock, SlidePreview } from "./slide-preview"
@@ -56,6 +54,8 @@ type RealDeck = { title: string; duration: number; template: string; slides: Sli
 const EXPORT_COST = creditCosts.find((c) => c.feature.startsWith("导出"))?.value ?? 20
 
 export default function PresentPage() {
+  // 示例内容只允许在显式 demo 模式渲染；真实项目（projectId）永远优先
+  const isDemo = useDemoMode()
   const { openPaywall } = usePaywall()
   const router = useRouter()
 
@@ -81,14 +81,11 @@ export default function PresentPage() {
   const [activeId, setActiveId] = useState<string>("")
 
   /* 交互 */
-  const [aiCollapsed, setAiCollapsed] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
   const [exportStatus, setExportStatus] = useState("")
   /* 402 积分不足等需要引导入口的导出错误：文案 + 链接（不随 3 秒自动消失） */
   const [exportGate, setExportGate] = useState<{ text: string; href: string; label: string } | null>(null)
-  const [aiInput, setAiInput] = useState("")
-  const [aiReply, setAiReply] = useState("")
   const [dragId, setDragId] = useState<string | null>(null)
 
   /* 真实项目：present 步产 DeckSpec（真实幻灯+口播稿），到位即覆盖示例。
@@ -260,13 +257,6 @@ export default function PresentPage() {
     setDragId(null)
   }
 
-  /* ---------------- AI 协同 ---------------- */
-  function runAi(cmd: string) {
-    if (!active) return
-    setAiReply(`已根据「${cmd}」优化本页要点与演讲备注，可在中栏查看并继续微调。`)
-    setAiInput("")
-  }
-
   /* ---------------- 资料库插入 ---------------- */
   function insertFromLibrary(item: LibraryItem) {
     if (!active) return
@@ -299,8 +289,8 @@ export default function PresentPage() {
     }
   }
 
-  /* 预计问答：真实 deck 用生成的 QA，否则示例 */
-  const qaList = realDeck?.qa?.length ? realDeck.qa : presentQA
+  /* 预计问答：真实 deck 用生成的 QA；示例 QA 只在 demo 出现；真实缺失则不渲染问答卡 */
+  const qaList = realDeck?.qa?.length ? realDeck.qa : isDemo ? presentQA : []
 
   /* ---------------- 导出 ---------------- */
   function onExportEntry() {
@@ -361,6 +351,17 @@ export default function PresentPage() {
     })()
   }
 
+  // 非 demo 且无进行中项目：不渲染任何示例内容，引导上传 / 示例体验
+  if (!projectId && !isDemo)
+    return (
+      <div className="flex h-[calc(100vh-4rem)] flex-col">
+        <div className="shrink-0 px-4 pt-4 sm:px-6">
+          <FlowNav current="present" />
+        </div>
+        <NoProjectGuide />
+      </div>
+    )
+
   return (
     <div className="flex h-[calc(100vh-4rem)] flex-col">
       {/* 流程返回区：上一步 + 面包屑 */}
@@ -375,6 +376,7 @@ export default function PresentPage() {
           action={stepErrorStatus === 402 ? { href: "/membership", label: "去充值" } : undefined}
         />
       }
+      {isDemo && <DemoBanner />}
       </div>
       {/* 顶部工具条 */}
       <div className="shrink-0 border-b border-border bg-card px-4 py-3 sm:px-6">
@@ -644,7 +646,8 @@ export default function PresentPage() {
                   </div>
                 </div>
 
-                {/* 预计问答 —— 付费钩子 */}
+                {/* 预计问答 —— 付费钩子（真实 deck 无 QA 时整卡不渲染） */}
+                {qaList.length > 0 && (
                 <div className="mt-5 rounded-2xl border border-border bg-card p-5">
                   <div className="flex items-center gap-2">
                     <HelpCircle className="size-4 text-primary" />
@@ -669,88 +672,13 @@ export default function PresentPage() {
                     ))}
                   </div>
                 </div>
+                )}
               </div>
             )}
           </main>
 
           {/* 右栏 · AI 协同 */}
-          {aiCollapsed ? (
-            <button
-              onClick={() => setAiCollapsed(false)}
-              className="hidden w-12 shrink-0 flex-col items-center gap-2 border-l border-border bg-card py-4 text-muted-foreground transition-colors hover:text-foreground lg:flex"
-              aria-label="展开 AI 协同"
-            >
-              <PanelRightOpen className="size-5" />
-              <span className="text-xs [writing-mode:vertical-rl]">AI 协同</span>
-            </button>
-          ) : (
-            <aside className="hidden w-80 shrink-0 flex-col border-l border-border bg-card lg:flex">
-              <div className="flex items-center justify-between border-b border-border px-4 py-3">
-                <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-foreground">
-                  <Sparkles className="size-4 text-primary" />
-                  AI 协同
-                </span>
-                <button
-                  onClick={() => setAiCollapsed(true)}
-                  className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                  aria-label="折叠"
-                >
-                  <PanelRightClose className="size-4" />
-                </button>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-4">
-                <p className="text-xs text-muted-foreground">针对当前页「{active?.title}」改写优化：</p>
-                <div className="mt-3 flex flex-col gap-2">
-                  {["更口语", "更突出亮点", "压缩到 1 分钟讲完", "补充数据支撑"].map((cmd) => (
-                    <button
-                      key={cmd}
-                      onClick={() => runAi(cmd)}
-                      className="inline-flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-left text-xs font-medium text-foreground transition-colors hover:border-primary/40 hover:text-primary"
-                    >
-                      <Wand2 className="size-3.5 text-primary" />
-                      {cmd}
-                    </button>
-                  ))}
-                </div>
-
-                <button
-                  onClick={() => setLibraryOpen(true)}
-                  className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-primary/30 gradient-brand-soft px-3 py-2 text-xs font-semibold text-primary transition-opacity hover:opacity-90"
-                >
-                  <Library className="size-3.5" />
-                  从资料库插入
-                </button>
-
-                {aiReply && (
-                  <div className="mt-4 rounded-xl border border-primary/20 bg-primary/5 p-3 text-xs leading-relaxed text-foreground">
-                    {aiReply}
-                  </div>
-                )}
-              </div>
-
-              <div className="border-t border-border p-3">
-                <div className="flex items-center gap-2 rounded-xl border border-border bg-background px-3 py-2">
-                  <input
-                    value={aiInput}
-                    onChange={(e) => setAiInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && aiInput.trim()) runAi(aiInput.trim())
-                    }}
-                    placeholder="描述你想怎么改这一页…"
-                    className="min-w-0 flex-1 bg-transparent text-xs text-foreground placeholder:text-muted-foreground focus:outline-none"
-                  />
-                  <button
-                    onClick={() => aiInput.trim() && runAi(aiInput.trim())}
-                    className="flex size-7 shrink-0 items-center justify-center rounded-lg gradient-brand text-white transition-opacity hover:opacity-90"
-                    aria-label="发送"
-                  >
-                    <Send className="size-3.5" />
-                  </button>
-                </div>
-              </div>
-            </aside>
-          )}
+          <AiPanel activeTitle={active?.title} onOpenLibrary={() => setLibraryOpen(true)} />
         </div>
       )}
 

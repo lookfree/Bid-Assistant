@@ -39,41 +39,56 @@ type RealRead = {
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepBanner } from "@/components/tool/step-banner"
 import { TenderDocPanel } from "@/components/tool/tender-doc-panel"
-
-const docFileName = projectMeta.fileName
+import { NoProjectGuide } from "@/components/tool/no-project-guide"
+import { StepPlaceholder } from "@/components/tool/step-placeholder"
+import { clearDemoMode, useDemoMode } from "@/lib/use-demo"
 
 
 export default function ReadPage() {
+  // 示例内容只允许在显式 demo 模式渲染；真实项目（projectId）永远优先
+  const isDemo = useDemoMode()
   const { projectId, info, data: real, running, error, start } = useStep<RealRead>("read")
   // 进入页面且该步未跑 → 自动触发读标（从上传页过来即开跑）
   useEffect(() => {
     if (projectId && info && !real && !running && info.project.currentStep === "read") void start()
   }, [projectId, info, real, running, start])
-  const categories = real
-    ? real.categories.map((c) => ({
-        ...c,
-        icon: sampleCategories.find((s) => s.key === c.key)?.icon ?? FileTextIcon,
-        items: c.items.map((i) => ({ ...i, clauseIds: i.clauseIds ?? [] })),
-      }))
-    : sampleCategories
-  const scoringTable = real?.scoring?.length ? real.scoring : sampleScoring
-  // 左栏原文：真实项目且 read 结果带分句时按 id 前缀分组渲染真实原文，否则回落示例
+  // 三态数据源：真实结果 > demo 示例 > 空（真实项目未就绪时占位，不回落示例）
+  const categories = useMemo(
+    () =>
+      real
+        ? real.categories.map((c) => ({
+            ...c,
+            icon: sampleCategories.find((s) => s.key === c.key)?.icon ?? FileTextIcon,
+            items: c.items.map((i) => ({ ...i, clauseIds: i.clauseIds ?? [] })),
+          }))
+        : isDemo
+          ? sampleCategories
+          : [],
+    [real, isDemo],
+  )
+  const scoringTable = real?.scoring?.length ? real.scoring : isDemo ? sampleScoring : []
+  // 左栏原文：真实项目且 read 结果带分句时按 id 前缀分组渲染真实原文；demo 用示例
   const docSections = useMemo(
-    () => (real?.docSections?.length ? groupDocSections(real.docSections) : tenderDoc),
-    [real],
+    () => (real?.docSections?.length ? groupDocSections(real.docSections) : isDemo ? tenderDoc : []),
+    [real, isDemo],
   )
   const locate = (clauseIds?: string[]) => clauseLocationIn(docSections, clauseIds)
+  // 头部文件名：demo 用示例名；真实项目用项目名（GET /api/projects/:id 的 name，缺省兜底）
+  const docFileName = isDemo ? projectMeta.fileName : (info?.project.name ?? "我的项目")
 
   const clauseRefs = useRef<Record<string, HTMLParagraphElement | null>>({})
   /* 精确高亮的条款 id（可多条）+ 弱上下文高亮的所属章节 */
   const [activeClauses, setActiveClauses] = useState<string[]>([])
-  const [activeSection, setActiveSection] = useState<string>(docSections[0].id)
+  const [activeSection, setActiveSection] = useState<string>(docSections[0]?.id ?? "")
   const [activeItem, setActiveItem] = useState<string>("")
-  const [activeCategory, setActiveCategory] = useState<string>(categories[0].key)
+  const [activeCategory, setActiveCategory] = useState<string>(categories[0]?.key ?? "")
   const [reportState, setReportState] = useState<"idle" | "generating" | "ready">("idle")
-  const [isDemo] = useState(() =>
-    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("demo") === "1",
-  )
+  // 真实结果异步到达后，把类目选中态对齐到第一个真实类目
+  useEffect(() => {
+    if (categories.length && !categories.some((c) => c.key === activeCategory)) {
+      setActiveCategory(categories[0].key)
+    }
+  }, [categories, activeCategory])
 
   const allItems = categories.flatMap((c) => c.items)
   const foundCount = allItems.filter((i) => i.status === "found").length
@@ -91,6 +106,15 @@ export default function ReadPage() {
     setReportState("generating")
     setTimeout(() => setReportState("ready"), 1600)
   }
+
+  // 非 demo 且无进行中项目：不渲染任何示例内容，引导上传 / 示例体验
+  if (!projectId && !isDemo)
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
+        <FlowNav current="read" />
+        <NoProjectGuide />
+      </div>
+    )
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
@@ -112,6 +136,7 @@ export default function ReadPage() {
             </Link>
             <Link
               href="/upload"
+              onClick={clearDemoMode}
               className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-card/60"
             >
               <LogOut className="size-3.5" />
@@ -242,7 +267,9 @@ export default function ReadPage() {
             })}
           </div>
 
-          <div className="flex-1 overflow-y-auto px-4 py-4">
+          <div className="flex flex-1 flex-col overflow-y-auto px-4 py-4">
+            {/* 真实项目读标未完成：占位，不回落示例解读 */}
+            {categories.length === 0 && <StepPlaceholder text="读标完成后显示评分点与分类解读" />}
             <div className="flex flex-col gap-5">
               {categories
                 .filter((cat) => cat.key === activeCategory)
@@ -254,7 +281,12 @@ export default function ReadPage() {
                     <span className="ml-auto text-xs text-muted-foreground">{cat.items.length} 项</span>
                   </div>
 
-                  {cat.key === "scoring" && (
+                  {cat.key === "scoring" && scoringTable.length === 0 && (
+                    <p className="mt-3 rounded-xl border border-dashed border-border px-4 py-6 text-center text-xs text-muted-foreground">
+                      读标完成后显示评分表
+                    </p>
+                  )}
+                  {cat.key === "scoring" && scoringTable.length > 0 && (
                     <div className="mt-3 overflow-hidden rounded-xl border border-border">
                       <table className="w-full border-collapse text-left text-[13px]">
                         <thead>

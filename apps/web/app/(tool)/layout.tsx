@@ -1,6 +1,7 @@
 import type React from "react"
 import Link from "next/link"
-import { Sparkles, LogIn, User } from "lucide-react"
+import { Sparkles } from "lucide-react"
+import { HeaderAuth } from "@/components/tool/header-auth"
 import { AppSidebar } from "@/components/tool/app-sidebar"
 import { MobileNav } from "@/components/tool/mobile-nav"
 import { PaywallProvider } from "@/components/paywall"
@@ -31,22 +32,7 @@ export default function ToolLayout({
             </div>
             <div className="hidden lg:block" />
 
-            <div className="flex items-center gap-2">
-              <Link
-                href="/login"
-                className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-              >
-                <LogIn className="size-4" />
-                <span className="hidden sm:inline">立即登录</span>
-              </Link>
-              <Link
-                href="/membership"
-                className="flex size-9 items-center justify-center rounded-full bg-secondary text-foreground transition-colors hover:bg-secondary/70"
-                aria-label="个人中心"
-              >
-                <User className="size-4" />
-              </Link>
-            </div>
+            <HeaderAuth />
           </header>
 
           <main className="flex-1">

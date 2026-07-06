@@ -12,7 +12,15 @@ export const STEP_ORDER: StepName[] = ["read", "outline", "content", "review", "
 
 export type ProjectStep = { step: string; status: string; result: unknown; costPoints: number }
 export type ProjectInfo = {
-  project: { id: string; threadId: string; status: string; currentStep: string; tenderFileKey: string | null }
+  // name：项目名（spec314 落库，取上传时原始文件名；老数据可能为 null，展示侧兜底"我的项目"）
+  project: {
+    id: string
+    threadId: string
+    name: string | null
+    status: string
+    currentStep: string
+    tenderFileKey: string | null
+  }
   steps: ProjectStep[]
 }
 

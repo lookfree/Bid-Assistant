@@ -30,14 +30,16 @@ import {
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepBanner } from "@/components/tool/step-banner"
 import { TenderDocPanel } from "@/components/tool/tender-doc-panel"
+import { DemoBanner } from "@/components/tool/demo-banner"
+import { NoProjectGuide } from "@/components/tool/no-project-guide"
+import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { useStep } from "@/lib/use-step"
+import { useDemoMode } from "@/lib/use-demo"
 import { patchStep, stepResult } from "@/lib/project"
 import { clauseLocationIn, groupDocSections, type DocSentence } from "@/lib/doc-sections"
 
 // agent Outline（camelCase）：chapters[{id,no,title,group,sourced,items[{id,label,clauseIds,isNew}]}]
 type RealOutline = { chapters: (BidChapter & { group: "tech" | "business" })[] }
-
-const docFileName = projectMeta.fileName
 
 /* ---------------- 提纲数据（取自全流程共享数据源） ---------------- */
 type Chapter = {
@@ -74,33 +76,38 @@ let idCounter = 0
 const genId = () => `gen-${Date.now()}-${idCounter++}`
 
 export default function OutlinePage() {
-  const clauseRefs = useRef<Record<string, HTMLParagraphElement | null>>({})
-  const [activeClauses, setActiveClauses] = useState<string[]>([])
-  const [activeSection, setActiveSection] = useState<string>(tenderDoc[0].id)
-  const [activeItem, setActiveItem] = useState<string>("")
-  const [activeTab, setActiveTab] = useState<TabId>("tech")
-
-  const [techChapters, setTechChapters] = useState<Chapter[]>(initialTechOutline)
-  const [businessChapters, setBusinessChapters] = useState<Chapter[]>(initialBusinessOutline)
-
-  // 真实项目：进入页面且该步未跑 → 自动生成提纲；结果覆盖示例树
+  // 示例内容只允许在显式 demo 模式渲染；真实项目（projectId）永远优先
+  const isDemo = useDemoMode()
+  // 真实项目：进入页面且该步未跑 → 自动生成提纲；结果覆盖树
   const { projectId, info, data: real, running, error, start } = useStep<RealOutline>("outline")
   useEffect(() => {
     if (projectId && info && !real && !running && info.project.currentStep === "outline") void start()
   }, [projectId, info, real, running, start])
+
+  // 左栏原文：真实项目取 read 步结果的分句（按 id 前缀分组）；demo 用示例；未就绪为空（占位）
+  const readResult = stepResult<{ docSections?: DocSentence[] }>(info, "read")
+  const docSections = useMemo(
+    () => (readResult?.docSections?.length ? groupDocSections(readResult.docSections) : isDemo ? tenderDoc : []),
+    [readResult, isDemo],
+  )
+  const locate = (clauseIds?: string[]) => clauseLocationIn(docSections, clauseIds)
+  // 头部文件名：demo 用示例名；真实项目用项目名（缺省兜底）
+  const docFileName = isDemo ? projectMeta.fileName : (info?.project.name ?? "我的项目")
+
+  const clauseRefs = useRef<Record<string, HTMLParagraphElement | null>>({})
+  const [activeClauses, setActiveClauses] = useState<string[]>([])
+  const [activeSection, setActiveSection] = useState<string>(docSections[0]?.id ?? "")
+  const [activeItem, setActiveItem] = useState<string>("")
+  const [activeTab, setActiveTab] = useState<TabId>("tech")
+
+  // 提纲树：demo 用示例初始树；真实项目从空开始，outline 结果到位后覆盖
+  const [techChapters, setTechChapters] = useState<Chapter[]>(() => (isDemo ? initialTechOutline : []))
+  const [businessChapters, setBusinessChapters] = useState<Chapter[]>(() => (isDemo ? initialBusinessOutline : []))
   useEffect(() => {
     if (!real) return
     setTechChapters(toOutline(real.chapters.filter((c) => c.group === "tech")))
     setBusinessChapters(toOutline(real.chapters.filter((c) => c.group === "business")))
   }, [real])
-
-  // 左栏原文：真实项目取 read 步结果的分句（按 id 前缀分组），否则回落示例
-  const readResult = stepResult<{ docSections?: DocSentence[] }>(info, "read")
-  const docSections = useMemo(
-    () => (readResult?.docSections?.length ? groupDocSections(readResult.docSections) : tenderDoc),
-    [readResult],
-  )
-  const locate = (clauseIds?: string[]) => clauseLocationIn(docSections, clauseIds)
 
   // 提纲编辑保存：把当前树序列化回 Outline 形状整份回写（真实项目且提纲已生成时可用）
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle")
@@ -238,10 +245,20 @@ export default function OutlinePage() {
     })
   }
 
+  // 非 demo 且无进行中项目：不渲染任何示例内容，引导上传 / 示例体验
+  if (!projectId && !isDemo)
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
+        <FlowNav current="outline" />
+        <NoProjectGuide />
+      </div>
+    )
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
       <FlowNav current="outline" />
       {<StepBanner running={running} error={error} runningText="AI 正在基于读标结论搭建技术标/商务标提纲…" onRetry={() => void start()} />}
+      {isDemo && <DemoBanner />}
       <div className="flex flex-col gap-4 rounded-2xl border border-border bg-card px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-start gap-3">
           <div className="flex size-10 shrink-0 items-center justify-center rounded-xl gradient-brand">
@@ -339,9 +356,20 @@ export default function OutlinePage() {
             })}
           </div>
 
-          <div className="flex-1 overflow-y-auto px-4 py-4">
+          <div className="flex flex-1 flex-col overflow-y-auto px-4 py-4">
+            {/* 真实项目提纲未生成：占位（读标未完成时先引导回读标），不回落示例树 */}
+            {projectId && !real && (
+              <StepPlaceholder
+                text={
+                  info?.project.currentStep === "read"
+                    ? "先完成读标步骤，再生成提纲"
+                    : "提纲生成完成后在此展示，可自由增删改"
+                }
+                action={info?.project.currentStep === "read" ? { href: "/read", label: "前往读标" } : undefined}
+              />
+            )}
             <div className="flex flex-col gap-5">
-              {groups.map((group) => (
+              {(projectId && !real ? [] : groups).map((group) => (
                 <div key={group.label}>
                   {activeTab === "full" && (
                     <div className="mb-2 flex items-center gap-2 px-1">

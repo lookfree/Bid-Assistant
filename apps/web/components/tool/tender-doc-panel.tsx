@@ -31,6 +31,10 @@ export function TenderDocPanel({
         <span className="ml-auto shrink-0 rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">原文</span>
       </header>
       <div className="flex-1 overflow-y-auto px-6 py-5">
+        {/* 真实项目读标未完成时不回落示例原文，给占位 */}
+        {sections.length === 0 && (
+          <p className="py-16 text-center text-sm text-muted-foreground">读标完成后显示招标原文</p>
+        )}
         {sections.map((sec) => (
           <div
             key={sec.id}
