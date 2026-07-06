@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test"
-import { formatPeriodEnd, statusLabel, tierCardState, planPriceYuan, plansByTier } from "../lib/membership-view"
-import type { MembershipOverview, PlanView } from "../lib/membership-types"
+import { formatPeriodEnd, isMember, statusLabel, tierCardState, planPriceYuan, plansByTier } from "../lib/membership-view"
+import type { MembershipOverview, PlanView, SubscriptionView } from "../lib/membership-types"
 
 const plan = (tierId: PlanView["tierId"], m: number, y: number): PlanView => ({
   id: `p-${tierId}`,
@@ -22,6 +22,16 @@ describe("spec308 会员中心纯逻辑", () => {
     expect(formatPeriodEnd("2026-08-15T10:00:00.000Z")).toMatch(/^2026-08-1[45]$/) // 时区容差
     expect(formatPeriodEnd(null)).toBe("—")
     expect(formatPeriodEnd("not-a-date")).toBe("—")
+  })
+
+  it("isMember：仅 active 算会员权益；past_due/expired/none 与未加载均锁定", () => {
+    const ov = (status: SubscriptionView["status"]) =>
+      ({ subscription: { status } } as MembershipOverview)
+    expect(isMember(ov("active"))).toBe(true)
+    expect(isMember(ov("past_due"))).toBe(false)
+    expect(isMember(ov("expired"))).toBe(false)
+    expect(isMember(ov("none"))).toBe(false)
+    expect(isMember(null)).toBe(false)
   })
 
   it("statusLabel 覆盖四态", () => {

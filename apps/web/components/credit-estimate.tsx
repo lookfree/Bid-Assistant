@@ -2,14 +2,13 @@
 
 import Link from "next/link"
 import { Coins, AlertCircle, ArrowRight } from "lucide-react"
-import { DEMO_CREDIT_BALANCE } from "@/lib/plans"
 import { cn } from "@/lib/utils"
 
 interface CreditEstimateProps {
   /** 本次操作预计消耗的积分 */
   cost: number
-  /** 当前积分余额，默认取演示余额 */
-  balance?: number
+  /** 当前积分余额（真实值，由调用方经 useMembership 提供） */
+  balance: number
   /** 估算可支持的单位词，如「章」「次」「份」 */
   unitLabel?: string
   /** 是否展示「约可支持 N 单位」一行 */
@@ -29,7 +28,7 @@ interface CreditEstimateProps {
  */
 export function CreditEstimate({
   cost,
-  balance = DEMO_CREDIT_BALANCE,
+  balance,
   unitLabel = "次",
   showSupportable = true,
   actionLabel = "确认并继续",

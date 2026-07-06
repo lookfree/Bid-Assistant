@@ -135,6 +135,15 @@ describe("/api/projects 按步编排", () => {
     expect(((await res.json()) as { error: string }).error).toBe("step_already_running")
   })
 
+  it("非 uuid 的 :id → 404（不落 PG 22P02 → 500）", async () => {
+    const step = await app.request("/api/projects/not-a-uuid/steps/read", { method: "POST", headers: auth() })
+    expect(step.status).toBe(404)
+    const detail = await app.request("/api/projects/not-a-uuid", { headers: auth() })
+    expect(detail.status).toBe(404)
+    const artifact = await app.request("/api/projects/not-a-uuid/artifacts/docx", { headers: auth() })
+    expect(artifact.status).toBe(404)
+  })
+
   it("未知步骤 → 400；他人项目 → 404", async () => {
     const bad = await app.request(`/api/projects/${projectId}/steps/nope`, { method: "POST", headers: auth() })
     expect(bad.status).toBe(400)

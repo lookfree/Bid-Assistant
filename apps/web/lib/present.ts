@@ -300,15 +300,9 @@ export const slideStyles: SlideStyle[] = [
   },
 ]
 
-/**
- * 企业自有模板 → 预览配色映射（演示用）。
- * key 为资料库「演示模板」分类中条目的 id，套用后仅切换预览配色/封面占位，
- * 不承诺一键复刻原 PPT 设计。
- */
-export const enterpriseTemplateStyles: Record<string, SlideStyle> = {
-  pe1: {
-    id: "ent-pe1",
-    name: "公司标准述标模板",
+/** 企业模板预览配色池（静态类名以便 Tailwind 扫描），按条目 id 稳定哈希循环取用 */
+const enterprisePalettes: Omit<SlideStyle, "id" | "name">[] = [
+  {
     swatch: "gradient-brand",
     coverBg: "gradient-brand",
     bar: "gradient-brand",
@@ -316,9 +310,7 @@ export const enterpriseTemplateStyles: Record<string, SlideStyle> = {
     chip: "bg-primary/10 text-primary",
     accent: "text-primary",
   },
-  pe2: {
-    id: "ent-pe2",
-    name: "政务项目述标模板",
+  {
     swatch: "bg-red-700",
     coverBg: "bg-red-700",
     bar: "bg-red-600",
@@ -326,4 +318,24 @@ export const enterpriseTemplateStyles: Record<string, SlideStyle> = {
     chip: "bg-red-600/10 text-red-600",
     accent: "text-red-600",
   },
+  {
+    swatch: "bg-emerald-600",
+    coverBg: "bg-emerald-700",
+    bar: "bg-emerald-600",
+    dot: "bg-emerald-600",
+    chip: "bg-emerald-600/10 text-emerald-700",
+    accent: "text-emerald-700",
+  },
+]
+
+/**
+ * 企业自有模板 → 预览配色（演示用）：对资料库条目 id 做稳定哈希，
+ * 在配色池中循环取色（同 id 恒同配色），套用后仅切换预览配色/封面占位，
+ * 不承诺一键复刻原 PPT 设计。返回 SlideStyle 的 id 绑定条目 id，供选中态判断。
+ */
+export function enterpriseTemplateStyle(itemId: string, name: string): SlideStyle {
+  let h = 0
+  for (let i = 0; i < itemId.length; i++) h = (h * 31 + itemId.charCodeAt(i)) >>> 0
+  const palette = enterprisePalettes[h % enterprisePalettes.length]
+  return { id: `ent-${itemId}`, name, ...palette }
 }

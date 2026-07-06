@@ -1,7 +1,7 @@
 import { Hono } from "hono"
 import { streamSSE } from "hono/streaming"
 import { z } from "zod"
-import { eq } from "drizzle-orm"
+import { eq, and } from "drizzle-orm"
 import { getDb } from "../db/client"
 import { agentRuns } from "../db/schema"
 import type { User } from "../db/schema"
@@ -81,7 +81,11 @@ export function readRoutes(deps: Partial<ReadDeps> = {}) {
   })
 
   r.get("/runs/:id", async (c) => {
-    const [row] = await getDb().select().from(agentRuns).where(eq(agentRuns.runId, c.req.param("id")))
+    // 属主隔离：只允许读本人的 run（否则任意登录用户可越权读他人读标结果）
+    const [row] = await getDb()
+      .select()
+      .from(agentRuns)
+      .where(and(eq(agentRuns.runId, c.req.param("id")), eq(agentRuns.userId, c.get("user").id)))
     if (!row) return c.json({ error: "not_found" }, 404)
     return c.json(row) // 前端 /read 渲染 row.result
   })

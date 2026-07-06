@@ -30,8 +30,6 @@ import {
   Lock,
   ArrowRight,
   Library,
-  Search,
-  Paperclip,
   X,
   Coins,
 } from "lucide-react"
@@ -39,9 +37,12 @@ import { usePaywall } from "@/components/paywall"
 import { CreditEstimate } from "@/components/credit-estimate"
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepBanner } from "@/components/tool/step-banner"
+import { LibraryPicker } from "@/components/tool/library-picker"
 import { useEscapeClose } from "@/hooks/use-escape-close"
-import { creditCosts, DEMO_CREDIT_BALANCE } from "@/lib/plans"
-import { libraryCategories, type LibraryItem, type LibraryCategoryId } from "@/lib/library"
+import { creditCosts } from "@/lib/plans"
+import { useMembership } from "@/lib/use-membership"
+import { useLibrary } from "@/lib/use-library"
+import { type LibraryItem } from "@/lib/library"
 import { chapters as bidChapters, riskFindings } from "@/lib/sample-bid"
 import { useStep } from "@/lib/use-step"
 import { artifactUrl, runStep, stepResult } from "@/lib/project"
@@ -163,12 +164,12 @@ export default function ContentPage() {
   const editorRef = useRef<HTMLDivElement>(null)
   const { openPaywall } = usePaywall()
 
-  /* 演示积分余额：用于切换「余额充足走导出弹窗 / 余额不足弹开通会员」两种体验 */
-  const [balance, setBalance] = useState(DEMO_CREDIT_BALANCE)
+  /* 真实积分余额与会员身份（GET /api/membership；仅 active 订阅算会员，决定整改建议是否完整可见） */
+  const { balance, isMember, loading: membershipLoading, error: membershipError } = useMembership()
   /* 余额是否足够支付本次导出消耗（仅影响导出付费墙，不影响整改建议解锁） */
   const canAfford = balance >= EXPORT_COST
-  /* 演示用：是否为付费会员，决定整改建议是否完整可见 */
-  const [isMember, setIsMember] = useState(false)
+  /* 资料库数据提升到页面级：LibraryPicker 弹层复用，避免每次打开全量重拉 */
+  const { items: libItems, loading: libLoading, error: libError } = useLibrary()
 
   /* 废标体检状态 */
   const [checkState, setCheckState] = useState<"idle" | "checking" | "done">("idle")
@@ -242,7 +243,7 @@ export default function ContentPage() {
       const parts: string[] = [`<strong>${item.title}</strong>`]
       if (item.meta) parts.push(item.meta)
       if (item.fields?.length) parts.push(item.fields.map((f) => `${f.label}：${f.value}`).join("；"))
-      if (item.attachments?.length) parts.push(`附件：${item.attachments.join("、")}`)
+      if (item.attachments?.length) parts.push(`附件：${item.attachments.map((a) => a.name).join("、")}`)
       html = `<p>${parts.join("，")}。</p>`
     }
     exec("insertHTML", html)
@@ -333,6 +334,8 @@ export default function ContentPage() {
 
   /* 点击「导出文件」入口 */
   function onExportEntry() {
+    // 余额加载中不做付费墙判定（按钮已禁用，双保险防按 balance=0 误弹）
+    if (membershipLoading) return
     // 积分不足：弹「开通会员」付费墙；积分充足：打开导出弹窗（消耗积分）
     if (!canAfford) {
       openPaywall("export")
@@ -359,34 +362,29 @@ export default function ContentPage() {
     }
   }
 
-  function doExport(format: "word" | "pdf") {
-    const scopeName = exportScopes.find((s) => s.id === exportScope)?.name ?? "标书全文"
-    const formatName = format === "word" ? "Word" : "PDF"
+  function doExport(_format: "word" | "pdf") {
     setExportConfirm(false)
     setExportOpen(false)
-    if (projectId && info) {
-      // 真实导出：export 步（渲染完整 .docx 落 MinIO）→ 预签名 URL 直下
-      setExportStatus("正在渲染完整标书…")
-      void (async () => {
-        try {
-          if (!stepResult(info, "export")) await runStep(projectId, "export")
-          window.open(await artifactUrl(projectId, "docx"), "_blank")
-          setExportStatus("已导出，浏览器开始下载")
-          setHasExported(true)
-        } catch {
-          setExportStatus("导出失败，请重试")
-        } finally {
-          setTimeout(() => setExportStatus(""), 3000)
-        }
-      })()
+    // 只有真实项目才可导出（导出按钮无项目时已禁用；报告弹层等入口在此兜底提示）
+    if (!projectId || !info) {
+      setExportStatus("请先从项目进入，再导出标书文件")
+      setTimeout(() => setExportStatus(""), 3000)
       return
     }
-    setExportStatus(`正在导出 ${scopeName}（${formatName}）…`)
-    setTimeout(() => {
-      setExportStatus(`已导出 ${scopeName}（${formatName}）`)
-      setHasExported(true)
-      setTimeout(() => setExportStatus(""), 2500)
-    }, 900)
+    // 真实导出：export 步（渲染完整 .docx 落 MinIO）→ 预签名 URL 直下
+    setExportStatus("正在渲染完整标书…")
+    void (async () => {
+      try {
+        if (!stepResult(info, "export")) await runStep(projectId, "export")
+        window.open(await artifactUrl(projectId, "docx"), "_blank")
+        setExportStatus("已导出，浏览器开始下载")
+        setHasExported(true)
+      } catch {
+        setExportStatus("导出失败，请重试")
+      } finally {
+        setTimeout(() => setExportStatus(""), 3000)
+      }
+    })()
   }
 
   /* 弹窗统一 Escape 关闭 */
@@ -669,25 +667,12 @@ export default function ContentPage() {
 
       {/* 底部：废标体检 + 导出文件 */}
       <div className="mt-3 flex flex-col gap-3 rounded-2xl border border-border bg-card px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
-        {/* 演示切换：积分余额（影响导出付费墙）+ 会员身份（影响整改建议解锁） */}
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={() => setBalance((v) => (v >= EXPORT_COST ? Math.max(0, EXPORT_COST - 10) : DEMO_CREDIT_BALANCE))}
-            className="inline-flex w-fit items-center gap-1.5 rounded-full border border-dashed border-border px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
-            title="演示用：切换积分余额充足 / 不足"
-          >
-            <Coins className="size-3" />
-            余额：{balance} 积分（{canAfford ? "充足" : "不足"}）
-          </button>
-          <button
-            onClick={() => setIsMember((v) => !v)}
-            className="inline-flex w-fit items-center gap-1.5 rounded-full border border-dashed border-border px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
-            title="演示用：切换免费用户 / 付费会员"
-          >
-            <User className="size-3" />
-            身份：{isMember ? "付费会员" : "免费用户"}
-          </button>
-        </div>
+        {/* 当前积分余额（真实值；导出等操作按积分消耗）；加载中显示占位，失败给可见提示 */}
+        <span className="inline-flex w-fit items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11px] text-muted-foreground">
+          <Coins className="size-3" />
+          余额：{membershipLoading ? "…" : `${balance} 积分`}
+          {membershipError && <span className="text-destructive">{membershipError}</span>}
+        </span>
 
         <div className="flex flex-wrap items-center gap-3">
           {hasExported && (
@@ -825,10 +810,12 @@ export default function ContentPage() {
           <div className="relative">
             <button
               onClick={onExportEntry}
-              className="inline-flex items-center gap-2 rounded-xl gradient-brand px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+              disabled={membershipLoading || !projectId}
+              title={!projectId ? "请先从项目进入" : undefined}
+              className="inline-flex items-center gap-2 rounded-xl gradient-brand px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Download className="size-4" />
-              导出文件
+              {membershipLoading ? "余额加载中…" : "导出文件"}
             </button>
 
             {/* 导出菜单（积分不足时已走付费墙，不会展开） */}
@@ -1103,101 +1090,16 @@ export default function ContentPage() {
         </div>
       )}
 
-      {/* 从资料库插入选择器 */}
-      {libraryOpen && <LibraryPicker onClose={() => setLibraryOpen(false)} onPick={insertFromLibrary} />}
-    </div>
-  )
-}
-
-/* 资料库内容选择器：分类切换 + 搜索 + 点击插入 */
-function LibraryPicker({
-  onClose,
-  onPick,
-}: {
-  onClose: () => void
-  onPick: (item: LibraryItem) => void
-}) {
-  const [cat, setCat] = useState<LibraryCategoryId>("text")
-  const [q, setQ] = useState("")
-  useEscapeClose(onClose)
-  const current = libraryCategories.find((c) => c.id === cat)!
-  const items = q.trim()
-    ? current.items.filter(
-        (it) =>
-          it.title.includes(q.trim()) ||
-          it.meta?.includes(q.trim()) ||
-          it.tags?.some((t) => t.includes(q.trim())),
-      )
-    : current.items
-
-  return (
-    <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-foreground/40 backdrop-blur-sm" onClick={onClose} aria-hidden />
-      <div role="dialog" aria-modal="true" className="relative z-10 flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl">
-        <div className="flex items-center justify-between border-b border-border px-5 py-4">
-          <div className="flex items-center gap-2">
-            <Library className="size-5 text-primary" />
-            <h2 className="text-base font-semibold text-foreground">从资料库插入</h2>
-          </div>
-          <button onClick={onClose} aria-label="关闭" className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground">
-            <X className="size-5" />
-          </button>
-        </div>
-
-        {/* 分类 + 搜索 */}
-        <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-3">
-          {libraryCategories.map((c) => (
-            <button
-              key={c.id}
-              onClick={() => setCat(c.id)}
-              className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
-                cat === c.id ? "gradient-brand text-white" : "border border-border bg-background text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {c.title}
-            </button>
-          ))}
-          <div className="ml-auto flex items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5">
-            <Search className="size-3.5 text-muted-foreground" />
-            <input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="搜索"
-              className="w-28 bg-transparent text-xs text-foreground placeholder:text-muted-foreground focus:outline-none"
-            />
-          </div>
-        </div>
-
-        {/* 条目列表 */}
-        <div className="flex-1 overflow-y-auto p-4">
-          {items.length === 0 && <p className="py-10 text-center text-sm text-muted-foreground">未找到匹配条目</p>}
-          <div className="flex flex-col gap-2">
-            {items.map((it) => (
-              <button
-                key={it.id}
-                onClick={() => onPick(it)}
-                className="group flex items-start justify-between gap-3 rounded-xl border border-border bg-background p-3.5 text-left transition-colors hover:border-primary/40 hover:bg-muted/40"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-foreground">{it.title}</p>
-                  {it.meta && <p className="mt-0.5 text-xs text-muted-foreground">{it.meta}</p>}
-                  {it.body && <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{it.body}</p>}
-                  {it.attachments?.length ? (
-                    <span className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-                      <Paperclip className="size-3" />
-                      {it.attachments.join("、")}
-                    </span>
-                  ) : null}
-                </div>
-                <span className="mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-lg border border-primary/30 px-2.5 py-1 text-xs font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100">
-                  插入
-                  <ArrowRight className="size-3.5" />
-                </span>
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
+      {/* 从资料库插入选择器（数据由页面级 useLibrary 提供） */}
+      {libraryOpen && (
+        <LibraryPicker
+          items={libItems}
+          loading={libLoading}
+          error={libError}
+          onClose={() => setLibraryOpen(false)}
+          onPick={insertFromLibrary}
+        />
+      )}
     </div>
   )
 }

@@ -11,6 +11,7 @@ export const bidProjects = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     threadId: text("thread_id").notNull().unique(), // 一本标书一个 thread（贯穿 agent 工作流）
+    name: text("name"), // 项目名：建项时取 project_files.filename（原始文件名）；旧行/查不到为 null
     tenderFileKey: text("tender_file_key"), // 招标文件 MinIO key
     status: text("status").notNull().default("draft"), // draft/running/done
     currentStep: text("current_step").notNull().default("read"),

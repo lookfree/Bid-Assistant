@@ -1,15 +1,18 @@
 import { Hono } from "hono"
 import { streamSSE } from "hono/streaming"
 import { z } from "zod"
-import { eq, and } from "drizzle-orm"
+import { eq, and, desc, sql } from "drizzle-orm"
 import { getDb } from "../db/client"
-import { bidProjects, projectSteps } from "../db/schema"
+import { bidProjects, projectSteps, projectFiles } from "../db/schema"
 import type { User } from "../db/schema"
 import { authMiddleware } from "../middleware/auth"
+import { getUserId } from "../lib/auth-user"
+import { isUuid } from "../lib/uuid"
 import * as billing from "../services/billing-stub"
 import * as client from "../services/agent-client"
 import { getAgentModel } from "../services/agent-client"
 import { toCamel } from "../lib/case"
+import { parsePagination, pagedBody, pagedResult } from "../lib/pagination"
 import { presignGet } from "../storage/s3"
 
 // 与 agent 节点序一致（spec201 NODE_ORDER）
@@ -28,6 +31,13 @@ const STEP_TEXT: Record<Step, string> = {
 
 // 产物下载名（预签名 URL 的 Content-Disposition）
 const ARTIFACT_NAME: Record<string, string> = { docx: "投标文件.docx", pptx: "述标演示.pptx" }
+
+// 项目名：优先落库的 name（建项时取 project_files.filename 原始文件名）；
+// 老数据兜底 key 的 basename（key 里是 sanitize 后的名，不做 decodeURIComponent——上传链路从不 URI 编码）。
+function projectName(name: string | null, tenderFileKey: string | null): string {
+  const base = tenderFileKey?.split("/").pop()
+  return name ?? (base || "未命名项目")
+}
 
 // 编排依赖可注入（mock 测编排次序），默认真实 billing-stub / agent-client（与 read.ts 同法）。
 export type ProjectDeps = {
@@ -74,17 +84,54 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
     const userId = c.get("user").id
     const threadId = `proj-${crypto.randomUUID()}`
+    // 项目名取上传时的原始 filename（key 里是 sanitize 后的名，不可反解）；查不到落 null 由列表兜底
+    const [f] = await getDb()
+      .select({ filename: projectFiles.filename })
+      .from(projectFiles)
+      .where(and(eq(projectFiles.key, parsed.data.fileKey), eq(projectFiles.userId, userId)))
     const [p] = await getDb()
       .insert(bidProjects)
-      .values({ userId, threadId, tenderFileKey: parsed.data.fileKey })
+      .values({ userId, threadId, tenderFileKey: parsed.data.fileKey, name: f?.filename ?? null })
       .returning()
     if (!p) return c.json({ error: "insert_failed" }, 500)
     return c.json({ id: p.id, threadId: p.threadId })
   })
 
+  // 我的项目列表（分页，按创建时间倒序）。注意：必须先于 GET /:id 注册，否则被参数路由吞掉。
+  r.get("/", async (c) => {
+    let pg
+    try {
+      pg = parsePagination(c.req.query())
+    } catch {
+      return c.json({ error: "invalid_pagination" }, 400)
+    }
+    const where = eq(bidProjects.userId, getUserId(c)) // 只见自己的
+    const { items, total } = await pagedResult(
+      getDb().select().from(bidProjects).where(where).orderBy(desc(bidProjects.createdAt)).limit(pg.pageSize).offset(pg.offset),
+      getDb().select({ n: sql<number>`count(*)` }).from(bidProjects).where(where),
+    )
+    const totalSteps = STEP_ORDER.length
+    return c.json(
+      pagedBody(pg, {
+        items: items.map((p) => ({
+          id: p.id,
+          name: projectName(p.name, p.tenderFileKey),
+          status: p.status,
+          currentStep: p.currentStep,
+          // done 表示整本完成（不在 STEP_ORDER 内）→ 进度打满；否则取当前步下标
+          stepIndex: p.currentStep === "done" ? totalSteps : Math.max(STEP_ORDER.indexOf(p.currentStep as Step), 0),
+          totalSteps,
+          createdAt: p.createdAt,
+        })),
+        total,
+      }),
+    )
+  })
+
   // 推进一步：预扣 → 建 run（同 thread）→ SSE 中继 → 存结果 → settle
   r.post("/:id/steps/:step", async (c) => {
     const { id, step } = c.req.param()
+    if (!isUuid(id)) return c.json({ error: "not_found" }, 404) // 非 uuid 直接 404，避免 PG 22P02 → 500
     if (!STEP_ORDER.includes(step as Step)) return c.json({ error: "bad_step" }, 400)
     const userId = c.get("user").id
     const [p] = await getDb()
@@ -193,11 +240,13 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
 
   // 查项目 + 各步结果（前端各页渲染；result 转 camelCase）
   r.get("/:id", async (c) => {
+    const id = c.req.param("id")
+    if (!isUuid(id)) return c.json({ error: "not_found" }, 404) // 非 uuid 直接 404，避免 PG 22P02 → 500
     const userId = c.get("user").id
     const [p] = await getDb()
       .select()
       .from(bidProjects)
-      .where(and(eq(bidProjects.id, c.req.param("id")), eq(bidProjects.userId, userId)))
+      .where(and(eq(bidProjects.id, id), eq(bidProjects.userId, userId)))
     if (!p) return c.json({ error: "not_found" }, 404)
     const steps = await getDb().select().from(projectSteps).where(eq(projectSteps.projectId, p.id))
     return c.json({ project: p, steps: steps.map((s) => ({ ...s, result: toCamel(s.result) })) })
@@ -207,6 +256,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
   // 发预签名 URL，二进制不过 App。
   r.get("/:id/artifacts/:kind", async (c) => {
     const { id, kind } = c.req.param()
+    if (!isUuid(id)) return c.json({ error: "not_found" }, 404) // 非 uuid 直接 404，避免 PG 22P02 → 500
     if (!(kind in ARTIFACT_NAME)) return c.json({ error: "bad_kind" }, 400)
     const userId = c.get("user").id
     const [p] = await getDb()

@@ -13,6 +13,14 @@ export function formatPeriodEnd(iso: string | null): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 }
 
+/**
+ * 会员权益判定口径：仅 status === "active" 视为付费会员；
+ * past_due / expired / none 权益一律锁定（与免费口径一致），到期宽限不解锁权益。
+ */
+export function isMember(ov: MembershipOverview | null): boolean {
+  return ov?.subscription.status === "active"
+}
+
 /** 订阅状态中文标签。 */
 export function statusLabel(status: SubscriptionView["status"]): string {
   const m: Record<SubscriptionView["status"], string> = {

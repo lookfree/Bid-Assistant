@@ -31,6 +31,8 @@ import { CreditEstimate } from "@/components/credit-estimate"
 import { FlowNav } from "@/components/tool/flow-nav"
 import { creditCosts } from "@/lib/plans"
 import { libraryMatch } from "@/lib/library"
+import { useLibrary } from "@/lib/use-library"
+import { useMembership } from "@/lib/use-membership"
 import { riskFindings } from "@/lib/sample-bid"
 import { useStep } from "@/lib/use-step"
 
@@ -739,6 +741,10 @@ function DedupReview() {
 
 /* ============== 终极审核表（投递前清单） ============== */
 function Checklist() {
+  /* 真实积分余额（导出预估用）与真实资料库条目（「资料库已具备」联动判定用） */
+  const { balance } = useMembership()
+  const { items: libItems } = useLibrary()
+
   // 以 "组id-序号" 为键存每项状态、责任人、备注
   const allKeys = useMemo(
     () => checklistGroups.flatMap((g) => g.items.map((_, i) => `${g.id}-${i}`)),
@@ -840,7 +846,7 @@ function Checklist() {
                     <div className="min-w-0">
                       <span className="text-sm leading-relaxed text-foreground">{item}</span>
                       {(() => {
-                        const lib = libraryMatch(item)
+                        const lib = libraryMatch(item, libItems)
                         if (!lib) return null
                         return lib.has ? (
                           <span className="ml-2 inline-flex items-center gap-1 rounded-md bg-success/10 px-1.5 py-0.5 align-middle text-[11px] font-medium text-success">
@@ -902,6 +908,7 @@ function Checklist() {
       <div className="rounded-2xl border border-border bg-card p-5">
         <CreditEstimate
           cost={CHECKLIST_EXPORT_COST}
+          balance={balance}
           showSupportable={false}
           actionLabel="导出签字版审核表"
           onConfirm={() => setExportOpen((v) => !v)}

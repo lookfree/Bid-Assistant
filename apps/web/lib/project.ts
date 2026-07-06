@@ -22,6 +22,29 @@ export function currentProjectId(): string | null {
   return typeof window === "undefined" ? null : localStorage.getItem(KEY)
 }
 
+/** 切换当前项目（项目列表页点卡片续作时调用），后续工具页经 localStorage 贯穿。 */
+export function setCurrentProjectId(id: string): void {
+  if (typeof window !== "undefined") localStorage.setItem(KEY, id)
+}
+
+// 项目列表行（GET /api/projects 契约，camelCase）
+export type ProjectListItem = {
+  id: string
+  name: string
+  status: "draft" | "running" | "done"
+  currentStep: "read" | "outline" | "content" | "review" | "present" | "export" | "done"
+  stepIndex: number
+  totalSteps: number
+  createdAt: string
+}
+
+export async function listProjects(
+  page = 1,
+  pageSize = 50,
+): Promise<{ items: ProjectListItem[]; page: number; pageSize: number; total: number; hasMore: boolean }> {
+  return api.request(`/api/projects?page=${page}&pageSize=${pageSize}`)
+}
+
 export async function createProject(fileKey: string): Promise<string> {
   const { id } = await api.request<{ id: string; threadId: string }>("/api/projects", {
     method: "POST",

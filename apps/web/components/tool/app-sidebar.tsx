@@ -17,7 +17,7 @@ import {
   ArrowRight,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { DEMO_CREDIT_BALANCE } from "@/lib/plans"
+import { useMembership } from "@/lib/use-membership"
 
 type NavItem = {
   href: string
@@ -55,6 +55,8 @@ const groups: { title: string; items: NavItem[] }[] = [
  */
 export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname()
+  /* 真实积分余额（GET /api/membership）；加载中显示占位 */
+  const { balance, loading: balanceLoading } = useMembership()
 
   return (
     <>
@@ -109,7 +111,7 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
               <Coins className="size-3.5 text-[oklch(0.55_0.13_75)]" />
               剩余积分
             </span>
-            <span className="text-sm font-bold text-foreground">{DEMO_CREDIT_BALANCE.toLocaleString()}</span>
+            <span className="text-sm font-bold text-foreground">{balanceLoading ? "…" : balance.toLocaleString()}</span>
           </div>
           <Link
             href="/membership"

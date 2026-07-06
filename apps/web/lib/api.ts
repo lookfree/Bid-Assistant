@@ -19,3 +19,6 @@ export const api = createApiClient({
   },
 })
 export const captchaEnabled = process.env.NEXT_PUBLIC_CAPTCHA_ENABLED === "true"
+
+/** 共享请求函数类型：各领域 API 封装（library / membership 等）以工厂形式注入复用。 */
+export type RequestFn = typeof api.request
