@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test"
-import { formatPeriodEnd, isMember, statusLabel, tierCardState, planPriceYuan, plansByTier } from "../lib/membership-view"
+import { creditCostValue, formatPeriodEnd, isMember, statusLabel, tierCardState, planPriceYuan, plansByTier } from "../lib/membership-view"
 import type { MembershipOverview, PlanView, SubscriptionView } from "../lib/membership-types"
 
 const plan = (tierId: PlanView["tierId"], m: number, y: number): PlanView => ({
@@ -52,6 +52,19 @@ describe("spec308 会员中心纯逻辑", () => {
     expect(planPriceYuan(p, "month", 0)).toBe(39)
     expect(planPriceYuan(p, "year", 0)).toBe(399)
     expect(planPriceYuan(undefined, "month", 39)).toBe(39)
+  })
+
+  it("creditCostValue：优先后端实时口径，key 缺失/未加载回退默认值", () => {
+    const ov = {
+      creditCosts: [
+        { key: "rewrite", feature: "逐章重写 / 改写", desc: "", value: 30, cost: "30 积分 / 次" },
+        { key: "review", feature: "废标风险审查", desc: "", value: 66, cost: "66 积分 / 次" },
+      ],
+    } as MembershipOverview
+    expect(creditCostValue(ov, "rewrite", 25)).toBe(30)
+    expect(creditCostValue(ov, "review", 60)).toBe(66)
+    expect(creditCostValue(ov, "export", 20)).toBe(20) // key 不在实时口径里 → 回退
+    expect(creditCostValue(null, "rewrite", 25)).toBe(25) // overview 未加载 → 回退
   })
 
   it("plansByTier 建索引", () => {

@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   FileText,
   Briefcase,
@@ -14,57 +14,42 @@ import {
   Heading2,
   RefreshCw,
   Wand2,
-  Send,
-  Bot,
-  User,
-  CheckCircle2,
-  AlertTriangle,
   Download,
-  FileType2,
-  FileText as FileDoc,
   PanelRightClose,
   PanelRightOpen,
   ShieldCheck,
   ShieldAlert,
   Loader2,
-  Lock,
-  ArrowRight,
   Library,
-  X,
   Coins,
 } from "lucide-react"
 import { usePaywall } from "@/components/paywall"
-import { CreditEstimate } from "@/components/credit-estimate"
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepBanner } from "@/components/tool/step-banner"
 import { LibraryPicker } from "@/components/tool/library-picker"
 import { useEscapeClose } from "@/hooks/use-escape-close"
+import { ApiError } from "@/lib/api-client"
 import { creditCosts } from "@/lib/plans"
 import { useMembership } from "@/lib/use-membership"
+import { creditCostValue } from "@/lib/membership-view"
 import { useLibrary } from "@/lib/use-library"
 import { type LibraryItem } from "@/lib/library"
-import { chapters as bidChapters, riskFindings } from "@/lib/sample-bid"
+import { chapters as bidChapters } from "@/lib/sample-bid"
+import { deriveHealthReport } from "@/lib/risk-derive"
 import { useStep } from "@/lib/use-step"
-import { artifactUrl, runStep, stepResult } from "@/lib/project"
+import { artifactUrl, patchStep, runStep, stepResult } from "@/lib/project"
+import { ChatPanel } from "./chat-panel"
+import { ChapterNav, type Chapter } from "./chapter-nav"
+import { CheckConfirm, CheckSummary, ExportConfirm } from "./check-dialogs"
+import { ExportMenu, type BidType } from "./export-menu"
+import { ReportDialog } from "./report-dialog"
+import { useHealthCheck } from "./use-health-check"
 
 // agent content 步结果（camelCase）：{chapterId: bodyHtml}；章结构取 outline 步结果
 type RealChapters = Record<string, string>
 type RealOutline = { chapters: { id: string; no: string; title: string; group: Group; sourced: boolean }[] }
 
-type BidType = "tech" | "business" | "full"
 type Group = "tech" | "business"
-
-type Chapter = {
-  id: string
-  no: string
-  title: string
-  /** 是否能在招标文件中索引到来源；false 表示提纲新增、正文缺失需补写 */
-  sourced: boolean
-  /** 已生成的正文 HTML；空字符串表示尚未生成（缺失） */
-  html: string
-}
-
-type ChatMsg = { role: "user" | "ai"; text: string }
 
 /* 标书正文取自全流程共享数据源（t5/b5 正文为空 = 待生成演示状态） */
 const initialChapters: Record<Group, Chapter[]> = {
@@ -82,49 +67,8 @@ const bidTabs: { id: BidType; name: string; icon: React.ElementType }[] = [
   { id: "full", name: "标书全文", icon: Layers },
 ]
 
-const exportScopes: { id: BidType; name: string; desc: string; icon: React.ElementType }[] = [
-  { id: "tech", name: "技术文件", desc: "仅导出技术标全部章节", icon: FileText },
-  { id: "business", name: "商务文件", desc: "仅导出商务标全部章节", icon: Briefcase },
-  { id: "full", name: "标书全文", desc: "技术标 + 商务标合并导出", icon: Layers },
-]
-
 function groupOf(id: string): Group {
   return id.startsWith("t") ? "tech" : "business"
-}
-
-type CheckItem = {
-  level: string
-  tone: "destructive" | "warning"
-  title: string
-  chapter: string
-  advice: string
-  /** 定位目标：标书 tab 与章节 id */
-  targetTab: BidType
-  targetId: string
-}
-
-/* 废标体检结果取自全流程共享风险项，确保与审查页一致 */
-const healthCheck = {
-  score: riskFindings.score,
-  high: riskFindings.high,
-  mid: riskFindings.mid,
-  passed: riskFindings.passed,
-  items: riskFindings.items.map((f) => ({
-    level: f.level,
-    tone: f.tone,
-    title: f.title,
-    chapter: f.chapterTitle,
-    advice: f.advice,
-    targetTab: f.targetTab,
-    targetId: f.targetId,
-  })) as CheckItem[],
-  /* 已通过项（供完整报告展示） */
-  passedItems: riskFindings.passedItems,
-}
-
-const checkToneClasses: Record<CheckItem["tone"], { badge: string; border: string }> = {
-  destructive: { badge: "bg-destructive/10 text-destructive", border: "border-destructive/30" },
-  warning: { badge: "bg-warning/15 text-warning-foreground", border: "border-warning/30" },
 }
 
 /** 导出单次消耗积分（取自积分消耗表） */
@@ -135,7 +79,7 @@ export default function ContentPage() {
   const [data, setData] = useState(initialChapters)
 
   // 真实项目：outline 树 + content 各章 HTML → 覆盖示例正文；该步未跑则自动触发
-  const { projectId, info, data: realBodies, running, error, start } = useStep<RealChapters>("content")
+  const { projectId, info, data: realBodies, running, error, errorStatus, start } = useStep<RealChapters>("content")
   useEffect(() => {
     if (projectId && info && !realBodies && !running && info.project.currentStep === "content") void start()
   }, [projectId, info, realBodies, running, start])
@@ -152,28 +96,36 @@ export default function ContentPage() {
   }, [realBodies, info])
   const [activeId, setActiveId] = useState<string>("t1")
   const [chatOpen, setChatOpen] = useState(true)
-  const [chat, setChat] = useState<ChatMsg[]>([
-    { role: "ai", text: "你好，我是智启元 · 投标助手。选中左侧章节后，可以让我帮你改写、扩写或调整这一处的内容。" },
-  ])
-  const [input, setInput] = useState("")
   const [exportOpen, setExportOpen] = useState(false)
   const [exportScope, setExportScope] = useState<BidType>("full")
   const [exportFormat, setExportFormat] = useState<"word" | "pdf">("word")
   const [exportStatus, setExportStatus] = useState<string>("")
+  /* 步序闸 / 402 引导提示：文案 + 引导链接（区别于 3 秒即逝的 exportStatus） */
+  const [exportGate, setExportGate] = useState<{ text: string; href: string; label: string } | null>(null)
   const [hasExported, setHasExported] = useState(false)
   const editorRef = useRef<HTMLDivElement>(null)
   const { openPaywall } = usePaywall()
 
   /* 真实积分余额与会员身份（GET /api/membership；仅 active 订阅算会员，决定整改建议是否完整可见） */
-  const { balance, isMember, loading: membershipLoading, error: membershipError } = useMembership()
+  const { overview, balance, isMember, loading: membershipLoading, error: membershipError, reload: reloadMembership } = useMembership()
+  /* 计费口径：优先后端实时配置（运营可改），缺省回落默认值 */
+  const reviewCost = creditCostValue(overview, "review", 60)
+  const presentCost = creditCostValue(overview, "present", 80)
+  const rewriteCost = creditCostValue(overview, "rewrite", 25)
   /* 余额是否足够支付本次导出消耗（仅影响导出付费墙，不影响整改建议解锁） */
   const canAfford = balance >= EXPORT_COST
   /* 资料库数据提升到页面级：LibraryPicker 弹层复用，避免每次打开全量重拉 */
   const { items: libItems, loading: libLoading, error: libError } = useLibrary()
 
-  /* 废标体检状态 */
-  const [checkState, setCheckState] = useState<"idle" | "checking" | "done">("idle")
+  /* 真实项目且正文已生成：编辑持久化 / 单章改写通道可用 */
+  const isReal = !!(projectId && realBodies)
+
+  /* 废标体检：真实项目跑真实 review 步，demo 回落示例（content 未完成时不可体检） */
+  const { checkState, findings, canCheck, runCheck, checkError, checkErrorStatus } = useHealthCheck(isReal)
+  const healthCheck = useMemo(() => (findings ? deriveHealthReport(findings) : null), [findings])
   const [checkOpen, setCheckOpen] = useState(false)
+  /* 体检计费确认弹层：体检（review 步）是计费步，任何路径都先显式确认；值为触发来源 */
+  const [checkConfirm, setCheckConfirm] = useState<null | "check" | "export">(null)
   /* 就地完整体检报告弹层 */
   const [reportOpen, setReportOpen] = useState(false)
   const [reportExportStatus, setReportExportStatus] = useState<string>("")
@@ -210,14 +162,39 @@ export default function ContentPage() {
     setActiveId(id)
   }
 
+  /* 编辑持久化状态（真实项目失焦自动全量回写 content 步结果） */
+  const [contentSaveState, setContentSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle")
+
+  /** 把某章正文替换进两组数据（按 id 定位，不依赖 id 前缀约定） */
+  function withChapterHtml(prev: Record<Group, Chapter[]>, chapterId: string, html: string) {
+    const replace = (list: Chapter[]) => list.map((c) => (c.id === chapterId ? { ...c, html } : c))
+    return { tech: replace(prev.tech), business: replace(prev.business) }
+  }
+
+  /** 真实项目：把当前全部章节正文（{chapterId: html}）整份回写 content 步结果 */
+  function persistContent(next: Record<Group, Chapter[]>) {
+    if (!isReal || !projectId) return
+    const result: Record<string, string> = {}
+    for (const c of [...next.tech, ...next.business]) result[c.id] = c.html
+    setContentSaveState("saving")
+    patchStep(projectId, "content", result)
+      .then(() => setContentSaveState("saved"))
+      .catch(() => setContentSaveState("error"))
+  }
+
   function saveEditor() {
     if (!editorRef.current) return
     const html = editorRef.current.innerHTML
-    const g = groupOf(active.id)
-    setData((prev) => ({
-      ...prev,
-      [g]: prev[g].map((c) => (c.id === active.id ? { ...c, html } : c)),
-    }))
+    // 无变化不回写；上次保存失败则借下次失焦重试
+    if (html === active.html && contentSaveState !== "error") return
+    const next = withChapterHtml(data, active.id, html)
+    setData(next)
+    persistContent(next)
+  }
+
+  /** 单章改写完成：替换该章正文（后端已把改写结果合入 content 步结果，无需再回写） */
+  function applyRewrite(chapterId: string, html: string) {
+    setData((prev) => withChapterHtml(prev, chapterId, html))
   }
 
   function exec(cmd: string, value?: string) {
@@ -265,38 +242,32 @@ export default function ContentPage() {
     setActiveId(id)
   }
 
-  function sendMessage() {
-    const text = input.trim()
-    if (!text) return
-    setChat((prev) => [...prev, { role: "user", text }])
-    setInput("")
-    setTimeout(() => {
-      setChat((prev) => [
-        ...prev,
-        {
-          role: "ai",
-          text: `已针对「${active.no} ${active.title}」理解你的要求："${text}"。建议在本章节中补充对应论述，你可以点击下方按钮将修改应用到正文。`,
-        },
-      ])
-    }, 500)
-  }
-
-  /* 运行废标体检；done 后执行可选回调 */
-  function runCheck(after?: () => void) {
-    setCheckState("checking")
-    setTimeout(() => {
-      setCheckState("done")
-      after?.()
-    }, 1200)
-  }
-
-  /* 点击「一键废标体检」按钮 */
-  function onCheckClick() {
-    if (checkState === "checking") return
-    if (checkState === "idle") {
-      runCheck(() => setCheckOpen(true))
-    } else {
+  /* 点击「一键废标体检」按钮：真实项目首次体检先显式确认计费；已有结果开合摘要弹层 */
+  async function onCheckClick() {
+    if (checkState === "checking" || !canCheck) return
+    if (checkState === "done") {
       setCheckOpen((v) => !v)
+      return
+    }
+    // 真实项目且 review 步从未跑过：计费步，弹确认（显示"本次体检消耗 N 积分"）
+    if (isReal && !findings) {
+      setCheckConfirm("check")
+      return
+    }
+    if (await runCheck()) setCheckOpen(true)
+  }
+
+  /* 体检计费确认后真跑 review 步；从「确认导出」进入的，体检完成后继续导出流程 */
+  async function confirmCheck() {
+    const from = checkConfirm
+    setCheckConfirm(null)
+    const f = await runCheck()
+    if (!f) return
+    if (from === "export") {
+      if (f.high > 0 && !softPassed) setExportConfirm(true)
+      else doExport(exportFormat)
+    } else {
+      setCheckOpen(true)
     }
   }
 
@@ -336,6 +307,7 @@ export default function ContentPage() {
   function onExportEntry() {
     // 余额加载中不做付费墙判定（按钮已禁用，双保险防按 balance=0 误弹）
     if (membershipLoading) return
+    setExportGate(null)
     // 积分不足：弹「开通会员」付费墙；积分充足：打开导出弹窗（消耗积分）
     if (!canAfford) {
       openPaywall("export")
@@ -344,18 +316,44 @@ export default function ContentPage() {
     setExportOpen((v) => !v)
   }
 
-  /* 付费用户在导出菜单点「确认导出」：先体检，再按风险弱拦截 */
-  function attemptExport() {
-    setExportOpen(false)
-    if (checkState !== "done") {
-      runCheck(evaluateAndExport)
-    } else {
-      evaluateAndExport()
+  function flashExportStatus(text: string) {
+    setExportStatus(text)
+    setTimeout(() => setExportStatus(""), 3000)
+  }
+
+  /** 步序闸：agent 图线性（…→review→present→export），export 只能在 present 完成后跑。
+      currentStep 非 export/done 时不调 runStep("export")（后端必 409），改给完成路径提示。 */
+  function exportGateHint(): { text: string; href: string; label: string } | null {
+    const cur = info?.project.currentStep
+    if (!cur || cur === "export" || cur === "done") return null
+    const reviewDone = checkState === "done" || !!findings
+    if (cur === "present" || reviewDone)
+      return { text: `导出前需完成：述标生成（${presentCost} 积分）`, href: "/present", label: "前往述标页" }
+    return {
+      text: `导出前需完成：废标审查（${reviewCost} 积分）→ 述标生成（${presentCost} 积分）`,
+      href: "/risk",
+      label: "前往审查页",
     }
   }
 
-  function evaluateAndExport() {
-    if (healthCheck.high > 0 && !softPassed) {
+  /* 付费用户在导出菜单点「确认导出」：体检未跑不再静默触发，先显式确认计费；再按风险弱拦截 */
+  async function attemptExport() {
+    setExportOpen(false)
+    if (!canCheck) {
+      flashExportStatus("完成正文生成后可体检并导出")
+      return
+    }
+    // 体检未跑（review 步无结果）：弹计费确认，用户显式确认或跳过（跳过仅步序闸允许时可选）
+    if (isReal && !findings) {
+      setCheckConfirm("export")
+      return
+    }
+    const f = checkState === "done" ? findings : await runCheck()
+    if (!f) {
+      flashExportStatus("体检失败，请重试")
+      return
+    }
+    if (f.high > 0 && !softPassed) {
       setExportConfirm(true)
     } else {
       doExport(exportFormat)
@@ -365,10 +363,16 @@ export default function ContentPage() {
   function doExport(_format: "word" | "pdf") {
     setExportConfirm(false)
     setExportOpen(false)
+    setExportGate(null)
     // 只有真实项目才可导出（导出按钮无项目时已禁用；报告弹层等入口在此兜底提示）
     if (!projectId || !info) {
-      setExportStatus("请先从项目进入，再导出标书文件")
-      setTimeout(() => setExportStatus(""), 3000)
+      flashExportStatus("请先从项目进入，再导出标书文件")
+      return
+    }
+    // 步序闸：还没走到 export 步就不发请求，给出完成路径与入口链接
+    const gate = exportGateHint()
+    if (gate) {
+      setExportGate(gate)
       return
     }
     // 真实导出：export 步（渲染完整 .docx 落 MinIO）→ 预签名 URL 直下
@@ -379,8 +383,16 @@ export default function ContentPage() {
         window.open(await artifactUrl(projectId, "docx"), "_blank")
         setExportStatus("已导出，浏览器开始下载")
         setHasExported(true)
-      } catch {
-        setExportStatus("导出失败，请重试")
+      } catch (e) {
+        // 错误码直通：402 引导充值（持久提示），409 步骤顺序，其余通用重试
+        if (e instanceof ApiError && e.status === 402) {
+          setExportGate({ text: "积分不足，无法导出", href: "/membership", label: "去充值" })
+          setExportStatus("")
+        } else if (e instanceof ApiError && e.status === 409) {
+          setExportStatus("步骤顺序不符，请先完成前序步骤")
+        } else {
+          setExportStatus("导出失败，请重试")
+        }
       } finally {
         setTimeout(() => setExportStatus(""), 3000)
       }
@@ -390,11 +402,18 @@ export default function ContentPage() {
   /* 弹窗统一 Escape 关闭 */
   useEscapeClose(() => setExportConfirm(false), exportConfirm)
   useEscapeClose(() => setReportOpen(false), reportOpen)
+  useEscapeClose(() => setCheckConfirm(null), checkConfirm !== null)
 
   return (
     <div className="mx-auto flex h-[calc(100vh-4rem)] max-w-[1600px] flex-col px-4 py-5 sm:px-6 lg:px-8">
       <FlowNav current="content" />
-      {<StepBanner running={running} error={error} runningText="AI 写手团队正在按章撰写正文（多章并行，约 3–8 分钟）…" onRetry={() => void start()} />}
+      <StepBanner
+        running={running}
+        error={error}
+        runningText="AI 写手团队正在按章撰写正文（多章并行，约 3–8 分钟）…"
+        onRetry={() => void start()}
+        action={errorStatus === 402 ? { href: "/membership", label: "去充值" } : undefined}
+      />
       {/* 头部 */}
       <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
@@ -445,62 +464,13 @@ export default function ContentPage() {
         }`}
       >
         {/* 左：目录 */}
-        <aside className="flex min-h-0 flex-col rounded-2xl border border-border bg-card">
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <span className="text-sm font-semibold text-foreground">标书目录</span>
-            <span className="text-xs text-muted-foreground">
-              {generatedCount}/{list.length}
-            </span>
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-2">
-            {groups.map((grp) => (
-              <div key={grp.label || "single"} className="mb-1">
-                {grp.label && (
-                  <div className="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    {grp.label}
-                  </div>
-                )}
-                {grp.items.map((ch) => {
-                  const isActive = ch.id === active.id
-                  const isMissing = !ch.html.trim()
-                  return (
-                    <button
-                      key={ch.id}
-                      onClick={() => selectChapter(ch.id)}
-                      className={`mb-1 flex w-full items-start gap-2 rounded-xl px-3 py-2.5 text-left transition-colors ${
-                        isActive ? "gradient-brand-soft border border-primary/30" : "hover:bg-muted"
-                      }`}
-                    >
-                      <span className="mt-0.5 shrink-0">
-                        {isMissing ? (
-                          <AlertTriangle className="size-4 text-warning-foreground" />
-                        ) : (
-                          <CheckCircle2 className="size-4 text-success" />
-                        )}
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-[11px] font-medium text-primary">{ch.no}</span>
-                        <span className="block truncate text-[13px] font-medium text-foreground">{ch.title}</span>
-                        <span className="mt-0.5 flex flex-wrap gap-1">
-                          {!ch.sourced && (
-                            <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-                              新增
-                            </span>
-                          )}
-                          {isMissing && (
-                            <span className="rounded bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning-foreground">
-                              待生成
-                            </span>
-                          )}
-                        </span>
-                      </span>
-                    </button>
-                  )
-                })}
-              </div>
-            ))}
-          </div>
-        </aside>
+        <ChapterNav
+          groups={groups}
+          activeId={active.id}
+          generatedCount={generatedCount}
+          total={list.length}
+          onSelect={selectChapter}
+        />
 
         {/* 中：可编辑正文 */}
         <section className="flex min-h-0 flex-col rounded-2xl border border-border bg-card">
@@ -555,113 +525,68 @@ export default function ContentPage() {
                   ? "该章节对应招标文件要求，点击下方按钮由 AI 生成初稿后即可编辑。"
                   : "该章节为提纲新增内容，招标文件中无直接对应，建议结合自身情况补写。"}
               </p>
-              <button
-                onClick={() => generateChapter(active.id)}
-                className="mt-5 inline-flex items-center gap-2 rounded-xl gradient-brand px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90"
-              >
-                <Wand2 className="size-4" />
-                AI 生成本章正文
-              </button>
+              {isReal ? (
+                <p className="mt-5 max-w-xs rounded-xl border border-primary/20 gradient-brand-soft px-4 py-2.5 text-xs leading-relaxed text-primary">
+                  在右侧 AI 助手中选中本章并输入指令，由 AI 生成/改写本章正文（{rewriteCost} 积分/次）
+                </p>
+              ) : (
+                <button
+                  onClick={() => generateChapter(active.id)}
+                  className="mt-5 inline-flex items-center gap-2 rounded-xl gradient-brand px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+                >
+                  <Wand2 className="size-4" />
+                  AI 生成本章正文
+                </button>
+              )}
             </div>
           )}
 
           {active.html.trim() && (
             <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-2.5">
-              <button
-                onClick={() => generateChapter(active.id)}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+              {isReal ? (
+                <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <RefreshCw className="size-3.5" />
+                  重写本章可在右侧 AI 助手输入指令（{rewriteCost} 积分/次）
+                </span>
+              ) : (
+                <button
+                  onClick={() => generateChapter(active.id)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                >
+                  <RefreshCw className="size-3.5" />
+                  重新生成
+                </button>
+              )}
+              <span
+                className={`ml-auto text-xs ${contentSaveState === "error" ? "font-medium text-destructive" : "text-muted-foreground"}`}
               >
-                <RefreshCw className="size-3.5" />
-                重新生成
-              </button>
-              <span className="ml-auto text-xs text-muted-foreground">编辑后自动保存</span>
+                {!isReal
+                  ? "编辑后自动保存"
+                  : contentSaveState === "saving"
+                    ? "保存中…"
+                    : contentSaveState === "error"
+                      ? "保存失败，编辑后将自动重试"
+                      : contentSaveState === "saved"
+                        ? "已保存"
+                        : "编辑后自动保存"}
+              </span>
             </div>
           )}
         </section>
 
-        {/* 右：AI 对话 */}
+        {/* 右：AI 对话（真实项目走单章改写通道） */}
         {chatOpen && (
-          <aside className="hidden min-h-0 flex-col rounded-2xl border border-border bg-card lg:flex">
-            <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-              <span className="flex size-7 items-center justify-center rounded-lg gradient-brand">
-                <Bot className="size-4 text-white" />
-              </span>
-              <span className="text-sm font-semibold text-foreground">智启元 · 投标助手</span>
-              <span className="ml-auto truncate rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-                {active.no}
-              </span>
-            </div>
-
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
-              {chat.map((m, i) => (
-                <div key={i} className={`flex gap-2 ${m.role === "user" ? "flex-row-reverse" : ""}`}>
-                  <span
-                    className={`flex size-7 shrink-0 items-center justify-center rounded-lg ${
-                      m.role === "user" ? "bg-secondary" : "gradient-brand"
-                    }`}
-                  >
-                    {m.role === "user" ? (
-                      <User className="size-3.5 text-foreground" />
-                    ) : (
-                      <Bot className="size-3.5 text-white" />
-                    )}
-                  </span>
-                  <div
-                    className={`max-w-[80%] rounded-2xl px-3 py-2 text-[13px] leading-relaxed ${
-                      m.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"
-                    }`}
-                  >
-                    {m.text}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* 快捷指令 */}
-            <div className="flex flex-wrap gap-1.5 border-t border-border px-3 py-2">
-              <button
-                onClick={() => setLibraryOpen(true)}
-                className="inline-flex items-center gap-1 rounded-full border border-primary/30 gradient-brand-soft px-2.5 py-1 text-[11px] font-medium text-primary transition-opacity hover:opacity-90"
-              >
-                <Library className="size-3" />
-                从资料库插入
-              </button>
-              {["扩写本章", "更正式", "提炼要点", "补充案例"].map((q) => (
-                <button
-                  key={q}
-                  onClick={() => setInput(q)}
-                  className="rounded-full border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
-                >
-                  {q}
-                </button>
-              ))}
-            </div>
-
-            <div className="border-t border-border p-3">
-              <div className="flex items-end gap-2 rounded-xl border border-border bg-background px-3 py-2 focus-within:border-primary">
-                <textarea
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault()
-                      sendMessage()
-                    }
-                  }}
-                  rows={1}
-                  placeholder={`针对「${active.title}」提出修改…`}
-                  className="max-h-24 min-h-0 flex-1 resize-none bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
-                />
-                <button
-                  onClick={sendMessage}
-                  disabled={!input.trim()}
-                  className="flex size-8 shrink-0 items-center justify-center rounded-lg gradient-brand text-white transition-opacity hover:opacity-90 disabled:opacity-40"
-                >
-                  <Send className="size-4" />
-                </button>
-              </div>
-            </div>
-          </aside>
+          <ChatPanel
+            chapters={[...data.tech, ...data.business].map((c) => ({ id: c.id, no: c.no, title: c.title }))}
+            activeId={active.id}
+            projectId={projectId}
+            contentReady={isReal}
+            balance={balance}
+            rewriteCost={rewriteCost}
+            onApply={applyRewrite}
+            refreshBalance={reloadMembership}
+            onOpenLibrary={() => setLibraryOpen(true)}
+          />
         )}
       </div>
 
@@ -676,9 +601,18 @@ export default function ContentPage() {
 
         <div className="flex flex-wrap items-center gap-3">
           {hasExported && (
-            <span className="hidden text-xs text-muted-foreground lg:inline">导出��可在「我的标书」随时重新下载</span>
+            <span className="hidden text-xs text-muted-foreground lg:inline">导出后可在「我的标书」随时重新下载</span>
           )}
           {exportStatus && <span className="text-xs font-medium text-primary">{exportStatus}</span>}
+          {/* 步序闸 / 积分不足提示：说明还差哪些步骤（含费用），附入口链接 */}
+          {exportGate && (
+            <span className="text-xs font-medium text-destructive">
+              {exportGate.text}
+              <Link href={exportGate.href} className="ml-1.5 font-semibold text-primary underline">
+                {exportGate.label}
+              </Link>
+            </span>
+          )}
 
           {hasExported && (
             <Link
@@ -690,13 +624,14 @@ export default function ContentPage() {
             </Link>
           )}
 
-          {/* 一键废标体检 */}
+          {/* 一键废标体检（真实项目跑 review 步；content 未完成时禁用） */}
           <div className="relative">
             <button
-              onClick={onCheckClick}
-              disabled={checkState === "checking"}
-              className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-semibold transition-colors ${
-                checkState === "done" && healthCheck.high > 0
+              onClick={() => void onCheckClick()}
+              disabled={checkState === "checking" || !canCheck}
+              title={!canCheck ? "完成正文生成后可体检" : undefined}
+              className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                checkState === "done" && (healthCheck?.high ?? 0) > 0
                   ? "border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive/15"
                   : checkState === "done"
                     ? "border-success/40 bg-success/10 text-success hover:bg-success/15"
@@ -706,9 +641,9 @@ export default function ContentPage() {
               {checkState === "checking" ? (
                 <>
                   <Loader2 className="size-4 animate-spin" />
-                  体检中…
+                  体检中…（跑真实审查，约 1–2 分钟）
                 </>
-              ) : checkState === "done" ? (
+              ) : checkState === "done" && healthCheck ? (
                 healthCheck.high > 0 ? (
                   <>
                     <ShieldAlert className="size-4" />
@@ -723,86 +658,30 @@ export default function ContentPage() {
               ) : (
                 <>
                   <ShieldCheck className="size-4" />
-                  一键废标体检
+                  {/* 计费告知：真实项目首次体检显示消耗（已有结果时开合免费） */}
+                  一键废标体检{isReal && !findings ? `（${reviewCost} 积分）` : ""}
                 </>
               )}
             </button>
+            {checkState !== "checking" && checkError && (
+              <span className="absolute -top-5 right-0 whitespace-nowrap text-[11px] font-medium text-destructive">
+                {checkError}
+                {checkErrorStatus === 402 && (
+                  <Link href="/membership" className="ml-1 font-semibold text-primary underline">
+                    去充值
+                  </Link>
+                )}
+              </span>
+            )}
 
             {/* 体检结果摘要弹层 */}
-            {checkOpen && checkState === "done" && (
-              <>
-                <button
-                  aria-label="关闭体检摘要"
-                  onClick={() => setCheckOpen(false)}
-                  className="fixed inset-0 z-40 cursor-default"
-                />
-                <div className="absolute bottom-full right-0 z-50 mb-2 w-80 rounded-2xl border border-border bg-card p-4 shadow-lg">
-                  {/* 健康分 + 计数 */}
-                  <div className="flex items-center gap-3 border-b border-border pb-3">
-                    <div className="flex size-12 shrink-0 flex-col items-center justify-center rounded-xl gradient-brand-soft">
-                      <span className="text-lg font-bold leading-none text-primary">{healthCheck.score}</span>
-                      <span className="text-[9px] text-muted-foreground">健康分</span>
-                    </div>
-                    <div className="flex flex-1 items-center justify-between text-center text-xs">
-                      <span className="flex flex-col">
-                        <span className="text-sm font-bold text-destructive">{healthCheck.high}</span>
-                        <span className="text-muted-foreground">高风险</span>
-                      </span>
-                      <span className="flex flex-col">
-                        <span className="text-sm font-bold text-warning-foreground">{healthCheck.mid}</span>
-                        <span className="text-muted-foreground">中风险</span>
-                      </span>
-                      <span className="flex flex-col">
-                        <span className="text-sm font-bold text-success">{healthCheck.passed}</span>
-                        <span className="text-muted-foreground">已通过</span>
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* 逐条风险 */}
-                  <div className="mt-3 flex max-h-56 flex-col gap-2 overflow-y-auto">
-                    {healthCheck.items.map((it, i) => {
-                      const tc = checkToneClasses[it.tone]
-                      return (
-                        <div key={i} className={`rounded-xl border ${tc.border} p-2.5`}>
-                          <div className="flex items-center gap-1.5">
-                            <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tc.badge}`}>{it.level}</span>
-                            <span className="truncate text-[12px] font-medium text-foreground">{it.title}</span>
-                          </div>
-                          <p className="mt-1 text-[11px] text-muted-foreground">{it.chapter}</p>
-                          {/* 整改建议：非会员模糊处理 */}
-                          {isMember ? (
-                            <p className="mt-1 text-[11px] leading-relaxed text-foreground">{it.advice}</p>
-                          ) : (
-                            <div className="relative mt-1">
-                              <p className="select-none text-[11px] leading-relaxed text-foreground blur-[3px]">
-                                {it.advice}
-                              </p>
-                              <div className="absolute inset-0 flex items-center justify-center">
-                                <Link
-                                  href="/membership"
-                                  className="inline-flex items-center gap-1 rounded-full bg-card/80 px-2 py-0.5 text-[10px] font-medium text-primary transition-opacity hover:opacity-80"
-                                >
-                                  <Lock className="size-3" />
-                                  解锁查看完整整改建议
-                                </Link>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )
-                    })}
-                  </div>
-
-                  <button
-                    onClick={openReport}
-                    className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl gradient-brand px-3 py-2 text-xs font-semibold text-white transition-opacity hover:opacity-90"
-                  >
-                    查看完整体检报告
-                    <ArrowRight className="size-3.5" />
-                  </button>
-                </div>
-              </>
+            {checkOpen && checkState === "done" && healthCheck && (
+              <CheckSummary
+                report={healthCheck}
+                isMember={isMember}
+                onClose={() => setCheckOpen(false)}
+                onOpenReport={openReport}
+              />
             )}
           </div>
 
@@ -820,274 +699,67 @@ export default function ContentPage() {
 
             {/* 导出菜单（积分不足时已走付费墙，不会展开） */}
             {exportOpen && canAfford && (
-              <>
-                <button
-                  aria-label="关闭导出菜单"
-                  onClick={() => setExportOpen(false)}
-                  className="fixed inset-0 z-40 cursor-default"
-                />
-                <div className="absolute bottom-full right-0 z-50 mb-2 w-80 rounded-2xl border border-border bg-card p-3 shadow-lg">
-                  <p className="px-1 pb-2 text-xs font-semibold text-foreground">选择导出范围</p>
-                  <div className="flex flex-col gap-1">
-                    {exportScopes.map((s) => {
-                      const Icon = s.icon
-                      const isActive = exportScope === s.id
-                      return (
-                        <button
-                          key={s.id}
-                          onClick={() => setExportScope(s.id)}
-                          className={`flex items-start gap-2.5 rounded-xl border px-3 py-2 text-left transition-colors ${
-                            isActive ? "border-primary/40 gradient-brand-soft" : "border-border hover:bg-muted"
-                          }`}
-                        >
-                          <Icon className={`mt-0.5 size-4 shrink-0 ${isActive ? "text-primary" : "text-muted-foreground"}`} />
-                          <span className="min-w-0 flex-1">
-                            <span className="block text-[13px] font-medium text-foreground">{s.name}</span>
-                            <span className="block text-[11px] text-muted-foreground">{s.desc}</span>
-                          </span>
-                          {isActive && <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-primary" />}
-                        </button>
-                      )
-                    })}
-                  </div>
-
-                  <p className="px-1 pb-2 pt-3 text-xs font-semibold text-foreground">选择导出格式</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      onClick={() => setExportFormat("word")}
-                      className={`inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2.5 text-sm font-medium transition-colors ${
-                        exportFormat === "word" ? "border-primary/40 gradient-brand-soft text-foreground" : "border-border bg-background text-foreground hover:bg-muted"
-                      }`}
-                    >
-                      <FileDoc className="size-4 text-primary" />
-                      Word
-                    </button>
-                    <button
-                      onClick={() => setExportFormat("pdf")}
-                      className={`inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2.5 text-sm font-medium transition-colors ${
-                        exportFormat === "pdf" ? "border-primary/40 gradient-brand-soft text-foreground" : "border-border bg-background text-foreground hover:bg-muted"
-                      }`}
-                    >
-                      <FileType2 className="size-4 text-destructive" />
-                      PDF
-                    </button>
-                  </div>
-
-                  {/* 积分预估 */}
-                  <div className="mt-3">
-                    <CreditEstimate
-                      cost={EXPORT_COST}
-                      balance={balance}
-                      showSupportable={false}
-                      actionLabel="确认导出"
-                      onConfirm={attemptExport}
-                    />
-                  </div>
-                </div>
-              </>
+              <ExportMenu
+                scope={exportScope}
+                format={exportFormat}
+                cost={EXPORT_COST}
+                balance={balance}
+                onScope={setExportScope}
+                onFormat={setExportFormat}
+                onConfirm={() => void attemptExport()}
+                onClose={() => setExportOpen(false)}
+              />
             )}
           </div>
         </div>
       </div>
 
+      {/* 体检计费确认（体检按钮 / 确认导出两个入口共用；跳过导出仅步序闸允许时提供） */}
+      {checkConfirm && (
+        <CheckConfirm
+          cost={reviewCost}
+          balance={balance}
+          note={checkConfirm === "export" ? `体检完成后还需完成述标生成（${presentCost} 积分），才能导出标书文件。` : undefined}
+          skip={
+            checkConfirm === "export" && !exportGateHint()
+              ? {
+                  label: "跳过体检直接导出",
+                  onSkip: () => {
+                    setCheckConfirm(null)
+                    doExport(exportFormat)
+                  },
+                }
+              : undefined
+          }
+          onConfirm={() => void confirmCheck()}
+          onClose={() => setCheckConfirm(null)}
+        />
+      )}
+
       {/* 导出前高风险二次确认 */}
-      {exportConfirm && (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-foreground/40 backdrop-blur-sm" onClick={() => setExportConfirm(false)} aria-hidden />
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="导出前发现废标高风险"
-            className="relative z-10 w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-2xl"
-          >
-            <button
-              onClick={() => setExportConfirm(false)}
-              aria-label="关闭"
-              className="absolute right-3 top-3 flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              <X className="size-4" />
-            </button>
-            <div className="flex size-11 items-center justify-center rounded-xl bg-destructive/10 text-destructive">
-              <ShieldAlert className="size-5" />
-            </div>
-            <h2 className="mt-4 text-lg font-bold text-foreground">导出前发现废标高风险</h2>
-            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-              本次体检发现 {healthCheck.high} 项高风险（如「缺少 ISO27001 信息安全管理体系认证」），可能导致直接废标。建议先处理风险再导出。
-            </p>
-            <div className="mt-5 flex flex-col gap-2.5">
-              <button
-                onClick={openReport}
-                className="inline-flex items-center justify-center gap-2 rounded-xl gradient-brand px-4 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90"
-              >
-                <ShieldCheck className="size-4" />
-                查看并处理风险
-              </button>
-              <button
-                onClick={() => {
-                  setSoftPassed(true)
-                  setExportConfirm(false)
-                  doExport(exportFormat)
-                }}
-                className="inline-flex items-center justify-center rounded-xl border border-border bg-card px-4 py-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                仍要导出
-              </button>
-              <button
-                onClick={() => setExportConfirm(false)}
-                className="inline-flex items-center justify-center rounded-lg px-4 py-2 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-              >
-                取消（留在编辑）
-              </button>
-            </div>
-          </div>
-        </div>
+      {exportConfirm && healthCheck && (
+        <ExportConfirm
+          report={healthCheck}
+          onViewReport={openReport}
+          onExportAnyway={() => {
+            setSoftPassed(true)
+            setExportConfirm(false)
+            doExport(exportFormat)
+          }}
+          onClose={() => setExportConfirm(false)}
+        />
       )}
 
       {/* 就地完整体检报告（针对当前这份标书草稿） */}
-      {reportOpen && (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-foreground/40 backdrop-blur-sm" onClick={() => setReportOpen(false)} aria-hidden />
-          <div
-            role="dialog"
-            aria-modal="true"
-            className="relative z-10 flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
-          >
-            {/* 头部：健康分 + 计数 */}
-            <div className="flex items-start justify-between gap-4 border-b border-border p-5">
-              <div className="flex items-center gap-4">
-                <div className="flex size-16 shrink-0 flex-col items-center justify-center rounded-2xl gradient-brand-soft">
-                  <span className="text-2xl font-bold leading-none text-primary">{healthCheck.score}</span>
-                  <span className="mt-0.5 text-[10px] text-muted-foreground">健康分</span>
-                </div>
-                <div>
-                  <h2 className="text-lg font-bold text-foreground">废标体检报告</h2>
-                  <p className="mt-1 text-xs text-muted-foreground">针对当前这份标书草稿的投递前自检</p>
-                  <div className="mt-2 flex items-center gap-4 text-xs">
-                    <span className="inline-flex items-center gap-1 text-destructive">
-                      <ShieldAlert className="size-3.5" />
-                      高风险 {healthCheck.high}
-                    </span>
-                    <span className="inline-flex items-center gap-1 text-warning-foreground">
-                      <AlertTriangle className="size-3.5" />
-                      中风险 {healthCheck.mid}
-                    </span>
-                    <span className="inline-flex items-center gap-1 text-success">
-                      <CheckCircle2 className="size-3.5" />
-                      已通过 {healthCheck.passed}
-                    </span>
-                  </div>
-                </div>
-              </div>
-              <button
-                onClick={() => setReportOpen(false)}
-                aria-label="关闭报告"
-                className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <X className="size-5" />
-              </button>
-            </div>
-
-            {/* 正文：逐条风险 + 已通过项 */}
-            <div className="flex-1 overflow-y-auto p-5">
-              <p className="text-xs font-semibold text-foreground">待处理风险项</p>
-              <div className="mt-2 flex flex-col gap-3">
-                {healthCheck.items.map((it, i) => {
-                  const tc = checkToneClasses[it.tone]
-                  return (
-                    <div key={i} className={`rounded-xl border ${tc.border} p-3.5`}>
-                      <div className="flex items-center gap-2">
-                        <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${tc.badge}`}>{it.level}</span>
-                        <span className="text-sm font-medium text-foreground">{it.title}</span>
-                      </div>
-                      <p className="mt-2 text-xs leading-relaxed text-foreground">{it.advice}</p>
-                      <div className="mt-3 flex items-center justify-between">
-                        <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-                          <FileText className="size-3.5" />
-                          {it.chapter}
-                        </span>
-                        <button
-                          onClick={() => gotoChapter(it.targetTab, it.targetId)}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-primary/40 gradient-brand-soft px-3 py-1.5 text-xs font-semibold text-primary transition-opacity hover:opacity-90"
-                        >
-                          定位到本章修改
-                          <ArrowRight className="size-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-
-              <p className="mt-5 text-xs font-semibold text-foreground">已通过项</p>
-              <div className="mt-2 flex flex-col gap-1.5">
-                {healthCheck.passedItems.map((p, i) => (
-                  <div key={i} className="flex items-start gap-2 rounded-lg bg-success/5 px-3 py-2">
-                    <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-success" />
-                    <span className="text-xs text-foreground">{p}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* 底部：导出体检报告 + 导出标书文件 + 免责说明，区别于独立的 /risk */}
-            <div className="border-t border-border bg-muted/40 px-5 py-3.5">
-              {reportExportStatus && (
-                <p className="mb-2.5 text-[11px] font-medium text-primary">{reportExportStatus}</p>
-              )}
-              <div className="flex flex-col gap-3">
-                {/* 导出体检报告 */}
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <span className="text-xs font-medium text-foreground">导出体检报告</span>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <button
-                      onClick={() => exportReport("word")}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-                    >
-                      <FileDoc className="size-3.5 text-primary" />
-                      导出 Word
-                    </button>
-                    <button
-                      onClick={() => exportReport("pdf")}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-                    >
-                      <FileType2 className="size-3.5 text-destructive" />
-                      导出 PDF
-                    </button>
-                  </div>
-                </div>
-
-                {/* 导出标书文件（已查看风险后软放行导出） */}
-                <div className="flex flex-col gap-2 border-t border-border pt-3 sm:flex-row sm:items-center sm:justify-between">
-                  <span className="text-xs font-medium text-foreground">导出标书文件</span>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <button
-                      onClick={() => exportBidFromReport("word")}
-                      className="inline-flex items-center gap-1.5 rounded-lg gradient-brand px-3 py-2 text-xs font-semibold text-white transition-opacity hover:opacity-90"
-                    >
-                      <FileDoc className="size-3.5" />
-                      导出 Word
-                    </button>
-                    <button
-                      onClick={() => exportBidFromReport("pdf")}
-                      className="inline-flex items-center gap-1.5 rounded-lg gradient-brand px-3 py-2 text-xs font-semibold text-white transition-opacity hover:opacity-90"
-                    >
-                      <FileType2 className="size-3.5" />
-                      导出 PDF
-                    </button>
-                  </div>
-                </div>
-
-                <p className="border-t border-border pt-3 text-[11px] leading-relaxed text-muted-foreground">
-                  体检仅供投递前自检，不替代正式标书审查。如需对任意标书做完整合规比对，请使用
-                  <Link href="/risk" className="mx-0.5 font-medium text-primary hover:underline">
-                    标书审查
-                  </Link>
-                  工具。
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
+      {reportOpen && healthCheck && (
+        <ReportDialog
+          report={healthCheck}
+          exportStatus={reportExportStatus}
+          onClose={() => setReportOpen(false)}
+          onGoto={gotoChapter}
+          onExportReport={exportReport}
+          onExportBid={exportBidFromReport}
+        />
       )}
 
       {/* 从资料库插入选择器（数据由页面级 useLibrary 提供） */}

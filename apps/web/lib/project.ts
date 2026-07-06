@@ -1,6 +1,7 @@
 "use client"
 
 import { api } from "./api"
+import { ApiError } from "./api-client"
 import { tokenStore } from "./token-store"
 
 // 全流程项目客户端（spec207）：一本标书一个 projectId/threadId，六步与 agent 节点序一致。
@@ -65,12 +66,26 @@ export function stepResult<T>(info: ProjectInfo | null, step: StepName): T | nul
 }
 
 // 推进一步：POST SSE 流，进度分片回调 onChunk，结束解析 step.done 返回该步结果（camelCase）。
-export async function runStep<T>(id: string, step: StepName, onChunk?: (text: string) => void): Promise<T> {
+// body 为该步运行参数（present 步：{duration: 10|15|20, template: "blue"|"tech"|"gov"}），无参数步不传。
+export async function runStep<T>(
+  id: string,
+  step: StepName,
+  onChunk?: (text: string) => void,
+  body?: Record<string, unknown>,
+): Promise<T> {
   const res = await fetch(`${baseUrl}/api/projects/${id}/steps/${step}`, {
     method: "POST",
-    headers: { authorization: `Bearer ${tokenStore.get() ?? ""}` },
+    headers: {
+      authorization: `Bearer ${tokenStore.get() ?? ""}`,
+      ...(body ? { "content-type": "application/json" } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
   })
-  if (!res.ok) throw new Error(`step ${step} ${res.status}`)
+  // 错误码直通：402（积分不足）/ 409（步骤顺序）等抛 ApiError，供上层区分展示
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string }
+    throw new ApiError(res.status, err.error)
+  }
   const reader = res.body!.getReader()
   const dec = new TextDecoder()
   let buf = ""
@@ -87,6 +102,31 @@ export async function runStep<T>(id: string, step: StepName, onChunk?: (text: st
   const payload = JSON.parse(m[1]!) as { status: string; result: T }
   if (payload.status !== "done") throw new Error(`step ${step} 失败`)
   return payload.result
+}
+
+// 步结果编辑回写：把编辑后的结果整份覆盖该步已完成的 result（outline/content/present）。
+export async function patchStep(
+  id: string,
+  step: "outline" | "content" | "present",
+  result: unknown,
+): Promise<void> {
+  await api.request<{ ok: boolean }>(`/api/projects/${id}/steps/${step}`, {
+    method: "PATCH",
+    body: JSON.stringify({ result }),
+  })
+}
+
+// 单章 AI 改写（App 侧按 rewrite 口径计费 25 积分）：成功返回新正文 HTML（后端已合入 content 步结果）。
+// 失败语义：402=余额不足、409=content 步未完成、502=agent 改写失败（均抛 ApiError）。
+export async function rewriteChapter(
+  id: string,
+  chapterId: string,
+  instruction: string,
+): Promise<{ chapterId: string; html: string; cost: number }> {
+  return api.request(`/api/projects/${id}/chapters/${chapterId}/rewrite`, {
+    method: "POST",
+    body: JSON.stringify({ instruction }),
+  })
 }
 
 // 产物预签名下载 URL（docx/pptx），浏览器直下 MinIO。

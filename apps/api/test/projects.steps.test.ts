@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bun:test"
-import { eq } from "drizzle-orm"
+import { and, eq } from "drizzle-orm"
 import { Hono } from "hono"
-import { projectRoutes, type ProjectDeps } from "../src/routes/projects"
+import { projectRoutes, buildStateOverrides, type ProjectDeps } from "../src/routes/projects"
 import { loginWithPhone } from "../src/services/auth"
 import { getDb, closeDb } from "../src/db/client"
 import { users, bidProjects, projectSteps } from "../src/db/schema"
@@ -20,7 +20,27 @@ const captured: {
   releasedRefs: string[]
 } = { preDeductSteps: [], releasedRefs: [] }
 
+// 各步 agent result（snake 原样）：read 带 doc_sections（spec315a 契约 4）；content 即 chapters 字典；present 即 deck。
+// content 的章 id 故意带下划线（LLM 自由字符串）：验证全链路不做大小写转换（ch_1 不许变形成 ch1）。
+const STEP_RESULTS: Record<string, unknown> = {
+  read: {
+    categories: [{ key: "qualification", title: "资格", items: [{ clause_ids: ["sec-1-c1"], is_new: false }] }],
+    doc_sections: [{ id: "sec-1-c1", text: "投标人须具备 ISO27001 认证" }],
+  },
+  outline: { chapters: [{ id: "ch-1", chapter_title: "技术方案", clause_ids: ["sec-1-c1"] }] },
+  content: { ch_1: "<p>正文一</p>" },
+  review: { findings: [] },
+  present: { template: "gov", slides: [{ id: "s-1", title: "封面" }] },
+  export: { docx: "artifacts/x.docx", pptx: "artifacts/x.pptx" },
+}
+let runStep = "" // createRun 时记下本 run 的步，getRun 按步返回对应 result
+let overridesBoom = false // 置 true 让 buildStateOverrides 抛错（模拟 DB 抖动）
+
 const mockDeps: Partial<ProjectDeps> = {
+  buildStateOverrides: async (projectId, step) => {
+    if (overridesBoom) throw new Error("db jitter")
+    return buildStateOverrides(projectId, step)
+  },
   preDeduct: async (userId: string, op: string, _ref: string) => {
     captured.preDeductUserId = userId
     captured.preDeductSteps.push(op)
@@ -30,21 +50,20 @@ const mockDeps: Partial<ProjectDeps> = {
     captured.settleArgs = { ref, holdId, actualCost }
     return actualCost
   },
+  settleContent: async (_ref: string, _holdId: string, heldAmount: number) => heldAmount, // content 步按篇幅结算，mock 全额
   settleFailed: async (ref: string) => {
     captured.releasedRefs.push(ref)
   },
   createRun: async (opts) => {
     captured.createRunOpts = opts
+    runStep = (opts.input as { step: string }).step
     capturedRunId = crypto.randomUUID()
     return { run_id: capturedRunId }
   },
   relayStream: async function* () {
     yield "data: 进度\n\n"
   },
-  getRun: async () => ({
-    status: "succeeded",
-    result: { categories: [{ key: "qualification", title: "资格", items: [{ clause_ids: ["sec-1-c1"], is_new: false }] }] },
-  }),
+  getRun: async () => ({ status: "succeeded", result: STEP_RESULTS[runStep] }),
 }
 
 const app = new Hono()
@@ -152,5 +171,98 @@ describe("/api/projects 按步编排", () => {
       headers: auth(),
     })
     expect(other.status).toBe(404)
+  })
+
+  // —— spec315a：input 五键（run_input / state_overrides）+ doc_sections 链路 ——
+
+  /** 推进一步并耗尽 SSE，返回本次 createRun 的 input 与 SSE 全文。 */
+  const runStepAndGetInput = async (step: string, body?: unknown) => {
+    const res = await app.request(`/api/projects/${projectId}/steps/${step}`, {
+      method: "POST",
+      headers: auth(),
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+    expect(res.status).toBe(200)
+    const sse = await res.text()
+    expect(sse).toContain("event: step.done")
+    return { input: captured.createRunOpts?.input as Record<string, unknown>, sse }
+  }
+
+  it("read 步 result 含 doc_sections → GET /:id 自动转 camel（docSections，链路零改动）", async () => {
+    const res = await app.request(`/api/projects/${projectId}`, { headers: auth() })
+    const body = (await res.json()) as { steps: Array<{ step: string; result: unknown }> }
+    const read = body.steps.find((s) => s.step === "read")
+    expect(JSON.stringify(read!.result)).toContain('"docSections"')
+    expect(JSON.stringify(read!.result)).toContain("投标人须具备 ISO27001 认证")
+  })
+
+  it("outline 步：非 present 步 run_input={}，read/outline 无 state_overrides", async () => {
+    const { input } = await runStepAndGetInput("outline")
+    expect(input.run_input).toEqual({})
+    expect(input.state_overrides).toEqual({})
+  })
+
+  it("state_overrides 组装抛错（DB 抖动）→ 500，且不预扣、不留 running 占位行（组装先于占位/预扣）", async () => {
+    overridesBoom = true
+    try {
+      const holds = captured.preDeductSteps.length
+      const res = await app.request(`/api/projects/${projectId}/steps/content`, { method: "POST", headers: auth() })
+      expect(res.status).toBe(500)
+      expect(captured.preDeductSteps.length).toBe(holds) // 没预扣 → 没有可泄漏的 hold
+      const rows = await getDb()
+        .select()
+        .from(projectSteps)
+        .where(and(eq(projectSteps.projectId, projectId), eq(projectSteps.step, "content")))
+      expect(rows.length).toBe(0) // 占位行没插 → 部分唯一索引不会让重试恒 409
+    } finally {
+      overridesBoom = false
+    }
+  })
+
+  it("content 步：state_overrides.outline 回灌已存提纲；SSE step.done 的章 id 键不做大小写转换", async () => {
+    const { input, sse } = await runStepAndGetInput("content") // 上一测未留残行，这里正常推进
+    expect(input.state_overrides).toEqual({ outline: STEP_RESULTS.outline })
+    expect(input.run_input).toEqual({})
+    expect(sse).toContain('"ch_1"') // 章 id 是 LLM 自由字符串，toCamel 会把 ch_1 转坏成 ch1
+    expect(sse).not.toContain('"ch1"')
+  })
+
+  it("review 步：state_overrides 带 outline+chapters（体检读编辑后现值，不与编辑分叉）", async () => {
+    const { input } = await runStepAndGetInput("review")
+    expect(input.state_overrides).toEqual({
+      outline: STEP_RESULTS.outline,
+      chapters: STEP_RESULTS.content,
+    })
+  })
+
+  it("present 步：非法 duration → 400 不留占位行；{duration,template} 透传；state_overrides 带 outline+chapters", async () => {
+    const bad = await app.request(`/api/projects/${projectId}/steps/present`, {
+      method: "POST",
+      headers: auth(),
+      body: JSON.stringify({ duration: 12 }),
+    })
+    expect(bad.status).toBe(400)
+    expect(((await bad.json()) as { error: string }).error).toBe("invalid_input")
+
+    // 合法参数正常推进（400 未留 running 残行，否则这里会 409）
+    const { input } = await runStepAndGetInput("present", { duration: 20, template: "gov" })
+    expect(input.run_input).toEqual({ duration: 20, template: "gov" })
+    expect(input.state_overrides).toEqual({
+      outline: STEP_RESULTS.outline,
+      chapters: STEP_RESULTS.content,
+    })
+  })
+
+  it("export 步：state_overrides 带 outline/chapters/deck 三键（各取对应步 result 现值）", async () => {
+    const { input } = await runStepAndGetInput("export")
+    expect(input.state_overrides).toEqual({
+      outline: STEP_RESULTS.outline,
+      chapters: STEP_RESULTS.content, // content 步 result 即 chapters 字典
+      deck: STEP_RESULTS.present, // present 步 result 即 deck
+    })
+    // 最后一步完成 → 整本 done
+    const [p] = await getDb().select().from(bidProjects).where(eq(bidProjects.id, projectId))
+    expect(p?.currentStep).toBe("done")
+    expect(p?.status).toBe("done")
   })
 })

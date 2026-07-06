@@ -34,6 +34,33 @@ export async function* relayStream(runId: string): AsyncGenerator<string> {
   }
 }
 
+/** 单章改写（spec315a）：agent 同步路由，LLM 改写耗时较长 → 超时放宽 120s。
+ *  chapter_id 是 agent 章节 id（字符串，非 uuid）；agent 侧 merge reducer 保证只更新该章。
+ *  baseHtml：DB 里该章现值（编辑过=编辑后），作改写底稿——agent state 里的可能是旧稿。 */
+export async function rewriteChapter(opts: {
+  agentType: string
+  threadId: string
+  chapterId: string
+  instruction: string
+  baseHtml?: string
+  model?: AgentModelSelection
+}): Promise<{ chapter_id: string; html: string }> {
+  const body: Record<string, unknown> = { chapter_id: opts.chapterId, instruction: opts.instruction }
+  if (opts.baseHtml !== undefined) body.base_html = opts.baseHtml
+  if (opts.model) body.model = opts.model // 有配置才下发；无则 agent 用 env 默认（与 createRun 同法）
+  const r = await fetch(
+    `${getEnv().AGENT_BASE_URL}/agents/${opts.agentType}/threads/${opts.threadId}/chapters/rewrite`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(120_000),
+    },
+  )
+  if (!r.ok) throw new Error(`agent rewriteChapter ${r.status}`)
+  return (await r.json()) as { chapter_id: string; html: string }
+}
+
 export async function getRun(runId: string) {
   const r = await fetch(`${getEnv().AGENT_BASE_URL}/runs/${runId}`)
   return (await r.json()) as { status: string; result?: unknown }

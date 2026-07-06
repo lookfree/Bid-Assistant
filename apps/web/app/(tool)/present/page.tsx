@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
@@ -11,7 +11,6 @@ import {
   Plus,
   Trash2,
   GripVertical,
-  Lock,
   MessageSquareText,
   HelpCircle,
   Library,
@@ -22,7 +21,6 @@ import {
   Wand2,
   X,
   ChevronRight,
-  ListChecks,
   History,
 } from "lucide-react"
 import { usePaywall } from "@/components/paywall"
@@ -45,10 +43,12 @@ import {
   type SlideStyle,
 } from "@/lib/present"
 import { type LibraryItem } from "@/lib/library"
+import { ApiError } from "@/lib/api-client"
 import { useStep } from "@/lib/use-step"
-import { artifactUrl, runStep } from "@/lib/project"
+import { artifactUrl, patchStep, runStep } from "@/lib/project"
 import { EmptyState, DURATIONS, type Duration } from "./empty-state"
 import { TemplatePicker } from "./template-picker"
+import { LockedBlock, SlidePreview } from "./slide-preview"
 
 // agent DeckSpec（camelCase）：slides/qa 与原型 Slide/QA 同构
 type RealDeck = { title: string; duration: number; template: string; slides: Slide[]; qa: { q: string; a: string }[] }
@@ -85,19 +85,31 @@ export default function PresentPage() {
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
   const [exportStatus, setExportStatus] = useState("")
+  /* 402 积分不足等需要引导入口的导出错误：文案 + 链接（不随 3 秒自动消失） */
+  const [exportGate, setExportGate] = useState<{ text: string; href: string; label: string } | null>(null)
   const [aiInput, setAiInput] = useState("")
   const [aiReply, setAiReply] = useState("")
   const [dragId, setDragId] = useState<string | null>(null)
 
-  /* 真实项目：present 步产 DeckSpec（真实幻灯+口播稿），到位即覆盖示例 */
-  const { projectId, info, data: realDeck, running: stepRunning, error: stepError, start } = useStep<RealDeck>("present")
+  /* 真实项目：present 步产 DeckSpec（真实幻灯+口播稿），到位即覆盖示例。
+     生成调用透传当前时长/模板（POST steps/present body {duration, template}）。 */
+  const { projectId, info, data: realDeck, running: stepRunning, error: stepError, errorStatus: stepErrorStatus, start } = useStep<RealDeck>("present")
+  // 自动触发只此一次（失败后改选时长/模板不静默重跑，重试走横幅按钮或生成按钮，避免误扣积分）
+  const autoStarted = useRef(false)
   useEffect(() => {
-    if (projectId && info && !realDeck && !stepRunning && info.project.currentStep === "present") void start()
-  }, [projectId, info, realDeck, stepRunning, start])
+    if (autoStarted.current) return
+    if (projectId && info && !realDeck && !stepRunning && info.project.currentStep === "present") {
+      autoStarted.current = true
+      void start({ duration, template: styleId })
+    }
+  }, [projectId, info, realDeck, stepRunning, start, duration, styleId])
   useEffect(() => {
     if (!realDeck) return
     setSlides(realDeck.slides)
     setActiveId(realDeck.slides[0]?.id ?? "")
+    // 选择器与后端已存 deck 对齐（保存/下次生成据此透传）
+    if (DURATIONS.includes(realDeck.duration as Duration)) setDuration(realDeck.duration as Duration)
+    if (slideStyles.some((s) => s.id === realDeck.template)) setStyleId(realDeck.template as StyleId)
     setGenState("done")
   }, [realDeck])
 
@@ -170,6 +182,11 @@ export default function PresentPage() {
 
   /* ---------------- 生成大纲 ---------------- */
   function runGenerate() {
+    // 真实项目：跑 present 步并透传当前时长/模板；无项目（demo）回落示例 deck
+    if (projectId) {
+      void start({ duration, template: styleId })
+      return
+    }
     setGenState("generating")
     setTimeout(() => {
       const deck = buildDeck(duration)
@@ -179,10 +196,11 @@ export default function PresentPage() {
     }, 1100)
   }
 
-  /* 切换时长：已生成则按新时长重建 */
+  /* 切换时长：demo 已生成则按新时长重建示例；真实项目只更新选择器
+     （新时长随下次生成透传，或经「保存」回写 deck.duration，避免误触重复扣积分） */
   function changeDuration(d: Duration) {
     setDuration(d)
-    if (genState === "done") {
+    if (!projectId && genState === "done") {
       const deck = buildDeck(d)
       setSlides(deck)
       setActiveId(deck[0]?.id ?? "")
@@ -259,10 +277,36 @@ export default function PresentPage() {
     setLibraryOpen(false)
   }
 
+  /* ---------------- 保存幻灯片编辑 ---------------- */
+  /* 把当前 deck（编辑后的幻灯 + 选择器时长/模板）序列化回 DeckSpec 整份回写 present 步结果；
+     导出（export 步）由后端自动带编辑后 deck 重渲 pptx。 */
+  const [deckSaveState, setDeckSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle")
+  async function saveDeck() {
+    if (!projectId || !realDeck || deckSaveState === "saving") return
+    setDeckSaveState("saving")
+    try {
+      await patchStep(projectId, "present", {
+        title: realDeck.title,
+        duration,
+        template: styleId,
+        slides,
+        qa: realDeck.qa,
+      })
+      setDeckSaveState("saved")
+      setTimeout(() => setDeckSaveState((s) => (s === "saved" ? "idle" : s)), 2500)
+    } catch {
+      setDeckSaveState("error")
+    }
+  }
+
+  /* 预计问答：真实 deck 用生成的 QA，否则示例 */
+  const qaList = realDeck?.qa?.length ? realDeck.qa : presentQA
+
   /* ---------------- 导出 ---------------- */
   function onExportEntry() {
     // 余额加载中不做付费墙判定（按钮已禁用，双保险防按 balance=0 误弹）
     if (membershipLoading) return
+    setExportGate(null)
     if (!canAfford) {
       openPaywall("present")
       return
@@ -271,9 +315,18 @@ export default function PresentPage() {
   }
   function doExport(_format: "pptx" | "pdf") {
     setExportOpen(false)
+    setExportGate(null)
     // 只有真实项目产物可导出（导出按钮无项目时已禁用；此处兜底提示）
     if (!projectId || !realDeck) {
       setExportStatus("请先从项目进入并生成述标演示，再导出")
+      setTimeout(() => setExportStatus(""), 3000)
+      return
+    }
+    // 步序闸守卫（defensive）：present 完成后 currentStep=export，一般已放行；
+    // 未到 export/done 就不调 runStep("export")（后端必 409），给友好提示
+    const cur = info?.project.currentStep
+    if (cur && cur !== "export" && cur !== "done") {
+      setExportStatus("述标生成完成后才能导出，请先完成本步生成")
       setTimeout(() => setExportStatus(""), 3000)
       return
     }
@@ -292,8 +345,16 @@ export default function PresentPage() {
         }
         window.open(url, "_blank")
         setExportStatus("已导出，浏览器开始下载")
-      } catch {
-        setExportStatus("下载失败，请重试")
+      } catch (e) {
+        // 错误码直通：402 引导充值（持久提示），409 步骤顺序，其余通用重试
+        if (e instanceof ApiError && e.status === 402) {
+          setExportGate({ text: "积分不足，无法导出", href: "/membership", label: "去充值" })
+          setExportStatus("")
+        } else if (e instanceof ApiError && e.status === 409) {
+          setExportStatus("步骤顺序不符，请先完成前序步骤")
+        } else {
+          setExportStatus("下载失败，请重试")
+        }
       } finally {
         setTimeout(() => setExportStatus(""), 3000)
       }
@@ -305,7 +366,15 @@ export default function PresentPage() {
       {/* 流程返回区：上一步 + 面包屑 */}
       <div className="shrink-0 px-4 pt-4 sm:px-6">
         <FlowNav current="present" />
-      {<StepBanner running={stepRunning} error={stepError} runningText="AI 正在基于标书与评分点生成述标稿与 PPT…" onRetry={() => void start()} />}
+      {
+        <StepBanner
+          running={stepRunning}
+          error={stepError}
+          runningText="AI 正在基于标书与评分点生成述标稿与 PPT…"
+          onRetry={() => void start({ duration, template: styleId })}
+          action={stepErrorStatus === 402 ? { href: "/membership", label: "去充值" } : undefined}
+        />
+      }
       </div>
       {/* 顶部工具条 */}
       <div className="shrink-0 border-b border-border bg-card px-4 py-3 sm:px-6">
@@ -357,6 +426,26 @@ export default function PresentPage() {
                   </button>
                 </span>
               )}
+              {/* 保存编辑（真实项目：整份回写 present 步 deck，导出自动用编辑后内容） */}
+              {projectId && realDeck && (
+                <button
+                  onClick={() => void saveDeck()}
+                  disabled={deckSaveState === "saving"}
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-semibold transition-colors disabled:opacity-70 ${
+                    deckSaveState === "error"
+                      ? "border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive/15"
+                      : "border-primary/40 gradient-brand-soft text-primary hover:opacity-90"
+                  }`}
+                >
+                  {deckSaveState === "saving"
+                    ? "保存中…"
+                    : deckSaveState === "saved"
+                      ? "已保存"
+                      : deckSaveState === "error"
+                        ? "保存失败，点击重试"
+                        : "保存编辑"}
+                </button>
+              )}
               {/* 导出 */}
               <button
                 onClick={onExportEntry}
@@ -400,6 +489,14 @@ export default function PresentPage() {
           </div>
         )}
         {exportStatus && <p className="mt-2 text-xs font-medium text-primary">{exportStatus}</p>}
+        {exportGate && (
+          <p className="mt-2 text-xs font-medium text-destructive">
+            {exportGate.text}
+            <Link href={exportGate.href} className="ml-1.5 font-semibold text-primary underline">
+              {exportGate.label}
+            </Link>
+          </p>
+        )}
         {membershipError && <p className="mt-2 text-xs font-medium text-destructive">{membershipError}</p>}
       </div>
 
@@ -410,7 +507,7 @@ export default function PresentPage() {
           onDuration={changeDuration}
           balance={balance}
           balanceLoading={membershipLoading}
-          generating={genState === "generating"}
+          generating={genState === "generating" || stepRunning}
           onGenerate={runGenerate}
           styleName={style.name}
           refPpt={refPpt}
@@ -552,10 +649,10 @@ export default function PresentPage() {
                   <div className="flex items-center gap-2">
                     <HelpCircle className="size-4 text-primary" />
                     <h3 className="text-sm font-semibold text-foreground">评委可能提问 · 建议回答</h3>
-                    <span className="ml-auto text-xs text-muted-foreground">{presentQA.length} 条</span>
+                    <span className="ml-auto text-xs text-muted-foreground">{qaList.length} 条</span>
                   </div>
                   <div className="mt-3 flex flex-col gap-2.5">
-                    {presentQA.map((qa, i) => (
+                    {qaList.map((qa, i) => (
                       <div key={i} className="rounded-xl border border-border bg-background p-3.5">
                         <p className="flex items-start gap-2 text-sm font-medium text-foreground">
                           <span className={`mt-0.5 text-xs font-bold ${style.accent}`}>Q{i + 1}</span>
@@ -693,63 +790,3 @@ export default function PresentPage() {
   )
 }
 
-/* ============== 幻灯片预览画布 ============== */
-function SlidePreview({ slide, style }: { slide: Slide; style: (typeof slideStyles)[number] }) {
-  if (slide.kind === "cover" || slide.kind === "end") {
-    return (
-      <div className={`flex aspect-video flex-col items-center justify-center rounded-2xl ${style.coverBg} p-8 text-center text-white shadow-lg`}>
-        <Presentation className="size-10 opacity-90" />
-        <h2 className="mt-4 text-2xl font-bold text-balance">{slide.title}</h2>
-        <div className="mt-4 flex flex-col gap-1 text-sm text-white/85">
-          {slide.bullets.map((b, i) => (
-            <span key={i}>{b}</span>
-          ))}
-        </div>
-      </div>
-    )
-  }
-  return (
-    <div className="aspect-video overflow-hidden rounded-2xl border border-border bg-card p-7 shadow-lg">
-      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${style.chip}`}>
-        <ListChecks className="size-3" />
-        {slide.scoring}
-      </span>
-      <div className="mt-3 flex items-center gap-2.5">
-        <span className={`h-6 w-1 rounded-full ${style.bar}`} />
-        <h2 className="text-xl font-bold text-foreground text-balance">{slide.title}</h2>
-      </div>
-      <ul className="mt-5 flex flex-col gap-2.5">
-        {slide.bullets.map((b, i) => (
-          <li key={i} className="flex items-start gap-2.5 text-sm leading-relaxed text-foreground">
-            <span className={`mt-1.5 size-1.5 shrink-0 rounded-full ${style.dot}`} />
-            {b}
-          </li>
-        ))}
-      </ul>
-    </div>
-  )
-}
-
-/* ============== 付费模糊块 ============== */
-function LockedBlock({ text, rows }: { text: string; rows: number }) {
-  return (
-    <div className="relative mt-1.5">
-      <p
-        className="select-none overflow-hidden rounded-lg border border-border bg-background px-3 py-2 text-sm leading-relaxed text-foreground blur-[4px]"
-        style={{ maxHeight: `${rows * 1.6}rem` }}
-        aria-hidden
-      >
-        {text}
-      </p>
-      <div className="absolute inset-0 flex items-center justify-center">
-        <Link
-          href="/membership"
-          className="inline-flex items-center gap-1.5 rounded-lg gradient-brand px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-opacity hover:opacity-90"
-        >
-          <Lock className="size-3.5" />
-          解锁完整演讲稿与问答
-        </Link>
-      </div>
-    </div>
-  )
-}

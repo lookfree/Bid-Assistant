@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { fetchMembership } from "./membership-api"
 import { isMember } from "./membership-view"
 import { tokenStore } from "./token-store"
@@ -47,10 +47,23 @@ export function useMembership() {
     }
   }, [])
 
+  // 主动刷新（余额变动后调用，如单章改写扣费）：静默重拉并更新跨页缓存。
+  const reload = useCallback(() => {
+    if (!tokenStore.get()) return
+    fetchMembership()
+      .then((ov) => {
+        cachedOverview = ov
+        setOverview(ov)
+        setError(null)
+      })
+      .catch(() => {})
+  }, [])
+
   return {
     overview,
     loading,
     error,
+    reload,
     balance: overview?.balance ?? 0,
     isMember: isMember(overview),
   }

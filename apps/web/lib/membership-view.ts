@@ -45,6 +45,11 @@ export function planPriceYuan(plan: PlanView | undefined, billing: "month" | "ye
   return billing === "year" ? plan.priceYearYuan : plan.priceMonthYuan
 }
 
+/** 取某计费口径的单次积分消耗：优先后端实时口径（overview.creditCosts，运营可配），缺则回退默认值。 */
+export function creditCostValue(ov: MembershipOverview | null, key: string, fallback: number): number {
+  return ov?.creditCosts.find((c) => c.key === key)?.value ?? fallback
+}
+
 /** 按 tierId 索引后端套餐（渲染时叠加到静态文案卡上）。 */
 export function plansByTier(ov: MembershipOverview | null): Map<TierId, PlanView> {
   const m = new Map<TierId, PlanView>()

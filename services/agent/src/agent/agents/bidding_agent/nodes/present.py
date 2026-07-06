@@ -13,18 +13,27 @@ def _plain(html: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html)).strip()
 
 
-def make_present_node(ctx, *, duration: int = 15):
+def make_present_node(ctx):
     """graph 节点（两段式 §4.2.1）：读 chapters+read → 产 DeckSpec（LLM）→ render_pptx 确定性渲染
-    → .pptx 落 MinIO → 写 state['deck'] / artifacts['pptx']；模型未提交即失败（可重试）。"""
-    duration = duration if duration in (10, 15, 20) else 15   # 对齐 DeckSpec.duration 档位
+    → .pptx 落 MinIO → 写 state['deck'] / artifacts['pptx']；模型未提交即失败（可重试）。
+    spec315a：duration/template 取自 state['run_input']（App 每 run 透传），非法值回默认。"""
     async def present_node(state):
+        run_input = state.get("run_input") or {}
+        duration = run_input.get("duration")
+        duration = duration if duration in (10, 15, 20) else 15       # 对齐 DeckSpec.duration 档位
+        template = run_input.get("template")
+        template = template if template in ("blue", "tech", "gov") else None
         chapters = {cid: _plain(html) for cid, html in (state.get("chapters") or {}).items()}
         payload = {"chapters": chapters, "read": slim_read(state.get("read") or {}),
                    "duration": duration}
         user = f"标书与评分点：\n{json.dumps(payload, ensure_ascii=False)}\n时长 {duration} 分钟，请产 DeckSpec。"
+        if template:
+            user += f"\n客户指定模板：{template}（template 字段必须用它）。"
         deck = await run_submit_agent(
             ctx, PRESENT_SYSTEM_PROMPT, user,
             "submit_deck", DeckSpec, "提交述标 DeckSpec")
+        if template:
+            deck.template = template   # 客户指定优先：模型没照办也强制生效
         data = render_pptx(deck)   # 模板色取 deck.template
         key = await upload_artifact(
             ctx, "present.pptx", data,

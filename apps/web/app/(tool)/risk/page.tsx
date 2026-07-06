@@ -34,29 +34,13 @@ import { libraryMatch } from "@/lib/library"
 import { useLibrary } from "@/lib/use-library"
 import { useMembership } from "@/lib/use-membership"
 import { riskFindings } from "@/lib/sample-bid"
+import { deriveRisk, type RealRisk } from "@/lib/risk-derive"
 import { useStep } from "@/lib/use-step"
-
-// agent RiskReport（camelCase）：与原型 riskFindings 同构
-type RealRisk = typeof riskFindings
 
 type Tab = "reject" | "dedup" | "checklist"
 
 /** 审核表导出消耗积分（沿用导出口径） */
 const CHECKLIST_EXPORT_COST = creditCosts.find((c) => c.feature.startsWith("导出"))?.value ?? 20
-
-/* ---------------- 废标风险审查数据（真实项目用 review 步结果，否则示例） ---------------- */
-function deriveRisk(f: RealRisk) {
-  return {
-    score: f.score,
-    overview: [
-      { label: "高风险", value: f.high, tone: "destructive" },
-      { label: "中风险", value: f.mid, tone: "warning" },
-      { label: "已通过", value: f.passed, tone: "success" },
-    ],
-    riskItems: f.items.map((x) => ({ level: x.level, tone: x.tone, title: x.title, chapter: x.tenderRef, advice: x.advice })),
-    passed: f.passedItems,
-  }
-}
 
 const toneClasses: Record<string, { badge: string; icon: string; border: string }> = {
   destructive: { badge: "bg-destructive/10 text-destructive", icon: "text-destructive", border: "border-destructive/30" },

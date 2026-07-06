@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import {
   FileText,
@@ -18,24 +18,27 @@ import {
 } from "lucide-react"
 import {
   projectMeta,
-  tenderDoc as docSections,
+  tenderDoc,
   analysisCategories as sampleCategories,
   scoringTable as sampleScoring,
-  clauseLocation,
   type AnalysisItem,
   type ScoringRow,
 } from "@/lib/sample-bid"
 import { FileText as FileTextIcon } from "lucide-react"
 import { useStep } from "@/lib/use-step"
+import { clauseLocationIn, groupDocSections, type DocSentence } from "@/lib/doc-sections"
 
 // agent ReadResult（App 已转 camelCase）→ 原型渲染形状；icon 按 key 从示例类目合并（agent 不产 UI 组件）。
+// docSections = 招标原文分句（spec315a），有真实结果时左栏渲染真实原文。
 type RealRead = {
   categories: { key: string; title: string; items: AnalysisItem[] }[]
   scoring?: ScoringRow[]
   riskSummary?: string[]
+  docSections?: DocSentence[]
 }
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepBanner } from "@/components/tool/step-banner"
+import { TenderDocPanel } from "@/components/tool/tender-doc-panel"
 
 const docFileName = projectMeta.fileName
 
@@ -54,6 +57,12 @@ export default function ReadPage() {
       }))
     : sampleCategories
   const scoringTable = real?.scoring?.length ? real.scoring : sampleScoring
+  // 左栏原文：真实项目且 read 结果带分句时按 id 前缀分组渲染真实原文，否则回落示例
+  const docSections = useMemo(
+    () => (real?.docSections?.length ? groupDocSections(real.docSections) : tenderDoc),
+    [real],
+  )
+  const locate = (clauseIds?: string[]) => clauseLocationIn(docSections, clauseIds)
 
   const clauseRefs = useRef<Record<string, HTMLParagraphElement | null>>({})
   /* 精确高亮的条款 id（可多条）+ 弱上下文高亮的所属章节 */
@@ -183,47 +192,16 @@ export default function ReadPage() {
       )}
 
       <div className="mt-5 grid gap-5 lg:grid-cols-2">
-        {/* 左侧：原始文档 */}
-        <section className="flex flex-col rounded-2xl border border-border bg-card lg:h-[calc(100vh-11rem)] lg:min-h-[600px]">
-          <header className="flex items-center gap-2 border-b border-border px-5 py-3.5">
-            <FileText className="size-4 shrink-0 text-primary" />
-            <span className="truncate text-sm font-semibold text-foreground">{docFileName}</span>
-            <span className="ml-auto shrink-0 rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">原文</span>
-          </header>
-          <div className="flex-1 overflow-y-auto px-6 py-5">
-            {docSections.map((sec) => (
-              <div
-                key={sec.id}
-                className={`rounded-xl px-3 py-3 transition-colors ${
-                  activeSection === sec.id ? "bg-primary/[0.04]" : ""
-                } ${sec.id !== docSections[0].id ? "mt-4" : ""}`}
-              >
-                <h3 className="text-sm font-bold text-foreground">{sec.title}</h3>
-                <div className="mt-2 flex flex-col gap-1.5">
-                  {sec.paragraphs.map((clause) => {
-                    const hit = activeClauses.includes(clause.id)
-                    return (
-                      <p
-                        key={clause.id}
-                        ref={(el) => {
-                          clauseRefs.current[clause.id] = el
-                        }}
-                        className={`scroll-mt-16 rounded-lg px-2.5 py-1.5 text-[13px] leading-relaxed transition-colors ${
-                          hit
-                            ? "border-l-2 border-primary bg-primary/10 font-medium text-foreground"
-                            : "text-muted-foreground"
-                        }`}
-                      >
-                        {hit && <MapPin className="mr-1 inline size-3.5 -translate-y-px text-primary" />}
-                        {clause.text}
-                      </p>
-                    )
-                  })}
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
+        {/* 左侧：原始文档（真实分句 / 示例回落） */}
+        <TenderDocPanel
+          fileName={docFileName}
+          sections={docSections}
+          activeSection={activeSection}
+          activeClauses={activeClauses}
+          registerClauseRef={(id, el) => {
+            clauseRefs.current[id] = el
+          }}
+        />
 
         {/* 右侧：分类分析 */}
         <section className="flex flex-col rounded-2xl border border-border bg-card lg:h-[calc(100vh-11rem)] lg:min-h-[600px]">
@@ -306,10 +284,10 @@ export default function ReadPage() {
                                 <button
                                   onClick={() => handleItemClick(row.clauseIds, row.id)}
                                   className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-muted-foreground hover:text-primary"
-                                  aria-label={`定位到招标原文 ${clauseLocation(row.clauseIds)}`}
+                                  aria-label={`定位到招标原文 ${locate(row.clauseIds)}`}
                                 >
                                   <MapPin className="size-3.5" />
-                                  {clauseLocation(row.clauseIds)}
+                                  {locate(row.clauseIds)}
                                 </button>
                               </td>
                             </tr>
@@ -368,7 +346,7 @@ export default function ReadPage() {
                               {item.status === "found" && (
                                 <span className="mt-1.5 inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
                                   <MapPin className="size-3" />
-                                  定位 {clauseLocation(item.clauseIds)}
+                                  定位 {locate(item.clauseIds)}
                                 </span>
                               )}
                             </span>

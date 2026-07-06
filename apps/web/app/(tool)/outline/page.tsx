@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import {
   FileText,
@@ -16,19 +16,23 @@ import {
   Plus,
   Check,
   X,
+  Loader2,
+  Save,
 } from "lucide-react"
 import {
   projectMeta,
-  tenderDoc as docSections,
+  tenderDoc,
   techChapters as techChaptersData,
   businessChapters as businessChaptersData,
-  clauseLocation,
   type OutlineItem,
   type BidChapter,
 } from "@/lib/sample-bid"
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepBanner } from "@/components/tool/step-banner"
+import { TenderDocPanel } from "@/components/tool/tender-doc-panel"
 import { useStep } from "@/lib/use-step"
+import { patchStep, stepResult } from "@/lib/project"
+import { clauseLocationIn, groupDocSections, type DocSentence } from "@/lib/doc-sections"
 
 // agent Outline（camelCase）：chapters[{id,no,title,group,sourced,items[{id,label,clauseIds,isNew}]}]
 type RealOutline = { chapters: (BidChapter & { group: "tech" | "business" })[] }
@@ -40,11 +44,19 @@ type Chapter = {
   id: string
   no: string
   title: string
+  /** 是否能在招标文件中索引到来源（保存回写 Outline 契约需要） */
+  sourced: boolean
   items: OutlineItem[]
 }
 
 const toOutline = (list: BidChapter[]): Chapter[] =>
-  list.map(({ id, no, title, items }) => ({ id, no, title, items: items.map((it) => ({ ...it })) }))
+  list.map(({ id, no, title, sourced, items }) => ({
+    id,
+    no,
+    title,
+    sourced,
+    items: items.map((it) => ({ ...it })),
+  }))
 
 const initialTechOutline: Chapter[] = toOutline(techChaptersData)
 const initialBusinessOutline: Chapter[] = toOutline(businessChaptersData)
@@ -64,7 +76,7 @@ const genId = () => `gen-${Date.now()}-${idCounter++}`
 export default function OutlinePage() {
   const clauseRefs = useRef<Record<string, HTMLParagraphElement | null>>({})
   const [activeClauses, setActiveClauses] = useState<string[]>([])
-  const [activeSection, setActiveSection] = useState<string>(docSections[0].id)
+  const [activeSection, setActiveSection] = useState<string>(tenderDoc[0].id)
   const [activeItem, setActiveItem] = useState<string>("")
   const [activeTab, setActiveTab] = useState<TabId>("tech")
 
@@ -81,6 +93,44 @@ export default function OutlinePage() {
     setTechChapters(toOutline(real.chapters.filter((c) => c.group === "tech")))
     setBusinessChapters(toOutline(real.chapters.filter((c) => c.group === "business")))
   }, [real])
+
+  // 左栏原文：真实项目取 read 步结果的分句（按 id 前缀分组），否则回落示例
+  const readResult = stepResult<{ docSections?: DocSentence[] }>(info, "read")
+  const docSections = useMemo(
+    () => (readResult?.docSections?.length ? groupDocSections(readResult.docSections) : tenderDoc),
+    [readResult],
+  )
+  const locate = (clauseIds?: string[]) => clauseLocationIn(docSections, clauseIds)
+
+  // 提纲编辑保存：把当前树序列化回 Outline 形状整份回写（真实项目且提纲已生成时可用）
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle")
+  async function saveOutline() {
+    if (!projectId || saveState === "saving") return
+    setSaveState("saving")
+    const serialize = (list: Chapter[], group: "tech" | "business") =>
+      list.map((ch) => ({
+        id: ch.id,
+        no: ch.no,
+        title: ch.title,
+        group,
+        sourced: ch.sourced,
+        items: ch.items.map((it) => ({
+          id: it.id,
+          label: it.label,
+          clauseIds: it.clauseIds ?? [],
+          isNew: it.isNew ?? false,
+        })),
+      }))
+    try {
+      await patchStep(projectId, "outline", {
+        chapters: [...serialize(techChapters, "tech"), ...serialize(businessChapters, "business")],
+      })
+      setSaveState("saved")
+      setTimeout(() => setSaveState((s) => (s === "saved" ? "idle" : s)), 2500)
+    } catch {
+      setSaveState("error")
+    }
+  }
 
   // 正在编辑的目标：条目或章节标题
   const [editingItem, setEditingItem] = useState<string | null>(null)
@@ -184,7 +234,7 @@ export default function OutlinePage() {
     setter(kind)((prev) => {
       const newId = genId()
       const no = `第${prev.length + 1}章`
-      return [...prev, { id: newId, no, title: "新增章节", items: [] }]
+      return [...prev, { id: newId, no, title: "新增章节", sourced: false, items: [] }]
     })
   }
 
@@ -204,61 +254,60 @@ export default function OutlinePage() {
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2.5 rounded-xl bg-muted/60 px-3 py-1.5 text-xs">
-          <span className="inline-flex items-center gap-1 font-medium text-success">
-            <MapPin className="size-3.5" />
-            可索引 {indexedCount}
-          </span>
-          <span className="h-3 w-px bg-border" />
-          <span className="inline-flex items-center gap-1 font-medium text-primary">
-            <Sparkles className="size-3.5" />
-            新增 {newCount}
-          </span>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5 rounded-xl bg-muted/60 px-3 py-1.5 text-xs">
+            <span className="inline-flex items-center gap-1 font-medium text-success">
+              <MapPin className="size-3.5" />
+              可索引 {indexedCount}
+            </span>
+            <span className="h-3 w-px bg-border" />
+            <span className="inline-flex items-center gap-1 font-medium text-primary">
+              <Sparkles className="size-3.5" />
+              新增 {newCount}
+            </span>
+          </div>
+          {/* 保存提纲（真实项目且提纲已生成后可用） */}
+          {projectId && real && (
+            <div className="flex items-center gap-2">
+              {saveState === "error" && <span className="text-xs font-medium text-destructive">保存失败，请重试</span>}
+              <button
+                onClick={() => void saveOutline()}
+                disabled={saveState === "saving"}
+                className="inline-flex items-center gap-1.5 rounded-xl gradient-brand px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-70"
+              >
+                {saveState === "saving" ? (
+                  <>
+                    <Loader2 className="size-4 animate-spin" />
+                    保存中…
+                  </>
+                ) : saveState === "saved" ? (
+                  <>
+                    <Check className="size-4" />
+                    已保存
+                  </>
+                ) : (
+                  <>
+                    <Save className="size-4" />
+                    保存提纲
+                  </>
+                )}
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
       <div className="mt-5 grid gap-5 lg:grid-cols-2">
-        {/* 左侧：原始文档 */}
-        <section className="flex flex-col rounded-2xl border border-border bg-card lg:h-[calc(100vh-11rem)] lg:min-h-[600px]">
-          <header className="flex items-center gap-2 border-b border-border px-5 py-3.5">
-            <FileText className="size-4 shrink-0 text-primary" />
-            <span className="truncate text-sm font-semibold text-foreground">{docFileName}</span>
-            <span className="ml-auto shrink-0 rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">原文</span>
-          </header>
-          <div className="flex-1 overflow-y-auto px-6 py-5">
-            {docSections.map((sec) => (
-              <div
-                key={sec.id}
-                className={`rounded-xl px-3 py-3 transition-colors ${
-                  activeSection === sec.id ? "bg-primary/[0.04]" : ""
-                } ${sec.id !== docSections[0].id ? "mt-4" : ""}`}
-              >
-                <h3 className="text-sm font-bold text-foreground">{sec.title}</h3>
-                <div className="mt-2 flex flex-col gap-1.5">
-                  {sec.paragraphs.map((clause) => {
-                    const hit = activeClauses.includes(clause.id)
-                    return (
-                      <p
-                        key={clause.id}
-                        ref={(el) => {
-                          clauseRefs.current[clause.id] = el
-                        }}
-                        className={`scroll-mt-16 rounded-lg px-2.5 py-1.5 text-[13px] leading-relaxed transition-colors ${
-                          hit
-                            ? "border-l-2 border-primary bg-primary/10 font-medium text-foreground"
-                            : "text-muted-foreground"
-                        }`}
-                      >
-                        {hit && <MapPin className="mr-1 inline size-3.5 -translate-y-px text-primary" />}
-                        {clause.text}
-                      </p>
-                    )
-                  })}
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
+        {/* 左侧：原始文档（真实分句 / 示例回落） */}
+        <TenderDocPanel
+          fileName={docFileName}
+          sections={docSections}
+          activeSection={activeSection}
+          activeClauses={activeClauses}
+          registerClauseRef={(id, el) => {
+            clauseRefs.current[id] = el
+          }}
+        />
 
         {/* 右侧：提纲 */}
         <section className="flex flex-col rounded-2xl border border-border bg-card lg:h-[calc(100vh-11rem)] lg:min-h-[600px]">
@@ -415,10 +464,10 @@ export default function OutlinePage() {
                                     {indexed ? (
                                       <span
                                         className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-success/10 px-1.5 py-0.5 text-[11px] font-medium text-success"
-                                        title={`定位到 ${clauseLocation(item.clauseIds)}`}
+                                        title={`定位到 ${locate(item.clauseIds)}`}
                                       >
                                         <MapPin className="size-3" />
-                                        {clauseLocation(item.clauseIds)}
+                                        {locate(item.clauseIds)}
                                       </span>
                                     ) : (
                                       <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary">
