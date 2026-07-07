@@ -61,6 +61,54 @@ export async function rewriteChapter(opts: {
   return (await r.json()) as { chapter_id: string; html: string }
 }
 
+/** agent 同步路由的非 2xx 错误：带状态码与响应体——查重 422（某文件解析失败 {error, file}）
+ *  是业务态，App 层需识别并透传给前端；其余状态一律 502。 */
+export class AgentHttpError extends Error {
+  constructor(
+    public status: number,
+    public body?: unknown,
+  ) {
+    super(`agent http ${status}`)
+  }
+}
+
+/** POST 到 agent 的同步路由（snake body），非 2xx 抛 AgentHttpError；解析/比对/渲染耗时较长 → 120s。 */
+async function postSync<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  const r = await fetch(`${getEnv().AGENT_BASE_URL}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(120_000),
+  })
+  if (!r.ok) throw new AgentHttpError(r.status, await r.json().catch(() => undefined))
+  return (await r.json()) as T
+}
+
+/** 标书查重（spec315b）：同步纯算法路由（不进 LangGraph thread）。
+ *  files 2-3 份 {key, label}（label=上传原始文件名，pairs 里 a/b 以此可读展示）。 */
+export async function dedupe(payload: {
+  files: Array<{ key: string; label: string }>
+  tenderKey?: string
+  dims: string[]
+  strategy: string
+}): Promise<{ pairs: unknown[]; overall: unknown; dims_run: string[] }> {
+  const body: Record<string, unknown> = { files: payload.files, dims: payload.dims, strategy: payload.strategy }
+  if (payload.tenderKey !== undefined) body.tender_key = payload.tenderKey // 基线扣除用的招标文件
+  return postSync("/dedupe", body)
+}
+
+/** 审核表渲染（spec315b）：无状态——App 把 groups+状态灌给 agent，agent 出 docx 落 MinIO 返 {key}。
+ *  groups 须已是 snake_case（App 层 toSnake 后透传）。 */
+export async function renderChecklist(payload: {
+  title: string
+  projectName?: string
+  groups: unknown[]
+}): Promise<{ key: string }> {
+  const body: Record<string, unknown> = { title: payload.title, groups: payload.groups }
+  if (payload.projectName !== undefined) body.project_name = payload.projectName
+  return postSync("/render/checklist", body)
+}
+
 export async function getRun(runId: string) {
   const r = await fetch(`${getEnv().AGENT_BASE_URL}/runs/${runId}`)
   return (await r.json()) as { status: string; result?: unknown }

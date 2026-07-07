@@ -40,10 +40,10 @@
 
 ## Tasks
 
-- [ ] **Task A（agent）**：parsing 扩展 + /dedupe + /render/checklist + pytest（含中文文本相似度用例、基线扣除、meta 命中、渲染冒烟）
-- [ ] **Task B（api）**：迁移（project_checklists + dedupe_runs）+ 4 端点 + 计费（**mbp 测试**：dedupe/export 的 hold-settle-failed 全分支、fileKeys 越权 400、checklist upsert 属主隔离）
-- [ ] **Task C（web）**：两 tab 接线 + tsc/build
-- [ ] **Task D**：/code-review 全修 → 双侧全绿 → commit → 部署 mbp
+- [x] **Task A（agent）**：parsing 扩展 + /dedupe + /render/checklist + pytest（含中文文本相似度用例、基线扣除、meta 命中、渲染冒烟）
+- [x] **Task B（api）**：迁移（project_checklists + dedupe_runs）+ 4 端点 + 计费（**mbp 测试**：dedupe/export 的 hold-settle-failed 全分支、fileKeys 越权 400、checklist upsert 属主隔离）
+- [x] **Task C（web）**：两 tab 接线 + tsc/build
+- [x] **Task D**：/code-review 全修 → 双侧全绿 → commit → 部署 mbp
 
 ## 决策记录
 

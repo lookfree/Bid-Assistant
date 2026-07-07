@@ -21,6 +21,7 @@ dependencies = [
   "boto3>=1.43.38",
   "python-pptx>=1.0.2",
   "beautifulsoup4>=4.15.0",
+  "pillow>=12.3.0",
 ]
 
 [dependency-groups]

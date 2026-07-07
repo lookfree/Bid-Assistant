@@ -12,6 +12,8 @@ import { referralRoutes } from "./routes/referral"
 import { creditsRoutes } from "./routes/credits"
 import { ordersRoutes } from "./routes/orders"
 import { libraryRoutes } from "./routes/library"
+import { checklistRoutes } from "./routes/checklist"
+import { dedupeRoutes } from "./routes/dedupe"
 import { adminRoutes } from "./routes/admin"
 import type { SmsCodeService } from "./services/sms-code"
 import type { makeWechatAuth } from "./services/wechat-auth"
@@ -34,7 +36,7 @@ export function createApp(deps: AppDeps) {
     "*",
     cors({
       origin: allow,
-      allowMethods: ["GET", "POST", "OPTIONS"],
+      allowMethods: ["GET", "POST", "PUT", "OPTIONS"], // PUT：/api/checklist upsert（spec315b）
       allowHeaders: ["Content-Type", "Authorization"],
       credentials: true,
     }),
@@ -70,6 +72,8 @@ export function createApp(deps: AppDeps) {
   app.route("/api/credits", creditsRoutes()) // 积分流水分页（spec308）；自带 authMiddleware
   app.route("/api/orders", ordersRoutes()) // 我的订单分页（spec308）；自带 authMiddleware
   app.route("/api/library", libraryRoutes()) // 个人资料库 CRUD；自带 authMiddleware
+  app.route("/api/checklist", checklistRoutes()) // 终极审核表持久化+导出（spec315b）；自带 authMiddleware
+  app.route("/api/dedupe", dedupeRoutes()) // 标书查重计费编排（spec315b）；自带 authMiddleware
   app.route("/admin-api", adminRoutes()) // 运营后台（spec309）；独立 admin 身份/RBAC，与 C 端完全隔离
   return app
 }

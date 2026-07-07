@@ -1,0 +1,70 @@
+import { api, type RequestFn } from "./api"
+
+// 标书查重 + 终极审核表接口封装（spec315b Web 侧契约），全部建在 api.request 上。
+// 工厂形式（照 library-api.ts 模式）：createRiskApi(request) 便于测试注入 fetchImpl，
+// 模块底部导出绑定单例与具名函数，页面直接 import 使用。
+
+/* ---------------- 标书查重 POST /api/dedupe ---------------- */
+
+export type DedupeDim = "text" | "image" | "meta" | "baseline"
+export type DedupeStrategy = "fast" | "standard" | "strict"
+
+export type DedupeHit = {
+  dim: DedupeDim
+  aText?: string
+  bText?: string
+  detail: string
+}
+
+export type DedupePair = {
+  a: string
+  b: string
+  /** 相似度 0-100 */
+  score: number
+  tone: "destructive" | "warning" | "success"
+  note: string
+  hits: DedupeHit[]
+}
+
+export type DedupeResult = {
+  pairs: DedupePair[]
+  overall: { maxScore: number; highPairs: number }
+  dimsRun: DedupeDim[]
+}
+
+/* ---------------- 终极审核表 GET/PUT /api/checklist ---------------- */
+
+export type CheckStatus = "pass" | "risk" | "pending"
+
+/** 单项持久化状态，键为 "组id-序号"（如 "A-0"）。 */
+export type ChecklistItemState = { status: CheckStatus; owner: string; note: string }
+
+export type ChecklistExportGroup = {
+  id: string
+  title: string
+  items: { text: string; status: CheckStatus; owner: string; note: string; libraryHit: string | null }[]
+}
+
+export function createRiskApi(request: RequestFn) {
+  return {
+    /** 发起查重（计费点在后端：hold "dedupe" → settle）。402 积分不足 / 400 invalid_files / 422 解析失败 / 502 agent_failed。 */
+    runDedupe: (body: { fileKeys: string[]; tenderKey?: string; dims: DedupeDim[]; strategy: DedupeStrategy }) =>
+      request<DedupeResult>("/api/dedupe", { method: "POST", body: JSON.stringify(body) }),
+
+    getChecklist: (projectId: string | null): Promise<{ items: Record<string, ChecklistItemState> }> =>
+      request(`/api/checklist${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
+
+    saveChecklist: (projectId: string | null, items: Record<string, ChecklistItemState>): Promise<{ ok: boolean }> =>
+      request("/api/checklist", {
+        method: "PUT",
+        body: JSON.stringify({ ...(projectId ? { projectId } : {}), items }),
+      }),
+
+    /** 导出签字版审核表（计费点在后端：hold "export" → settle）。402 积分不足 / 502 agent_failed。 */
+    exportChecklist: (body: { projectId?: string; title?: string; groups: ChecklistExportGroup[] }) =>
+      request<{ url: string; cost: number }>("/api/checklist/export", { method: "POST", body: JSON.stringify(body) }),
+  }
+}
+
+export const riskApi = createRiskApi(api.request)
+export const { runDedupe, getChecklist, saveChecklist, exportChecklist } = riskApi

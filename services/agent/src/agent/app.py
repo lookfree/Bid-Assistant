@@ -6,6 +6,8 @@ from agent import db, redis_client
 from agent.routes.health import router as health_router
 from agent.routes.runs import router as runs_router
 from agent.routes.chapters import router as chapters_router
+from agent.routes.dedupe import router as dedupe_router
+from agent.routes.checklist import router as checklist_router
 
 
 @asynccontextmanager
@@ -22,4 +24,6 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(runs_router)
     app.include_router(chapters_router)
+    app.include_router(dedupe_router)      # spec315b 查重（同步、无 thread）
+    app.include_router(checklist_router)   # spec315b 审核表渲染（同步无状态）
     return app
