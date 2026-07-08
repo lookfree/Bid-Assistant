@@ -1,9 +1,12 @@
 "use client"
 
 import Link from "next/link"
-import { ArrowRight, Sparkles, Upload } from "lucide-react"
+import { ArrowRight, PlayCircle, Upload } from "lucide-react"
 
-/** 非 demo 且无进行中项目时的引导卡片（四个工具页共用）：不渲染任何示例内容。 */
+// 演示视频入口：未配置链接时整个隐藏（视频上线后配置 env 才显示）
+const DEMO_VIDEO_URL = process.env.NEXT_PUBLIC_DEMO_VIDEO_URL
+
+/** 非 demo 且无进行中项目时的引导卡片（四个工具页共用）：只指向上传，不渲染任何示例内容。 */
 export function NoProjectGuide() {
   return (
     <div className="flex flex-1 items-center justify-center px-4 py-16">
@@ -23,13 +26,16 @@ export function NoProjectGuide() {
             上传招标文件
             <ArrowRight className="size-4" />
           </Link>
-          <Link
-            href="/read?demo=1"
-            className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-card px-5 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
-          >
-            <Sparkles className="size-4 text-primary" />
-            示例体验
-          </Link>
+          {DEMO_VIDEO_URL && (
+            <button
+              type="button"
+              onClick={() => window.open(DEMO_VIDEO_URL, "_blank")}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-card px-5 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+            >
+              <PlayCircle className="size-4 text-primary" />
+              观看演示视频
+            </button>
+          )}
         </div>
       </div>
     </div>

@@ -12,21 +12,28 @@ import {
   FileCheck2,
   MapPin,
   Loader2,
-  Sparkles,
   Star,
-  LogOut,
+  ShieldCheck,
+  Wallet,
+  Cpu,
+  ClipboardList,
+  type LucideIcon,
 } from "lucide-react"
-import {
-  projectMeta,
-  tenderDoc,
-  analysisCategories as sampleCategories,
-  scoringTable as sampleScoring,
-  type AnalysisItem,
-  type ScoringRow,
-} from "@/lib/sample-bid"
-import { FileText as FileTextIcon } from "lucide-react"
+import type { AnalysisItem, ScoringRow } from "@/lib/bid-types"
 import { useStep } from "@/lib/use-step"
+import { useMembership } from "@/lib/use-membership"
+import { creditCostValue } from "@/lib/membership-view"
 import { clauseLocationIn, groupDocSections, type DocSentence } from "@/lib/doc-sections"
+
+// 分类解读类目 icon（agent 结果只带 key，不产 UI 组件），未知 key 兜底 FileText
+const CATEGORY_ICONS: Record<string, LucideIcon> = {
+  overview: FileText,
+  qualification: ShieldCheck,
+  commercial: Wallet,
+  technical: Cpu,
+  scoring: Target,
+  format: ClipboardList,
+}
 
 // agent ReadResult（App 已转 camelCase）→ 原型渲染形状；icon 按 key 从示例类目合并（agent 不产 UI 组件）。
 // docSections = 招标原文分句（spec315a），有真实结果时左栏渲染真实原文。
@@ -41,46 +48,45 @@ import { StepBanner } from "@/components/tool/step-banner"
 import { TenderDocPanel } from "@/components/tool/tender-doc-panel"
 import { NoProjectGuide } from "@/components/tool/no-project-guide"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
-import { clearDemoMode, useDemoMode } from "@/lib/use-demo"
+import { StepRunCta } from "@/components/tool/step-run-cta"
 
 
 export default function ReadPage() {
-  // 示例内容只允许在显式 demo 模式渲染；真实项目（projectId）永远优先
-  const isDemo = useDemoMode()
-  const { projectId, info, data: real, running, error, start } = useStep<RealRead>("read")
-  // 进入页面且该步未跑 → 自动触发读标（从上传页过来即开跑）。
-  // 自动触发只此一次（同 present 页做法）：info 刷新/依赖变化不得反复触发，失败重试走横幅按钮。
+  const { projectId, info, data: real, running, error, errorAction, start } = useStep<RealRead>("read")
+  const { overview } = useMembership()
+  const readCost = creditCostValue(overview, "read", 20)
+  // 唯一允许的自动触发：从上传页「开始智能读标」跳转（URL 带 ?autostart=1，那一下点击即计费授权，
+  // 费用已在上传按钮标注）。one-shot ref 保证只跑一次；其余场景一律走页面主按钮显式点击。
   const autoStarted = useRef(false)
   useEffect(() => {
-    if (autoStarted.current) return
-    if (projectId && info && !real && !running && info.project.currentStep === "read") {
-      autoStarted.current = true
-      void start()
-    }
+    if (autoStarted.current || !projectId || !info || real || running) return
+    if (typeof window === "undefined") return
+    if (new URLSearchParams(window.location.search).get("autostart") !== "1") return
+    if (info.project.currentStep !== "read") return
+    autoStarted.current = true
+    void start()
   }, [projectId, info, real, running, start])
-  // 三态数据源：真实结果 > demo 示例 > 空（真实项目未就绪时占位，不回落示例）
+  // 数据一律来自真实 read 步结果；该步未跑时页面停在显式生成入口，绝不渲染示例
   const categories = useMemo(
     () =>
       real
         ? real.categories.map((c) => ({
             ...c,
-            icon: sampleCategories.find((s) => s.key === c.key)?.icon ?? FileTextIcon,
+            icon: CATEGORY_ICONS[c.key] ?? FileText,
             items: c.items.map((i) => ({ ...i, clauseIds: i.clauseIds ?? [] })),
           }))
-        : isDemo
-          ? sampleCategories
-          : [],
-    [real, isDemo],
+        : [],
+    [real],
   )
-  const scoringTable = real?.scoring?.length ? real.scoring : isDemo ? sampleScoring : []
-  // 左栏原文：真实项目且 read 结果带分句时按 id 前缀分组渲染真实原文；demo 用示例
+  const scoringTable = real?.scoring ?? []
+  // 左栏原文：read 结果带分句时按 id 前缀分组渲染真实原文
   const docSections = useMemo(
-    () => (real?.docSections?.length ? groupDocSections(real.docSections) : isDemo ? tenderDoc : []),
-    [real, isDemo],
+    () => (real?.docSections?.length ? groupDocSections(real.docSections) : []),
+    [real],
   )
   const locate = (clauseIds?: string[]) => clauseLocationIn(docSections, clauseIds)
-  // 头部文件名：demo 用示例名；真实项目用项目名（GET /api/projects/:id 的 name，缺省兜底）
-  const docFileName = isDemo ? projectMeta.fileName : (info?.project.name ?? "我的项目")
+  // 头部文件名：项目名（GET /api/projects/:id 的 name，缺省兜底）
+  const docFileName = info?.project.name ?? "我的项目"
 
   const clauseRefs = useRef<Record<string, HTMLParagraphElement | null>>({})
   /* 精确高亮的条款 id（可多条）+ 弱上下文高亮的所属章节 */
@@ -113,8 +119,8 @@ export default function ReadPage() {
     setTimeout(() => setReportState("ready"), 1600)
   }
 
-  // 非 demo 且无进行中项目：不渲染任何示例内容，引导上传 / 示例体验
-  if (!projectId && !isDemo)
+  // 无进行中项目：只引导上传，不渲染任何示例内容
+  if (!projectId)
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
         <FlowNav current="read" />
@@ -122,35 +128,35 @@ export default function ReadPage() {
       </div>
     )
 
+  // 该步未跑：停在显式生成入口（消耗数标注在按钮上），运行中/失败由横幅呈现
+  if (!real)
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
+        <FlowNav current="read" />
+        <StepBanner
+          running={running}
+          error={error}
+          runningText="AI 正在通读招标文件，提取评分点与废标红线…（约 1–2 分钟）"
+          onRetry={() => void start()}
+          action={errorAction ?? undefined}
+        />
+        {running ? (
+          <StepPlaceholder text="读标完成后显示招标原文与分类解读" />
+        ) : (
+          <StepRunCta
+            title="开始智能读标"
+            desc="AI 通读招标文件，自动提取评分点、资格要求与废标红线，完成后可逐条定位原文"
+            costText={`消耗 ${readCost} 积分`}
+            actionLabel="开始智能读标"
+            onRun={() => void start()}
+          />
+        )}
+      </div>
+    )
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
       <FlowNav current="read" />
-      {<StepBanner running={running} error={error} runningText="AI 正在通读招标文件，提取评分点与废标红线…（约 1–2 分钟）" onRetry={() => void start()} />}
-      {isDemo && (
-        <div className="mb-4 flex flex-col gap-2 rounded-2xl border border-primary/20 gradient-brand-soft px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <p className="inline-flex items-center gap-2 text-xs font-medium text-primary sm:text-sm">
-            <Sparkles className="size-4" />
-            示例体验中：正在跑通「读标→提纲→生成→审查」全流程 · 不消耗积分
-          </p>
-          <div className="flex shrink-0 items-center gap-2">
-            <Link
-              href="/upload"
-              className="inline-flex items-center gap-1.5 rounded-lg bg-card px-3 py-1.5 text-xs font-semibold text-primary transition-colors hover:bg-card/70"
-            >
-              上传我的招标文件
-              <ArrowRight className="size-3.5" />
-            </Link>
-            <Link
-              href="/upload"
-              onClick={clearDemoMode}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-card/60"
-            >
-              <LogOut className="size-3.5" />
-              退出示例
-            </Link>
-          </div>
-        </div>
-      )}
       <div className="flex flex-col gap-4 rounded-2xl border border-border bg-card px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-start gap-3">
           <div className="flex size-10 shrink-0 items-center justify-center rounded-xl gradient-brand">

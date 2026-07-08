@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
@@ -21,28 +21,26 @@ import { usePaywall } from "@/components/paywall"
 import { CreditEstimate } from "@/components/credit-estimate"
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepBanner } from "@/components/tool/step-banner"
-import { DemoBanner } from "@/components/tool/demo-banner"
 import { NoProjectGuide } from "@/components/tool/no-project-guide"
-import { LibraryPicker } from "@/components/tool/library-picker"
+import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { creditCosts } from "@/lib/plans"
 import { useMembership } from "@/lib/use-membership"
+import { creditCostValue } from "@/lib/membership-view"
 import { useLibrary } from "@/lib/use-library"
 import { createEntry } from "@/lib/library-api"
 import { uploadFile } from "@/lib/files"
 import {
-  buildDeck,
   estimateMinutes,
-  presentQA,
   slideStyles,
   type Slide,
   type StyleId,
   type SlideStyle,
 } from "@/lib/present"
+import { LibraryPicker } from "@/components/tool/library-picker"
 import { type LibraryItem } from "@/lib/library"
 import { ApiError } from "@/lib/api-client"
-import { useStep } from "@/lib/use-step"
-import { useDemoMode } from "@/lib/use-demo"
-import { artifactUrl, patchStep, runStep } from "@/lib/project"
+import { stepPrereq, useStep } from "@/lib/use-step"
+import { artifactUrl, patchErrorMessage, patchStep, runStep } from "@/lib/project"
 import { AiPanel } from "./ai-panel"
 import { EmptyState, DURATIONS, type Duration } from "./empty-state"
 import { TemplatePicker } from "./template-picker"
@@ -54,14 +52,14 @@ type RealDeck = { title: string; duration: number; template: string; slides: Sli
 const EXPORT_COST = creditCosts.find((c) => c.feature.startsWith("导出"))?.value ?? 20
 
 export default function PresentPage() {
-  // 示例内容只允许在显式 demo 模式渲染；真实项目（projectId）永远优先
-  const isDemo = useDemoMode()
   const { openPaywall } = usePaywall()
   const router = useRouter()
 
   /* 真实积分余额与会员身份（GET /api/membership；仅 active 订阅算会员权益） */
-  const { balance, isMember, loading: membershipLoading, error: membershipError } = useMembership()
+  const { overview, balance, isMember, loading: membershipLoading, error: membershipError } = useMembership()
   const canAfford = balance >= EXPORT_COST
+  /* 述标生成计费口径（优先后端实时配置） */
+  const presentCost = creditCostValue(overview, "present", 80)
   /* 资料库数据提升到页面级：LibraryPicker / TemplatePicker 共用同一份，避免同页重复拉取 */
   const { items: libItems, loading: libLoading, error: libError, reload: reloadLibrary } = useLibrary()
 
@@ -75,8 +73,7 @@ export default function PresentPage() {
   /* 临时上传的企业模板（演示用） */
   const [uploadedTpls, setUploadedTpls] = useState<SlideStyle[]>([])
 
-  /* 大纲生成 */
-  const [genState, setGenState] = useState<"idle" | "generating" | "done">("idle")
+  /* 幻灯编辑状态（present 步结果到位后填充） */
   const [slides, setSlides] = useState<Slide[]>([])
   const [activeId, setActiveId] = useState<string>("")
 
@@ -88,18 +85,10 @@ export default function PresentPage() {
   const [exportGate, setExportGate] = useState<{ text: string; href: string; label: string } | null>(null)
   const [dragId, setDragId] = useState<string | null>(null)
 
-  /* 真实项目：present 步产 DeckSpec（真实幻灯+口播稿），到位即覆盖示例。
+  /* present 步产 DeckSpec（真实幻灯+口播稿）。计费步：绝不自动触发，
+     只由用户点击「生成述标大纲」（CreditEstimate 确认条，明示消耗）才跑，
      生成调用透传当前时长/模板（POST steps/present body {duration, template}）。 */
-  const { projectId, info, data: realDeck, running: stepRunning, error: stepError, errorStatus: stepErrorStatus, start } = useStep<RealDeck>("present")
-  // 自动触发只此一次（失败后改选时长/模板不静默重跑，重试走横幅按钮或生成按钮，避免误扣积分）
-  const autoStarted = useRef(false)
-  useEffect(() => {
-    if (autoStarted.current) return
-    if (projectId && info && !realDeck && !stepRunning && info.project.currentStep === "present") {
-      autoStarted.current = true
-      void start({ duration, template: styleId })
-    }
-  }, [projectId, info, realDeck, stepRunning, start, duration, styleId])
+  const { projectId, info, data: realDeck, running: stepRunning, error: stepError, errorAction: stepErrorAction, start } = useStep<RealDeck>("present")
   useEffect(() => {
     if (!realDeck) return
     setSlides(realDeck.slides)
@@ -107,8 +96,9 @@ export default function PresentPage() {
     // 选择器与后端已存 deck 对齐（保存/下次生成据此透传）
     if (DURATIONS.includes(realDeck.duration as Duration)) setDuration(realDeck.duration as Duration)
     if (slideStyles.some((s) => s.id === realDeck.template)) setStyleId(realDeck.template as StyleId)
-    setGenState("done")
   }, [realDeck])
+  /* deck 就绪 = present 步已有真实结果（编辑/保存/导出入口只在此后出现） */
+  const deckReady = !!realDeck
 
   /* 当前预览样式：套用企业模板时优先，否则用内置预设 */
   const style = enterpriseStyle ?? slideStyles.find((s) => s.id === styleId)!
@@ -177,31 +167,15 @@ export default function PresentPage() {
     await reloadLibrary()
   }
 
-  /* ---------------- 生成大纲 ---------------- */
+  /* ---------------- 生成大纲（用户显式点击才跑，透传当前时长/模板） ---------------- */
   function runGenerate() {
-    // 真实项目：跑 present 步并透传当前时长/模板；无项目（demo）回落示例 deck
-    if (projectId) {
-      void start({ duration, template: styleId })
-      return
-    }
-    setGenState("generating")
-    setTimeout(() => {
-      const deck = buildDeck(duration)
-      setSlides(deck)
-      setActiveId(deck[0]?.id ?? "")
-      setGenState("done")
-    }, 1100)
+    void start({ duration, template: styleId })
   }
 
-  /* 切换时长：demo 已生成则按新时长重建示例；真实项目只更新选择器
-     （新时长随下次生成透传，或经「保存」回写 deck.duration，避免误触重复扣积分） */
+  /* 切换时长：只更新选择器（新时长随下次生成透传，或经「保存」回写 deck.duration，
+     绝不静默重跑生成，避免误触重复扣积分） */
   function changeDuration(d: Duration) {
     setDuration(d)
-    if (!projectId && genState === "done") {
-      const deck = buildDeck(d)
-      setSlides(deck)
-      setActiveId(deck[0]?.id ?? "")
-    }
   }
 
   /* ---------------- 幻灯片编辑 ---------------- */
@@ -271,6 +245,7 @@ export default function PresentPage() {
   /* 把当前 deck（编辑后的幻灯 + 选择器时长/模板）序列化回 DeckSpec 整份回写 present 步结果；
      导出（export 步）由后端自动带编辑后 deck 重渲 pptx。 */
   const [deckSaveState, setDeckSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle")
+  const [deckSaveError, setDeckSaveError] = useState<string>("")
   async function saveDeck() {
     if (!projectId || !realDeck || deckSaveState === "saving") return
     setDeckSaveState("saving")
@@ -284,13 +259,15 @@ export default function PresentPage() {
       })
       setDeckSaveState("saved")
       setTimeout(() => setDeckSaveState((s) => (s === "saved" ? "idle" : s)), 2500)
-    } catch {
+    } catch (e) {
+      // 404 = 该步无真实 done 结果（step_not_done），精确提示
+      setDeckSaveError(patchErrorMessage(e))
       setDeckSaveState("error")
     }
   }
 
-  /* 预计问答：真实 deck 用生成的 QA；示例 QA 只在 demo 出现；真实缺失则不渲染问答卡 */
-  const qaList = realDeck?.qa?.length ? realDeck.qa : isDemo ? presentQA : []
+  /* 预计问答：deck 生成的 QA；缺失则不渲染问答卡 */
+  const qaList = realDeck?.qa ?? []
 
   /* ---------------- 导出 ---------------- */
   function onExportEntry() {
@@ -351,8 +328,8 @@ export default function PresentPage() {
     })()
   }
 
-  // 非 demo 且无进行中项目：不渲染任何示例内容，引导上传 / 示例体验
-  if (!projectId && !isDemo)
+  // 无进行中项目：只引导上传，不渲染任何示例内容
+  if (!projectId)
     return (
       <div className="flex h-[calc(100vh-4rem)] flex-col">
         <div className="shrink-0 px-4 pt-4 sm:px-6">
@@ -361,6 +338,9 @@ export default function PresentPage() {
         <NoProjectGuide />
       </div>
     )
+
+  // 前序步未完成：不给生成入口（点了也必 409），引导先补齐
+  const prereq = !realDeck ? stepPrereq(info, "present") : null
 
   return (
     <div className="flex h-[calc(100vh-4rem)] flex-col">
@@ -373,10 +353,9 @@ export default function PresentPage() {
           error={stepError}
           runningText="AI 正在基于标书与评分点生成述标稿与 PPT…"
           onRetry={() => void start({ duration, template: styleId })}
-          action={stepErrorStatus === 402 ? { href: "/membership", label: "去充值" } : undefined}
+          action={stepErrorAction ?? undefined}
         />
       }
-      {isDemo && <DemoBanner />}
       </div>
       {/* 顶部工具条 */}
       <div className="shrink-0 border-b border-border bg-card px-4 py-3 sm:px-6">
@@ -391,7 +370,7 @@ export default function PresentPage() {
             </div>
           </div>
 
-          {genState === "done" && (
+          {deckReady && (
             <div className="flex flex-wrap items-center gap-2">
               {/* 时长适配 */}
               <div className="inline-flex items-center gap-1 rounded-lg border border-border bg-background p-0.5">
@@ -499,22 +478,31 @@ export default function PresentPage() {
             </Link>
           </p>
         )}
+        {deckSaveState === "error" && <p className="mt-2 text-xs font-medium text-destructive">{deckSaveError || "保存失败，请重试"}</p>}
         {membershipError && <p className="mt-2 text-xs font-medium text-destructive">{membershipError}</p>}
       </div>
 
-      {/* 主体 */}
-      {genState !== "done" ? (
-        <EmptyState
-          duration={duration}
-          onDuration={changeDuration}
-          balance={balance}
-          balanceLoading={membershipLoading}
-          generating={genState === "generating" || stepRunning}
-          onGenerate={runGenerate}
-          styleName={style.name}
-          refPpt={refPpt}
-          onOpenTemplates={() => setTplOpen(true)}
-        />
+      {/* 主体：前序未完成 → 引导；未生成 → 显式生成入口（明示消耗）；已生成 → 编辑器 */}
+      {!deckReady ? (
+        prereq ? (
+          <StepPlaceholder
+            text={`请先完成前序步骤：${prereq.label}，再生成述标演示`}
+            action={{ href: prereq.href, label: `前往${prereq.label}` }}
+          />
+        ) : (
+          <EmptyState
+            duration={duration}
+            onDuration={changeDuration}
+            cost={presentCost}
+            balance={balance}
+            balanceLoading={membershipLoading}
+            generating={stepRunning}
+            onGenerate={runGenerate}
+            styleName={style.name}
+            refPpt={refPpt}
+            onOpenTemplates={() => setTplOpen(true)}
+          />
+        )
       ) : (
         <div className="flex min-h-0 flex-1">
           {/* 左栏 · 幻灯片列表 */}

@@ -1,0 +1,68 @@
+// 标书全流程共享数据形状（与 agent 输出契约 camelCase 同构），read/outline/risk 等页共用。
+// 原 lib/sample-bid.ts 的示例数据已随「示例模式」一并删除，这里只保留类型定义。
+
+/* ===================== 读标：评分办法表 ===================== */
+export type ScoringRow = {
+  id: string
+  category: "技术方案" | "商务条款" | "投标报价"
+  name: string
+  score: number
+  /** 是否★不可偏离项 */
+  star?: boolean
+  desc: string
+  /** 招标原文条款 id（可多条） */
+  clauseIds: string[]
+  /** 对应标书章节 id */
+  chapterId: string
+}
+
+/* ===================== 读标：分类解读条目 ===================== */
+export type AnalysisItem = {
+  title: string
+  value: string
+  /** 精确定位到的招标原文条款 id（可一条对多条）；missing 项为空 */
+  clauseIds: string[]
+  status: "found" | "missing"
+  /** 是否废标风险点 */
+  risk?: boolean
+}
+
+/* ===================== 提纲 / 正文章节 ===================== */
+export type Group = "tech" | "business"
+export type OutlineItem = { id: string; label: string; clauseIds?: string[]; isNew?: boolean }
+
+export type BidChapter = {
+  id: string
+  no: string
+  title: string
+  group: Group
+  /** 是否能在招标文件中索引到来源；false 表示提纲新增 */
+  sourced: boolean
+  /** 提纲子项 */
+  items: OutlineItem[]
+}
+
+/* ===================== 审查：风险项（/risk 与 /content 体检共用） ===================== */
+export type RiskFinding = {
+  level: string
+  tone: "destructive" | "warning"
+  title: string
+  /** 对应标书章节标题 */
+  chapterTitle: string
+  /** 对应招标条款（"对应：…"展示串） */
+  tenderRef: string
+  advice: string
+  /** 定位目标：标书 tab 与章节 id */
+  targetTab: Group
+  targetId: string
+}
+
+/** review 步结果（agent RiskReport，camelCase）。 */
+export type RiskReport = {
+  score: number
+  high: number
+  mid: number
+  passed: number
+  items: RiskFinding[]
+  passedItems: string[]
+}

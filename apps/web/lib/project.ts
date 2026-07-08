@@ -112,9 +112,19 @@ export async function runStep<T>(
   // SSE 末尾的 step.done 事件带该步结果；失败（status=failed / 无 step.done）即抛错
   const m = [...buf.matchAll(/event:\s*step\.done\s*\ndata:\s*(.+)/g)].at(-1)
   if (!m) throw new Error(`step ${step} 未完成`)
-  const payload = JSON.parse(m[1]!) as { status: string; result: T }
-  if (payload.status !== "done") throw new Error(`step ${step} 失败`)
+  const payload = JSON.parse(m[1]!) as { status: string; result: T; error?: string }
+  if (payload.status !== "done") {
+    // step.done 带 agent 侧失败原因（原始串不适合直接展示）：落 console 供排查，用户侧走通用失败文案
+    console.error(`step ${step} failed:`, payload.error ?? "(no detail)")
+    throw new Error(`step ${step} 失败`)
+  }
   return payload.result
+}
+
+/** PATCH 步结果失败的用户可读文案：404 = 该步还没有真实生成结果（无 done 行），不可编辑保存。 */
+export function patchErrorMessage(e: unknown): string {
+  if (e instanceof ApiError && e.status === 404) return "该步骤还未生成，请先生成"
+  return "保存失败，请重试"
 }
 
 // 步结果编辑回写：把编辑后的结果整份覆盖该步已完成的 result（outline/content/present）。

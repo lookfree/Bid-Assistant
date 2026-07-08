@@ -1,8 +1,8 @@
-import { riskFindings } from "./sample-bid"
+import type { RiskReport } from "./bid-types"
 
-// agent RiskReport（camelCase）：review 步结果，与原型 riskFindings 同构。
+// agent RiskReport（camelCase）：review 步结果。
 // /risk 页与 /content 页废标体检共用（同一步、同一份结果），映射逻辑也集中在此。
-export type RealRisk = typeof riskFindings
+export type RealRisk = RiskReport
 
 /** /risk 页视图映射：总览计数 + 风险条目（chapter 取招标出处 tenderRef）。 */
 export function deriveRisk(f: RealRisk) {

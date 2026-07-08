@@ -1,18 +1,16 @@
 "use client"
 
-import { ChevronRight, FolderOpen, Palette, Presentation, Sparkles, Upload } from "lucide-react"
+import { ChevronRight, Palette, Presentation, Sparkles } from "lucide-react"
 import { CreditEstimate } from "@/components/credit-estimate"
-import { creditCosts } from "@/lib/plans"
-
-const GEN_COST = creditCosts.find((c) => c.feature === "述标演示生成")?.value ?? 80
 
 export type Duration = 10 | 15 | 20
 export const DURATIONS: Duration[] = [10, 15, 20]
 
-/* ============== 空状态：生成大纲 ============== */
+/* ============== 空状态：生成大纲（计费步显式入口，明示消耗后由用户确认触发） ============== */
 export function EmptyState({
   duration,
   onDuration,
+  cost,
   balance,
   balanceLoading,
   generating,
@@ -23,6 +21,8 @@ export function EmptyState({
 }: {
   duration: Duration
   onDuration: (d: Duration) => void
+  /** 述标生成单次消耗积分（后端实时口径，页面传入） */
+  cost: number
   balance: number
   /** 余额加载中：不渲染依赖余额的预估确认条（防按 balance=0 误判余额不足） */
   balanceLoading: boolean
@@ -46,9 +46,8 @@ export function EmptyState({
 
           <DurationSection duration={duration} onDuration={onDuration} />
           <TemplateSection styleName={styleName} refPpt={refPpt} onOpenTemplates={onOpenTemplates} />
-          <SourceButtons />
-          <GenerateAction balance={balance} balanceLoading={balanceLoading} generating={generating} onGenerate={onGenerate} />
-          <p className="mt-3 text-[11px] text-muted-foreground">生成与预览免费查看；演讲稿、问答与导出消耗积分，余额不足时再充值或开通会员</p>
+          <GenerateAction cost={cost} balance={balance} balanceLoading={balanceLoading} generating={generating} onGenerate={onGenerate} />
+          <p className="mt-3 text-[11px] text-muted-foreground">生成后可自由编辑幻灯与口播稿；导出 PPTX 另按导出口径消耗积分</p>
         </div>
       </div>
     </div>
@@ -107,29 +106,15 @@ function TemplateSection({
   )
 }
 
-/* 数据来源 */
-function SourceButtons() {
-  return (
-    <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-center">
-      <button className="inline-flex items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-secondary">
-        <FolderOpen className="size-4" />
-        从我的标书选择
-      </button>
-      <button className="inline-flex items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-secondary">
-        <Upload className="size-4" />
-        上传标书文件
-      </button>
-    </div>
-  )
-}
-
 /* 积分预估 + 生成（余额加载中禁用，防按 0 余额误判） */
 function GenerateAction({
+  cost,
   balance,
   balanceLoading,
   generating,
   onGenerate,
 }: {
+  cost: number
   balance: number
   balanceLoading: boolean
   generating: boolean
@@ -148,11 +133,11 @@ function GenerateAction({
         </div>
       ) : (
         <CreditEstimate
-          cost={GEN_COST}
+          cost={cost}
           balance={balance}
           unitLabel="次"
           showSupportable={false}
-          actionLabel="生成述标大纲"
+          actionLabel={`生成述标大纲（消耗 ${cost} 积分）`}
           onConfirm={onGenerate}
         />
       )}

@@ -8,7 +8,6 @@ import {
   Layers,
   Sparkles,
   RefreshCw,
-  Wand2,
   Download,
   PanelRightClose,
   PanelRightOpen,
@@ -20,7 +19,6 @@ import {
 import { usePaywall } from "@/components/paywall"
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepBanner } from "@/components/tool/step-banner"
-import { DemoBanner } from "@/components/tool/demo-banner"
 import { NoProjectGuide } from "@/components/tool/no-project-guide"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { LibraryPicker } from "@/components/tool/library-picker"
@@ -31,11 +29,9 @@ import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import { useLibrary } from "@/lib/use-library"
 import { type LibraryItem } from "@/lib/library"
-import { chapters as bidChapters } from "@/lib/sample-bid"
 import { deriveHealthReport } from "@/lib/risk-derive"
 import { useStep } from "@/lib/use-step"
-import { useDemoMode } from "@/lib/use-demo"
-import { artifactUrl, patchStep, runStep, stepResult } from "@/lib/project"
+import { artifactUrl, patchErrorMessage, patchStep, runStep, stepResult } from "@/lib/project"
 import { ChatPanel } from "./chat-panel"
 import { EditorToolbar } from "./editor-toolbar"
 import { ChapterNav, type Chapter } from "./chapter-nav"
@@ -50,43 +46,22 @@ type RealOutline = { chapters: { id: string; no: string; title: string; group: G
 
 type Group = "tech" | "business"
 
-/* 标书正文取自全流程共享数据源（t5/b5 正文为空 = 待生成演示状态） */
-const initialChapters: Record<Group, Chapter[]> = {
-  tech: bidChapters
-    .filter((c) => c.group === "tech")
-    .map(({ id, no, title, sourced, body }) => ({ id, no, title, sourced, html: body })),
-  business: bidChapters
-    .filter((c) => c.group === "business")
-    .map(({ id, no, title, sourced, body }) => ({ id, no, title, sourced, html: body })),
-}
-
 const bidTabs: { id: BidType; name: string; icon: React.ElementType }[] = [
   { id: "tech", name: "技术标", icon: FileText },
   { id: "business", name: "商务标", icon: Briefcase },
   { id: "full", name: "标书全文", icon: Layers },
 ]
 
-function groupOf(id: string): Group {
-  return id.startsWith("t") ? "tech" : "business"
-}
-
 /** 导出单次消耗积分（取自积分消耗表） */
 const EXPORT_COST = creditCosts.find((c) => c.feature.startsWith("导出"))?.value ?? 20
 
 export default function ContentPage() {
-  // 示例内容只允许在显式 demo 模式渲染；真实项目（projectId）永远优先
-  const isDemo = useDemoMode()
   const [bidType, setBidType] = useState<BidType>("tech")
-  // 章节树：demo 用示例初始树；真实项目从空开始，由 outline/content 结果构建
-  const [data, setData] = useState<Record<Group, Chapter[]>>(() =>
-    isDemo ? initialChapters : { tech: [], business: [] },
-  )
+  // 章节树：从空开始，由 outline/content 结果构建
+  const [data, setData] = useState<Record<Group, Chapter[]>>({ tech: [], business: [] })
 
-  // 真实项目：outline 树 + content 各章 HTML → 构建章节树；该步未跑则自动触发
-  const { projectId, info, data: realBodies, running, error, errorStatus, start } = useStep<RealChapters>("content")
-  useEffect(() => {
-    if (projectId && info && !realBodies && !running && info.project.currentStep === "content") void start()
-  }, [projectId, info, realBodies, running, start])
+  // outline 树 + content 各章 HTML → 构建章节树；计费步绝不自动触发，生成一律走显式按钮
+  const { projectId, info, data: realBodies, running, error, errorAction, start } = useStep<RealChapters>("content")
   // outline 结果一到位就先建树（正文缺失章显示"待生成"占位），content 结果到位后填充各章 HTML
   useEffect(() => {
     if (!info) return
@@ -117,6 +92,8 @@ export default function ContentPage() {
   const reviewCost = creditCostValue(overview, "review", 60)
   const presentCost = creditCostValue(overview, "present", 80)
   const rewriteCost = creditCostValue(overview, "rewrite", 25)
+  const contentShortCost = creditCostValue(overview, "content_short", 40)
+  const contentLongCost = creditCostValue(overview, "content_long", 80)
   /* 余额是否足够支付本次导出消耗（仅影响导出付费墙，不影响整改建议解锁） */
   const canAfford = balance >= EXPORT_COST
   /* 资料库数据提升到页面级：LibraryPicker 弹层复用，避免每次打开全量重拉 */
@@ -169,6 +146,7 @@ export default function ContentPage() {
 
   /* 编辑持久化状态（真实项目失焦自动全量回写 content 步结果） */
   const [contentSaveState, setContentSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle")
+  const [contentSaveError, setContentSaveError] = useState<string>("")
 
   /** 把某章正文替换进两组数据（按 id 定位，不依赖 id 前缀约定） */
   function withChapterHtml(prev: Record<Group, Chapter[]>, chapterId: string, html: string) {
@@ -184,7 +162,11 @@ export default function ContentPage() {
     setContentSaveState("saving")
     patchStep(projectId, "content", result)
       .then(() => setContentSaveState("saved"))
-      .catch(() => setContentSaveState("error"))
+      .catch((e: unknown) => {
+        // 404 = 该步无真实 done 结果（step_not_done），精确提示
+        setContentSaveError(patchErrorMessage(e))
+        setContentSaveState("error")
+      })
   }
 
   function saveEditor() {
@@ -226,20 +208,6 @@ export default function ContentPage() {
     exec("insertHTML", html)
     saveEditor()
     setLibraryOpen(false)
-  }
-
-  function generateChapter(id: string) {
-    const g = groupOf(id)
-    /* 取共享数据源中的写实正文：已写实章节回填原始 body；
-       待生成章节（t5/b5，body 为空）取预置的 demoBody，绝不使用占位句 */
-    const src = bidChapters.find((c) => c.id === id)
-    const html = (src?.body && src.body.trim()) || src?.demoBody || ""
-    if (!html) return
-    setData((prev) => ({
-      ...prev,
-      [g]: prev[g].map((c) => (c.id === id ? { ...c, html } : c)),
-    }))
-    setActiveId(id)
   }
 
   /* 点击「一键废标体检」按钮：真实项目首次体检先显式确认计费；已有结果开合摘要弹层 */
@@ -404,8 +372,8 @@ export default function ContentPage() {
   useEscapeClose(() => setReportOpen(false), reportOpen)
   useEscapeClose(() => setCheckConfirm(null), checkConfirm !== null)
 
-  // 非 demo 且无进行中项目：不渲染任何示例内容，引导上传 / 示例体验
-  if (!projectId && !isDemo)
+  // 无进行中项目：只引导上传，不渲染任何示例内容
+  if (!projectId)
     return (
       <div className="mx-auto flex h-[calc(100vh-4rem)] max-w-[1600px] flex-col px-4 py-5 sm:px-6 lg:px-8">
         <FlowNav current="content" />
@@ -413,7 +381,7 @@ export default function ContentPage() {
       </div>
     )
 
-  // 真实项目：项目加载中 / 提纲缺失（章节树依赖 outline 结果）→ 占位，不回落示例
+  // 项目加载中 / 提纲缺失（章节树依赖 outline 结果）→ 占位引导
   if (!active)
     return (
       <div className="mx-auto flex h-[calc(100vh-4rem)] max-w-[1600px] flex-col px-4 py-5 sm:px-6 lg:px-8">
@@ -423,7 +391,7 @@ export default function ContentPage() {
           error={error}
           runningText="AI 写手团队正在按章撰写正文（多章并行，约 3–8 分钟）…"
           onRetry={() => void start()}
-          action={errorStatus === 402 ? { href: "/membership", label: "去充值" } : undefined}
+          action={errorAction ?? undefined}
         />
         <StepPlaceholder
           text={!info ? "正在加载项目…" : "先完成提纲步骤，生成章节结构后再撰写正文"}
@@ -431,6 +399,9 @@ export default function ContentPage() {
         />
       </div>
     )
+
+  // 正文步已就绪但未生成：停在显式生成入口（明示消耗），点击才计费开跑
+  const needsRun = info?.project.currentStep === "content" && !realBodies && !running
 
   return (
     <div className="mx-auto flex h-[calc(100vh-4rem)] max-w-[1600px] flex-col px-4 py-5 sm:px-6 lg:px-8">
@@ -440,9 +411,25 @@ export default function ContentPage() {
         error={error}
         runningText="AI 写手团队正在按章撰写正文（多章并行，约 3–8 分钟）…"
         onRetry={() => void start()}
-        action={errorStatus === 402 ? { href: "/membership", label: "去充值" } : undefined}
+        action={errorAction ?? undefined}
       />
-      {isDemo && <DemoBanner />}
+      {needsRun && (
+        <div className="mb-3 flex flex-col gap-3 rounded-2xl border border-primary/20 gradient-brand-soft px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold text-foreground">投标正文尚未生成</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              AI 按提纲逐章撰写（短章 {contentShortCost} 积分/章、长章 {contentLongCost} 积分/章），生成后可在线编辑
+            </p>
+          </div>
+          <button
+            onClick={() => void start()}
+            className="inline-flex shrink-0 items-center gap-2 rounded-xl gradient-brand px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+          >
+            <Sparkles className="size-4" />
+            生成投标正文（{contentShortCost} 积分/章起）
+          </button>
+        </div>
+      )}
       {/* 头部 */}
       <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
@@ -531,39 +518,26 @@ export default function ContentPage() {
                   ? "该章节对应招标文件要求，点击下方按钮由 AI 生成初稿后即可编辑。"
                   : "该章节为提纲新增内容，招标文件中无直接对应，建议结合自身情况补写。"}
               </p>
-              {projectId ? (
-                /* 真实项目不回落示例正文：引导走真实改写通道（content 生成中由顶部横幅提示进度） */
+              {isReal ? (
+                /* 正文已生成但本章为空：引导走真实单章改写通道 */
                 <p className="mt-5 max-w-xs rounded-xl border border-primary/20 gradient-brand-soft px-4 py-2.5 text-xs leading-relaxed text-primary">
                   在右侧 AI 助手中选中本章并输入指令，由 AI 生成/改写本章正文（{rewriteCost} 积分/次）
                 </p>
               ) : (
-                <button
-                  onClick={() => generateChapter(active.id)}
-                  className="mt-5 inline-flex items-center gap-2 rounded-xl gradient-brand px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90"
-                >
-                  <Wand2 className="size-4" />
-                  AI 生成本章正文
-                </button>
+                /* 正文步未跑：指向顶部显式生成入口（生成中由顶部横幅提示进度） */
+                <p className="mt-5 max-w-xs rounded-xl border border-primary/20 gradient-brand-soft px-4 py-2.5 text-xs leading-relaxed text-primary">
+                  {running ? "正文生成中，完成后本章自动填充" : "点击上方「生成投标正文」按钮，由 AI 撰写全部章节初稿"}
+                </p>
               )}
             </div>
           )}
 
           {active.html.trim() && (
             <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-2.5">
-              {projectId ? (
-                <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <RefreshCw className="size-3.5" />
-                  重写本章可在右侧 AI 助手输入指令（{rewriteCost} 积分/次）
-                </span>
-              ) : (
-                <button
-                  onClick={() => generateChapter(active.id)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-                >
-                  <RefreshCw className="size-3.5" />
-                  重新生成
-                </button>
-              )}
+              <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                <RefreshCw className="size-3.5" />
+                重写本章可在右侧 AI 助手输入指令（{rewriteCost} 积分/次）
+              </span>
               <span
                 className={`ml-auto text-xs ${contentSaveState === "error" ? "font-medium text-destructive" : "text-muted-foreground"}`}
               >
@@ -572,7 +546,7 @@ export default function ContentPage() {
                   : contentSaveState === "saving"
                     ? "保存中…"
                     : contentSaveState === "error"
-                      ? "保存失败，编辑后将自动重试"
+                      ? contentSaveError || "保存失败，编辑后将自动重试"
                       : contentSaveState === "saved"
                         ? "已保存"
                         : "编辑后自动保存"}

@@ -3,7 +3,10 @@
 import { useState, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { api } from "@/lib/api"
+import { ApiError } from "@/lib/api-client"
 import { createProject } from "@/lib/project"
+import { useMembership } from "@/lib/use-membership"
+import { creditCostValue } from "@/lib/membership-view"
 import {
   UploadCloud,
   FileText,
@@ -20,7 +23,11 @@ import {
   Brain,
   Flame,
   PlayCircle,
+  RotateCcw,
 } from "lucide-react"
+
+// 演示视频入口：未配置链接时整个隐藏（视频上线后配置 env 才显示）
+const DEMO_VIDEO_URL = process.env.NEXT_PUBLIC_DEMO_VIDEO_URL
 
 type FileStatus = "uploading" | "done" | "error"
 
@@ -32,7 +39,8 @@ type UploadFile = {
   status: FileStatus
   fileId?: string
   fileKey?: string // MinIO key（complete 返回），建项目用
-  errorText?: string // 失败原因（格式不支持/上传失败），列表行展示
+  errorText?: string // 失败原因（网络/格式/超限分开），列表行展示
+  file?: File // 原始 File：失败后单文件「重试」重传用（格式拦截项不存，重试无意义）
 }
 
 // 与后端 presign 白名单一致（解析层只支持这三种；.doc/.xls 老格式必须先另存为新格式）
@@ -45,6 +53,7 @@ function formatSize(bytes: number) {
 }
 
 // 直传 PUT 到 MinIO（预签名 URL），用 XHR 拿真实上传进度。
+// 失败原因区分：网络断连 → Error("network")；HTTP 非 2xx → Error("put_<status>")。
 function putWithProgress(url: string, file: File, onProgress: (pct: number) => void): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
@@ -53,10 +62,21 @@ function putWithProgress(url: string, file: File, onProgress: (pct: number) => v
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100))
     }
-    xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error("upload failed")))
-    xhr.onerror = () => reject(new Error("upload failed"))
+    xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(`put_${xhr.status}`)))
+    xhr.onerror = () => reject(new Error("network"))
     xhr.send(file)
   })
+}
+
+/** 上传失败的用户可读原因（网络 / 格式 / 超限分开），决定文件行提示文案。 */
+function uploadErrorText(e: unknown): string {
+  if (e instanceof ApiError) {
+    if (e.code === "file_too_large") return "文件超过大小限制（单文件最大 50MB）"
+    if (e.code === "unsupported_file_type") return "文件格式不支持，仅支持 PDF / DOCX / XLSX"
+    return "上传服务异常，请点击重试"
+  }
+  if (e instanceof Error && e.message === "network") return "网络异常，请检查网络后点击重试"
+  return "上传失败，请点击重试"
 }
 
 export default function UploadPage() {
@@ -64,9 +84,13 @@ export default function UploadPage() {
   const inputRef = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
   const [files, setFiles] = useState<UploadFile[]>([])
+  /* 读标计费口径（优先后端实时配置），上传按钮上明示「那一下点击」将花多少积分 */
+  const { overview } = useMembership()
+  const readCost = creditCostValue(overview, "read", 20)
 
   // 三段直传：presign（建元数据+签 URL）→ 浏览器 PUT 直传 MinIO → complete（HEAD 校验落 uploaded）。
-  async function startUpload(id: string, file: File) {
+  // 失败自动重试 1 次（间隔 2s，网络抖动自愈）；仍失败落具体原因，文件行可单独「重试」。
+  async function startUpload(id: string, file: File, attempt = 0): Promise<void> {
     const patch = (u: Partial<UploadFile>) => setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, ...u } : f)))
     try {
       const { fileId, uploadUrl } = await api.request<{ fileId: string; uploadUrl: string }>("/files/presign-upload", {
@@ -82,9 +106,21 @@ export default function UploadPage() {
         method: "POST",
       })
       patch({ progress: 100, status: "done", fileId, fileKey: rec.key })
-    } catch {
-      patch({ status: "error" })
+    } catch (e) {
+      if (attempt === 0) {
+        patch({ progress: 0 })
+        await new Promise((r) => setTimeout(r, 2000))
+        return startUpload(id, file, 1)
+      }
+      patch({ status: "error", errorText: uploadErrorText(e) })
     }
+  }
+
+  /** 单文件重传（不必移除重加）：复用原始 File 重走三段直传。 */
+  function retryUpload(f: UploadFile) {
+    if (!f.file) return
+    setFiles((prev) => prev.map((x) => (x.id === f.id ? { ...x, status: "uploading", progress: 0, errorText: undefined } : x)))
+    void startUpload(f.id, f.file)
   }
 
   function handleFiles(fileList: FileList | null) {
@@ -103,7 +139,7 @@ export default function UploadPage() {
         ])
         continue
       }
-      setFiles((prev) => [...prev, { id, name: file.name, size: file.size, progress: 0, status: "uploading" }])
+      setFiles((prev) => [...prev, { id, name: file.name, size: file.size, progress: 0, status: "uploading", file }])
       void startUpload(id, file)
     }
     if (inputRef.current) inputRef.current.value = ""
@@ -116,21 +152,17 @@ export default function UploadPage() {
   const [creating, setCreating] = useState(false)
 
   // 建项目（一本标书一个 thread）→ 进入读标；后续各页经 localStorage 的 projectId 贯穿。
+  // ?autostart=1：本按钮已标注读标费用，这一下点击即计费授权，read 页据此自动跑一次读标。
   async function startRead() {
     const key = files.find((f) => f.status === "done")?.fileKey
     if (!key || creating) return
     setCreating(true)
     try {
       await createProject(key)
-      router.push("/read")
+      router.push("/read?autostart=1")
     } finally {
       setCreating(false)
     }
-  }
-
-  function startDemo() {
-    // 载入内置示例招标文件，直接进入读标跑通全流程（不消耗积分）
-    router.push("/read?demo=1")
   }
 
   const securityPromises = [
@@ -213,19 +245,21 @@ export default function UploadPage() {
               </button>
             </div>
 
-            {/* 示例一键体验 */}
-            <div className="mt-6 flex flex-col items-center gap-2 border-t border-dashed border-border pt-6">
-              <p className="text-xs text-muted-foreground">没有招标文件？</p>
-              <button
-                type="button"
-                onClick={startDemo}
-                className="inline-flex items-center gap-2 rounded-xl border border-primary/30 bg-card px-5 py-2.5 text-sm font-semibold text-primary transition-colors hover:bg-primary/5"
-              >
-                <PlayCircle className="size-4" />
-                用示例一键体验全流程
-              </button>
-              <p className="text-[11px] text-muted-foreground">载入内置示例招标文件，跑通读标→提纲→生成→审查 · 不消耗积分</p>
-            </div>
+            {/* 演示视频入口（未配置链接时隐藏） */}
+            {DEMO_VIDEO_URL && (
+              <div className="mt-6 flex flex-col items-center gap-2 border-t border-dashed border-border pt-6">
+                <p className="text-xs text-muted-foreground">想先了解产品？</p>
+                <button
+                  type="button"
+                  onClick={() => window.open(DEMO_VIDEO_URL, "_blank")}
+                  className="inline-flex items-center gap-2 rounded-xl border border-primary/30 bg-card px-5 py-2.5 text-sm font-semibold text-primary transition-colors hover:bg-primary/5"
+                >
+                  <PlayCircle className="size-4" />
+                  观看演示视频
+                </button>
+                <p className="text-[11px] text-muted-foreground">3 分钟看完读标→提纲→生成→审查→述标全流程</p>
+              </div>
+            )}
           </div>
         ) : (
           <div
@@ -280,7 +314,7 @@ export default function UploadPage() {
                         {f.status === "done" ? (
                           <span className="ml-1.5 text-success">· 已就绪</span>
                         ) : f.status === "error" ? (
-                          <span className="ml-1.5 text-destructive">· {f.errorText ?? "上传失败，请移除后重试"}</span>
+                          <span className="ml-1.5 text-destructive">· {f.errorText ?? "上传失败，请点击重试"}</span>
                         ) : (
                           <span className="ml-1.5">· 上传中 {f.progress}%</span>
                         )}
@@ -289,13 +323,26 @@ export default function UploadPage() {
                     {f.status === "uploading" ? (
                       <Loader2 className="size-5 shrink-0 animate-spin text-primary" />
                     ) : (
-                      <button
-                        onClick={() => removeFile(f.id)}
-                        className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                        aria-label={`移除 ${f.name}`}
-                      >
-                        <X className="size-4" />
-                      </button>
+                      <div className="flex shrink-0 items-center gap-1">
+                        {/* 失败可单文件重传，不必移除重加（格式拦截项无原始 File，不给重试） */}
+                        {f.status === "error" && f.file && (
+                          <button
+                            onClick={() => retryUpload(f)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                            aria-label={`重试上传 ${f.name}`}
+                          >
+                            <RotateCcw className="size-3.5" />
+                            重试
+                          </button>
+                        )}
+                        <button
+                          onClick={() => removeFile(f.id)}
+                          className="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                          aria-label={`移除 ${f.name}`}
+                        >
+                          <X className="size-4" />
+                        </button>
+                      </div>
                     )}
                   </div>
                   {f.status === "uploading" && (
@@ -312,7 +359,7 @@ export default function UploadPage() {
               onClick={startRead}
               className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-xl gradient-brand px-6 py-3.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {creating ? "创建项目中…" : allDone ? "开始智能读标" : "文件上传中…"}
+              {creating ? "创建项目中…" : allDone ? `开始智能读标（约 ${readCost} 积分）` : "文件上传中…"}
               {allDone && <ArrowRight className="size-4" />}
             </button>
           </div>

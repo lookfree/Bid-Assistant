@@ -2,13 +2,31 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { ApiError } from "./api-client"
-import { clearCurrentProjectId, currentProjectId, getProject, runStep, stepResult, type ProjectInfo, type StepName } from "./project"
+import { clearCurrentProjectId, currentProjectId, getProject, runStep, stepResult, STEP_ORDER, type ProjectInfo, type StepName } from "./project"
 
 /** 步骤运行失败的用户可读文案：402 积分不足、409 步骤顺序、其余通用重试。 */
 export function stepErrorMessage(status: number | null): string {
   if (status === 402) return "积分不足，无法继续本步"
   if (status === 409) return "步骤顺序不符，请先完成前序步骤"
   return "生成失败，请重试"
+}
+
+/** 各步对应的工具页入口（409 顺序错误 / 前序未完成时引导用户去补齐）。 */
+const STEP_PAGE: Record<string, { href: string; label: string }> = {
+  read: { href: "/read", label: "招标解读" },
+  outline: { href: "/outline", label: "提纲生成" },
+  content: { href: "/content", label: "标书生成" },
+  review: { href: "/risk", label: "标书审查" },
+  present: { href: "/present", label: "述标演示" },
+}
+
+/** step 的未完成前序步（按项目 currentStep 判断）：返回该前序步的页面入口；无前序缺口返回 null。 */
+export function stepPrereq(info: ProjectInfo | null, step: StepName): { href: string; label: string } | null {
+  const cur = info?.project.currentStep
+  if (!cur) return null
+  const curIdx = STEP_ORDER.indexOf(cur as StepName)
+  if (curIdx === -1 || curIdx >= STEP_ORDER.indexOf(step)) return null
+  return STEP_PAGE[cur] ?? null
 }
 
 // 409 step_already_running 后的收敛轮询节奏：每 5s 查一次项目，最多等 10 分钟（正常步 1-10 分钟必出结果）
@@ -103,5 +121,15 @@ export function useStep<T>(step: StepName) {
     [projectId, step, running],
   )
 
-  return { projectId, info, data, running, error, errorStatus, start }
+  // 失败文案与引导动作精确化：409 顺序错误 → 点名未完成的前序步并给入口；402 → 引导充值
+  const prereq = errorStatus === 409 ? stepPrereq(info, step) : null
+  const displayError = error && prereq ? `请先完成前序步骤：${prereq.label}` : error
+  const errorAction: { href: string; label: string } | null =
+    errorStatus === 402
+      ? { href: "/membership", label: "去充值" }
+      : prereq
+        ? { href: prereq.href, label: `前往${prereq.label}` }
+        : null
+
+  return { projectId, info, data, running, error: displayError, errorStatus, errorAction, start }
 }
