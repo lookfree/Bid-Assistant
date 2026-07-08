@@ -46,6 +46,34 @@ type UploadFile = {
 // 与后端 presign 白名单一致（解析层只支持这三种；.doc/.xls 老格式必须先另存为新格式）
 const SUPPORTED_EXTS = new Set(["pdf", "docx", "xlsx"])
 
+// 已传完文件跨页留存（列表是组件内存态，切菜单即丢；文件本体已在存储，只需记住条目）。
+// 只存 done 项（uploading/error 依赖内存里的 File 对象，无法恢复）；建项目成功后清除。
+const UPLOAD_CACHE_KEY = "bid.upload.files"
+function restoreDoneFiles(): UploadFile[] {
+  if (typeof window === "undefined") return []
+  try {
+    const raw = window.sessionStorage.getItem(UPLOAD_CACHE_KEY)
+    return raw ? (JSON.parse(raw) as UploadFile[]) : []
+  } catch {
+    return []
+  }
+}
+function persistDoneFiles(files: UploadFile[]) {
+  try {
+    const done = files.filter((f) => f.status === "done").map(({ file: _f, ...rest }) => rest)
+    window.sessionStorage.setItem(UPLOAD_CACHE_KEY, JSON.stringify(done))
+  } catch {
+    /* 隐私模式等存储不可用：跨页留存降级，不影响上传本身 */
+  }
+}
+function clearDoneFiles() {
+  try {
+    window.sessionStorage.removeItem(UPLOAD_CACHE_KEY)
+  } catch {
+    /* 同上 */
+  }
+}
+
 function formatSize(bytes: number) {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`
@@ -83,7 +111,15 @@ export default function UploadPage() {
   const router = useRouter()
   const inputRef = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
-  const [files, setFiles] = useState<UploadFile[]>([])
+  const [files, setFilesRaw] = useState<UploadFile[]>(restoreDoneFiles)
+  // 包一层:列表每次变化把 done 项写入 sessionStorage(切菜单再回来列表不丢)
+  const setFiles = (updater: (prev: UploadFile[]) => UploadFile[]) => {
+    setFilesRaw((prev) => {
+      const next = updater(prev)
+      persistDoneFiles(next)
+      return next
+    })
+  }
   /* 读标计费口径（优先后端实时配置），上传按钮上明示「那一下点击」将花多少积分 */
   const { overview } = useMembership()
   const readCost = creditCostValue(overview, "read", 20)
@@ -159,6 +195,7 @@ export default function UploadPage() {
     setCreating(true)
     try {
       await createProject(key)
+      clearDoneFiles() // 文件已归属新项目，跨页缓存使命完成
       router.push("/read?autostart=1")
     } finally {
       setCreating(false)
