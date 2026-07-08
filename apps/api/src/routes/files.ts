@@ -8,6 +8,7 @@ import {
   FileTooLargeError,
   FileNotFoundError,
   ObjectMissingError,
+  UnsupportedFileTypeError,
 } from "../services/files"
 import type { User } from "../db/schema"
 
@@ -29,6 +30,7 @@ export function fileRoutes() {
       return c.json(out)
     } catch (e) {
       if (e instanceof FileTooLargeError) return c.json({ error: "file_too_large" }, 400)
+      if (e instanceof UnsupportedFileTypeError) return c.json({ error: "unsupported_file_type" }, 400)
       throw e
     }
   })

@@ -30,6 +30,16 @@ export class ObjectMissingError extends Error {
 // 大小上限（字节）：MB→B 换算收一处，预签名与确认两处校验共用，边界不会各自漂移。
 const fileMaxBytes = () => getEnv().FILE_MAX_SIZE_MB * 1024 * 1024
 
+// 解析层（agent parsing）只支持这三种：上传入口 fail fast，别让用户走到读标扣费后才发现 .doc 解析必败。
+const SUPPORTED_EXTS = new Set(["pdf", "docx", "xlsx"])
+
+export class UnsupportedFileTypeError extends Error {
+  constructor() {
+    super("unsupported_file_type")
+    this.name = "UnsupportedFileTypeError"
+  }
+}
+
 // 文件名清洗：仅留字母数字下划线点连字符与中文，截断到 120，避免 key 注入/超长。
 function sanitize(name: string): string {
   return name.replace(/[^\w.\-一-龥]/g, "_").slice(0, 120)
@@ -44,6 +54,8 @@ export async function presignUpload(input: {
 }): Promise<{ fileId: string; key: string; uploadUrl: string }> {
   const env = getEnv()
   if (input.size > fileMaxBytes()) throw new FileTooLargeError()
+  const ext = input.filename.split(".").pop()?.toLowerCase() ?? ""
+  if (!SUPPORTED_EXTS.has(ext)) throw new UnsupportedFileTypeError()
   const key = `uploads/${input.userId}/${randomUUID()}/${sanitize(input.filename)}`
   const [row] = await getDb()
     .insert(projectFiles)

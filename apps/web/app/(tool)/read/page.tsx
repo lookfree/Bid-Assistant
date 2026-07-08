@@ -48,9 +48,15 @@ export default function ReadPage() {
   // 示例内容只允许在显式 demo 模式渲染；真实项目（projectId）永远优先
   const isDemo = useDemoMode()
   const { projectId, info, data: real, running, error, start } = useStep<RealRead>("read")
-  // 进入页面且该步未跑 → 自动触发读标（从上传页过来即开跑）
+  // 进入页面且该步未跑 → 自动触发读标（从上传页过来即开跑）。
+  // 自动触发只此一次（同 present 页做法）：info 刷新/依赖变化不得反复触发，失败重试走横幅按钮。
+  const autoStarted = useRef(false)
   useEffect(() => {
-    if (projectId && info && !real && !running && info.project.currentStep === "read") void start()
+    if (autoStarted.current) return
+    if (projectId && info && !real && !running && info.project.currentStep === "read") {
+      autoStarted.current = true
+      void start()
+    }
   }, [projectId, info, real, running, start])
   // 三态数据源：真实结果 > demo 示例 > 空（真实项目未就绪时占位，不回落示例）
   const categories = useMemo(

@@ -26,23 +26,23 @@ describe("files service", () => {
     const body = "招标文件示例"
     const { fileId, uploadUrl } = await presignUpload({
       userId,
-      filename: "tender.txt",
-      contentType: "text/plain",
+      filename: "tender.docx",
+      contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       size: Buffer.byteLength(body),
     })
-    await fetch(uploadUrl, { method: "PUT", headers: { "content-type": "text/plain" }, body })
+    await fetch(uploadUrl, { method: "PUT", headers: { "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }, body })
 
     const file = await confirmUpload(fileId, userId)
     expect(file.status).toBe("uploaded")
     expect(file.size).toBe(Buffer.byteLength(body))
 
     const { url, filename } = await presignDownload(fileId, userId)
-    expect(filename).toBe("tender.txt")
+    expect(filename).toBe("tender.docx")
     expect(await (await fetch(url)).text()).toBe(body)
   })
 
   it("别人无法下载我的文件", async () => {
-    const { fileId } = await presignUpload({ userId, filename: "a.txt", contentType: "text/plain", size: 1 })
+    const { fileId } = await presignUpload({ userId, filename: "a.docx", contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", size: 1 })
     await expect(presignDownload(fileId, "00000000-0000-0000-0000-000000000000")).rejects.toThrow()
   })
 })

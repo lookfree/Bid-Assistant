@@ -32,7 +32,11 @@ type UploadFile = {
   status: FileStatus
   fileId?: string
   fileKey?: string // MinIO key（complete 返回），建项目用
+  errorText?: string // 失败原因（格式不支持/上传失败），列表行展示
 }
+
+// 与后端 presign 白名单一致（解析层只支持这三种；.doc/.xls 老格式必须先另存为新格式）
+const SUPPORTED_EXTS = new Set(["pdf", "docx", "xlsx"])
 
 function formatSize(bytes: number) {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
@@ -87,6 +91,18 @@ export default function UploadPage() {
     if (!fileList || fileList.length === 0) return
     for (const file of Array.from(fileList)) {
       const id = `${file.name}-${file.size}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      // 前置格式拦截：老格式 .doc/.xls 解析必败，别等上传/读标才失败
+      const ext = file.name.split(".").pop()?.toLowerCase() ?? ""
+      if (!SUPPORTED_EXTS.has(ext)) {
+        setFiles((prev) => [
+          ...prev,
+          {
+            id, name: file.name, size: file.size, progress: 0, status: "error",
+            errorText: ext === "doc" || ext === "xls" ? "不支持老版 Office 格式，请用 Word/WPS 另存为 .docx / .xlsx 后重传" : "仅支持 PDF / DOCX / XLSX",
+          },
+        ])
+        continue
+      }
       setFiles((prev) => [...prev, { id, name: file.name, size: file.size, progress: 0, status: "uploading" }])
       void startUpload(id, file)
     }
@@ -264,7 +280,7 @@ export default function UploadPage() {
                         {f.status === "done" ? (
                           <span className="ml-1.5 text-success">· 已就绪</span>
                         ) : f.status === "error" ? (
-                          <span className="ml-1.5 text-destructive">· 上传失败，请移除后重试</span>
+                          <span className="ml-1.5 text-destructive">· {f.errorText ?? "上传失败，请移除后重试"}</span>
                         ) : (
                           <span className="ml-1.5">· 上传中 {f.progress}%</span>
                         )}
@@ -306,7 +322,7 @@ export default function UploadPage() {
           ref={inputRef}
           type="file"
           multiple
-          accept=".pdf,.doc,.docx,.xlsx,.xls"
+          accept=".pdf,.docx,.xlsx"
           className="hidden"
           onChange={(e) => handleFiles(e.target.files)}
         />

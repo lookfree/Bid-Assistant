@@ -36,6 +36,11 @@ export function setCurrentProjectId(id: string): void {
   if (typeof window !== "undefined") localStorage.setItem(KEY, id)
 }
 
+/** 清除当前项目（本地 projectId 指向已删项目/404 时复位，工具页回到无项目引导态）。 */
+export function clearCurrentProjectId(): void {
+  if (typeof window !== "undefined") localStorage.removeItem(KEY)
+}
+
 // 项目列表行（GET /api/projects 契约，camelCase）
 export type ProjectListItem = {
   id: string

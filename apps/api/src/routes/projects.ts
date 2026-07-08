@@ -10,6 +10,7 @@ import { getUserId } from "../lib/auth-user"
 import { isUuid } from "../lib/uuid"
 import * as billing from "../services/billing-stub"
 import * as client from "../services/agent-client"
+import { healStuckStep } from "../services/stuck-steps"
 import { getAgentModel } from "../services/agent-client"
 import { toCamel, toSnake } from "../lib/case"
 import { parsePagination, pagedBody, pagedResult } from "../lib/pagination"
@@ -235,6 +236,27 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     )
   })
 
+  /** 占位行获取：插 running 占位行；撞唯一索引先惰性自愈——既有行已死（超 10 分钟 /
+   *  其 run 已失败：DB 断连等导致收尾没执行，行永远卡 running、该步恒 409）则当场
+   *  置 failed + 退还其预扣（stuck-steps 服务），重试一次插入；活行/重试仍冲突返回 null → 409。 */
+  async function acquireStepSlot(projectId: string, step: string): Promise<typeof projectSteps.$inferSelect | null> {
+    const insert = async () => {
+      const [row] = await getDb().insert(projectSteps).values({ projectId, step, status: "running" }).returning()
+      return row ?? null
+    }
+    try {
+      return await insert()
+    } catch {
+      const healed = await healStuckStep(projectId, step, getRun)
+      if (!healed) return null
+      try {
+        return await insert()
+      } catch {
+        return null // 并发请求抢先重建了占位行：如实 409
+      }
+    }
+  }
+
   // 推进一步：预扣 → 建 run（同 thread）→ SSE 中继 → 存结果 → settle
   r.post("/:id/steps/:step", async (c) => {
     const { id, step } = c.req.param()
@@ -265,18 +287,9 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     }
 
     // 先落「running 占位行」再计费/建 run：部分唯一索引 (project_id, step) WHERE status='running'
-    // 在 DB 层原子挡掉并发双击（第二个请求这里冲突 → 409，不会双建 run/双计费）。
-    let s: typeof projectSteps.$inferSelect
-    try {
-      const [row] = await getDb()
-        .insert(projectSteps)
-        .values({ projectId: p.id, step, status: "running" })
-        .returning()
-      if (!row) return c.json({ error: "insert_failed" }, 500)
-      s = row
-    } catch {
-      return c.json({ error: "step_already_running" }, 409)
-    }
+    // 在 DB 层原子挡掉并发双击（第二个请求这里冲突 → 惰性自愈失败才 409，不会双建 run/双计费）。
+    const s = await acquireStepSlot(p.id, step)
+    if (!s) return c.json({ error: "step_already_running" }, 409)
 
     // 真账本预扣（spec302）：ref=占位行 id（该次步进的稳定标识，幂等键随之稳定）。
     // 按真实配置键扣费：content 步预扣按上档 content_long（结算再落篇幅档），其余步用同名 credit_cost.<step>。

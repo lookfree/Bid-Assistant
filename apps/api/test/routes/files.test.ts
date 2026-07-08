@@ -33,12 +33,13 @@ describe("/files", () => {
     expect(res.status).toBe(401)
   })
 
-  it("presign -> PUT -> complete -> download-url 全链路", async () => {
+  it("presign(.docx 白名单放行) -> PUT -> complete -> download-url 全链路", async () => {
     const body = "tender-bytes"
+    // 文件名须过 SUPPORTED_EXTS 白名单（pdf/docx/xlsx）；内容字节 MinIO 不校验，用文本即可
     const pre = await app.request("/files/presign-upload", {
       method: "POST",
       headers: auth(),
-      body: JSON.stringify({ filename: "t.txt", contentType: "text/plain", size: body.length }),
+      body: JSON.stringify({ filename: "t.docx", contentType: "text/plain", size: body.length }),
     })
     expect(pre.status).toBe(200)
     const { fileId, uploadUrl } = (await pre.json()) as { fileId: string; uploadUrl: string }
@@ -51,5 +52,15 @@ describe("/files", () => {
     const dl = await app.request(`/files/${fileId}/download-url`, { headers: auth() })
     const { url } = (await dl.json()) as { url: string }
     expect(await (await fetch(url)).text()).toBe(body)
+  })
+
+  it("扩展名白名单：.doc 老格式 → 400 unsupported_file_type（解析层必败，入口 fail fast）", async () => {
+    const res = await app.request("/files/presign-upload", {
+      method: "POST",
+      headers: auth(),
+      body: JSON.stringify({ filename: "老标书.doc", contentType: "application/msword", size: 10 }),
+    })
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { error: string }).error).toBe("unsupported_file_type")
   })
 })
