@@ -1,6 +1,7 @@
 "use client"
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react"
 import { api, setAuthExpiredHandler } from "@/lib/api"
+import { ApiError } from "@/lib/api-client"
 import { tokenStore } from "@/lib/token-store"
 
 type User = { id: string; nickname: string | null; status?: string }
@@ -18,21 +19,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
 
-  // 启动/刷新时用本地令牌向 /auth/me 还原当前用户；令牌失效则清掉。
+  // 启动/刷新时用本地令牌向 /auth/me 还原当前用户。
+  // 只有 401（令牌真的失效/撤销）才清令牌；网络抖动/瞬时 5xx 重试两次——
+  // 否则一次闪断就把登录态吹掉，用户回退个页面就被迫重新登录。
   async function refresh() {
     if (!tokenStore.get()) {
       setUser(null)
       setLoading(false)
       return
     }
-    try {
-      setUser(await api.authApi.me())
-    } catch {
-      tokenStore.clear()
-      setUser(null)
-    } finally {
-      setLoading(false)
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        setUser(await api.authApi.me())
+        setLoading(false)
+        return
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 401) {
+          tokenStore.clear()
+          setUser(null)
+          setLoading(false)
+          return
+        }
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 1500))
+      }
     }
+    // 连续失败（服务暂不可用）：保留令牌，仅本次未能还原——守卫会引导去登录页，令牌恢复后仍可用
+    setUser(null)
+    setLoading(false)
   }
   useEffect(() => {
     void refresh()
