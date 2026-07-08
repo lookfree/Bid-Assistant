@@ -22,11 +22,33 @@ export function getS3(): S3Client {
   return client
 }
 
+// 预签名专用客户端：SigV4 签名包含 Host，签完改 host 会失效——浏览器可达地址与容器内地址不同时
+// （如容器经 SSH 隧道 host.docker.internal 访问、浏览器走 127.0.0.1），必须直接对公开地址签名。
+// MINIO_PUBLIC_ENDPOINT 缺省 = MINIO_ENDPOINT（内外一致的部署零变化）。
+let presignClient: S3Client | undefined
+function getS3Presign(): S3Client {
+  const env = getEnv()
+  const publicEndpoint = env.MINIO_PUBLIC_ENDPOINT ?? env.MINIO_ENDPOINT
+  if (publicEndpoint === env.MINIO_ENDPOINT) return getS3()
+  if (presignClient) return presignClient
+  presignClient = new S3Client({
+    endpoint: publicEndpoint,
+    region: env.MINIO_REGION,
+    forcePathStyle: true,
+    credentials: { accessKeyId: env.MINIO_ACCESS_KEY, secretAccessKey: env.MINIO_SECRET_KEY },
+  })
+  return presignClient
+}
+
 // 优雅关闭：入口在 SIGINT/SIGTERM 时调用，与 closeDb/closeRedis 一致，避免热重载/重启泄漏连接。
 export async function closeS3(): Promise<void> {
   if (client) {
     client.destroy()
     client = undefined
+  }
+  if (presignClient) {
+    presignClient.destroy()
+    presignClient = undefined
   }
 }
 
@@ -36,7 +58,7 @@ export function bucket(): string {
 
 // 预签名 PUT：浏览器凭此直传对象到 MinIO（二进制不经过 App）。
 export function presignPut(key: string, contentType: string, expiresIn: number): Promise<string> {
-  return getSignedUrl(getS3(), new PutObjectCommand({ Bucket: bucket(), Key: key, ContentType: contentType }), {
+  return getSignedUrl(getS3Presign(), new PutObjectCommand({ Bucket: bucket(), Key: key, ContentType: contentType }), {
     expiresIn,
   })
 }
@@ -44,7 +66,7 @@ export function presignPut(key: string, contentType: string, expiresIn: number):
 // 预签名 GET：浏览器凭此直下；downloadName 设置附件名。
 export function presignGet(key: string, expiresIn: number, downloadName?: string): Promise<string> {
   return getSignedUrl(
-    getS3(),
+    getS3Presign(),
     new GetObjectCommand({
       Bucket: bucket(),
       Key: key,

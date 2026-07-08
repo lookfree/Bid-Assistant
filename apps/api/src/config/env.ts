@@ -39,6 +39,7 @@ const schema = z.object({
 
   // —— 对象存储（S3 API / MinIO）：文件直传直下，二进制不经过 App ——
   MINIO_ENDPOINT: z.string().url(),
+  MINIO_PUBLIC_ENDPOINT: z.string().optional(), // 浏览器可达的 MinIO 地址(预签名用);缺省=MINIO_ENDPOINT
   MINIO_ACCESS_KEY: z.string(),
   MINIO_SECRET_KEY: z.string(),
   MINIO_BUCKET: z.string().default("bidsaas"),
