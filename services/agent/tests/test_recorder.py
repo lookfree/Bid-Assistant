@@ -73,6 +73,21 @@ def test_full_run_records_and_usage_summary():
         _cleanup(run_id)
 
 
+def test_run_status_none_when_missing_then_tracks_lifecycle():
+    """清道夫(spec317)判孤儿用：查无记录返回 None；随生命周期从 running 变到终态。"""
+    rec = Recorder(get_pool())
+    run_id = str(uuid.uuid4())
+    at = "bidding_agent"
+    assert rec.run_status(run_id) is None  # 从未落库
+    try:
+        rec.start_run(run_id, at, thread_id=run_id)
+        assert rec.run_status(run_id) == "running"
+        rec.finish_run(run_id, status="succeeded")
+        assert rec.run_status(run_id) == "succeeded"
+    finally:
+        _cleanup(run_id)
+
+
 def test_edge_cases_empty_payload_resume_and_none_provider():
     rec = Recorder(get_pool())
     run_id = str(uuid.uuid4())

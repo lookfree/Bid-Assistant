@@ -103,6 +103,11 @@ class Recorder:
             (status, error, error_type, node_count, run_id, run_id),
         )
 
+    def run_status(self, run_id: str) -> str | None:
+        """查 run 当前状态；None=无记录。清道夫判定孤儿用（spec317）。"""
+        row = self._fetchone("select status from agent.agent_request where run_id=%s", (run_id,))
+        return row[0] if row else None
+
     def usage_summary(self, run_id: str) -> dict[str, int]:
         row = self._fetchone(
             """select coalesce(sum(input_tokens),0), coalesce(sum(output_tokens),0),
