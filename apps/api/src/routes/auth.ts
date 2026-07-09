@@ -7,7 +7,10 @@ import { normalizePhone } from "../util/phone"
 import type { SmsCodeService } from "../services/sms-code"
 
 const phoneRe = /^\+?\d{6,15}$/
-const sendSchema = z.object({ phone: z.string().regex(phoneRe), captchaToken: z.string().optional() })
+const sendSchema = z.object({
+  phone: z.string().regex(phoneRe),
+  captchaToken: z.string().max(4096).optional(), // param 是 JSON 串几百字节，加上限防超大 body 滥用
+})
 const verifySchema = z.object({
   phone: z.string().regex(phoneRe),
   code: z.string().regex(/^\d{6}$/),

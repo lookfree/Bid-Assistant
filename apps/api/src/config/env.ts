@@ -47,11 +47,12 @@ const schema = z.object({
   FILE_MAX_SIZE_MB: z.coerce.number().int().positive().default(50),
   FILE_PRESIGN_TTL_SECONDS: z.coerce.number().int().positive().default(600),
 
-  // —— 人机验证（滑块）：默认开启 ——
+  // —— 人机验证（滑块）：默认开启；AK/Secret 复用短信 AK 需给该 RAM 用户授 AliyunYundunCaptchaFullAccess ——
   CAPTCHA_ENABLED: envBool(true),
   ALIYUN_CAPTCHA_ACCESS_KEY_ID: z.string().optional(),
   ALIYUN_CAPTCHA_ACCESS_KEY_SECRET: z.string().optional(),
   ALIYUN_CAPTCHA_SCENE_ID: z.string().optional(),
+  ALIYUN_CAPTCHA_ENDPOINT: z.string().default("captcha.cn-shanghai.aliyuncs.com"), // 验证码2.0 仅上海/新加坡有 region
 
   // —— 限频类防刷：各层独立开关，默认关闭（按需开启）；阈值可配 ——
   SMS_CODE_TTL_SECONDS: z.coerce.number().int().positive().default(300),

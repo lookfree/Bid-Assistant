@@ -41,6 +41,7 @@
     "apps/api": {
       "name": "@bid/api",
       "dependencies": {
+        "@alicloud/captcha20230305": "^1.1.4",
         "@alicloud/dysmsapi20170525": "^4.5.1",
         "@alicloud/openapi-client": "^0.4.15",
         "@aws-sdk/client-s3": "^3.1077.0",
@@ -88,6 +89,8 @@
     "hono": "4.12.25",
   },
   "packages": {
+    "@alicloud/captcha20230305": ["@alicloud/captcha20230305@1.1.4", "https://registry.npmmirror.com/@alicloud/captcha20230305/-/captcha20230305-1.1.4.tgz", { "dependencies": { "@alicloud/openapi-core": "^1.0.0", "@darabonba/typescript": "^1.0.0" } }, "sha512-WG0xaJReho0iJIaU/3c+WpTZc9IBlWRnPbLh95vxs+p6RACgmV3Sj9kyRtKlbTr7i+nH98r5sNwsPCudHzINrg=="],
+
     "@alicloud/credentials": ["@alicloud/credentials@2.4.5", "https://registry.npmmirror.com/@alicloud/credentials/-/credentials-2.4.5.tgz", { "dependencies": { "@alicloud/tea-typescript": "^1.8.0", "httpx": "^2.3.3", "ini": "^1.3.5", "kitx": "^2.0.0" } }, "sha512-od1ufCxOO7cP2R4EVFliOB0kGo9lUXCibyj/mzmI6yLhxeqhqsegTzVsx5p2NJJsceKJnYcmye7FWKyLJAFBkw=="],
 
     "@alicloud/darabonba-array": ["@alicloud/darabonba-array@0.1.2", "https://registry.npmmirror.com/@alicloud/darabonba-array/-/darabonba-array-0.1.2.tgz", { "dependencies": { "@alicloud/tea-typescript": "^1.7.1" } }, "sha512-ZPuQ+bJyjrd8XVVm55kl+ypk7OQoi1ZH/DiToaAEQaGvgEjrTcvQkg71//vUX/6cvbLIF5piQDvhrLb+lUEIPQ=="],

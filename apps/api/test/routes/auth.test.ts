@@ -88,3 +88,38 @@ describe("/auth flow", () => {
     expect(after.status).toBe(401)
   })
 })
+
+describe("/auth/sms/send captcha 钩子", () => {
+  const captchaPhone = `+8613${(Date.now() + 11).toString().slice(-9)}`
+
+  it("captchaEnabled + verifyCaptcha 判负 -> 403 captcha_required", async () => {
+    const app = createApp({
+      pingDb: async () => true,
+      smsCode: fakeSms,
+      captchaEnabled: true,
+      verifyCaptcha: async () => false,
+    })
+    const res = await app.request("/auth/sms/send", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ phone: captchaPhone }),
+    })
+    expect(res.status).toBe(403)
+    expect(((await res.json()) as { error: string }).error).toBe("captcha_required")
+  })
+
+  it("captchaEnabled + verifyCaptcha 判正 -> 放行 200", async () => {
+    const app = createApp({
+      pingDb: async () => true,
+      smsCode: fakeSms,
+      captchaEnabled: true,
+      verifyCaptcha: async () => true,
+    })
+    const res = await app.request("/auth/sms/send", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ phone: captchaPhone }),
+    })
+    expect(res.status).toBe(200)
+  })
+})
