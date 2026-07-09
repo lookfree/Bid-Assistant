@@ -99,6 +99,23 @@ async def process_run(run_id: str) -> None:
         await _callback(run_id, agent_type, "failed")
 
 
+async def reap_orphan_run(run_id: str) -> str:
+    """清道夫处置一个认领到的孤儿 run，返回处置类别 "terminal"|"orphaned"|"missing"。
+    永不重新执行——重试语义属于 App 层（新 run_id）+ checkpointer（spec317 决策记录 §3）。"""
+    rec = _rec()
+    status = await asyncio.to_thread(rec.run_status, run_id)
+    if status in ("succeeded", "failed"):
+        return "terminal"
+    if status is None:
+        return "missing"
+    r = get_redis()
+    await asyncio.to_thread(rec.finish_run, run_id, status="failed",
+                             error="orphaned: worker exited mid-run", error_type="Orphaned")
+    await _apublish(r, run_id, {"type": "run.end",
+                                 "data": {"status": "failed", "error": "orphaned: worker exited mid-run"}})
+    return "orphaned"
+
+
 async def _callback(run_id: str, agent_type: str, status: str) -> None:
     if not settings.app_callback_url:
         return

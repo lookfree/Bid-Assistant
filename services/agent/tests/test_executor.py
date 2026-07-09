@@ -94,3 +94,73 @@ async def test_process_run_offloads_sync_calls_so_two_runs_overlap(monkeypatch):
     monkeypatch.setattr(executor_mod.settings, "app_callback_url", None)
 
     await asyncio.gather(process_run("run-a"), process_run("run-b"))
+
+
+class _FakeRecorderForReap:
+    """只实现 reap_orphan_run 用到的两个方法：run_status 查状态、finish_run 记调用参数。"""
+
+    def __init__(self, status: str | None):
+        self._status = status
+        self.finish_calls: list[tuple] = []
+
+    def run_status(self, run_id):
+        return self._status
+
+    def finish_run(self, run_id, status=None, error=None, error_type=None):
+        self.finish_calls.append((run_id, status, error, error_type))
+
+
+class _CapturingPipeline(_FakePipeline):
+    """在 _FakePipeline 之上把 xadd 落的事件记下来，供断言 run.end 的内容。"""
+
+    def __init__(self, sink: list):
+        self._sink = sink
+
+    def xadd(self, key, fields):
+        self._sink.append(json.loads(fields["event"]))
+        return self
+
+
+async def test_reap_orphan_run_terminal_only_reports_no_finish_call(monkeypatch):
+    """终态(succeeded/failed) run 被认领到 = 上次跑完只是没确认掉 xack；清道夫只报"terminal"，
+    不调 finish_run（状态已经是终态，不需要也不该覆写）。"""
+    rec = _FakeRecorderForReap("succeeded")
+    monkeypatch.setattr(executor_mod, "get_redis", lambda: _FakeRedis())
+    monkeypatch.setattr(executor_mod, "_rec", lambda: rec)
+
+    disposition = await executor_mod.reap_orphan_run("run-terminal")
+
+    assert disposition == "terminal"
+    assert rec.finish_calls == []
+
+
+async def test_reap_orphan_run_missing_record_reports_missing(monkeypatch):
+    """查无记录（远古脏消息）：不调 finish_run，只报"missing"。"""
+    rec = _FakeRecorderForReap(None)
+    monkeypatch.setattr(executor_mod, "get_redis", lambda: _FakeRedis())
+    monkeypatch.setattr(executor_mod, "_rec", lambda: rec)
+
+    disposition = await executor_mod.reap_orphan_run("run-missing")
+
+    assert disposition == "missing"
+    assert rec.finish_calls == []
+
+
+async def test_reap_orphan_run_nonterminal_marks_failed_and_publishes_run_end(monkeypatch):
+    """非终态(queued/running) = 孤儿（in-flight 过滤已保证属主进程已死）：标失败 + 推 run.end 失败事件。"""
+    rec = _FakeRecorderForReap("running")
+    events: list[dict] = []
+    fake_r = _FakeRedis()
+    fake_r.pipeline = lambda: _CapturingPipeline(events)
+    monkeypatch.setattr(executor_mod, "get_redis", lambda: fake_r)
+    monkeypatch.setattr(executor_mod, "_rec", lambda: rec)
+
+    disposition = await executor_mod.reap_orphan_run("run-orphan")
+
+    assert disposition == "orphaned"
+    assert rec.finish_calls == [
+        ("run-orphan", "failed", "orphaned: worker exited mid-run", "Orphaned")
+    ]
+    assert len(events) == 1
+    assert events[0]["type"] == "run.end"
+    assert events[0]["data"]["status"] == "failed"
