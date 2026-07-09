@@ -259,7 +259,13 @@ async def test_run_loop_caps_concurrent_dispatch_then_backfills(monkeypatch):
     finally:
         for ev in release.values():
             ev.set()  # 放行剩下的，别让子任务悬在 event loop 关闭时
-        await asyncio.sleep(0.05)  # 给已放行的子任务一点时间跑完自己的 xack，避免悬空 task
+        # 有界 drain 替换定长 sleep：等 run_loop 内部派发的 handle_entry 子任务（release 后)
+        # 真正跑完自己的 xack，而不是赌一个时间片够不够——避免负载重的 CI 上出现
+        # "Task was destroyed but it is pending" 噪音，同时不会无限期挂起（超时兜底）。
+        current = asyncio.current_task()
+        subtasks = [t for t in asyncio.all_tasks() if t not in (current, task) and not t.done()]
+        if subtasks:
+            await asyncio.wait(subtasks, timeout=5)
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
