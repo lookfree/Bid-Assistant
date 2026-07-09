@@ -67,7 +67,11 @@ async def claim_stale(r, consumer: str, inflight: set[str]) -> None:
     跳过、不处置也不 ack，等属主任务自己收尾。过滤剩下的在单实例部署下属主进程必已消亡，
     是真孤儿——查库按状态分三类处置（reap_orphan_run），任何分支都不调 process_run：
     重试语义属于 App 层（用户重新点击产生新 run_id）+ checkpointer 续跑（spec317 决策记录 §3）。
-    没 run_id 的脏消息（远古/墓碑）不查库，直接 ack。"""
+    没 run_id 的脏消息（远古/墓碑）不查库，直接 ack。
+
+    单条处置按条隔离（try/except，同 handle_entry 隔离 process_run 的思路）：reap 查的是 PG，
+    抛的是 psycopg 错误、不是 RedisError——run_loop 只兜 RedisError，若从这里冒出会打崩循环、
+    连带取消所有在跑的 run。失败的条目不 ack，留在 pending 下个周期重试。"""
     resp = await asyncio.to_thread(
         r.xautoclaim, stream_key(), GROUP, consumer, min_idle_time=CLAIM_MIN_IDLE_MS, start_id="0-0", count=10,
     )
@@ -75,12 +79,15 @@ async def claim_stale(r, consumer: str, inflight: set[str]) -> None:
         if entry_id in inflight:
             continue
         run_id = (fields or {}).get("run_id")
-        if run_id:
-            disposition = await reap_orphan_run(run_id)
-            print(f"[worker] claim {entry_id} run={run_id}: {disposition}", flush=True)
-        else:
-            print(f"[worker] claim {entry_id}: no run_id, dropping stale/dirty message", flush=True)
-        await asyncio.to_thread(r.xack, stream_key(), GROUP, entry_id)
+        try:
+            if run_id:
+                disposition = await reap_orphan_run(run_id)
+                print(f"[worker] claim {entry_id} run={run_id}: {disposition}", flush=True)
+            else:
+                print(f"[worker] claim {entry_id}: no run_id, dropping stale/dirty message", flush=True)
+            await asyncio.to_thread(r.xack, stream_key(), GROUP, entry_id)
+        except Exception as e:  # noqa: BLE001 单条清理失败不拖垮循环；不 ack，下个周期重试
+            print(f"[worker] claim {entry_id} reap failed: {e}", flush=True)
 
 
 def _reap_done_tasks(pending: set, entry_of: dict, inflight: set) -> None:
@@ -138,7 +145,8 @@ async def run_loop() -> None:
             if time.monotonic() - last_claim >= CLAIM_EVERY_S:
                 last_claim = time.monotonic()
                 await claim_stale(r, consumer, inflight)
-            capacity = settings.agent_worker_concurrency - len(pending)
+            # max(1,...)：env 误配成 ≤0 时，pending 恒空、_await_capacity 直接返回，循环会 100% CPU 空转
+            capacity = max(1, settings.agent_worker_concurrency) - len(pending)
             if capacity > 0:
                 await _dispatch_batch(r, consumer, capacity, pending, entry_of, inflight)
             else:

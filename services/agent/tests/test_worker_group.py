@@ -180,6 +180,30 @@ async def test_claim_stale_dispositions_all_three_branches_all_ack(monkeypatch):
     assert [a[2] for a in r.acked] == ["5-1", "5-2", "5-3"]
 
 
+async def test_claim_stale_reap_error_skips_ack_and_continues(monkeypatch):
+    """reap_orphan_run 抛非 Redis 异常（如 PG 瞬断的 psycopg 错误）：run_loop 只兜 RedisError，
+    异常若从 claim_stale 冒出会打崩循环、连带取消所有在跑的 run——必须在 claim_stale 内按条
+    隔离：该条不 ack（留在 pending 下个周期重试），同批后续条目照常处置。"""
+    calls = []
+
+    async def fake_reap(run_id):
+        calls.append(run_id)
+        if run_id == "r-boom":
+            raise RuntimeError("PG 瞬断")
+        return "terminal"
+
+    monkeypatch.setattr(main_worker, "reap_orphan_run", fake_reap)
+    r = FakeRedis(autoclaim=("0-0", [
+        ("8-1", {"run_id": "r-boom"}),
+        ("8-2", {"run_id": "r-ok"}),
+    ], []))
+
+    await claim_stale(r, "worker-a", inflight=set())  # 不抛——异常被按条消化
+
+    assert calls == ["r-boom", "r-ok"]  # 失败不挡后续条目
+    assert [a[2] for a in r.acked] == ["8-2"]  # 失败条目不 ack，下个周期重试
+
+
 async def test_claim_stale_dirty_message_without_run_id_only_acks(monkeypatch):
     """没 run_id 的脏消息（远古/墓碑）：不查库、不调 reap_orphan_run，直接 ack（既有行为保留）。"""
     calls = []
