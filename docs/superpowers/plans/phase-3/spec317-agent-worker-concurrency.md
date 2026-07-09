@@ -47,9 +47,9 @@
 
 ## Tasks
 
-- [ ] **Task A（config）**：`Settings` 加 `agent_worker_concurrency` 字段 + 默认值/env 覆盖测试 + `.env.bidsaas.example` 补注释。
-- [ ] **Task B（executor 卸载）**：`executor.py` 全部同步调用点 `to_thread` 包裹 + 并发重叠测试（事件握手）证明不再互相阻塞。
-- [ ] **Task C（worker 并发派发 + 清道夫）**：`main_worker.py` 改造 `run_loop` 为信号量限流并发派发（含 in-flight entry_id 登记/排除 + 任务异常回收）+ 认领路径改孤儿清理语义（终态 ack / 非终态标失败发 run.end / 永不重执行）+ 同步调用点卸载 + 对应测试。
+- [x] **Task A（config）**：`Settings` 加 `agent_worker_concurrency` 字段 + 默认值/env 覆盖测试 + `.env.bidsaas.example` 补注释。
+- [x] **Task B（executor 卸载）**：`executor.py` 全部同步调用点 `to_thread` 包裹 + 并发重叠测试（事件握手）证明不再互相阻塞。
+- [x] **Task C（worker 并发派发 + 清道夫）**：`main_worker.py` 改造 `run_loop` 为信号量限流并发派发（含 in-flight entry_id 登记/排除 + 任务异常回收）+ 认领路径改孤儿清理语义（终态 ack / 非终态标失败发 run.end / 永不重执行）+ 同步调用点卸载 + 对应测试。
 - [ ] **Task D**：`uv run pytest` 全绿 → `/code-review` 全修 → 部署 mbp → 手测多标书并发生成验收。
 
 ## 决策记录
