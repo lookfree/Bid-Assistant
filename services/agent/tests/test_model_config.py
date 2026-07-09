@@ -1,5 +1,19 @@
+from agent.config import Settings
 from agent.models.gateway import model_override_to_settings
 from agent.routes.runs import CreateRunBody
+
+
+def test_agent_worker_concurrency_default():
+    """Test that agent_worker_concurrency defaults to 5."""
+    settings = Settings(_env_file=None, database_url="postgresql://u:p@localhost/x")
+    assert settings.agent_worker_concurrency == 5
+
+
+def test_agent_worker_concurrency_from_env(monkeypatch):
+    """Test that agent_worker_concurrency can be overridden via AGENT_WORKER_CONCURRENCY env var."""
+    monkeypatch.setenv("AGENT_WORKER_CONCURRENCY", "9")
+    settings = Settings(_env_file=None, database_url="postgresql://u:p@localhost/x")
+    assert settings.agent_worker_concurrency == 9
 
 
 def test_override_maps_and_drops_none():
