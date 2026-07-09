@@ -701,11 +701,12 @@ deepagents 建在 LangGraph 上，`create_deep_agent()` 返回一个编译好的
 | 应用 | App API (Hono+Bun) | ×3 | 2 vCPU | 2 GB | — | 钱的权威；Redis 锁单例 Cron |
 | 智能体 | Agent API (FastAPI) | ×2 | 2 vCPU | 4 GB | — | run 管理 + SSE，无状态 |
 | 智能体 | Agent Worker | ×2 | 4 vCPU | 8 GB | 20 GB 临时盘 | 文档解析 + deepagent 执行（CPU/内存重） |
+| 智能体 | bge-embed（BGE-M3 嵌入） | ×2 | 2 vCPU | 4 GB | 2 GB（模型权重卷） | 自建服务，CPU 推理，OpenAI 兼容 `/v1/embeddings`；无状态，随应用节点部署，不占用独立机器；供 Agent Worker/API 索引与检索调用（§4.4 RAG 向量检索） |
 | 数据 | PostgreSQL + pgvector | 主+备 | 4 vCPU | 16 GB | 200 GB SSD ×2 | 业务+账本+向量；流复制热备 |
 | 数据 | Redis | 主+备 | 2 vCPU | 4 GB | 20 GB SSD ×2 | 会话/队列/分布式锁；AOF 持久化 |
 | 存储 | MinIO（S3） | 起步 1 / HA 4 | 2–4 vCPU | 4–8 GB | **2 TB+ 起步** | 文件大头：招标/标书/PPT/附件 |
 
-**合计（起步生产，不含外部 SaaS）**：**≈ 40 vCPU · ≈ 88 GB 内存 · ≈ 2.6 TB 磁盘**（MinIO 为磁盘大头）。
+**合计（起步生产，不含外部 SaaS）**：**≈ 44 vCPU · ≈ 96 GB 内存 · ≈ 2.6 TB 磁盘**（MinIO 为磁盘大头，含 bge-embed）。
 **裸机落地**：2–3 台应用/智能体节点（8c/16–32g）+ PG 主+备各 1 台（8c/32g/SSD）+ 1 台大盘 MinIO，每台 Docker Compose 编排。
 
 **外部依赖（SaaS，不占我方资源、按量计费）**：收钱吧（聚合支付）、阿里云短信、国产大模型 API（DeepSeek/通义/智谱，经 Model Gateway）。
@@ -745,11 +746,12 @@ deepagents 建在 LangGraph 上，`create_deep_agent()` 返回一个编译好的
 | 应用 | App API (Hono+Bun) | ×1 | 2 vCPU · 2 GB | 生产 ×3 → ×1 |
 | 智能体 | Agent API (FastAPI) | ×1 | 2 vCPU · 4 GB | 生产 ×2 → ×1 |
 | 智能体 | Agent Worker | ×1 | 4 vCPU · 8 GB · 20 GB | 生产 ×2 → ×1 |
+| 智能体 | bge-embed（BGE-M3 嵌入） | ×1 | 2 vCPU · 4 GB | 生产 ×2 → ×1；无状态，随应用节点部署 |
 | 数据 | PostgreSQL + pgvector | ×1 | 4 vCPU · 16 GB · 200 GB SSD | **去掉热备**（生产主+备） |
 | 数据 | Redis | ×1 | 2 vCPU · 4 GB · 20 GB SSD | **去掉副本** |
 | 存储 | MinIO（S3） | ×1 | 2–4 vCPU · 4–8 GB | 单节点；磁盘按存量起（**500 GB–1 TB 起步，按真实增长加盘**） |
 
-**合计**：**≈ 20 vCPU · ≈ 44 GB 内存 · ≈ 1 TB 磁盘起步**——约为起步生产档（§13.2）的一半：省掉的是冗余副本与 PG/Redis 主备，**单服务规格完全不变**。可单机承载，也可按服务散到 2–3 台小机；关键是「每样 1 个」，不是缩规格。
+**合计**：**≈ 22 vCPU · ≈ 48 GB 内存 · ≈ 1 TB 磁盘起步**（含 bge-embed）——约为起步生产档（§13.2）的一半：省掉的是冗余副本与 PG/Redis 主备，**单服务规格完全不变**。可单机承载，也可按服务散到 2–3 台小机；关键是「每样 1 个」，不是缩规格。
 
 **取舍（推广初期可接受）**：
 - ⚠ **单副本无 HA**：某服务/某机故障期间该能力短暂不可用；有状态层靠**定时快照**（`pg_dump` + MinIO 同步外部盘/异地）兜底，故障后重建。
