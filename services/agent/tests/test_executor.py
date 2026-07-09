@@ -121,6 +121,48 @@ class _CapturingPipeline(_FakePipeline):
         return self
 
 
+class _RecorderRaisingUsage:
+    """finish_run 记录终态；usage_summary 模拟瞬断 PG 错误，验证不会污染已成功落定的终态。"""
+
+    def __init__(self):
+        self.finish_calls: list[tuple] = []
+
+    def start_run(self, run_id, agent_type, thread_id):
+        pass
+
+    def log_event(self, *a, **kw):
+        pass
+
+    def finish_run(self, run_id, status=None, **kw):
+        self.finish_calls.append((run_id, status))
+
+    def usage_summary(self, run_id):
+        raise RuntimeError("PG 瞬断")
+
+
+async def test_callback_usage_summary_error_does_not_flip_succeeded_run(monkeypatch):
+    """_callback 里 usage_summary 抛错必须被吞掉——不能让 process_run 已经写定的 succeeded
+    终态被覆写成 failed，也不能因此多发一次 run.end failed 事件（回归 spec317 review 发现的
+    "usage 读失败污染已成功 run" 问题：修复前 usage_summary 抛到 _callback 外、冒进
+    process_run 的 except，把成功 run 标记成失败并二次发布 run.end）。"""
+    rec = _RecorderRaisingUsage()
+    events: list[dict] = []
+    fake_r = _FakeRedis()
+    fake_r.pipeline = lambda: _CapturingPipeline(events)
+
+    monkeypatch.setattr(executor_mod, "get_redis", lambda: fake_r)
+    monkeypatch.setattr(executor_mod, "_rec", lambda: rec)
+    monkeypatch.setattr(executor_mod, "get_agent", lambda agent_type: _FakeAgent())
+    monkeypatch.setattr(executor_mod.settings, "app_callback_url", "http://example.invalid/callback")
+
+    await process_run("run-usage-error")
+
+    assert rec.finish_calls == [("run-usage-error", "succeeded")]
+    end_events = [e for e in events if e["type"] == "run.end"]
+    assert len(end_events) == 1
+    assert end_events[0]["data"]["status"] == "succeeded"
+
+
 async def test_reap_orphan_run_terminal_only_reports_no_finish_call(monkeypatch):
     """终态(succeeded/failed) run 被认领到 = 上次跑完只是没确认掉 xack；清道夫只报"terminal"，
     不调 finish_run（状态已经是终态，不需要也不该覆写）。"""

@@ -119,8 +119,10 @@ async def reap_orphan_run(run_id: str) -> str:
 async def _callback(run_id: str, agent_type: str, status: str) -> None:
     if not settings.app_callback_url:
         return
-    usage = await asyncio.to_thread(_rec().usage_summary, run_id)
     try:
+        # usage_summary 查库也纳入这个 try：它和 httpx POST 一样只是"上报"，瞬时 PG 错误不该
+        # 冒出去覆写 process_run 里已经落定的 succeeded 状态（见 process_run 里 _callback 的调用位置）。
+        usage = await asyncio.to_thread(_rec().usage_summary, run_id)
         async with httpx.AsyncClient(timeout=10) as c:
             await c.post(settings.app_callback_url, json={"run_id": run_id, "agent_type": agent_type,
                                                           "status": status, "usage": usage})
