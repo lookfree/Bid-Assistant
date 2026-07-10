@@ -56,7 +56,8 @@ def test_upsert_deletes_before_insert_with_incrementing_chunk_no(monkeypatch):
     assert n == 3
     sqls = [c[0] for c in conn.executed]
     assert "DELETE" in sqls[0].upper()
-    assert "src1" in conn.executed[0][1]
+    assert "user_id" in sqls[0]                    # DELETE 也按属主隔离，防越权重建他人 chunks
+    assert "u1" in conn.executed[0][1] and "src1" in conn.executed[0][1]
     insert_calls = [c for c in conn.executed if "INSERT" in c[0].upper()]
     assert len(insert_calls) == 3
     chunk_nos = [c[1][3] for c in insert_calls]   # (user_id, source_type, source_id, chunk_no, ...)

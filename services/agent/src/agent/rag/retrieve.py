@@ -41,20 +41,23 @@ async def build_reference_block(user_id: str, queries: list[str], top_k: int,
 
 async def _build(user_id: str, queries: list[str], top_k: int,
                   budget: int, tender_thread_id: str | None) -> str:
-    # 多个 query 合并成一段文本 embed 一次（比逐条 embed 简单、也省一次批量请求）。
-    query_text = "\n".join(q for q in queries if q and q.strip())
-    if not query_text:
+    # 逐 query 各 embed 一个向量（一次批量请求返回 N 个）：多章文档要跨章检索广度，
+    # 合成一个平均向量会把相关性拉平。
+    clean = [q for q in queries if q and q.strip()]
+    if not clean:
         return ""
-    vectors = await embedder.embed([query_text])
+    vectors = await embedder.embed(clean)
     if not vectors:
         return ""
-    vec = vectors[0]
     pool = get_pool()
-    # library 取该用户全部资料库（source_id=None）；tender 按 thread 隔离（per-project source_id）。
-    hits = await asyncio.to_thread(store.search, pool, user_id, "library", vec, top_k)
+    # library 逐向量各查、UNION（source_id=None 取该用户全部资料库）；_format_block 统一去重+排序+截断。
+    hits: list[dict] = []
+    for vec in vectors:
+        hits += await asyncio.to_thread(store.search, pool, user_id, "library", vec, top_k)
+    # tender 只查一次、按 thread 隔离（per-project source_id）：招标原文取首个 query 向量作代表即可。
     if tender_thread_id:
-        hits = hits + await asyncio.to_thread(
-            store.search, pool, user_id, "tender", vec, _TENDER_TOP_K, tender_thread_id)
+        hits += await asyncio.to_thread(
+            store.search, pool, user_id, "tender", vectors[0], _TENDER_TOP_K, tender_thread_id)
     return _format_block(hits, budget)
 
 

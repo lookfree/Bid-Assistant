@@ -20,12 +20,13 @@ def register(conn) -> None:
 
 def upsert(pool: ConnectionPool, user_id: str, source_type: str, source_id: str,
            chunks: list[str], embeddings: list[list[float]], metas: list[dict]) -> int:
-    """先删旧（按 source_type+source_id 重建），再顺序插入（chunk_no 递增）。返回写入条数。"""
+    """先删旧（按属主 user_id+source_type+source_id 重建），再顺序插入（chunk_no 递增）。返回写入条数。
+    DELETE 带 user_id：UNIQUE 约束不含 user_id，不加属主条件会让 user_id 不匹配的调用删+改写他人 chunks。"""
     with pool.connection() as conn:
         register(conn)
         conn.execute(
-            "DELETE FROM agent.rag_chunks WHERE source_type=%s AND source_id=%s",
-            (source_type, source_id),
+            "DELETE FROM agent.rag_chunks WHERE source_type=%s AND source_id=%s AND user_id=%s",
+            (source_type, source_id, user_id),
         )
         for i, (text, embedding, meta) in enumerate(zip(chunks, embeddings, metas)):
             conn.execute(

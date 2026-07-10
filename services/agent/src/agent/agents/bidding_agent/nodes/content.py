@@ -17,7 +17,7 @@ _REWRITE_QUERY_CHARS = 200   # 改写检索 query 取原章前 N 字，避免整
 
 
 def _default_top_k(run_input: dict) -> int:
-    return (run_input.get("rag") or {}).get("top_k") or 5
+    return (run_input.get("rag") or {}).get("top_k") or 3   # spec/seed 默认 3；App 恒发 3
 
 
 async def _rag_on(ctx, run_input: dict) -> bool:

@@ -101,6 +101,38 @@ def test_build_reference_block_includes_tender_hits_when_thread_given(monkeypatc
     assert ("u1", "library", 5, None) in fake_store.search_calls
 
 
+class _SeqStore:
+    """library 每次 search 返回序列里的下一组命中（模拟逐 query 检索不同章节命中）；tender 返回空。"""
+
+    def __init__(self, library_seq):
+        self.library_seq = library_seq
+        self.i = 0
+        self.search_calls: list[tuple] = []
+
+    def search(self, pool, user_id, source_type, query_vec, top_k=5, source_id=None):
+        self.search_calls.append((user_id, source_type, top_k, source_id))
+        if source_type == "tender":
+            return []
+        hits = self.library_seq[self.i]
+        self.i += 1
+        return hits
+
+
+def test_build_reference_block_unions_hits_across_queries(monkeypatch):
+    """spec316 A2 fix：逐 query 各查 library、UNION 命中、按 text 去重、score 降序——
+    多章文档取到跨章广度，而非一个平均向量拉低相关性。"""
+    seq_store = _SeqStore([
+        [{"text": "章一命中", "score": 0.8}],
+        [{"text": "章二命中", "score": 0.9}, {"text": "章一命中", "score": 0.5}],  # 章一重复→去重
+    ])
+    _patch(monkeypatch, store=seq_store)
+    block = asyncio.run(build_reference_block("u1", ["章一 query", "章二 query"], top_k=3))
+    lines = block.splitlines()[1:]
+    assert lines == ["- 章二命中", "- 章一命中"]                 # union + dedup + score desc
+    lib_calls = [c for c in seq_store.search_calls if c[1] == "library"]
+    assert len(lib_calls) == 2                                  # 每个 query 各查一次 library
+
+
 def test_rag_enabled_false_when_user_id_missing(monkeypatch):
     _patch(monkeypatch)
     assert asyncio.run(rag_enabled(None, {"rag": {"enabled": True}})) is False
