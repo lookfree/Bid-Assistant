@@ -4,7 +4,9 @@
 
 **Goal:** 把运营后台的模型配置从「/plans 页底部一张 3 字段卡」升级为**独立菜单「模型管理」**,支持:模型库(配服务商+模型名+参数,就地测试连通、就地调参)、运行编排(主模型 + 有序降级链),且**启用/入链前必须测试连通通过**。原型已确认:见 scratchpad model-admin-mockup(布局+配色对齐后台政务红 token+参数悬停说明)。
 
-**Architecture:** 三层改动。① **agent**:`get_chat` 透传 `temperature/max_tokens/top_p`(当前完全没传——也是述标 max_tokens 走默认值的原因);新增 `POST /models/test` 连通性探针端点(用该 provider 的 env key 建临时 ChatOpenAI,发固定短 prompt,回 `{ok, latency_ms, tokens, error}`);run 契约的 model override 从 `{provider, model, fallbacks}` 字符串式升级为**带每模型参数的有序链** `{chain:[{provider,model,params}]}`,gateway 按链逐个 failover 且各用自己的参数。② **App API**:配置数据结构从单条 `agent_model={provider,model,fallbacks}` 升级为 `{models:[...], chain:[id...]}`(读时向后兼容旧结构);新增 `/admin-api/models` 路由组(读/写整份配置 + 测试中转到 agent);`getAgentModel()` 从新结构派生 run override 链;createRun/rewriteChapter 带上。③ **admin 前端**:新 `/models` 菜单页(运行编排 + 模型库两段),测试/调参/启用交互,移除 /plans 底部的 AgentModelCard。
+**Architecture:** 三层改动。① **agent**:`get_chat` 透传 `temperature/max_tokens/top_p`(当前完全没传——也是述标 max_tokens 走默认值的原因)——参数存进 `Settings`(`model_temperature/max_tokens/top_p`),`get_chat` 读设置并入 `ChatOpenAI`,这样生成节点的 `get_chat(provider=None)` 天然用上**主模型**参数,无需改各节点调用点;新增 `POST /models/test` 连通性探针端点(用该 provider 的 env key 建临时 ChatOpenAI,发固定短 prompt,回 `{ok, latency_ms, tokens, error}`);run 契约的 model override 在现有 `{provider, model, fallbacks}` 上**追加 `params`**(主模型参数),`fallbacks` 仍是 `"prov:model,..."` 字符串喂现有 `_chain`(compressor failover 保持不变)。② **App API**:配置数据结构从单条 `agent_model={provider,model,fallbacks}` 升级为 `{models:[...], chain:[id...]}`(读时向后兼容旧结构);新增 `/admin-api/models` 路由组(读/写整份配置 + 测试中转到 agent);`getAgentModel()` 从新结构派生 run override(主=`chain[0]` 的 provider/model/params,fallbacks=`chain[1:]` 拼 `prov:model` 串);createRun/rewriteChapter 带上。③ **admin 前端**:新 `/models` 菜单页(运行编排 + 模型库两段),测试/调参/启用交互,移除 /plans 底部的 AgentModelCard。
+
+> **架构事实(决定上面的收敛)**:生成节点(read/outline/content/review/present、`_forced_submit`)走 `ctx.gateway.get_chat(provider=None)` 单模型、**无 failover**;真正的多模型 failover 只在 compressor 的 `ModelGateway.invoke()`（用 `_chain` 读 `model_fallbacks` 串）。故本轮参数作用于**主模型**(节点实际用的那个),降级链沿用现有字符串 failover 机制不改。给"整条链每模型独立参数 + 节点级 failover"是更大的改造，本轮不做(见决策记录 §1)。
 
 **Tech Stack:** admin(Next.js + shadcn,配色用 `apps/admin/app/globals.css` 既有 oklch token);App API(Hono + Bun + Drizzle,`billing_configs` 复用,Zod,bun:test);agent(FastAPI + langchain_openai,uv/pytest)。
 
@@ -43,10 +45,11 @@
 - **迁移读**:`getModelConfig()` 读到旧结构(有 `provider`/`fallbacks` 键、无 `models`)→ 就地转成新结构:主 model 由 `{provider, model:model??默认, params:默认}` 生成 id 入 `models`;`fallbacks`(`"glm:glm-4-flash,..."`)每段拆成 model 入 `models`;`chain`=[主, ...fallbacks];test 全 `untested`、enabled 全 true(老数据视作已在用,避免迁移后主模型被门槛挡掉——迁移是一次性兼容,不倒查测试)。迁移结果**不立即回写**(读时转换,写时才落新结构),避免读操作产生写副作用。
 
 ### Agent 侧
-1. **`models/gateway.py` `get_chat`**:签名加 `params: dict | None`,把 `temperature/max_tokens/top_p`(存在才传,None 不传)并入 `ChatOpenAI(...)`。`providers.py` 无关。
-2. **run override 升级**(`gateway.py` `model_override_to_settings` + `executor.py`):meta.model 新形状 `{"chain":[{"provider","model","params"}...]}`。改 `_chain`/`invoke` failover 逻辑:按 chain 逐项 `get_chat(provider, model, params)` 尝试,失败转下一项;chain 缺失/空 → 回退现有默认(provider/model_default + 空 fallback)。**保留** meta.model 缺失时用模块级默认 gateway 的行为(降级铁律)。旧字符串形状 `{provider,model,fallbacks}` 不再由 App 下发(App 统一发新形状),但 `model_override_to_settings` 对无法识别的形状要安全回退默认、不抛。
-3. **`POST /agents/{agent_type}/threads/... ` 无关;新增 `POST /models/test`**(agent 新路由,`routes/models.py`):body `{provider, model, params?}` → 用该 provider 的 env key `get_chat(provider, model, params)` → `ainvoke([HumanMessage("请回复:OK")])`(固定探针)→ 计时 → 回 `{ok:true, latency_ms, tokens, model_echo}` 或 `{ok:false, error:"<可读原因,如 401 未授权/超时/连接失败>"}`。**不落库、不计费**、超时 15s。provider 无 key → `{ok:false, error:"<PROVIDER>_API_KEY 未配置"}`。
-4. app.py 挂载新路由。
+1. **`config.py` Settings**:加 `model_temperature: float | None = None`、`model_max_tokens: int | None = None`、`model_top_p: float | None = None`(None = 不传,用 provider 默认)。
+2. **`models/gateway.py` `get_chat`**:从 `self.s` 读上面三个参数,非 None 才并入 `ChatOpenAI(temperature=..., max_tokens=..., top_p=...)`;显式 `**kw` 仍可覆盖(优先级 kw > settings)。抽一个 `_params_kwargs()` 小方法组装,函数 ≤80 行。`providers.py` 无关。这样节点的 `get_chat(provider=None)` 与 compressor 的 `invoke`→`get_chat` 都自动带上参数,**无需改各节点调用点**。
+3. **run override 追加 params**(`gateway.py` `model_override_to_settings`):`_OVERRIDE_MAP` 之外,识别 `sel["params"]`(dict),把 `temperature/max_tokens/top_p` 映射为 `model_temperature/max_tokens/top_p`(校验类型,越界/非数丢弃不抛)。现有 `{provider,model,fallbacks}` 映射不变;`executor.py` 的 `model_copy(update=override)` 路径不改。**降级铁律保留**:meta.model 缺失 → 用模块级默认 gateway(不改)。
+4. **新增 `POST /models/test`**(agent 新路由 `routes/models.py`):body `{provider, model, params?}` → 校验 provider 在 `PROVIDERS` → 临时 `ModelGateway(settings.model_copy(update=params 映射)).get_chat(provider, model)` → `await chat.ainvoke([HumanMessage("请回复:OK")])`(固定探针)→ 计时 → 回 `{ok:true, latency_ms, tokens}`(tokens 取 usage_metadata 总数,取不到给 0)或 `{ok:false, error:"<可读原因>"}`。**不落库、不计费**、超时 15s(`asyncio.wait_for`)。provider 无 key(get_chat 抛 RuntimeError)→ `{ok:false, error:"<PROVIDER>_API_KEY 未配置"}`;其它异常 → `{ok:false, error:str(e) 截断}`。provider 非白名单 → 400。
+5. `app.py` 挂载新路由。
 
 ### App API 侧
 1. **`services/config.ts` 或新 `services/model-config.ts`**:`getModelConfig()`(读+迁移)、`saveModelConfig(cfg)`(校验后写 key `agent_model`)。校验:providers 白名单、params 范围、`chain` 每 id 存在且对应 model `enabled && test.status==="passed"`(违反 → 抛 `ChainRequiresTestedError`)。
@@ -54,7 +57,7 @@
    - `GET /` → `getModelConfig()`(`config.read`)。
    - `PUT /` body=整份 `{models, chain}` → Zod 校验 + `saveModelConfig` + 审计(`config.write`);校验失败 400(`invalid_params`/`chain_requires_tested_models`/`unknown_provider`)。
    - `POST /test` body `{provider, model, params?}` → `config.write` → 中转 `agentClient.testModel(...)`(新方法,超时 20s)→ 回 agent 的 `{ok, latencyMs, tokens}`/`{ok, error}`。**不改配置**(测试无状态,client 把结果并进 model.test 后随 PUT 落库)。
-3. **`services/agent-client.ts`**:`getAgentModel()` 改为读 `getModelConfig()` → 组装 run override `{chain:[{provider,model,params}]}`(只取 `chain` 里 enabled+passed 的,按序;空 → 返回 undefined 让 agent 用默认);`createRun`/`rewriteChapter`/(dedupe/checklist 若也带 model)统一用新形状。加 `testModel({provider,model,params})` 打 agent `/models/test`。
+3. **`services/agent-client.ts`**:`getAgentModel()` 改为读 `getModelConfig()` → 组装 run override `{provider, model, params, fallbacks}`——主= `chain[0]` 的 model 的 `{provider, model, params}`,`fallbacks`= `chain[1:]` 对应 model 拼 `"prov:model,..."` 串(与现有 agent `_chain` 解析一致);`chain` 空 → 返回 `undefined`(agent 用默认)。**沿用现有 override 形状 + 追加 `params`**,createRun/rewriteChapter 调用点不用改结构(已透传 `model`)。加 `testModel({provider,model,params})` 打 agent `/models/test`。
 4. **移除**旧 `agent_model` 的 `{provider,model,fallbacks}` 写路径依赖(`/admin-api/plans/configs` 仍可写其它 config key,但 agent_model 改由 `/admin-api/models` 管;plans 页不再写它)。
 
 ### admin 前端侧
@@ -68,21 +71,21 @@
 5. 配色/组件复用现有 shadcn + globals.css token(勿新引色)。
 
 ### 验证口径
-- **agent pytest**:`get_chat` 传入 params → ChatOpenAI 收到 temperature/max_tokens/top_p(mock ChatOpenAI 断言 kwargs);`/models/test` 成功(mock ainvoke 返回)→ `{ok,latency_ms,tokens}`;provider 无 key → `{ok:false,error}`;ainvoke 抛错 → `{ok:false,error}` 不 500;run override chain failover:主失败→用第二项(且各用自己 params,mock 断言)。
-- **App API bun test(mbp)**:`getModelConfig` 迁移旧结构正确;`saveModelConfig`/`PUT` 校验——chain 含未测通 model → 400 `chain_requires_tested_models`;params 越界 → 400;unknown provider → 400;`getAgentModel` 从新结构派生 override 链(含 params)、空配置 → undefined;`POST /test` 中转(mock agentClient)。
+- **agent pytest**:settings 带参数时 `get_chat` → ChatOpenAI 收到 temperature/max_tokens/top_p(mock ChatOpenAI 断言 kwargs),settings 参数为 None 时不传该 kwarg;`model_override_to_settings` 把 `params` 映射为 model_* 字段、越界/非数丢弃;`/models/test` 成功(mock ainvoke 返回带 usage)→ `{ok,latency_ms,tokens}`;provider 无 key → `{ok:false,error}`;ainvoke 抛错 → `{ok:false,error}` 不 500;provider 非白名单 → 400。
+- **App API bun test(mbp)**:`getModelConfig` 迁移旧结构正确;`saveModelConfig`/`PUT` 校验——chain 含未测通 model → 400 `chain_requires_tested_models`;params 越界 → 400;unknown provider → 400;`getAgentModel` 从新结构派生 `{provider,model,params,fallbacks}`(主=chain[0],fallbacks=chain[1:] 拼串)、空配置 → undefined;`POST /test` 中转(mock agentClient)。
 - **admin bun test**:config↔表单 mapping、chain 调序/校验逻辑、test 结果并入 model 逻辑(SDK mock)。
 - **端到端(部署后手测)**:新菜单页可配 deepseek + 测试通过 + 启用 + 设为主模型 + 保存 → 跑一次真实生成用上该配置(查 agent_token_usage 的 model 列)。
 
 ## Tasks
 
-- [ ] **Task A(agent)**:`get_chat` 参数透传 + `/models/test` 探针端点 + run override 链(带 params)failover + pytest(全 mock)。
+- [ ] **Task A(agent)**:Settings 加参数字段 + `get_chat` 从 settings 透传参数 + `model_override_to_settings` 追加 params 映射 + `/models/test` 探针端点(挂 app.py)+ pytest(全 mock)。
 - [ ] **Task B(App API)**:模型配置新结构(读迁移/写校验)+ `/admin-api/models` 路由(GET/PUT/POST test)+ `getAgentModel` 派生链 + agent-client testModel + mbp 测试。
 - [ ] **Task C(admin 前端)**:`/models` 菜单页(运行编排 + 模型库,测试/调参/启用/编排交互,配色对齐)+ admin-api 方法 + 从 /plans 移除旧卡 + 逻辑单测。
 - [ ] **Task D(验证/部署)**:三侧全绿 → `/code-review` 全修 → 合并 main → 部署 mbp → 端到端手测。
 
 ## 决策记录
 
-1. **run override 升级为「带每模型参数的有序链」而非全局单参数**:原型的核心是每模型独立参数。若只发主模型参数、降级共用,会出现"降级模型的参数配了却只在它当主模型时才生效"的困惑语义。发整条 chain(每项自带 params)让 agent 逐项 failover 时各用自己的参数,忠实于设计。代价是改 spec311 的 override 契约(App+agent 两侧),但边界清晰。
+1. **参数作用于主模型,降级链沿用现有字符串 failover(不做节点级逐项参数)**:读代码发现生成节点走 `get_chat(provider=None)` 单模型、**无 failover**,failover 只在 compressor。故"整条链每模型独立参数"对生成节点是过度设计——最高价值是让**主模型**参数真正作用到生成(修 `get_chat` 完全不传参、DeepSeek 走默认 max_tokens 的老问题,呼应 spec318 述标)。本轮:override 在现有 `{provider,model,fallbacks}` 上追加 `params`(主模型的),参数存 Settings 由 `get_chat` 读取,自动覆盖节点与 compressor 两条路径;降级链继续用 `fallbacks` 字符串喂 `_chain`(现状不改)。**已知取舍**:模型库里非主模型的 model 也能配参数,但运行时只有主模型(`chain[0]`)的参数生效,降级位模型的参数在它被设为主模型时才生效——UI 上不误导(参数是"该模型被用作主模型时的参数");给"节点级 failover + 逐项参数"是更大改造,留候选。
 2. **测试无状态、启用门槛服务端强制**:`/test` 只回结果不改配置(测试可发生在首次保存前);测试结果由 client 并入 model.test 随 PUT 落库;`PUT` 服务端校验 chain 全测通——这样"启用前必须测通"既有前端引导(开关禁用)又有服务端兜底(防绕过 API),符合"不破坏用户生成"的产品铁律。
 3. **复用 `billing_configs` 单 key `agent_model`,不建新表**:配置体量小(几条 model),单 JSON 够用;迁移读兼容旧结构,写才落新结构,读无副作用。避免迁移+新表的成本,与现有 config 存储一致。
 4. **连通性探针=固定短 prompt,平台承担成本**:按你的决策,只验 key/网络/延迟,不让运营自定义 prompt(更省成本更简单);探针在 agent 侧执行(key 在那)。回显延迟/token/错误。
