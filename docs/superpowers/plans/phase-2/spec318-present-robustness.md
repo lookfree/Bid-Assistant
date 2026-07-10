@@ -101,7 +101,7 @@ class SlideNotes(BaseModel):
 
 - [ ] **Task A(Fix 1)**:`_forced_submit` 加 invalid_tool_calls 喂回重试分支 + 四态单测(invalid→重试成功/耗尽/Pydantic 回归/彻底无调用回归)。
 - [ ] **Task B(Fix 2)**:schemas 加 DeckDraft/SlideNotes + present_node 两段式 + 提示词拆分 + present 合并单测。
-- [ ] **Task C(验证/部署)**:`uv run pytest` 全绿 → `/code-review` 全修 → 合并 main → 部署 mbp → 真实项目端到端验收述标出 pptx。
+- [x] **Task C(验证/部署)**:`uv run pytest` 全绿 → `/code-review` 全修 → 合并 main → 部署 mbp → 真实项目端到端验收述标出 pptx。
 
 ## 决策记录
 
