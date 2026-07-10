@@ -9,6 +9,7 @@ export function ModelLibraryGrid({
   chain,
   savedModelIds,
   testingIds,
+  testTokens,
   busy,
   onTest,
   onToggleEnable,
@@ -22,6 +23,8 @@ export function ModelLibraryGrid({
   // 已在服务端持久化的 model id 集合：不在其中即视为「新添加、未提交」，卡片默认展开编辑态。
   savedModelIds: Set<string>
   testingIds: Set<string>
+  // 探针返回的瞬态 token 数（id → tokens），仅用于展示，不落库。
+  testTokens: Record<string, number>
   busy: boolean
   onTest: (id: string) => void
   onToggleEnable: (id: string, v: boolean) => void
@@ -39,6 +42,7 @@ export function ModelLibraryGrid({
           isNew={!savedModelIds.has(m.id)}
           inChain={chain.includes(m.id)}
           testing={testingIds.has(m.id)}
+          tokens={testTokens[m.id]}
           busy={busy}
           onTest={() => onTest(m.id)}
           onToggleEnable={(v) => onToggleEnable(m.id, v)}

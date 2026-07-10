@@ -5,6 +5,8 @@ import {
   canAddToChain,
   moveInChain,
   resetTestOnEdit,
+  isInChain,
+  persistedChainFor,
   chainSummary,
   saveErrorMessage,
   type ModelEntry,
@@ -78,6 +80,31 @@ describe("spec319 model-config: resetTestOnEdit", () => {
   it("改参数后测试状态重置为 untested，不保留旧的 at/latencyMs/error", () => {
     const m = entry({ test: { status: "passed", at: "2026-07-09T00:00:00Z", latencyMs: 128 } })
     expect(resetTestOnEdit(m)).toEqual({ ...m, test: { status: "untested" } })
+  })
+})
+
+describe("spec319 model-config: isInChain", () => {
+  it("命中/未命中", () => {
+    expect(isInChain(["a", "b"], "b")).toBe(true)
+    expect(isInChain(["a", "b"], "z")).toBe(false)
+  })
+})
+
+describe("spec319 model-config: persistedChainFor", () => {
+  it("即时动作用已保存链，不裹挟未确认的链编辑", () => {
+    const saved = ["a", "b"]
+    expect(persistedChainFor(saved)).toEqual(["a", "b"])
+  })
+  it("返回新数组，不改入参", () => {
+    const saved = ["a", "b"]
+    const out = persistedChainFor(saved)
+    expect(out).not.toBe(saved)
+  })
+  it("删除时同步从已保存链剔除该 id（避免悬空引用）", () => {
+    expect(persistedChainFor(["a", "b", "c"], "b")).toEqual(["a", "c"])
+  })
+  it("删除不在链中的 id → 已保存链原样", () => {
+    expect(persistedChainFor(["a", "b"], "z")).toEqual(["a", "b"])
   })
 })
 

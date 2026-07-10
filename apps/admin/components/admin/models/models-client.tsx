@@ -6,7 +6,9 @@ import { adminApi, AdminApiError } from "@/lib/admin-api"
 import {
   DEFAULT_MODEL_PARAMS,
   canAddToChain,
+  isInChain,
   moveInChain,
+  persistedChainFor,
   saveErrorMessage,
   type ModelConfig,
   type ModelEntry,
@@ -25,6 +27,8 @@ export function ModelsClient() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testingIds, setTestingIds] = useState<Set<string>>(new Set())
+  // 探针返回的 token 数：只用于展示「✓ 128ms · N tokens」，不落库、不参与 PUT，刷新即丢弃。
+  const [testTokens, setTestTokens] = useState<Record<string, number>>({})
 
   useEffect(() => {
     let alive = true
@@ -42,27 +46,31 @@ export function ModelsClient() {
     }
   }, [])
 
-  // 原子操作（启用/删除）：乐观更新 + 立即整份 PUT；失败回滚到操作前的本地状态（不影响其它未保存的编辑）。
-  async function persistInstant(next: ModelConfig, successMessage?: string) {
-    const prev = cfg
-    setCfg(next)
+  // 即时动作（启用/停用/删除）：乐观更新 + 立即整份 PUT。关键——payload 用「已保存链」，绝不裹挟
+  // 用户尚未点「保存运行配置」确认的链编辑；本地 cfg 只改 models，保留 pending 的 cfg.chain（未保存徽标
+  // 与 dirty 判断依赖它）。失败回滚 cfg + savedCfg。
+  async function persistInstant(payload: ModelConfig, nextLocal: ModelConfig, successMessage?: string) {
+    const prevCfg = cfg
+    const prevSaved = savedCfg
+    setCfg(nextLocal)
+    setSavedCfg(payload)
     try {
-      await adminApi.models.save(next)
-      setSavedCfg(next)
+      await adminApi.models.save(payload)
       if (successMessage) toast.success(successMessage)
     } catch (e) {
-      setCfg(prev)
+      setCfg(prevCfg)
+      setSavedCfg(prevSaved)
       toast.error(e instanceof AdminApiError ? saveErrorMessage(e.code) : "保存失败，请重试")
     }
   }
 
   // 显式保存（保存参数 / 保存运行配置）：失败时保留用户的本地改动，方便直接重试。
-  async function persistExplicit(next: ModelConfig, successMessage: string) {
+  async function persistExplicit(payload: ModelConfig, nextLocal: ModelConfig, successMessage: string) {
     setSaving(true)
     try {
-      await adminApi.models.save(next)
-      setCfg(next)
-      setSavedCfg(next)
+      await adminApi.models.save(payload)
+      setCfg(nextLocal)
+      setSavedCfg(payload)
       toast.success(successMessage)
     } catch (e) {
       toast.error(e instanceof AdminApiError ? saveErrorMessage(e.code) : "保存失败，请重试")
@@ -76,8 +84,14 @@ export function ModelsClient() {
     const model = cfg.models.find((m) => m.id === id)
     if (!model) return
     setTestingIds((prev) => new Set(prev).add(id))
-    const test = await probeModel(model)
+    const { test, tokens } = await probeModel(model)
     setCfg((c) => (c ? { ...c, models: c.models.map((m) => (m.id === id ? { ...m, test } : m)) } : c))
+    setTestTokens((prev) => {
+      const next = { ...prev }
+      if (test.status === "passed" && tokens !== undefined) next[id] = tokens
+      else delete next[id]
+      return next
+    })
     setTestingIds((prev) => {
       const next = new Set(prev)
       next.delete(id)
@@ -86,15 +100,29 @@ export function ModelsClient() {
   }
 
   function handleToggleEnable(id: string, v: boolean) {
-    if (!cfg) return
-    const next = { ...cfg, models: cfg.models.map((m) => (m.id === id ? { ...m, enabled: v } : m)) }
-    void persistInstant(next, v ? "模型已启用" : "模型已停用")
+    if (!cfg || !savedCfg) return
+    // 停用一个仍在运行编排中的模型：客户端先拦（准确文案），不要靠后端 400 回滚——那会误报
+    // 「未测试通过」，而它其实是已测通、只是被停用。
+    if (!v && isInChain(cfg.chain, id)) {
+      toast.error("该模型在运行编排中使用，请先从降级链移除再停用")
+      return
+    }
+    const models = cfg.models.map((m) => (m.id === id ? { ...m, enabled: v } : m))
+    void persistInstant(
+      { models, chain: persistedChainFor(savedCfg.chain) },
+      { models, chain: cfg.chain },
+      v ? "模型已启用" : "模型已停用",
+    )
   }
 
   function handleDelete(id: string) {
-    if (!cfg) return
-    const next = { models: cfg.models.filter((m) => m.id !== id), chain: cfg.chain.filter((cid) => cid !== id) }
-    void persistInstant(next, "已删除模型")
+    if (!cfg || !savedCfg) return
+    const models = cfg.models.filter((m) => m.id !== id)
+    void persistInstant(
+      { models, chain: persistedChainFor(savedCfg.chain, id) },
+      { models, chain: cfg.chain.filter((cid) => cid !== id) },
+      "已删除模型",
+    )
   }
 
   function handleAdd() {
@@ -111,8 +139,14 @@ export function ModelsClient() {
   }
 
   function handleSaveModel(next: ModelEntry) {
-    if (!cfg) return
-    void persistExplicit({ ...cfg, models: cfg.models.map((m) => (m.id === next.id ? next : m)) }, "模型参数已保存")
+    if (!cfg || !savedCfg) return
+    const models = cfg.models.map((m) => (m.id === next.id ? next : m))
+    // 存参数是即时动作，同样只提交 models，链用已保存链（不裹挟未确认的链编辑）。
+    void persistExplicit(
+      { models, chain: persistedChainFor(savedCfg.chain) },
+      { models, chain: cfg.chain },
+      "模型参数已保存",
+    )
   }
 
   function handleAddToChain(id: string) {
@@ -142,7 +176,8 @@ export function ModelsClient() {
       toast.error(saveErrorMessage("chain_requires_tested_models"))
       return
     }
-    void persistExplicit(cfg, "运行编排已保存并生效")
+    // 唯一持久化链变更的入口：整份提交 cfg（含 pending 链）。
+    void persistExplicit(cfg, cfg, "运行编排已保存并生效")
   }
 
   if (loading || !cfg) {
@@ -177,6 +212,7 @@ export function ModelsClient() {
           chain={cfg.chain}
           savedModelIds={new Set(savedCfg?.models.map((m) => m.id) ?? [])}
           testingIds={testingIds}
+          testTokens={testTokens}
           busy={saving}
           onTest={handleTest}
           onToggleEnable={handleToggleEnable}
@@ -190,16 +226,16 @@ export function ModelsClient() {
   )
 }
 
-// 连通性探测：/models/test 认 snake_case 参数（adminApi.models.test 内部已转换），
-// 成功/失败都落成本地 ModelTest，不落库——落库随下一次启用/删除/保存等动作一并整份提交。
-async function probeModel(model: ModelEntry): Promise<ModelTest> {
+// 连通性探测：/models/test 认 snake_case 参数（adminApi.models.test 内部已转换）。
+// 返回持久化用的 ModelTest（不含 tokens）+ 展示用的 tokens（瞬态，不落库）。
+async function probeModel(model: ModelEntry): Promise<{ test: ModelTest; tokens?: number }> {
   try {
     const res = await adminApi.models.test({ provider: model.provider, model: model.model, params: model.params })
     return res.ok
-      ? { status: "passed", at: new Date().toISOString(), latencyMs: res.latencyMs }
-      : { status: "failed", error: res.error ?? "测试失败" }
+      ? { test: { status: "passed", at: new Date().toISOString(), latencyMs: res.latencyMs }, tokens: res.tokens }
+      : { test: { status: "failed", error: res.error ?? "测试失败" } }
   } catch {
-    return { status: "failed", error: "请求失败，请重试" }
+    return { test: { status: "failed", error: "请求失败，请重试" } }
   }
 }
 

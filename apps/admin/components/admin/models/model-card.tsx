@@ -47,6 +47,8 @@ type CardProps = {
   isNew: boolean
   inChain: boolean
   testing: boolean
+  // 本次会话内探针返回的 token 数（瞬态，不落库）；有值时测试行显示「· N tokens」。
+  tokens?: number
   // 是否有其它整份 PUT 正在进行（保存参数/保存运行配置）：期间禁用会产生写冲突的操作，避免并发覆盖。
   busy: boolean
   onTest: () => void
@@ -56,7 +58,7 @@ type CardProps = {
   onAddToChain: () => void
 }
 
-export function ModelCard({ model, isNew, inChain, testing, busy, onTest, onToggleEnable, onSave, onDelete, onAddToChain }: CardProps) {
+export function ModelCard({ model, isNew, inChain, testing, tokens, busy, onTest, onToggleEnable, onSave, onDelete, onAddToChain }: CardProps) {
   const [editing, setEditing] = useState(isNew)
   const [draft, setDraft] = useState<ModelEntry>(model)
 
@@ -89,7 +91,7 @@ export function ModelCard({ model, isNew, inChain, testing, busy, onTest, onTogg
 
       <CardContent className="flex flex-col gap-3 px-4">
         <ParamsGrid editing={editing} model={model} draft={draft} setDraft={setDraft} />
-        <TestLine model={model} inChain={inChain} />
+        <TestLine model={model} inChain={inChain} tokens={tokens} />
 
         <div className="flex items-center justify-between gap-2 border-t border-border pt-3">
           <CardActions
@@ -264,15 +266,16 @@ function TestStatusChip({ model }: { model: ModelEntry }) {
   )
 }
 
-// 连通性测试结果行：成功显示延迟/时间，失败显示错误，未测显示引导语；
-// 若参数已改（重置为 untested）且模型仍在编排链中，提示需要重测。
-function TestLine({ model, inChain }: { model: ModelEntry; inChain: boolean }) {
+// 连通性测试结果行：成功显示延迟/token/时间，失败显示错误，未测显示引导语；
+// 若参数已改（重置为 untested）且模型仍在编排链中，提示需要重测。tokens 为本会话瞬态值（可缺省）。
+function TestLine({ model, inChain, tokens }: { model: ModelEntry; inChain: boolean; tokens?: number }) {
   if (model.test.status === "passed")
     return (
       <p className="flex items-center gap-2 text-xs text-muted-foreground">
         <span className="font-medium text-emerald-700">✓ 连通</span>
         <span className="tabular-nums">
           {model.test.latencyMs}ms
+          {tokens !== undefined ? ` · ${tokens} tokens` : ""}
           {model.test.at ? ` · ${new Date(model.test.at).toLocaleString("zh-CN")}` : ""}
         </span>
       </p>

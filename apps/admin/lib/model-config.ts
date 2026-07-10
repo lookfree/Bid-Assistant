@@ -71,6 +71,18 @@ export function resetTestOnEdit(model: ModelEntry): ModelEntry {
   return { ...model, test: { status: "untested" } }
 }
 
+// 模型是否已在运行编排链中（用于停用前拦截、卡片「已在编排中」展示）。
+export function isInChain(chain: string[], id: string): boolean {
+  return chain.includes(id)
+}
+
+// 即时动作（启用/停用/删除/存参数）持久化时应使用的 chain：一律取「已保存链」，
+// 绝不裹挟当前尚未点「保存运行配置」确认的链编辑；removeId 用于删除，同步把该 id 从
+// 已保存链剔除以免留下悬空引用。返回新数组（不改入参）。
+export function persistedChainFor(savedChain: string[], removeId?: string): string[] {
+  return removeId ? savedChain.filter((id) => id !== removeId) : savedChain.slice()
+}
+
 // 运行编排段顶部的「当前生效」文案：主模型 + 降级顺序。chain 为空时给出引导文案。
 export function chainSummary(cfg: ModelConfig): string {
   const byId = (id: string) => cfg.models.find((m) => m.id === id)
