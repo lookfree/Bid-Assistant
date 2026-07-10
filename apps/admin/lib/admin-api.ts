@@ -1,11 +1,14 @@
 import { adminTokenStore } from "./admin-token-store"
+import { camelToSnakeParams, type ModelConfig, type ModelParams } from "./model-config"
 
 // admin API 客户端（spec309）：base /admin-api，Bearer admin token（与 C 端隔离）。
 const baseUrl = process.env.NEXT_PUBLIC_ADMIN_API_BASE_URL ?? "/admin-api"
 
 // 带状态码的错误：调用方据此区分 401（会话失效→登出）与瞬时错误（5xx/网络→不登出）。
+// code：best-effort 解析出的错误体 { error } 字段（如 models 路由的 chain_requires_tested_models），
+// 供需要按错误码区分提示的调用方（如模型管理保存）使用；无法解析时为 undefined。
 export class AdminApiError extends Error {
-  constructor(public status: number) {
+  constructor(public status: number, public code?: string) {
     super(`admin api ${status}`)
   }
 }
@@ -16,7 +19,10 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const token = adminTokenStore.get()
   if (token) headers.set("Authorization", `Bearer ${token}`)
   const res = await fetch(`${baseUrl}${path}`, { ...init, headers })
-  if (!res.ok) throw new AdminApiError(res.status)
+  if (!res.ok) {
+    const body = (await res.json().catch(() => undefined)) as { error?: string } | undefined
+    throw new AdminApiError(res.status, body?.error)
+  }
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T)
 }
 
@@ -81,6 +87,21 @@ export const adminApi = {
       req<ApiAdmin>(`/admins/${id}`, { method: "PUT", body: JSON.stringify(patch) }),
     auditLogs: (p: { page?: number; pageSize?: number } = {}) => req<Paged<ApiAuditLog>>(`/audit-logs${qs(p)}`),
     rbac: () => req<{ permissions: string[]; roles: Record<string, string[]> }>("/rbac"),
+  },
+  // 模型管理（spec319）：GET/PUT 整份 {models,chain}（camelCase），POST /test 单独探测一个模型。
+  models: {
+    get: () => req<ModelConfig>("/models"),
+    save: (cfg: ModelConfig) => req<{ ok: true }>("/models", { method: "PUT", body: JSON.stringify(cfg) }),
+    // ⚠️ /test 认 snake_case（agent 侧薄中转），PUT 认 camelCase：这里必须转换，否则参数在服务端悄悄变 {}。
+    test: (m: { provider: string; model?: string; params?: ModelParams }) =>
+      req<{ ok: boolean; latencyMs?: number; tokens?: number; error?: string }>("/models/test", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: m.provider,
+          model: m.model,
+          params: m.params ? camelToSnakeParams(m.params) : undefined,
+        }),
+      }),
   },
 }
 
