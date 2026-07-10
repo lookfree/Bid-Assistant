@@ -62,3 +62,14 @@ def test_override_params_non_numeric_max_tokens_dropped():
 def test_override_params_combined_with_provider_fields():
     out = model_override_to_settings({"provider": "qwen", "params": {"temperature": 0.5}})
     assert out == {"model_default_provider": "qwen", "model_temperature": 0.5}
+
+
+def test_run_model_override_preserves_params_through_dump():
+    """回归：RunModelOverride 必须声明 params，否则 pydantic v2 静默丢弃，per-run 采样参数
+    到不了 model_override_to_settings（Task B 的 App 请求会 DOA）。"""
+    b = CreateRunBody(input={}, model={
+        "provider": "deepseek", "params": {"temperature": 0.3, "max_tokens": 8192, "top_p": 0.9}})
+    override = model_override_to_settings(b.model.model_dump())
+    assert override["model_temperature"] == 0.3
+    assert override["model_max_tokens"] == 8192
+    assert override["model_top_p"] == 0.9

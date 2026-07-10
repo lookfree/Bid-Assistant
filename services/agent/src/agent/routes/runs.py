@@ -26,6 +26,7 @@ class RunModelOverride(BaseModel):
     provider: str | None = None
     model: str | None = None
     fallbacks: str | None = None
+    params: dict | None = None  # spec319：主模型采样参数 {temperature,max_tokens,top_p}；缺省继承 env
 
 
 class CreateRunBody(BaseModel):

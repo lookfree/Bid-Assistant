@@ -111,6 +111,8 @@ def test_get_chat_omits_sampling_params_when_none(monkeypatch):
 
 def test_get_chat_explicit_kw_overrides_settings(monkeypatch):
     calls = _patch_fake_chat_openai(monkeypatch)
-    gw = ModelGateway(_settings(model_temperature=0.3))
-    gw.get_chat("deepseek", temperature=0.1)
-    assert calls[-1]["temperature"] == 0.1
+    gw = ModelGateway(_settings(model_temperature=0.3, model_max_tokens=8192, model_top_p=0.9))
+    gw.get_chat("deepseek", temperature=0.1, max_tokens=4096, top_p=0.5)
+    assert calls[-1]["temperature"] == 0.1   # 三参数对称覆盖
+    assert calls[-1]["max_tokens"] == 4096
+    assert calls[-1]["top_p"] == 0.5
