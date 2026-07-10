@@ -57,5 +57,8 @@ class Settings(BaseSettings):
     minio_bucket: str = "bidsaas"
     minio_region: str = "us-east-1"
 
+    # 资料库 RAG（spec316）：自建 bge-embed，OpenAI 兼容 /v1/embeddings，dense 1024 维
+    rag_embed_endpoint: str = "http://host.docker.internal:18080/v1/embeddings"
+
 
 settings = Settings()  # 实例化即校验
