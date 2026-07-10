@@ -50,10 +50,11 @@ async def _build(user_id: str, queries: list[str], top_k: int,
         return ""
     vec = vectors[0]
     pool = get_pool()
+    # library 取该用户全部资料库（source_id=None）；tender 按 thread 隔离（per-project source_id）。
     hits = await asyncio.to_thread(store.search, pool, user_id, "library", vec, top_k)
     if tender_thread_id:
         hits = hits + await asyncio.to_thread(
-            store.search, pool, user_id, "tender", vec, _TENDER_TOP_K)
+            store.search, pool, user_id, "tender", vec, _TENDER_TOP_K, tender_thread_id)
     return _format_block(hits, budget)
 
 

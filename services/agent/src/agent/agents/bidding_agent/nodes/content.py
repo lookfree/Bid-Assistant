@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import logging
 from deepagents import create_deep_agent          # 全流程唯一 deepagent 节点（§4.5）
 from langchain_core.messages import HumanMessage
 from agent.models.usage import UsageCallback
@@ -9,12 +10,23 @@ from agent.agents.bidding_agent.prompts.content import (
     CONTENT_PLANNER_PROMPT, CHAPTER_WRITER_PROMPT, REWRITE_PROMPT)
 from agent.rag import retrieve as rag_retrieve
 
+logger = logging.getLogger(__name__)
+
 _CHAPTER_PREFIX = "/chapters/"
 _REWRITE_QUERY_CHARS = 200   # 改写检索 query 取原章前 N 字，避免整章 HTML 顶穿 embed 输入
 
 
 def _default_top_k(run_input: dict) -> int:
     return (run_input.get("rag") or {}).get("top_k") or 5
+
+
+async def _rag_on(ctx, run_input: dict) -> bool:
+    """gate 兜底：rag_enabled 抛错也视为 RAG off，检索故障绝不阻断正文生成（降级铁律）。"""
+    try:
+        return await rag_retrieve.rag_enabled(ctx.user_id, run_input)
+    except Exception:  # noqa: BLE001
+        logger.warning("rag gate raised, treating as disabled", exc_info=True)
+        return False
 
 
 def _outline_queries(outline: dict | None) -> list[str]:
@@ -30,7 +42,7 @@ async def _content_reference_block(ctx, state: dict) -> str:
     """content 是 deepagent 一次规划+写完所有章（架构现实，非逐章循环），spec 的逐章检索不适配——
     改为用 outline 汇成 queries，检索出一段全局参考资料，注入规划轮 user 消息（spec316 A2）。"""
     run_input = state.get("run_input") or {}
-    if not await rag_retrieve.rag_enabled(ctx.user_id, run_input):
+    if not await _rag_on(ctx, run_input):
         return ""
     queries = _outline_queries(state.get("outline"))
     return await rag_retrieve.build_reference_block(
@@ -65,12 +77,12 @@ def make_content_node(ctx):
         )
         # 读标依据走 slim_read（与 outline/review 一致）：read result 已并入全文分句 doc_sections
         # 与逐条 source_quote（token 大头），原样 dumps 会把整份招标原文灌进规划轮直接顶穿上下文。
-        user = (f"提纲：\n{json.dumps(state.get('outline', {}), ensure_ascii=False)}\n\n"
-                f"读标依据：\n{json.dumps(slim_read(state.get('read') or {}), ensure_ascii=False)}\n\n"
-                f"请逐章生成正文，每章写入 chapters/<章id>.html。")
+        # 参考资料段插在「读标依据」与「请逐章生成」指令之间（brief §5）；ref 为空则消息与未启用 RAG 逐字节一致。
+        head = (f"提纲：\n{json.dumps(state.get('outline', {}), ensure_ascii=False)}\n\n"
+                f"读标依据：\n{json.dumps(slim_read(state.get('read') or {}), ensure_ascii=False)}")
         ref = await _content_reference_block(ctx, state)
-        if ref:
-            user += f"\n\n{ref}"
+        mid = f"{ref}\n\n" if ref else ""
+        user = f"{head}\n\n{mid}请逐章生成正文，每章写入 chapters/<章id>.html。"
         # recursion_limit 放宽：10 章 ×（task 派发 + write_file）远超默认 25 步；
         # UsageCallback 补记 token（deepagent 直驱模型，不经 make_agent_node 埋点）。
         res = await deep.ainvoke(
@@ -86,7 +98,7 @@ def make_content_node(ctx):
 async def _rewrite_reference_block(ctx, state: dict, old: str, instruction: str) -> str:
     """rewrite 是真逐章：query 用「原章前 N 字 + 改写指令」检索，命中拼进改写提示词（spec316 A2）。"""
     run_input = state.get("run_input") or {}
-    if not await rag_retrieve.rag_enabled(ctx.user_id, run_input):
+    if not await _rag_on(ctx, run_input):
         return ""
     query = f"{old[:_REWRITE_QUERY_CHARS]} {instruction}"
     return await rag_retrieve.build_reference_block(

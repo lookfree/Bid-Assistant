@@ -49,20 +49,28 @@ def delete(pool: ConnectionPool, user_id: str, source_type: str, source_id: str)
 
 
 def search(pool: ConnectionPool, user_id: str, source_type: str,
-           query_vec: list[float], top_k: int = 5) -> list[dict]:
-    """cosine 近邻检索；user_id/source_type 严格隔离；2s 超时降级为空列表（不阻塞生成链路）。"""
+           query_vec: list[float], top_k: int = 5, source_id: str | None = None) -> list[dict]:
+    """cosine 近邻检索；user_id/source_type 严格隔离；2s 超时降级为空列表（不阻塞生成链路）。
+    source_id 给定时再按来源隔离（tender chunks 是 per-project source_id=thread_id，
+    否则会串到该用户其它投标项目的 tender 条款）；None 时不加此过滤（如 library 取全部资料库）。"""
     qv = Vector(query_vec)
+    where = "user_id=%s AND source_type=%s"
+    params: list = [qv, user_id, source_type]
+    if source_id is not None:
+        where += " AND source_id=%s"
+        params.append(source_id)
+    params.extend([qv, top_k])
     try:
         with pool.connection() as conn:
             register(conn)
             conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT_MS}ms'")
             cur = conn.execute(
-                """SELECT text, meta, 1 - (embedding <=> %s) AS score
+                f"""SELECT text, meta, 1 - (embedding <=> %s) AS score
                    FROM agent.rag_chunks
-                   WHERE user_id=%s AND source_type=%s
+                   WHERE {where}
                    ORDER BY embedding <=> %s
                    LIMIT %s""",
-                (qv, user_id, source_type, qv, top_k),
+                tuple(params),
             )
             rows = cur.fetchall()
             conn.commit()

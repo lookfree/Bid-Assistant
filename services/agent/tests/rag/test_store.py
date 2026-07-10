@@ -95,3 +95,25 @@ def test_search_degrades_to_empty_list_on_timeout(monkeypatch):
     pool = _FakePool(conn)
     result = store.search(pool, "u1", "library", [0.1, 0.2], top_k=5)
     assert result == []
+
+
+def test_search_scopes_by_source_id_when_given(monkeypatch):
+    """spec316 A2 fix：tender chunks 是 per-project（source_id=thread_id）——检索必须按 source_id 隔离，
+    否则返回该用户所有投标项目的 tender 条款；给了 source_id → WHERE 追加 AND source_id=%s 且入 params。"""
+    _no_register(monkeypatch)
+    conn = _FakeConn(rows=[])
+    pool = _FakePool(conn)
+    store.search(pool, "u1", "tender", [0.1, 0.2], top_k=2, source_id="thread-9")
+    select_sql, params = next((s, p) for s, p in conn.executed if "SELECT" in s.upper())
+    assert "source_id" in select_sql
+    assert "thread-9" in params
+
+
+def test_search_omits_source_id_filter_when_none(monkeypatch):
+    """library 检索 source_id=None → 不加 source_id 过滤（取该用户全部资料库），保持 A1 行为。"""
+    _no_register(monkeypatch)
+    conn = _FakeConn(rows=[])
+    pool = _FakePool(conn)
+    store.search(pool, "u1", "library", [0.1, 0.2], top_k=5)
+    select_sql, _params = next((s, p) for s, p in conn.executed if "SELECT" in s.upper())
+    assert "source_id" not in select_sql

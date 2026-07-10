@@ -101,10 +101,44 @@ def test_content_node_injects_reference_block_when_rag_enabled(monkeypatch):
     node = content_mod.make_content_node(ctx)
     asyncio.run(node({"outline": outline, "read": {},
                        "run_input": {"rag": {"enabled": True, "top_k": 5}}}))
-    assert "【参考资料·仅供撰写引用】" in captured["user"]
+    user = captured["user"]
+    assert "【参考资料·仅供撰写引用】" in user
+    # 位置：参考资料段必须在「读标依据」之后、「请逐章生成」指令之前（brief §5）
+    assert user.index("读标依据") < user.index("【参考资料·仅供撰写引用】") < user.index("请逐章生成")
     assert fake_rag.build_calls
     user_id, _queries, top_k, tender_thread_id = fake_rag.build_calls[0]
     assert user_id == "u1" and top_k == 5 and tender_thread_id == "t"
+
+
+class _RaisingRag:
+    """gate 抛错的桩：rag_enabled 直接 raise，验证节点不被检索故障阻断。"""
+
+    async def rag_enabled(self, user_id, run_input):
+        raise RuntimeError("gate boom")
+
+    async def build_reference_block(self, *a, **kw):
+        raise AssertionError("gate 抛错时不该走到 build_reference_block")
+
+
+def test_content_node_gate_exception_does_not_break_generation(monkeypatch):
+    """spec316 A2 harden：rag_enabled 抛错 → 视为 RAG off，正文照常生成、user 消息无 ref。"""
+    captured = {}
+
+    class _CapturingDeep(_FakeDeep):
+        async def ainvoke(self, _input, config=None):
+            captured["user"] = _input["messages"][0].content
+            return await super().ainvoke(_input, config)
+
+    files = {"/chapters/t1.html": {"content": "<p>…</p>"}}
+    monkeypatch.setattr(content_mod, "create_deep_agent", lambda **kw: _CapturingDeep(files))
+    monkeypatch.setattr(content_mod, "rag_retrieve", _RaisingRag())
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", user_id="u1")
+    outline = {"chapters": [{"id": "t1", "title": "需求理解", "items": []}]}
+    node = content_mod.make_content_node(ctx)
+    out = asyncio.run(node({"outline": outline, "read": {},
+                            "run_input": {"rag": {"enabled": True}}}))
+    assert out["chapters"] == {"t1": "<p>…</p>"}
+    assert "【参考资料·仅供撰写引用】" not in captured["user"]
 
 
 def test_content_node_unchanged_when_rag_disabled(monkeypatch):

@@ -124,6 +124,26 @@ def test_read_node_skips_index_when_rag_disabled(monkeypatch, submit_gateway):
     assert fake_store.upsert_calls == []
 
 
+class _RaisingRag:
+    async def rag_enabled(self, user_id, run_input):
+        raise RuntimeError("gate boom")
+
+
+def test_read_node_gate_exception_does_not_break_read(monkeypatch, submit_gateway):
+    """spec316 A2 harden：rag_enabled 抛错 → 视为 RAG off，read 结果照常返回、不索引。"""
+    monkeypatch.setattr(read_mod, "read_and_parse",
+                        lambda key: ParsedDoc(text="全文", kind="docx", clauses=_CLAUSES))
+    fake_store = _FakeRagStore()
+    monkeypatch.setattr(read_mod, "rag_retrieve", _RaisingRag())
+    monkeypatch.setattr(read_mod, "rag_store", fake_store)
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t",
+                     gateway=submit_gateway({"submit_read_result": _READ_ARGS}), user_id="u1")
+    out = asyncio.run(read_mod.make_read_node(ctx)(
+        {"file_key": "uploads/x/tender.docx", "run_input": {"rag": {"enabled": True}}}))
+    assert out["read"]["doc_sections"] == _CLAUSES
+    assert fake_store.upsert_calls == []
+
+
 def test_read_node_skips_index_when_no_user_id(monkeypatch, submit_gateway):
     """无 user_id → 不索引；真实（未打桩）rag_retrieve 短路跳过，不发起任何网络调用。"""
     monkeypatch.setattr(read_mod, "read_and_parse",

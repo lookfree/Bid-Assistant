@@ -16,16 +16,18 @@ logger = logging.getLogger(__name__)
 
 async def _index_tender(ctx, run_input: dict, clauses: list[dict]) -> None:
     """best-effort 索引招标条款分句供 RAG 检索（spec316 A2）：条款已是天然分块，不再过 chunker。
-    整段 try/except，失败仅 warning，绝不影响 read 交付。"""
-    if not clauses or not await rag_retrieve.rag_enabled(ctx.user_id, run_input):
+    整段 try/except（含 gate 判定），任何异常仅 warning，绝不影响 read 交付。"""
+    if not clauses:
         return
     try:
+        if not await rag_retrieve.rag_enabled(ctx.user_id, run_input):
+            return
         texts = [c.get("text", "") for c in clauses]
         vectors = await rag_retrieve.embedder.embed(texts)
         metas = [{"clause_id": c.get("id")} for c in clauses]
         await asyncio.to_thread(rag_store.upsert, get_pool(), ctx.user_id, "tender",
                                  ctx.thread_id, texts, vectors, metas)
-    except Exception:  # noqa: BLE001 索引失败绝不影响 read 节点交付
+    except Exception:  # noqa: BLE001 索引失败（含 gate 抛错）绝不影响 read 节点交付
         logger.warning("rag index tender failed thread_id=%s", ctx.thread_id, exc_info=True)
 
 

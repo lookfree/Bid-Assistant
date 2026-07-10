@@ -30,8 +30,8 @@ class _FakeStore:
         self.exc = exc
         self.search_calls: list[tuple] = []
 
-    def search(self, pool, user_id, source_type, query_vec, top_k=5):
-        self.search_calls.append((user_id, source_type, top_k))
+    def search(self, pool, user_id, source_type, query_vec, top_k=5, source_id=None):
+        self.search_calls.append((user_id, source_type, top_k, source_id))
         if self.exc:
             raise self.exc
         return self.tender_hits if source_type == "tender" else self.library_hits
@@ -96,7 +96,9 @@ def test_build_reference_block_includes_tender_hits_when_thread_given(monkeypatc
     _patch(monkeypatch, store=fake_store)
     block = asyncio.run(build_reference_block("u1", ["q"], top_k=5, tender_thread_id="t1"))
     assert "tender1" in block and "lib1" in block
-    assert ("u1", "tender", 2) in fake_store.search_calls
+    # tender 按 thread 隔离（source_id=tender_thread_id）；library 取全部资料库（source_id=None）
+    assert ("u1", "tender", 2, "t1") in fake_store.search_calls
+    assert ("u1", "library", 5, None) in fake_store.search_calls
 
 
 def test_rag_enabled_false_when_user_id_missing(monkeypatch):

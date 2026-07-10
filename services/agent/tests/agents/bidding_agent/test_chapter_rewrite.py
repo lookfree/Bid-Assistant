@@ -70,6 +70,28 @@ def test_rewrite_chapter_injects_reference_when_rag_enabled(monkeypatch):
     assert user_id == "u1" and top_k == 5 and tender_thread_id == "t"
 
 
+class _RaisingRag:
+    async def rag_enabled(self, user_id, run_input):
+        raise RuntimeError("gate boom")
+
+    async def build_reference_block(self, *a, **kw):
+        raise AssertionError("gate 抛错时不该走到 build_reference_block")
+
+
+def test_rewrite_chapter_gate_exception_does_not_break_rewrite(monkeypatch):
+    """spec316 A2 harden：rag_enabled 抛错 → 视为 RAG off，改写照常、msg 无 ref。"""
+    monkeypatch.setattr(content_mod, "rag_retrieve", _RaisingRag())
+    gateway = _CapturingGateway(_NEW_HTML)
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t",
+                     gateway=gateway, user_id="u1")
+    old = "<h3>3.3 SLA</h3><p>旧…</p>"
+    state = {"chapters": {"t3": old}, "run_input": {"rag": {"enabled": True}}}
+    html = asyncio.run(rewrite_chapter(ctx, "t3", "补充分级 SLA", state))
+    assert html == _NEW_HTML
+    expected = f"原章 HTML：\n{old}\n\n改写指令：补充分级 SLA"
+    assert gateway.chat.captured[-1].content == expected
+
+
 def test_rewrite_chapter_unchanged_when_rag_disabled():
     """硬不变式：RAG 不生效（无 user_id）→ msg 与今天逐字节一致；真实 rag_retrieve 不打桩。"""
     gateway = _CapturingGateway(_NEW_HTML)
