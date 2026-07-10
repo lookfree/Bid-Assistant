@@ -70,9 +70,16 @@ async def run_submit_agent(ctx, prompt: str, user_msg: str,
     return result
 
 
+def _reject_msg(msg, call_id: str, reason: str) -> list:
+    """把一次被拒绝的提交（Pydantic 校验失败 / JSON 非法）追加进对话，供下一轮模型修正。"""
+    return [msg, ToolMessage(content=reason, tool_call_id=call_id)]
+
+
 async def _forced_submit(ctx, prompt: str, user_msg: str, submit, tool_name: str, attempts: int = 3) -> None:
     """纯 submit 节点：tool_choice 锁定提交工具，模型无法只回文字（e2e 实测：自由发挥不调工具
-    是真实高频失败模式）；Pydantic 校验失败把错误喂回，最多重试 attempts 轮。
+    是真实高频失败模式）；Pydantic 校验失败、或大嵌套 JSON 写成非法语法（langchain 归入
+    invalid_tool_calls，此前被当"没提交"直接放弃——是 bug）都把错误喂回，最多重试 attempts 轮。
+    仅当模型这一轮真的完全没产出提交调用（tool_calls 与 invalid_tool_calls 均空）才 fail-closed 放弃。
     不走 build_create_agent：强制 tool_choice 下图循环永不停机（每轮都被迫调工具），单轮循环才可控。"""
     llm = ctx.gateway.get_chat(provider=None) if ctx.gateway else None
     if llm is None:
@@ -83,11 +90,19 @@ async def _forced_submit(ctx, prompt: str, user_msg: str, submit, tool_name: str
         msg = await forced.ainvoke(messages)
         record_ctx_usage(ctx, msg, node="agent", model=getattr(llm, "model_name", None))
         call = next((c for c in (getattr(msg, "tool_calls", None) or []) if c["name"] == tool_name), None)
-        if call is None:
-            return                       # 模型没产出提交调用（如 fake 模型）：交给上层抛"未提交"
-        try:
-            await submit.ainvoke(call["args"])
-            return                       # 校验通过，结果已被 make_submit_tool 捕获
-        except Exception as e:  # noqa: BLE001 校验错误喂回模型修正
-            messages = [*messages, msg,
-                        ToolMessage(content=f"提交被拒绝：{e}。请修正字段后重新提交。", tool_call_id=call["id"])]
+        if call is not None:
+            try:
+                await submit.ainvoke(call["args"])
+                return                   # 校验通过，结果已被 make_submit_tool 捕获
+            except Exception as e:  # noqa: BLE001 校验错误喂回模型修正
+                reason = f"提交被拒绝：{e}。请修正字段后重新提交。"
+                messages = [*messages, *_reject_msg(msg, call["id"], reason)]
+                continue
+        invalid = next((ic for ic in (getattr(msg, "invalid_tool_calls", None) or [])
+                        if ic.get("name") == tool_name), None)
+        if invalid is not None:
+            reason = (f"submit 参数不是合法 JSON（{invalid.get('error')}）。"
+                      "只输出一个合法 JSON 对象，一次性提交，不要多余包装键或注释。")
+            messages = [*messages, *_reject_msg(msg, invalid.get("id") or "invalid", reason)]
+            continue
+        return                           # 模型完全没产出提交调用（如 fake 模型）：交给上层抛"未提交"
