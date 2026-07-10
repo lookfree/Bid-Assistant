@@ -45,8 +45,9 @@ afterAll(async () => {
   await closeDb()
 })
 
-const headers = { Authorization: `Bearer ${token}`, "content-type": "application/json" }
-const req = (path: string, init: RequestInit = {}) => app.request(`/api/library${path}`, { ...init, headers })
+// 惰性读 token：token 在 beforeAll 里才赋值，函数形式确保每次请求取到最新值（非模块加载时的空串）
+const headers = () => ({ Authorization: `Bearer ${token}`, "content-type": "application/json" })
+const req = (path: string, init: RequestInit = {}) => app.request(`/api/library${path}`, { ...init, headers: headers() })
 
 type Item = { id: string }
 
@@ -120,6 +121,42 @@ describe("/api/library RAG 索引钩子（spec316）", () => {
   })
 })
 
+// fire-and-forget 回归守卫（spec316 Important）：agent 挂起（模拟不可达/超时窗口）时，
+// CRUD 必须立刻返回、绝不 await 钩子——否则用户每次增删改被拖到 30s 超时。用挂起 500ms 的 mock，
+// 断言响应远早于 500ms 返回（若代码 await 了钩子，响应至少要等 500ms，测试即失败）。
+describe("CRUD 钩子 fire-and-forget（agent 挂起不阻塞响应）", () => {
+  const hangDeps: Partial<LibraryDeps> = {
+    ragIndex: async () => {
+      await new Promise((r) => setTimeout(r, 500))
+    },
+    ragDelete: async () => {
+      await new Promise((r) => setTimeout(r, 500))
+    },
+  }
+  const hangApp = new Hono()
+  hangApp.route("/api/library", libraryRoutes(hangDeps))
+  const hangReq = (path: string, init: RequestInit = {}) =>
+    hangApp.request(`/api/library${path}`, { ...init, headers: headers() })
+
+  it("POST：agent 建索引挂起 500ms，响应仍在 200ms 内返回 201", async () => {
+    const t0 = Date.now()
+    const res = await hangReq("", { method: "POST", body: JSON.stringify({ category: "text", title: "挂起测试" }) })
+    const elapsed = Date.now() - t0
+    expect(res.status).toBe(201)
+    expect(elapsed).toBeLessThan(200) // 未 await 钩子——否则至少 500ms
+  })
+
+  it("DELETE：agent 删索引挂起 500ms，响应仍在 200ms 内返回 200", async () => {
+    const created = await hangReq("", { method: "POST", body: JSON.stringify({ category: "text", title: "待删挂起" }) })
+    const item = (await created.json()) as Item
+    const t0 = Date.now()
+    const res = await hangReq(`/${item.id}`, { method: "DELETE" })
+    const elapsed = Date.now() - t0
+    expect(res.status).toBe(200)
+    expect(elapsed).toBeLessThan(200)
+  })
+})
+
 describe("POST /api/library/reindex（spec316 手动重建）", () => {
   let otherUserId = ""
   let otherToken = ""
@@ -151,8 +188,8 @@ describe("POST /api/library/reindex（spec316 手动重建）", () => {
       headers: { Authorization: `Bearer ${token}` },
     })
     expect(res.status).toBe(200)
-    const body = (await res.json()) as { reindexed: number }
-    expect(body.reindexed).toBe(mine.length)
+    const body = (await res.json()) as { dispatched: number }
+    expect(body.dispatched).toBe(mine.length)
     expect(captured.indexCalls).toHaveLength(mine.length)
     expect(captured.indexCalls.every((c) => c.userId === userId)).toBe(true)
     expect(captured.indexCalls.some((c) => c.title === "别人的条目")).toBe(false)

@@ -124,7 +124,7 @@ export function libraryRoutes(deps: Partial<LibraryDeps> = {}) {
       .values({ userId, ...parsed.data })
       .returning()
     if (!row) return c.json({ error: "insert_failed" }, 500)
-    await bestEffortIndex(ragIndex, userId, row) // best-effort，失败不影响响应
+    void bestEffortIndex(ragIndex, userId, row) // fire-and-forget：agent 慢/挂也不阻塞响应（30s 超时不拖住用户）
     return c.json(row, 201)
   })
 
@@ -147,7 +147,7 @@ export function libraryRoutes(deps: Partial<LibraryDeps> = {}) {
       .where(and(eq(libraryItems.id, id), eq(libraryItems.userId, userId)))
       .returning()
     if (!row) return c.json({ error: "not_found" }, 404)
-    await bestEffortIndex(ragIndex, userId, row) // best-effort 重建该条向量，失败不影响响应
+    void bestEffortIndex(ragIndex, userId, row) // fire-and-forget 重建该条向量：agent 慢/挂不阻塞响应
     return c.json(row)
   })
 
@@ -161,16 +161,17 @@ export function libraryRoutes(deps: Partial<LibraryDeps> = {}) {
       .returning()
     if (!row) return c.json({ error: "not_found" }, 404)
     await cleanupAttachments(row.attachments, userId) // best-effort，失败不影响结果
-    await bestEffortDelete(ragDelete, userId, id) // best-effort 删索引，失败不影响结果
+    void bestEffortDelete(ragDelete, userId, id) // fire-and-forget 删索引：agent 慢/挂不阻塞响应
     return c.json({ ok: true })
   })
 
-  // 手动重建索引（spec316）：属主隔离，遍历本人全部条目逐条 best-effort 建索引，供资料库页后续按钮预留。
+  // 手动重建索引（spec316）：属主隔离，本人全部条目逐条 fire-and-forget 建索引，供资料库页后续按钮预留。
+  // 不逐条 await——否则 agent 挂时 N×30s 拖死运营；派发后即返回 {dispatched:n}（后台异步跑完）。
   r.post("/reindex", async (c) => {
     const userId = getUserId(c)
     const items = await getDb().select().from(libraryItems).where(eq(libraryItems.userId, userId))
-    for (const item of items) await bestEffortIndex(ragIndex, userId, item)
-    return c.json({ reindexed: items.length })
+    for (const item of items) void bestEffortIndex(ragIndex, userId, item)
+    return c.json({ dispatched: items.length })
   })
 
   return r
