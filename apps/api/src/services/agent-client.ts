@@ -58,9 +58,16 @@ export async function testModel(opts: {
   return { ok: body.ok, latencyMs: body.latency_ms, tokens: body.tokens, error: body.error }
 }
 
-export async function createRun(opts: { agentType: string; threadId: string; input: unknown; model?: AgentModelSelection }) {
+export async function createRun(opts: {
+  agentType: string
+  threadId: string
+  input: unknown
+  model?: AgentModelSelection
+  userId?: string
+}) {
   const body: Record<string, unknown> = { thread_id: opts.threadId, input: opts.input }
   if (opts.model) body.model = opts.model // 有配置才下发；无则 agent 用 env 默认
+  if (opts.userId) body.user_id = opts.userId // spec316：节点按 user_id 隔离 RAG 检索
   const r = await fetch(`${getEnv().AGENT_BASE_URL}/agents/${opts.agentType}/runs`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -91,10 +98,12 @@ export async function rewriteChapter(opts: {
   instruction: string
   baseHtml?: string
   model?: AgentModelSelection
+  userId?: string
 }): Promise<{ chapter_id: string; html: string }> {
   const body: Record<string, unknown> = { chapter_id: opts.chapterId, instruction: opts.instruction }
   if (opts.baseHtml !== undefined) body.base_html = opts.baseHtml
   if (opts.model) body.model = opts.model // 有配置才下发；无则 agent 用 env 默认（与 createRun 同法）
+  if (opts.userId) body.user_id = opts.userId // spec316：改写检索同样按 user_id 隔离
   const r = await fetch(
     `${getEnv().AGENT_BASE_URL}/agents/${opts.agentType}/threads/${opts.threadId}/chapters/rewrite`,
     {
@@ -106,6 +115,38 @@ export async function rewriteChapter(opts: {
   )
   if (!r.ok) throw new Error(`agent rewriteChapter ${r.status}`)
   return (await r.json()) as { chapter_id: string; html: string }
+}
+
+/** 资料库条目建库/查重索引（spec316）：best-effort——调用方 try/catch 兜底，绝不阻塞 CRUD 响应。
+ *  超时放宽 30s（向量化耗时高于普通接口，但不能拖到 rewrite 级别的 120s）。 */
+export async function ragIndex(opts: {
+  userId: string
+  sourceId: string
+  title: string
+  text: string
+}): Promise<void> {
+  const r = await fetch(`${getEnv().AGENT_BASE_URL}/rag/index`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      user_id: opts.userId,
+      source_type: "library",
+      source_id: opts.sourceId,
+      title: opts.title,
+      text: opts.text,
+    }),
+    signal: AbortSignal.timeout(30_000),
+  })
+  if (!r.ok) throw new Error(`agent ragIndex ${r.status}`)
+}
+
+/** 资料库条目删索引（spec316）：同 ragIndex，best-effort、调用方兜底。 */
+export async function ragDelete(opts: { userId: string; sourceType: string; sourceId: string }): Promise<void> {
+  const r = await fetch(
+    `${getEnv().AGENT_BASE_URL}/rag/index/${encodeURIComponent(opts.sourceType)}/${encodeURIComponent(opts.sourceId)}?user_id=${encodeURIComponent(opts.userId)}`,
+    { method: "DELETE", signal: AbortSignal.timeout(30_000) },
+  )
+  if (!r.ok) throw new Error(`agent ragDelete ${r.status}`)
 }
 
 /** agent 同步路由的非 2xx 错误：带状态码与响应体——查重 422（某文件解析失败 {error, file}）

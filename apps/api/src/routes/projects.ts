@@ -12,6 +12,7 @@ import * as billing from "../services/billing-stub"
 import * as client from "../services/agent-client"
 import { healStuckStep } from "../services/stuck-steps"
 import { getAgentModel } from "../services/agent-client"
+import { ragRunInput } from "../services/rag-config"
 import { toCamel, toSnake } from "../lib/case"
 import { parsePagination, pagedBody, pagedResult } from "../lib/pagination"
 import { presignGet } from "../storage/s3"
@@ -282,7 +283,8 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       text: `${STEP_TEXT[step as Step]}，key=${p.tenderFileKey}`,
       file_key: p.tenderFileKey,
       step,
-      run_input: runInput,
+      // rag（spec316）并入 run_input：present 的 duration/template 等既有键不丢
+      run_input: { ...runInput, rag: await ragRunInput() },
       state_overrides: await stateOverrides(p.id, step as Step),
     }
 
@@ -302,7 +304,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     let run_id: string
     try {
       const model = await getAgentModel() // 运营后台可配的 agent 模型选择（spec311）
-      ;({ run_id } = await createRun({ agentType: "bidding_agent", threadId: p.threadId, input, model }))
+      ;({ run_id } = await createRun({ agentType: "bidding_agent", threadId: p.threadId, input, model, userId }))
       await getDb().update(projectSteps).set({ runId: run_id }).where(eq(projectSteps.id, s.id))
     } catch (e) {
       // agent 服务不可达等：释放占位行为 failed，可立即重试
@@ -423,6 +425,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         instruction: parsed.data.instruction,
         baseHtml: typeof baseHtml === "string" ? baseHtml : undefined,
         model,
+        userId,
       }))
     } catch {
       await settleFailed(ref, hold.holdId!).catch(() => {}) // 失败全额退还，净 0

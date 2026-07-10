@@ -9,6 +9,7 @@ import { authMiddleware } from "../middleware/auth"
 import * as billing from "../services/billing-stub"
 import * as client from "../services/agent-client"
 import { getAgentModel } from "../services/agent-client"
+import { ragRunInput } from "../services/rag-config"
 
 // 编排依赖可注入（mock 测编排次序），默认用真实 billing-stub / agent-client。
 export type ReadDeps = {
@@ -49,8 +50,10 @@ export function readRoutes(deps: Partial<ReadDeps> = {}) {
       agentType: "bidding_agent",
       threadId,
       // 契约统一 { text, file_key, step }：text 为按步指令，key 也写进 text（避免 agent 端 input.text 落空）
-      input: { text: `请对招标文件读标，key=${fileKey}`, file_key: fileKey, step: "read" },
+      // run_input.rag（spec316）：读标节点检索个人资料库时按 user_id 隔离
+      input: { text: `请对招标文件读标，key=${fileKey}`, file_key: fileKey, step: "read", run_input: { rag: await ragRunInput() } },
       model,
+      userId,
     })
     await getDb()
       .insert(agentRuns)

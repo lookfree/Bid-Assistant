@@ -30,4 +30,7 @@ export const BILLING_SEED: Record<string, unknown> = {
   // 智能体模型选择（spec311）：运营后台可配，覆盖 agent env 默认；API Key 仍在 env。
   // provider ∈ deepseek/qwen/glm；model=null 用 provider 默认模型；fallbacks 形如 "qwen:qwen-plus,glm:glm-4-flash"
   agent_model: { provider: "deepseek", model: null, fallbacks: "" },
+  // 资料库 RAG 检索（spec316）：运营后台可关闭/调整 top_k；node 从 run_input.rag 读取。
+  "rag.enabled": true,
+  "rag.top_k": 3,
 }

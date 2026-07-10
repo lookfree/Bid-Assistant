@@ -80,7 +80,9 @@ describe("/api/read 编排", () => {
       text: "请对招标文件读标，key=uploads/x/tender.pdf",
       file_key: "uploads/x/tender.pdf",
       step: "read",
+      run_input: { rag: { enabled: true, top_k: 3 } }, // spec316：未改配置时的种子默认
     })
+    expect(captured.createRunOpts?.userId).toBe(userId) // spec316：user_id 随 run 下发，供节点隔离检索
     expect(sse).toContain("data: 进度") // 中继了 agent 进度分片
     expect(sse).toContain("event: done") // 末尾 done
     expect(captured.settleArgs?.holdId).toBe("hold-read")

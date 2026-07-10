@@ -114,6 +114,7 @@ describe("/api/projects 按步编排", () => {
     expect(captured.createRunOpts?.agentType).toBe("bidding_agent")
     expect((captured.createRunOpts?.input as { step: string }).step).toBe("read")
     expect((captured.createRunOpts?.input as { text: string }).text).toContain("key=uploads/x/tender.pdf")
+    expect(captured.createRunOpts?.userId).toBe(userId) // spec316：user_id 随 run 下发
     expect(sse).toContain("data: 进度")
     expect(sse).toContain("event: step.done")
     expect(sse).toContain("clauseIds") // SSE 的 result 已转 camelCase
@@ -196,9 +197,9 @@ describe("/api/projects 按步编排", () => {
     expect(JSON.stringify(read!.result)).toContain("投标人须具备 ISO27001 认证")
   })
 
-  it("outline 步：非 present 步 run_input={}，read/outline 无 state_overrides", async () => {
+  it("outline 步：非 present 步 run_input 只带 rag（spec316 种子默认），read/outline 无 state_overrides", async () => {
     const { input } = await runStepAndGetInput("outline")
-    expect(input.run_input).toEqual({})
+    expect(input.run_input).toEqual({ rag: { enabled: true, top_k: 3 } })
     expect(input.state_overrides).toEqual({})
   })
 
@@ -222,7 +223,7 @@ describe("/api/projects 按步编排", () => {
   it("content 步：state_overrides.outline 回灌已存提纲；SSE step.done 的章 id 键不做大小写转换", async () => {
     const { input, sse } = await runStepAndGetInput("content") // 上一测未留残行，这里正常推进
     expect(input.state_overrides).toEqual({ outline: STEP_RESULTS.outline })
-    expect(input.run_input).toEqual({})
+    expect(input.run_input).toEqual({ rag: { enabled: true, top_k: 3 } })
     expect(sse).toContain('"ch_1"') // 章 id 是 LLM 自由字符串，toCamel 会把 ch_1 转坏成 ch1
     expect(sse).not.toContain('"ch1"')
   })
@@ -246,7 +247,8 @@ describe("/api/projects 按步编排", () => {
 
     // 合法参数正常推进（400 未留 running 残行，否则这里会 409）
     const { input } = await runStepAndGetInput("present", { duration: 20, template: "gov" })
-    expect(input.run_input).toEqual({ duration: 20, template: "gov" })
+    // rag 并入 run_input，present 既有的 duration/template 不丢（spec316 契约要点）
+    expect(input.run_input).toEqual({ duration: 20, template: "gov", rag: { enabled: true, top_k: 3 } })
     expect(input.state_overrides).toEqual({
       outline: STEP_RESULTS.outline,
       chapters: STEP_RESULTS.content,

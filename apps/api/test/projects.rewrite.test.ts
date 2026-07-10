@@ -142,6 +142,7 @@ describe("POST /:id/chapters/:chapterId/rewrite 单章改写（真账本）", ()
       baseHtml: "<p>旧正文一</p>",
     })
     expect("model" in captured.rewriteArgs!).toBe(true) // 运营后台模型选择随请求下发（未配则 undefined）
+    expect(captured.rewriteArgs?.userId).toBe(userA) // spec316：user_id 随改写下发，供节点隔离检索
 
     // 持久化：ch-1 覆写为新 html，ch-2 原样保留（snake 原样存储）
     const result = await contentResult()

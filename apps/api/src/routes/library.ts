@@ -2,12 +2,19 @@ import { Hono } from "hono"
 import { z } from "zod"
 import { eq, and, desc, inArray } from "drizzle-orm"
 import { getDb } from "../db/client"
-import { libraryItems, projectFiles, LIBRARY_CATEGORIES } from "../db/schema"
+import { libraryItems, projectFiles, LIBRARY_CATEGORIES, type LibraryItem } from "../db/schema"
 import type { User } from "../db/schema"
 import { authMiddleware } from "../middleware/auth"
 import { getUserId } from "../lib/auth-user"
 import { isUuid } from "../lib/uuid"
 import { deleteObject } from "../storage/s3"
+import * as client from "../services/agent-client"
+
+// CRUD 钩子可注入（测试 mock agent-client，断言被调 + best-effort 不阻塞响应），默认真实 agent-client。
+export type LibraryDeps = {
+  ragIndex: typeof client.ragIndex
+  ragDelete: typeof client.ragDelete
+}
 
 // 条目 body 校验：POST 必填 category/title；PUT 契约为「缺键=不改，null=清空」，
 // 故可清空字段一律 .nullable().optional()（title 不可 null，category 枚举可选但不可 null）。
@@ -58,7 +65,41 @@ async function cleanupAttachments(atts: { fileId: string }[] | null, userId: str
   }
 }
 
-export function libraryRoutes() {
+// 条目可检索文本（spec316）：title + meta + 结构化字段 + 正文；附件不入（只索引文本字段）。
+function indexText(item: Pick<LibraryItem, "title" | "meta" | "fields" | "body">): string {
+  const parts = [item.title]
+  if (item.meta) parts.push(item.meta)
+  if (item.fields?.length) parts.push(item.fields.map((f) => `${f.label}：${f.value}`).join("；"))
+  if (item.body) parts.push(item.body)
+  return parts.join("\n")
+}
+
+// 建/改条目后 best-effort 建索引（重建该条向量）：agent 不可达/抛错只告警，绝不影响 CRUD 响应。
+async function bestEffortIndex(
+  ragIndex: LibraryDeps["ragIndex"],
+  userId: string,
+  item: Pick<LibraryItem, "id" | "title" | "meta" | "fields" | "body">,
+): Promise<void> {
+  try {
+    await ragIndex({ userId, sourceId: item.id, title: item.title, text: indexText(item) })
+  } catch (e) {
+    console.warn(`library rag 索引失败 itemId=${item.id}:`, e)
+  }
+}
+
+// 删条目后 best-effort 删索引：同上，失败不影响删除结果。
+async function bestEffortDelete(ragDelete: LibraryDeps["ragDelete"], userId: string, id: string): Promise<void> {
+  try {
+    await ragDelete({ userId, sourceType: "library", sourceId: id })
+  } catch (e) {
+    console.warn(`library rag 删索引失败 itemId=${id}:`, e)
+  }
+}
+
+export function libraryRoutes(deps: Partial<LibraryDeps> = {}) {
+  const ragIndex = deps.ragIndex ?? client.ragIndex
+  const ragDelete = deps.ragDelete ?? client.ragDelete
+
   const r = new Hono<{ Variables: { user: User } }>()
   r.use("*", authMiddleware) // 资料属本人，需登录
 
@@ -83,6 +124,7 @@ export function libraryRoutes() {
       .values({ userId, ...parsed.data })
       .returning()
     if (!row) return c.json({ error: "insert_failed" }, 500)
+    await bestEffortIndex(ragIndex, userId, row) // best-effort，失败不影响响应
     return c.json(row, 201)
   })
 
@@ -105,6 +147,7 @@ export function libraryRoutes() {
       .where(and(eq(libraryItems.id, id), eq(libraryItems.userId, userId)))
       .returning()
     if (!row) return c.json({ error: "not_found" }, 404)
+    await bestEffortIndex(ragIndex, userId, row) // best-effort 重建该条向量，失败不影响响应
     return c.json(row)
   })
 
@@ -118,7 +161,16 @@ export function libraryRoutes() {
       .returning()
     if (!row) return c.json({ error: "not_found" }, 404)
     await cleanupAttachments(row.attachments, userId) // best-effort，失败不影响结果
+    await bestEffortDelete(ragDelete, userId, id) // best-effort 删索引，失败不影响结果
     return c.json({ ok: true })
+  })
+
+  // 手动重建索引（spec316）：属主隔离，遍历本人全部条目逐条 best-effort 建索引，供资料库页后续按钮预留。
+  r.post("/reindex", async (c) => {
+    const userId = getUserId(c)
+    const items = await getDb().select().from(libraryItems).where(eq(libraryItems.userId, userId))
+    for (const item of items) await bestEffortIndex(ragIndex, userId, item)
+    return c.json({ reindexed: items.length })
   })
 
   return r
