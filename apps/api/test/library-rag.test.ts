@@ -121,16 +121,19 @@ describe("/api/library RAG 索引钩子（spec316）", () => {
   })
 })
 
-// fire-and-forget 回归守卫（spec316 Important）：agent 挂起（模拟不可达/超时窗口）时，
-// CRUD 必须立刻返回、绝不 await 钩子——否则用户每次增删改被拖到 30s 超时。用挂起 500ms 的 mock，
-// 断言响应远早于 500ms 返回（若代码 await 了钩子，响应至少要等 500ms，测试即失败）。
+// fire-and-forget 回归守卫（spec316 Important）：agent 挂起（模拟不可达/超时窗口）时，CRUD 必须立刻
+// 返回、绝不 await 钩子——否则用户每次增删改被拖到 30s 超时。
+// 断言用 baseline-relative：先测钩子秒回的 baselineMs，再测钩子挂起 500ms 的 hangMs——两次都付同样的
+// 真库往返（连阿里云 PG 单次可达数百 ms），差值 hangMs-baselineMs 才是钩子引入的额外耗时。若代码 await
+// 了钩子，差值 ≈500ms；fire-and-forget 下差值可忽略（阈值 300ms 兜住抖动）。
 describe("CRUD 钩子 fire-and-forget（agent 挂起不阻塞响应）", () => {
+  let hookDelayMs = 0 // 0=秒回（baseline）；500=挂起（hang）
   const hangDeps: Partial<LibraryDeps> = {
     ragIndex: async () => {
-      await new Promise((r) => setTimeout(r, 500))
+      if (hookDelayMs) await new Promise((r) => setTimeout(r, hookDelayMs))
     },
     ragDelete: async () => {
-      await new Promise((r) => setTimeout(r, 500))
+      if (hookDelayMs) await new Promise((r) => setTimeout(r, hookDelayMs))
     },
   }
   const hangApp = new Hono()
@@ -138,22 +141,37 @@ describe("CRUD 钩子 fire-and-forget（agent 挂起不阻塞响应）", () => {
   const hangReq = (path: string, init: RequestInit = {}) =>
     hangApp.request(`/api/library${path}`, { ...init, headers: headers() })
 
-  it("POST：agent 建索引挂起 500ms，响应仍在 200ms 内返回 201", async () => {
+  const timed = async (fn: () => Promise<Response> | Response): Promise<{ res: Response; ms: number }> => {
     const t0 = Date.now()
-    const res = await hangReq("", { method: "POST", body: JSON.stringify({ category: "text", title: "挂起测试" }) })
-    const elapsed = Date.now() - t0
-    expect(res.status).toBe(201)
-    expect(elapsed).toBeLessThan(200) // 未 await 钩子——否则至少 500ms
+    const res = await fn()
+    return { res, ms: Date.now() - t0 }
+  }
+  const postItem = (title: string) =>
+    hangReq("", { method: "POST", body: JSON.stringify({ category: "text", title }) })
+
+  it("POST：钩子挂起 500ms 相对 baseline 几乎不增耗时（未 await 钩子）", async () => {
+    hookDelayMs = 0
+    const base = await timed(() => postItem("baseline"))
+    expect(base.res.status).toBe(201)
+    hookDelayMs = 500
+    const hang = await timed(() => postItem("挂起测试"))
+    expect(hang.res.status).toBe(201)
+    expect(hang.ms - base.ms).toBeLessThan(300) // await 钩子的话差值 ≈500ms
+    hookDelayMs = 0
   })
 
-  it("DELETE：agent 删索引挂起 500ms，响应仍在 200ms 内返回 200", async () => {
-    const created = await hangReq("", { method: "POST", body: JSON.stringify({ category: "text", title: "待删挂起" }) })
-    const item = (await created.json()) as Item
-    const t0 = Date.now()
-    const res = await hangReq(`/${item.id}`, { method: "DELETE" })
-    const elapsed = Date.now() - t0
-    expect(res.status).toBe(200)
-    expect(elapsed).toBeLessThan(200)
+  it("DELETE：钩子挂起 500ms 相对 baseline 几乎不增耗时（未 await 钩子）", async () => {
+    // 两个无附件条目：cleanupAttachments 空转，baseline/hang 的真库成本一致，差值只反映钩子
+    hookDelayMs = 0
+    const a = (await (await postItem("待删 baseline")).json()) as Item
+    const b = (await (await postItem("待删挂起")).json()) as Item
+    const base = await timed(() => hangReq(`/${a.id}`, { method: "DELETE" }))
+    expect(base.res.status).toBe(200)
+    hookDelayMs = 500
+    const hang = await timed(() => hangReq(`/${b.id}`, { method: "DELETE" }))
+    expect(hang.res.status).toBe(200)
+    expect(hang.ms - base.ms).toBeLessThan(300)
+    hookDelayMs = 0
   })
 })
 
