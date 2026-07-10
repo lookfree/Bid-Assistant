@@ -13,6 +13,7 @@ class RunContext:
     gateway: Any = None
     redis: Any = None
     checkpointer: Any = None   # LangGraph checkpointer（多节点工作流续状态，Phase 2 spec201）
+    user_id: str | None = None  # 资料库 RAG 属主（spec316 A2）；缺省 None → RAG 节点静默跳过
 
 
 class AgentProtocol(Protocol):

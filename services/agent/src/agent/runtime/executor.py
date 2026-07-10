@@ -52,6 +52,7 @@ async def process_run(run_id: str) -> None:
     raw_meta = await asyncio.to_thread(r.get, runmeta_key(run_id))
     meta = json.loads(raw_meta or "{}")
     agent_type, thread_id, input = meta.get("agent_type"), meta.get("thread_id", run_id), meta.get("input", {})
+    user_id = meta.get("user_id")
 
     if not agent_type:
         # runmeta 丢失/过期（>24h 积压等）：直接标失败，别让 NOT NULL agent_type 崩在 start_run 而留孤儿。
@@ -69,7 +70,7 @@ async def process_run(run_id: str) -> None:
     # 有 per-run override 才新建 gateway；否则复用模块级单例 _gateway（零额外开销）
     gateway = ModelGateway(settings.model_copy(update=override)) if override else _gateway
     ctx = RunContext(run_id=run_id, agent_type=agent_type, thread_id=thread_id,
-                     recorder=rec, gateway=gateway, redis=r)
+                     recorder=rec, gateway=gateway, redis=r, user_id=user_id)
     result = None
     nodes = set()
     try:

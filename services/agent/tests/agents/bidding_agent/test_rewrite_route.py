@@ -129,6 +129,36 @@ def test_rewrite_missing_chapter_404(monkeypatch, submit_gateway):
     assert asyncio.run(go()).status_code == 404
 
 
+def test_rewrite_route_threads_user_id_into_ctx(monkeypatch, submit_gateway):
+    """spec316 A2 契约：RewriteBody.user_id → RunContext.user_id（rewrite_chapter 据此判定 RAG 是否生效）。
+    先真跑一步 read（同 test_rewrite_updates_single_chapter_keeps_rest：aupdate_state 的 as_node 推断需要运行历史）。"""
+    cp = _use_memory_cp(monkeypatch)
+    captured = {}
+
+    async def fake_rewrite_chapter(ctx, chapter_id, instruction, state):
+        captured["user_id"] = ctx.user_id
+        return _NEW_HTML
+
+    monkeypatch.setattr(chapters_mod, "rewrite_chapter", fake_rewrite_chapter)
+    monkeypatch.setattr(chapters_mod, "_make_gateway", lambda m: submit_gateway({}, reply=_NEW_HTML))
+    agent = get_agent("bidding_agent")
+    ctx = RunContext(run_id="r1", agent_type="bidding_agent", thread_id="th-6",
+                     gateway=submit_gateway({"submit_read_result": _READ_ARGS}), checkpointer=cp)
+
+    async def go():
+        async for _ in agent.astream({"file_key": "k"}, ctx):   # 跑到 read 断点
+            pass
+        g = build_bidding_workflow(ctx)
+        cfg = {"configurable": {"thread_id": "th-6"}}
+        await g.aupdate_state(cfg, {"chapters": {"t1": "<p>一</p>"}})
+        return await rewrite("bidding_agent", "th-6",
+                             RewriteBody(chapter_id="t1", instruction="改", user_id="u-9"))
+
+    res = asyncio.run(go())
+    assert res == {"chapter_id": "t1", "html": _NEW_HTML}
+    assert captured["user_id"] == "u-9"
+
+
 def test_rewrite_llm_error_502(monkeypatch):
     cp = _use_memory_cp(monkeypatch)
 

@@ -7,7 +7,15 @@ from agent.redis_client import get_redis
 from agent.runtime import executor as executor_mod
 from agent.runtime.dispatch import create_run
 from agent.runtime.executor import process_run
-from agent.runtime.channels import progress_stream, result_key
+from agent.runtime.channels import progress_stream, result_key, runmeta_key
+
+
+def test_create_run_stores_user_id_in_meta(cleanup_run):
+    """spec316 A2 契约：CreateRunBody.user_id → create_run 存进 runmeta（App 每 run 透传）。"""
+    r = get_redis()
+    run_id = cleanup_run(create_run("dummy", {"text": "ok"}, user_id="u-7"))
+    meta = json.loads(r.get(runmeta_key(run_id)))
+    assert meta["user_id"] == "u-7"
 
 
 def test_create_and_process_run_end_to_end(cleanup_run):
@@ -161,6 +169,46 @@ async def test_callback_usage_summary_error_does_not_flip_succeeded_run(monkeypa
     end_events = [e for e in events if e["type"] == "run.end"]
     assert len(end_events) == 1
     assert end_events[0]["data"]["status"] == "succeeded"
+
+
+class _MinimalRecorder:
+    """只实现 process_run 用到的四个方法，全无操作——只为验证 ctx 构造，不关心记账细节。"""
+
+    def start_run(self, *a, **kw):
+        pass
+
+    def log_event(self, *a, **kw):
+        pass
+
+    def finish_run(self, *a, **kw):
+        pass
+
+    def usage_summary(self, run_id):
+        return {}
+
+
+class _CapturingAgent:
+    def __init__(self):
+        self.ctx = None
+
+    async def astream(self, input, ctx):
+        self.ctx = ctx
+        yield {"type": "node.end", "node": "x", "data": {"result": {}}}
+
+
+async def test_process_run_threads_user_id_into_run_context(monkeypatch):
+    """spec316 A2 契约：runmeta.user_id → RunContext.user_id（RAG 节点据此判定是否生效）。"""
+    fake_r = _FakeRedis()
+    fake_r.get = lambda key: '{"agent_type": "dummy", "thread_id": "t", "user_id": "u-42"}'
+    agent = _CapturingAgent()
+    monkeypatch.setattr(executor_mod, "get_redis", lambda: fake_r)
+    monkeypatch.setattr(executor_mod, "_rec", lambda: _MinimalRecorder())
+    monkeypatch.setattr(executor_mod, "get_agent", lambda agent_type: agent)
+    monkeypatch.setattr(executor_mod.settings, "app_callback_url", None)
+
+    await process_run("run-user-id")
+
+    assert agent.ctx.user_id == "u-42"
 
 
 async def test_reap_orphan_run_terminal_only_reports_no_finish_call(monkeypatch):

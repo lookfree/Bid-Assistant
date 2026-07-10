@@ -22,6 +22,7 @@ class RewriteBody(BaseModel):
     instruction: str
     base_html: str | None = None  # App 传 DB 里该章现值（编辑过=编辑后）作改写底稿；缺省用 thread state
     model: RunModelOverride | None = None  # spec311 模式：App 下发的模型选择，覆盖 env 默认
+    user_id: str | None = None  # 资料库 RAG 属主（spec316 A2）
 
 
 def _make_gateway(model: RunModelOverride | None) -> ModelGateway:
@@ -40,7 +41,8 @@ async def rewrite(agent_type: str, thread_id: str, body: RewriteBody):
     except KeyError:
         return JSONResponse({"error": f"未注册的 agent_type: {agent_type}"}, status_code=404)
     ctx = RunContext(run_id=str(uuid.uuid4()), agent_type=agent_type, thread_id=thread_id,
-                     gateway=_make_gateway(body.model), checkpointer=await get_checkpointer())
+                     gateway=_make_gateway(body.model), checkpointer=await get_checkpointer(),
+                     user_id=body.user_id)
     graph = agent.build_graph(ctx) if hasattr(agent, "build_graph") else None
     if graph is None:                                     # 非工作流型 agent 没有章节概念
         return JSONResponse({"error": f"agent 不支持章节改写: {agent_type}"}, status_code=404)

@@ -34,12 +34,13 @@ class CreateRunBody(BaseModel):
     thread_id: str | None = None
     file_refs: list[str] | None = None
     model: RunModelOverride | None = None  # spec311：App 下发的模型选择，覆盖 env 默认
+    user_id: str | None = None  # 资料库 RAG 属主（spec316 A2）；App 每 run 透传，agent 服务对钱无感知
 
 
 @router.post("/agents/{agent_type}/runs")
 async def create(agent_type: str, body: CreateRunBody):
     model = body.model.model_dump() if body.model else None
-    run_id = create_run(agent_type, body.input, body.thread_id, body.file_refs, model)
+    run_id = create_run(agent_type, body.input, body.thread_id, body.file_refs, model, body.user_id)
     return {"run_id": run_id}
 
 

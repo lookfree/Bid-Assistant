@@ -7,7 +7,8 @@ from agent.runtime.channels import stream_key, runmeta_key
 
 
 def create_run(agent_type: str, input: dict, thread_id: str | None = None,
-                file_refs: list[str] | None = None, model: dict | None = None) -> str:
+                file_refs: list[str] | None = None, model: dict | None = None,
+                user_id: str | None = None) -> str:
     run_id = str(uuid.uuid4())
     tid = thread_id or run_id
     # 落 queued（GET 立即可查）
@@ -19,6 +20,7 @@ def create_run(agent_type: str, input: dict, thread_id: str | None = None,
         conn.commit()
     r = get_redis()
     r.set(runmeta_key(run_id), json.dumps(
-        {"agent_type": agent_type, "thread_id": tid, "input": input, "model": model}), ex=86400)
+        {"agent_type": agent_type, "thread_id": tid, "input": input, "model": model,
+         "user_id": user_id}), ex=86400)
     r.xadd(stream_key(), {"run_id": run_id})
     return run_id
