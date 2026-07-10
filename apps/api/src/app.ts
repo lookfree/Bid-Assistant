@@ -36,7 +36,10 @@ export function createApp(deps: AppDeps) {
     "*",
     cors({
       origin: allow,
-      allowMethods: ["GET", "POST", "PUT", "OPTIONS"], // PUT：/api/checklist upsert（spec315b）
+      // 必须列全 API 实际服务的方法：跨域部署（web 走 api.localhost）下，浏览器对 PATCH/DELETE 先发 CORS
+      // 预检，方法不在此列表 → 预检失败 → 浏览器拦截真实请求（curl 不走预检，故只在浏览器暴露）。
+      // PATCH：/steps/:step 编辑回写；PUT：/checklist upsert（spec315b）；DELETE：/library/:id。
+      allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       allowHeaders: ["Content-Type", "Authorization"],
       credentials: true,
     }),
