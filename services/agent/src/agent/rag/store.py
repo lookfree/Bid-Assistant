@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import logging
 
+from pgvector import Vector
 from pgvector.psycopg import register_vector
+from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 logger = logging.getLogger(__name__)
@@ -30,7 +32,7 @@ def upsert(pool: ConnectionPool, user_id: str, source_type: str, source_id: str,
                 """INSERT INTO agent.rag_chunks
                    (user_id, source_type, source_id, chunk_no, text, embedding, meta)
                    VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                (user_id, source_type, source_id, i, text, embedding, meta),
+                (user_id, source_type, source_id, i, text, Vector(embedding), Jsonb(meta or {})),
             )
         conn.commit()
     return len(chunks)
@@ -49,6 +51,7 @@ def delete(pool: ConnectionPool, user_id: str, source_type: str, source_id: str)
 def search(pool: ConnectionPool, user_id: str, source_type: str,
            query_vec: list[float], top_k: int = 5) -> list[dict]:
     """cosine 近邻检索；user_id/source_type 严格隔离；2s 超时降级为空列表（不阻塞生成链路）。"""
+    qv = Vector(query_vec)
     try:
         with pool.connection() as conn:
             register(conn)
@@ -59,7 +62,7 @@ def search(pool: ConnectionPool, user_id: str, source_type: str,
                    WHERE user_id=%s AND source_type=%s
                    ORDER BY embedding <=> %s
                    LIMIT %s""",
-                (query_vec, user_id, source_type, query_vec, top_k),
+                (qv, user_id, source_type, qv, top_k),
             )
             rows = cur.fetchall()
             conn.commit()

@@ -1,6 +1,5 @@
 """spec316 A1: embedder —— mock httpx,不打真实 bge-embed。批量>16 分批;探活失败降级。"""
 import httpx
-import pytest
 
 import agent.rag.embedder as embedder_mod
 from agent.rag.embedder import BATCH_SIZE, Embedder

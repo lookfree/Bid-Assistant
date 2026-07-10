@@ -1,6 +1,7 @@
 """spec316 A1: 资料库 RAG 索引路由——App CRUD 钩子 best-effort 调用,失败绝不阻塞调用方。"""
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter
@@ -40,8 +41,9 @@ async def index_source(body: IndexBody):
     try:
         vectors = await embedder.embed(chunks)
         metas = [{} for _ in chunks]
-        n = store.upsert(get_pool(), body.user_id, body.source_type, body.source_id,
-                          chunks, vectors, metas)
+        # store.upsert 是同步的（DELETE + 逐 chunk INSERT），大文档丢线程池避免卡 event loop（SSE 断流）。
+        n = await asyncio.to_thread(store.upsert, get_pool(), body.user_id,
+                                     body.source_type, body.source_id, chunks, vectors, metas)
     except Exception as e:  # noqa: BLE001 embed/store 故障对调用方可读,不裸崩
         logger.warning("rag index failed source_type=%s source_id=%s",
                         body.source_type, body.source_id, exc_info=True)
@@ -52,5 +54,5 @@ async def index_source(body: IndexBody):
 @router.delete("/rag/index/{source_type}/{source_id}")
 async def delete_index(source_type: str, source_id: str, user_id: str):
     """按属主删除；user_id 不匹配的行不受影响（store.delete 内已带 user_id 条件）。"""
-    store.delete(get_pool(), user_id, source_type, source_id)
+    await asyncio.to_thread(store.delete, get_pool(), user_id, source_type, source_id)
     return {"ok": True}
