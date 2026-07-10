@@ -109,7 +109,7 @@ export function ModelsClient() {
     }
     const models = cfg.models.map((m) => (m.id === id ? { ...m, enabled: v } : m))
     void persistInstant(
-      { models, chain: persistedChainFor(savedCfg.chain) },
+      { models, chain: persistedChainFor(savedCfg.chain, models) },
       { models, chain: cfg.chain },
       v ? "模型已启用" : "模型已停用",
     )
@@ -119,7 +119,7 @@ export function ModelsClient() {
     if (!cfg || !savedCfg) return
     const models = cfg.models.filter((m) => m.id !== id)
     void persistInstant(
-      { models, chain: persistedChainFor(savedCfg.chain, id) },
+      { models, chain: persistedChainFor(savedCfg.chain, models, id) },
       { models, chain: cfg.chain.filter((cid) => cid !== id) },
       "已删除模型",
     )
@@ -143,7 +143,7 @@ export function ModelsClient() {
     const models = cfg.models.map((m) => (m.id === next.id ? next : m))
     // 存参数是即时动作，同样只提交 models，链用已保存链（不裹挟未确认的链编辑）。
     void persistExplicit(
-      { models, chain: persistedChainFor(savedCfg.chain) },
+      { models, chain: persistedChainFor(savedCfg.chain, models) },
       { models, chain: cfg.chain },
       "模型参数已保存",
     )

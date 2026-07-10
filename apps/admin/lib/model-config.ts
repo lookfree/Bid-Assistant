@@ -79,8 +79,11 @@ export function isInChain(chain: string[], id: string): boolean {
 // 即时动作（启用/停用/删除/存参数）持久化时应使用的 chain：一律取「已保存链」，
 // 绝不裹挟当前尚未点「保存运行配置」确认的链编辑；removeId 用于删除，同步把该 id 从
 // 已保存链剔除以免留下悬空引用。返回新数组（不改入参）。
-export function persistedChainFor(savedChain: string[], removeId?: string): string[] {
-  return removeId ? savedChain.filter((id) => id !== removeId) : savedChain.slice()
+// 即时动作（启用/停用/删除/存参数）提交时的链 payload：从已保存链里只保留仍然合法（存在+启用+测通）的成员。
+// 既不裹挟用户尚未点「保存运行配置」的链编辑，又自愈迁移遗留的未测成员——否则服务端 chain 门槛会
+// 用一条无关的启用/删除操作触发 400，把整页卡住。正常（全测通）链下这是无操作。
+export function persistedChainFor(savedChain: string[], models: ModelEntry[], removeId?: string): string[] {
+  return savedChain.filter((id) => id !== removeId && models.some((m) => m.id === id && canAddToChain(m)))
 }
 
 // 运行编排段顶部的「当前生效」文案：主模型 + 降级顺序。chain 为空时给出引导文案。

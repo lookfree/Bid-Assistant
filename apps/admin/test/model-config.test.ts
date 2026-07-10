@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test"
 import {
   camelToSnakeParams,
+  DEFAULT_MODEL_PARAMS,
   canEnable,
   canAddToChain,
   moveInChain,
@@ -91,20 +92,29 @@ describe("spec319 model-config: isInChain", () => {
 })
 
 describe("spec319 model-config: persistedChainFor", () => {
-  it("即时动作用已保存链，不裹挟未确认的链编辑", () => {
-    const saved = ["a", "b"]
-    expect(persistedChainFor(saved)).toEqual(["a", "b"])
+  const ok = (id: string): ModelEntry => ({
+    id, provider: "deepseek", model: "deepseek-chat", params: DEFAULT_MODEL_PARAMS,
+    enabled: true, test: { status: "passed" },
+  })
+  it("全测通链：即时动作原样带上（无操作过滤）", () => {
+    const models = [ok("a"), ok("b")]
+    expect(persistedChainFor(["a", "b"], models)).toEqual(["a", "b"])
   })
   it("返回新数组，不改入参", () => {
     const saved = ["a", "b"]
-    const out = persistedChainFor(saved)
+    const out = persistedChainFor(saved, [ok("a"), ok("b")])
     expect(out).not.toBe(saved)
   })
-  it("删除时同步从已保存链剔除该 id（避免悬空引用）", () => {
-    expect(persistedChainFor(["a", "b", "c"], "b")).toEqual(["a", "c"])
+  it("删除时同步从链剔除该 id（避免悬空引用）", () => {
+    expect(persistedChainFor(["a", "b", "c"], [ok("a"), ok("b"), ok("c")], "b")).toEqual(["a", "c"])
   })
-  it("删除不在链中的 id → 已保存链原样", () => {
-    expect(persistedChainFor(["a", "b"], "z")).toEqual(["a", "b"])
+  it("自愈：链里未测通/被停用的成员在即时动作提交时被剔除（迁移遗留不再卡住整页）", () => {
+    const untested = { ...ok("b"), test: { status: "untested" as const } }
+    const disabled = { ...ok("c"), enabled: false }
+    expect(persistedChainFor(["a", "b", "c"], [ok("a"), untested, disabled])).toEqual(["a"])
+  })
+  it("链引用已不存在的 model → 剔除", () => {
+    expect(persistedChainFor(["a", "z"], [ok("a")])).toEqual(["a"])
   })
 })
 
