@@ -7,7 +7,7 @@ import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Phone, ShieldCheck, Sparkles, ArrowRight, FileSearch, PenLine, Download, QrCode } from "lucide-react"
 import { api, captchaEnabled, captchaSceneId, captchaPrefix } from "@/lib/api"
-import { loadAliyunCaptcha, makeCaptchaVerifyHandler, initCaptcha } from "@/lib/captcha"
+import { loadAliyunCaptcha, makeCaptchaVerifyHandler, initCaptcha, type CaptchaInstance } from "@/lib/captcha"
 import { authErrorMessage } from "@/lib/auth-errors"
 import { renderWxLogin } from "@/lib/wechat-login"
 import { useAuth } from "@/components/auth/auth-provider"
@@ -54,9 +54,14 @@ function LoginContent() {
   const canSubmit = phoneValid && code.length === 6 && agreed
 
   // 滑块开启时：加载阿里云验证码2.0 SDK 并把「获取验证码」按钮接管为弹窗触发器；拖动通过后才真正发码。
+  // 依赖 [tab]：手机号表单（含 #captcha-send-btn）在切到微信 tab 时会被卸载，再切回来会挂载一个
+  // 同 id 的新 DOM 节点——SDK 是按选择器绑定的旧节点引用，不会自动跟着新节点走。这里只在 tab==="phone"
+  // 时初始化，并在 cleanup（切走 / 卸载）里 destroy 掉上一个实例，切回来再重新 init 绑定到新节点，
+  // 避免旧实例悬空导致点击无反应，也避免重复 init 堆出多个监听。
   useEffect(() => {
-    if (!captchaEnabled) return
+    if (!captchaEnabled || tab !== "phone") return
     let cancelled = false
+    let instance: CaptchaInstance | null = null
     const sendAfterSlide = (param: string) => {
       const currentPhone = phoneRef.current
       if (!/^1\d{10}$/.test(currentPhone)) return Promise.reject(new Error("手机号无效"))
@@ -66,6 +71,7 @@ function LoginContent() {
       setCountdown(60)
       setMsg("验证码已发送")
     }
+    const onSlideError = (message: string) => setMsg(message)
     loadAliyunCaptcha()
       .then((initFn) => {
         if (cancelled) return
@@ -75,15 +81,19 @@ function LoginContent() {
           prefix: captchaPrefix,
           buttonSel: "#captcha-send-btn",
           elementSel: "#captcha-box",
-          verifyHandler: makeCaptchaVerifyHandler(sendAfterSlide, onSlideSuccess),
+          verifyHandler: makeCaptchaVerifyHandler(sendAfterSlide, onSlideSuccess, onSlideError),
+          getInstance: (inst) => {
+            instance = inst
+          },
         })
         setCaptchaReady(true)
       })
       .catch(() => setCaptchaError(true))
     return () => {
       cancelled = true
+      instance?.destroy?.()
     }
-  }, [])
+  }, [tab])
 
   // 手机号为纯 11 位（+86 由后端 normalizePhone 补全）；滑块关闭时不带 captchaToken，后端 DevPass 放行。
   // 滑块开启时按钮已被 SDK 接管弹出拼图，这里不再直接发码（交给 captchaVerifyCallback）；
