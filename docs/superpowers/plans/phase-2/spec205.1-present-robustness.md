@@ -1,4 +1,6 @@
-# spec318 · 述标(present)生成健壮性:强制提交重试 + 两段式拆分 Implementation Plan
+# spec205.1 · 述标(present)生成健壮性:强制提交重试 + 两段式拆分 Implementation Plan
+
+> 命名:present 节点(spec205)的健壮性后续,故 spec205.1(phase-2)。历史提交信息/代码注释里以 "spec318" 标注的即本 spec。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
