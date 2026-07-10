@@ -1,14 +1,61 @@
 import { getEnv } from "../config/env"
-import { getConfig } from "./config"
+import { getModelConfig, type ModelConfig } from "./model-config"
 
 // 封装 Agent Service 的 run 契约（spec104）。App 对 agent 内部无知，只发 {agent_type, thread_id, input}。
 // base_url 走惰性 getEnv（AGENT_BASE_URL），import 无副作用。
 
-export type AgentModelSelection = { provider?: string; model?: string | null; fallbacks?: string }
+export type AgentModelSelection = {
+  provider?: string
+  model?: string | null
+  fallbacks?: string
+  params?: { temperature: number; max_tokens: number; top_p: number } // agent 侧认 snake（spec319）
+}
 
-/** 读运营后台配置的 agent 模型选择（spec311）；缺省 undefined → 用 agent env 默认。 */
+/** 从模型注册表派生 run override（纯函数，本机可测）：chain[0]=主，chain[1:]=降级串；
+ *  chain 为空或主模型引用失效 → undefined（agent 用 env 默认）。
+ *  注意：不检查 test.status——测通门槛只在 saveModelConfig 时把关，run 时永远用已配置的跑（降级铁律）。 */
+export function deriveRunOverride(cfg: ModelConfig): AgentModelSelection | undefined {
+  if (!cfg.chain.length) return undefined
+  const primary = cfg.models.find((m) => m.id === cfg.chain[0])
+  if (!primary) return undefined
+  const fallbacks = cfg.chain
+    .slice(1)
+    .map((id) => cfg.models.find((m) => m.id === id))
+    .filter((m): m is NonNullable<typeof m> => !!m)
+    .map((m) => `${m.provider}:${m.model}`)
+    .join(",")
+  return {
+    provider: primary.provider,
+    model: primary.model,
+    fallbacks,
+    params: {
+      temperature: primary.params.temperature,
+      max_tokens: primary.params.maxTokens,
+      top_p: primary.params.topP,
+    },
+  }
+}
+
+/** 读运营后台配置的 agent 模型选择（spec311，spec319 起从模型注册表派生）；缺省 undefined → 用 agent env 默认。 */
 export async function getAgentModel(): Promise<AgentModelSelection | undefined> {
-  return getConfig<AgentModelSelection>("agent_model")
+  return deriveRunOverride(await getModelConfig())
+}
+
+/** 模型连通性测试中转（spec319）：relay 到 agent `/models/test`，不落库不改配置——纯探针。
+ *  超时放宽 20s（LLM 首 token 慢）；agent 恒回 JSON（含 400 非白名单场景），原样解析、camel 化字段名。 */
+export async function testModel(opts: {
+  provider: string
+  model?: string
+  params?: { temperature?: number; max_tokens?: number; top_p?: number }
+}): Promise<{ ok: boolean; latencyMs?: number; tokens?: number; error?: string }> {
+  const r = await fetch(`${getEnv().AGENT_BASE_URL}/models/test`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(opts),
+    signal: AbortSignal.timeout(20_000),
+  })
+  const body = (await r.json()) as { ok: boolean; latency_ms?: number; tokens?: number; error?: string }
+  return { ok: body.ok, latencyMs: body.latency_ms, tokens: body.tokens, error: body.error }
 }
 
 export async function createRun(opts: { agentType: string; threadId: string; input: unknown; model?: AgentModelSelection }) {

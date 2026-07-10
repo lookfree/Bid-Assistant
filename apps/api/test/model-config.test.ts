@@ -1,0 +1,139 @@
+import { describe, it, expect, afterAll, setDefaultTimeout } from "bun:test"
+import {
+  normalizeModelConfig,
+  validateModelConfig,
+  getModelConfig,
+  saveModelConfig,
+  UnknownProviderError,
+  InvalidParamsError,
+  ChainRequiresTestedError,
+  type ModelConfig,
+} from "../src/services/model-config"
+import { deriveRunOverride } from "../src/services/agent-client"
+import { getDb, closeDb } from "../src/db/client"
+import { billingConfigs } from "../src/db/schema"
+import { eq } from "drizzle-orm"
+import { TEST_TIMEOUT_MS } from "./repos/helpers"
+
+// billing_configs.value 是 NOT NULL：模拟"未配置"用删行，不能 setConfig(key, undefined/null)。
+const clearAgentModel = () => getDb().delete(billingConfigs).where(eq(billingConfigs.key, "agent_model"))
+
+setDefaultTimeout(TEST_TIMEOUT_MS)
+
+// 纯逻辑（不连库）：normalizeModelConfig / validateModelConfig / deriveRunOverride —— 本机可跑
+describe("spec319 model-config 纯逻辑", () => {
+  it("迁移旧结构：{provider,model:null,fallbacks} → models 2 条 + chain 2 项，全 untested/enabled", () => {
+    const cfg = normalizeModelConfig({ provider: "deepseek", model: null, fallbacks: "glm:glm-4-flash" })
+    expect(cfg.models).toHaveLength(2)
+    expect(cfg.chain).toHaveLength(2)
+    expect(cfg.models[0]).toMatchObject({ provider: "deepseek", model: "deepseek-chat", enabled: true, test: { status: "untested" } })
+    expect(cfg.models[1]).toMatchObject({ provider: "glm", model: "glm-4-flash", enabled: true, test: { status: "untested" } })
+    expect(cfg.chain).toEqual([cfg.models[0]!.id, cfg.models[1]!.id])
+  })
+
+  it("新结构原样返回 + 缺 params 项补默认", () => {
+    const raw = {
+      models: [{ id: "m1", provider: "qwen", model: "qwen-plus", params: { temperature: 0.3 }, enabled: true, test: { status: "passed" } }],
+      chain: ["m1"],
+    }
+    const cfg = normalizeModelConfig(raw)
+    expect(cfg.models[0]!.params).toEqual({ temperature: 0.3, maxTokens: 8192, topP: 1.0 })
+  })
+
+  it("空/undefined → {models:[],chain:[]}", () => {
+    expect(normalizeModelConfig(undefined)).toEqual({ models: [], chain: [] })
+    expect(normalizeModelConfig(null)).toEqual({ models: [], chain: [] })
+  })
+
+  it("validateModelConfig：chain 引用未测通 model → ChainRequiresTestedError", () => {
+    const cfg: ModelConfig = {
+      models: [{ id: "m1", provider: "deepseek", model: "deepseek-chat", params: { temperature: 0.7, maxTokens: 8192, topP: 1 }, enabled: true, test: { status: "untested" } }],
+      chain: ["m1"],
+    }
+    expect(() => validateModelConfig(cfg)).toThrow(ChainRequiresTestedError)
+  })
+
+  it("validateModelConfig：provider 非白名单 → UnknownProviderError", () => {
+    const cfg: ModelConfig = {
+      models: [{ id: "m1", provider: "openai", model: "gpt-4", params: { temperature: 0.7, maxTokens: 8192, topP: 1 }, enabled: true, test: { status: "passed" } }],
+      chain: [],
+    }
+    expect(() => validateModelConfig(cfg)).toThrow(UnknownProviderError)
+  })
+
+  it("validateModelConfig：temperature=5/topP=2/maxTokens=-1 → InvalidParamsError", () => {
+    const base = { id: "m1", provider: "deepseek", model: "deepseek-chat", enabled: true, test: { status: "passed" as const } }
+    expect(() => validateModelConfig({ models: [{ ...base, params: { temperature: 5, maxTokens: 8192, topP: 1 } }], chain: [] })).toThrow(InvalidParamsError)
+    expect(() => validateModelConfig({ models: [{ ...base, params: { temperature: 0.7, maxTokens: 8192, topP: 2 } }], chain: [] })).toThrow(InvalidParamsError)
+    expect(() => validateModelConfig({ models: [{ ...base, params: { temperature: 0.7, maxTokens: -1, topP: 1 } }], chain: [] })).toThrow(InvalidParamsError)
+  })
+
+  it("validateModelConfig：全合法（chain 引用的 model enabled+passed）→ 不抛", () => {
+    const cfg: ModelConfig = {
+      models: [{ id: "m1", provider: "deepseek", model: "deepseek-chat", params: { temperature: 0.7, maxTokens: 8192, topP: 1 }, enabled: true, test: { status: "passed" } }],
+      chain: ["m1"],
+    }
+    expect(() => validateModelConfig(cfg)).not.toThrow()
+  })
+
+  it("deriveRunOverride：chain=[deepseek(passed), glm(passed)] → 派生 snake params + fallbacks 串", () => {
+    const cfg: ModelConfig = {
+      models: [
+        { id: "a", provider: "deepseek", model: "deepseek-chat", params: { temperature: 0.5, maxTokens: 4096, topP: 0.9 }, enabled: true, test: { status: "passed" } },
+        { id: "b", provider: "glm", model: "glm-4-flash", params: { temperature: 0.7, maxTokens: 8192, topP: 1 }, enabled: true, test: { status: "passed" } },
+      ],
+      chain: ["a", "b"],
+    }
+    expect(deriveRunOverride(cfg)).toEqual({
+      provider: "deepseek",
+      model: "deepseek-chat",
+      fallbacks: "glm:glm-4-flash",
+      params: { temperature: 0.5, max_tokens: 4096, top_p: 0.9 },
+    })
+  })
+
+  it("deriveRunOverride：chain 空 → undefined", () => {
+    expect(deriveRunOverride({ models: [], chain: [] })).toBeUndefined()
+  })
+
+  it("deriveRunOverride：不因 test.status=untested 而拒绝下发（降级铁律：run 永远用已配置的跑）", () => {
+    const cfg: ModelConfig = {
+      models: [{ id: "a", provider: "deepseek", model: "deepseek-chat", params: { temperature: 0.7, maxTokens: 8192, topP: 1 }, enabled: true, test: { status: "untested" } }],
+      chain: ["a"],
+    }
+    expect(deriveRunOverride(cfg)).toMatchObject({ provider: "deepseek", model: "deepseek-chat" })
+  })
+})
+
+// DB 相关（getModelConfig/saveModelConfig 经 getConfig/setConfig 连真库）—— 需 mbp：
+// ./test-on-mbp.sh test/model-config.test.ts
+describe("spec319 model-config 服务（连库，mbp 跑）", () => {
+  afterAll(async () => {
+    await clearAgentModel()
+    await closeDb()
+  })
+
+  it("getModelConfig：读空配置 → {models:[],chain:[]}", async () => {
+    await clearAgentModel()
+    expect(await getModelConfig()).toEqual({ models: [], chain: [] })
+  })
+
+  it("saveModelConfig：未测通 chain 保存被拒绝，落库值不变", async () => {
+    await clearAgentModel()
+    const cfg: ModelConfig = {
+      models: [{ id: "m1", provider: "deepseek", model: "deepseek-chat", params: { temperature: 0.7, maxTokens: 8192, topP: 1 }, enabled: true, test: { status: "untested" } }],
+      chain: ["m1"],
+    }
+    await expect(saveModelConfig(cfg)).rejects.toThrow(ChainRequiresTestedError)
+    expect(await getModelConfig()).toEqual({ models: [], chain: [] })
+  })
+
+  it("saveModelConfig：全合法 → 写入成功，getModelConfig 读回一致", async () => {
+    const cfg: ModelConfig = {
+      models: [{ id: "m1", provider: "deepseek", model: "deepseek-chat", params: { temperature: 0.7, maxTokens: 8192, topP: 1 }, enabled: true, test: { status: "passed" } }],
+      chain: ["m1"],
+    }
+    await saveModelConfig(cfg)
+    expect(await getModelConfig()).toEqual(cfg)
+  })
+})
