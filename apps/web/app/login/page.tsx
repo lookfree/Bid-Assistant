@@ -2,11 +2,12 @@
 
 import type React from "react"
 
-import { useState, useEffect, Suspense } from "react"
+import { useState, useEffect, useRef, Suspense } from "react"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Phone, ShieldCheck, Sparkles, ArrowRight, FileSearch, PenLine, Download, QrCode } from "lucide-react"
-import { api, captchaEnabled } from "@/lib/api"
+import { api, captchaEnabled, captchaSceneId, captchaPrefix } from "@/lib/api"
+import { loadAliyunCaptcha, makeCaptchaVerifyHandler, initCaptcha } from "@/lib/captcha"
 import { authErrorMessage } from "@/lib/auth-errors"
 import { renderWxLogin } from "@/lib/wechat-login"
 import { useAuth } from "@/components/auth/auth-provider"
@@ -32,6 +33,15 @@ function LoginContent() {
   const [agreed, setAgreed] = useState(false)
   const [msg, setMsg] = useState("")
   const [busy, setBusy] = useState(false)
+  const [captchaReady, setCaptchaReady] = useState(false) // 滑块 SDK 是否已加载并绑定完成
+  const [captchaError, setCaptchaError] = useState(false) // SDK 加载失败 → fail-closed，禁止直接发码
+
+  // 供滑块的 captchaVerifyCallback 读取最新手机号：SDK 在 init 时绑定一次回调，若直接闭包捕获 state
+  // 会永远读到挂载时的初始值（空串）；用 ref 保证每次拖动通过时读到的是当前输入框的号码。
+  const phoneRef = useRef(phone)
+  useEffect(() => {
+    phoneRef.current = phone
+  }, [phone])
 
   useEffect(() => {
     if (countdown <= 0) return
@@ -43,17 +53,55 @@ function LoginContent() {
   const canSend = phoneValid && countdown === 0
   const canSubmit = phoneValid && code.length === 6 && agreed
 
+  // 滑块开启时：加载阿里云验证码2.0 SDK 并把「获取验证码」按钮接管为弹窗触发器；拖动通过后才真正发码。
+  useEffect(() => {
+    if (!captchaEnabled) return
+    let cancelled = false
+    const sendAfterSlide = (param: string) => {
+      const currentPhone = phoneRef.current
+      if (!/^1\d{10}$/.test(currentPhone)) return Promise.reject(new Error("手机号无效"))
+      return api.authApi.sendSmsCode(currentPhone, param).then(() => undefined)
+    }
+    const onSlideSuccess = () => {
+      setCountdown(60)
+      setMsg("验证码已发送")
+    }
+    loadAliyunCaptcha()
+      .then((initFn) => {
+        if (cancelled) return
+        initCaptcha({
+          initFn,
+          sceneId: captchaSceneId,
+          prefix: captchaPrefix,
+          buttonSel: "#captcha-send-btn",
+          elementSel: "#captcha-box",
+          verifyHandler: makeCaptchaVerifyHandler(sendAfterSlide, onSlideSuccess),
+        })
+        setCaptchaReady(true)
+      })
+      .catch(() => setCaptchaError(true))
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   // 手机号为纯 11 位（+86 由后端 normalizePhone 补全）；滑块关闭时不带 captchaToken，后端 DevPass 放行。
+  // 滑块开启时按钮已被 SDK 接管弹出拼图，这里不再直接发码（交给 captchaVerifyCallback）；
+  // 仅在 SDK 加载失败时兜底报错，避免静默跳过验证（fail-closed）。
   async function handleSendCode() {
     if (!canSend) return
     setMsg("")
-    try {
-      await api.authApi.sendSmsCode(phone, captchaEnabled ? "" : undefined)
-      setCountdown(60)
-      setMsg("验证码已发送")
-    } catch (e) {
-      setMsg(authErrorMessage(e, "发送失败，请稍后重试"))
+    if (!captchaEnabled) {
+      try {
+        await api.authApi.sendSmsCode(phone, undefined)
+        setCountdown(60)
+        setMsg("验证码已发送")
+      } catch (e) {
+        setMsg(authErrorMessage(e, "发送失败，请稍后重试"))
+      }
+      return
     }
+    if (captchaError) setMsg("验证组件加载失败，请刷新重试")
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -188,14 +236,17 @@ function LoginContent() {
                     className="w-full rounded-lg border border-input bg-background px-3 py-2.5 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/20"
                   />
                   <button
+                    id="captcha-send-btn"
                     type="button"
                     onClick={handleSendCode}
-                    disabled={!canSend}
+                    disabled={!canSend || (captchaEnabled && !captchaReady && !captchaError)}
                     className="shrink-0 rounded-lg border border-input bg-background px-4 text-sm font-medium text-primary transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:text-muted-foreground"
                   >
                     {countdown > 0 ? `${countdown}s 后重发` : "获取验证码"}
                   </button>
                 </div>
+                {/* 阿里云验证码2.0 弹层容器：滑块关闭时始终为空，不渲染任何东西 */}
+                <div id="captcha-box" />
               </div>
 
               <button

@@ -19,6 +19,9 @@ export const api = createApiClient({
   },
 })
 export const captchaEnabled = process.env.NEXT_PUBLIC_CAPTCHA_ENABLED === "true"
+// 阿里云验证码2.0 场景ID/身份标（公开值，非敏感）；滑块开启时必填，见 lib/captcha.ts。
+export const captchaSceneId = process.env.NEXT_PUBLIC_CAPTCHA_SCENE_ID ?? ""
+export const captchaPrefix = process.env.NEXT_PUBLIC_CAPTCHA_PREFIX ?? ""
 
 /** 共享请求函数类型：各领域 API 封装（library / membership 等）以工厂形式注入复用。 */
 export type RequestFn = typeof api.request
