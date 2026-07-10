@@ -31,7 +31,7 @@ def _merge_deck(draft: DeckDraft, slide_notes: SlideNotes) -> DeckSpec:
 
 
 def make_present_node(ctx):
-    """graph 节点（两段式 §4.2.1，spec318 Fix2）：读 chapters+read → 先产骨架 DeckDraft（不含 notes）
+    """graph 节点（两段式 §4.2.1，spec205.1 Fix2）：读 chapters+read → 先产骨架 DeckDraft（不含 notes）
     → 再逐页产口播稿 SlideNotes → 按 id 合并成 DeckSpec → render_pptx 确定性渲染 → .pptx 落 MinIO
     → 写 state['deck'] / artifacts['pptx']；模型未提交即失败（可重试）。骨架 JSON 去掉最大最易崩的
     notes 自由文本字段，单次提交体积更小更稳。

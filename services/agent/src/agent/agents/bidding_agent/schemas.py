@@ -119,7 +119,7 @@ class DeckSpec(BaseModel):
 
 
 class SlideDraft(BaseModel):
-    """述标骨架页：Slide 去掉 notes（最大最易崩的自由文本字段），两段式第一段产出（spec318 Fix2）。"""
+    """述标骨架页：Slide 去掉 notes（最大最易崩的自由文本字段），两段式第一段产出（spec205.1 Fix2）。"""
     id: str
     title: str
     scoring: str = ""
