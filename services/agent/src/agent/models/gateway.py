@@ -20,6 +20,17 @@ class ModelGateway:
             raise RuntimeError(f"模型 provider '{provider}' 缺少 API Key（{KEY_FIELD[provider].upper()}）")
         return key
 
+    def _model_params(self) -> dict:
+        """把 Settings 里的采样参数组装成 ChatOpenAI kwargs（None 的不传，用 provider 默认）。"""
+        out: dict = {}
+        if self.s.model_temperature is not None:
+            out["temperature"] = self.s.model_temperature
+        if self.s.model_max_tokens is not None:
+            out["max_tokens"] = self.s.model_max_tokens
+        if self.s.model_top_p is not None:
+            out["top_p"] = self.s.model_top_p
+        return out
+
     def get_chat(self, provider: str | None = None, model: str | None = None, **kw: Any) -> ChatOpenAI:
         provider = provider or self.s.model_default_provider   # 容忍 provider=None，回退默认家
         p = PROVIDERS[provider]
@@ -27,7 +38,7 @@ class ModelGateway:
             model=model or p["default_model"],
             base_url=p["base_url"],
             api_key=self._api_key(provider),
-            **kw,
+            **{**self._model_params(), **kw},   # 显式 kw 优先级更高，覆盖 settings
         )
 
     def _chain(self, provider: str | None, model: str | None) -> list[tuple[str, str | None]]:
@@ -87,13 +98,34 @@ _OVERRIDE_MAP = {
 }
 
 
+def _params_override(params: dict) -> dict:
+    """把 run 携带的采样参数 {temperature,max_tokens,top_p} 映射为 Settings 字段；
+    越界/非数值 → 丢弃该项（不抛，与 unknown-provider 一致的"安全回退默认"语义）。"""
+    out: dict = {}
+    temperature = params.get("temperature")
+    if isinstance(temperature, (int, float)) and not isinstance(temperature, bool) and 0 <= temperature <= 2:
+        out["model_temperature"] = temperature
+    top_p = params.get("top_p")
+    if isinstance(top_p, (int, float)) and not isinstance(top_p, bool) and 0 <= top_p <= 1:
+        out["model_top_p"] = top_p
+    max_tokens = params.get("max_tokens")
+    if isinstance(max_tokens, int) and not isinstance(max_tokens, bool) and max_tokens > 0:
+        out["model_max_tokens"] = max_tokens
+    return out
+
+
 def model_override_to_settings(sel: dict | None) -> dict:
-    """把 run 携带的 {provider,model,fallbacks} 映射为 Settings 字段；覆盖 env 默认（spec311）。
-    空串/None/缺失 → 丢弃（继承 env，默认配置即 no-op）；未知 provider → 丢弃（避免 run 时 KeyError）。"""
+    """把 run 携带的 {provider,model,fallbacks,params} 映射为 Settings 字段；覆盖 env 默认（spec311）。
+    空串/None/缺失 → 丢弃（继承 env，默认配置即 no-op）；未知 provider → 丢弃（避免 run 时 KeyError）；
+    params 不在 _OVERRIDE_MAP 里，单独校验后映射（spec319）。"""
     if not sel:
         return {}
     out: dict = {}
     for k, v in sel.items():
+        if k == "params":
+            if isinstance(v, dict):
+                out.update(_params_override(v))
+            continue
         if k not in _OVERRIDE_MAP or not v:
             continue
         if k == "provider" and v not in PROVIDERS:

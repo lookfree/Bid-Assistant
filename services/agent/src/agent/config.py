@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     model_default_provider: str = "deepseek"
     model_default_model: str | None = None     # None 则用 provider 默认模型
     model_fallbacks: str = ""                   # "qwen:qwen-plus,glm:glm-4-flash"
+    model_temperature: float | None = None     # None=用 provider 默认；由 App run override 下发
+    model_max_tokens: int | None = None
+    model_top_p: float | None = None
 
     app_callback_url: str | None = None         # App 的用量回调端点；None 则跳过（dummy/dev）
 

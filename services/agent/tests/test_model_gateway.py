@@ -77,3 +77,40 @@ def test_invoke_all_fail_raises(monkeypatch):
         model_name="m", invoke=lambda _m: (_ for _ in ()).throw(RuntimeError("boom"))))
     with pytest.raises(RuntimeError):
         gw.invoke([("user", "x")], recorder=_Rec(), run_id="r2", agent_type="bidding_agent")
+
+
+def _patch_fake_chat_openai(monkeypatch):
+    """monkeypatch agent.models.gateway.ChatOpenAI 为记录 kwargs 的 fake，断言透传最确定。"""
+    calls = []
+
+    class _FakeChatOpenAI:
+        def __init__(self, **kw):
+            calls.append(kw)
+
+    monkeypatch.setattr("agent.models.gateway.ChatOpenAI", _FakeChatOpenAI)
+    return calls
+
+
+def test_get_chat_passes_sampling_params_from_settings(monkeypatch):
+    calls = _patch_fake_chat_openai(monkeypatch)
+    gw = ModelGateway(_settings(model_temperature=0.3, model_max_tokens=8192, model_top_p=0.9))
+    gw.get_chat("deepseek")
+    assert calls[-1]["temperature"] == 0.3
+    assert calls[-1]["max_tokens"] == 8192
+    assert calls[-1]["top_p"] == 0.9
+
+
+def test_get_chat_omits_sampling_params_when_none(monkeypatch):
+    calls = _patch_fake_chat_openai(monkeypatch)
+    gw = ModelGateway(_settings())  # 默认全 None
+    gw.get_chat("deepseek")
+    assert "temperature" not in calls[-1]
+    assert "max_tokens" not in calls[-1]
+    assert "top_p" not in calls[-1]
+
+
+def test_get_chat_explicit_kw_overrides_settings(monkeypatch):
+    calls = _patch_fake_chat_openai(monkeypatch)
+    gw = ModelGateway(_settings(model_temperature=0.3))
+    gw.get_chat("deepseek", temperature=0.1)
+    assert calls[-1]["temperature"] == 0.1

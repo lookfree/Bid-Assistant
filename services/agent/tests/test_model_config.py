@@ -40,3 +40,25 @@ def test_create_run_body_parses_model():
     b = CreateRunBody(input={}, thread_id="t1", model={"provider": "deepseek", "model": "deepseek-chat", "fallbacks": ""})
     assert b.model.provider == "deepseek"
     assert b.model.model == "deepseek-chat"
+
+
+def test_override_maps_params():
+    out = model_override_to_settings({"params": {"temperature": 0.5, "max_tokens": 4096, "top_p": 0.8}})
+    assert out == {"model_temperature": 0.5, "model_max_tokens": 4096, "model_top_p": 0.8}
+
+
+def test_override_params_out_of_range_dropped():
+    out = model_override_to_settings({"params": {
+        "temperature": 5, "top_p": 2, "max_tokens": -1,
+    }})
+    assert out == {}
+
+
+def test_override_params_non_numeric_max_tokens_dropped():
+    out = model_override_to_settings({"params": {"max_tokens": "x"}})
+    assert out == {}
+
+
+def test_override_params_combined_with_provider_fields():
+    out = model_override_to_settings({"provider": "qwen", "params": {"temperature": 0.5}})
+    assert out == {"model_default_provider": "qwen", "model_temperature": 0.5}

@@ -8,6 +8,7 @@ from agent.routes.runs import router as runs_router
 from agent.routes.chapters import router as chapters_router
 from agent.routes.dedupe import router as dedupe_router
 from agent.routes.checklist import router as checklist_router
+from agent.routes.models import router as models_router
 
 
 @asynccontextmanager
@@ -26,4 +27,5 @@ def create_app() -> FastAPI:
     app.include_router(chapters_router)
     app.include_router(dedupe_router)      # spec315b 查重（同步、无 thread）
     app.include_router(checklist_router)   # spec315b 审核表渲染（同步无状态）
+    app.include_router(models_router)      # spec319 模型连通性测试探针
     return app
