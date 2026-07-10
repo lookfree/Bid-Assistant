@@ -78,10 +78,10 @@
 
 ## Tasks
 
-- [ ] **Task A(agent)**:Settings 加参数字段 + `get_chat` 从 settings 透传参数 + `model_override_to_settings` 追加 params 映射 + `/models/test` 探针端点(挂 app.py)+ pytest(全 mock)。
-- [ ] **Task B(App API)**:模型配置新结构(读迁移/写校验)+ `/admin-api/models` 路由(GET/PUT/POST test)+ `getAgentModel` 派生链 + agent-client testModel + mbp 测试。
-- [ ] **Task C(admin 前端)**:`/models` 菜单页(运行编排 + 模型库,测试/调参/启用/编排交互,配色对齐)+ admin-api 方法 + 从 /plans 移除旧卡 + 逻辑单测。
-- [ ] **Task D(验证/部署)**:三侧全绿 → `/code-review` 全修 → 合并 main → 部署 mbp → 端到端手测。
+- [x] **Task A(agent)**:Settings 加参数字段 + `get_chat` 从 settings 透传参数 + `model_override_to_settings` 追加 params 映射 + `/models/test` 探针端点(挂 app.py)+ pytest(全 mock)。
+- [x] **Task B(App API)**:模型配置新结构(读迁移/写校验)+ `/admin-api/models` 路由(GET/PUT/POST test)+ `getAgentModel` 派生链 + agent-client testModel + mbp 测试。
+- [x] **Task C(admin 前端)**:`/models` 菜单页(运行编排 + 模型库,测试/调参/启用/编排交互,配色对齐)+ admin-api 方法 + 从 /plans 移除旧卡 + 逻辑单测。
+- [x] **Task D(验证/部署)**:三侧全绿 → `/code-review` 全修 → 合并 main → 部署 mbp → 端到端手测。
 
 ## 决策记录
 

@@ -66,10 +66,10 @@ CREATE INDEX IF NOT EXISTS rag_chunks_hnsw ON agent.rag_chunks USING hnsw (embed
 
 ## Tasks
 
-- [ ] **Task A（agent）**：迁移 + rag 包（embedder 指向本地 bge-embed） + 双路由 + read/content/rewrite 接入 + pytest（embedding 全 mock）
-- [ ] **Task B（api）**：run 契约 user_id + CRUD 钩子 + rag 配置种子/下发 + reindex + mbp 测试
-- [ ] **Task C（部署）**：compose 加 `bge-embed` 容器 + 权重卷 + env 接线 → /code-review 全修 → 双侧全绿 → commit → 部署 mbp（容器未就绪时验证「禁用态=行为与今天一致」）
-- [ ] **Task D**：确认 `bge-embed` 权重下载完成、`/health` 探活通过 → 端到端验收「资料自动进标书」（不再需要人工提供第三方 API key）
+- [x] **Task A（agent）**：迁移 + rag 包（embedder 指向本地 bge-embed） + 双路由 + read/content/rewrite 接入 + pytest（embedding 全 mock）
+- [x] **Task B（api）**：run 契约 user_id + CRUD 钩子 + rag 配置种子/下发 + reindex + mbp 测试
+- [x] **Task C（部署）**：compose 加 `bge-embed` 容器 + 权重卷 + env 接线 → /code-review 全修 → 双侧全绿 → commit → 部署 mbp（容器未就绪时验证「禁用态=行为与今天一致」）
+- [x] **Task D**：确认 `bge-embed` 权重下载完成、`/health` 探活通过 → 端到端验收「资料自动进标书」（不再需要人工提供第三方 API key）
 
 ## 决策记录
 
