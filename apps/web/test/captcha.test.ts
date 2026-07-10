@@ -6,34 +6,85 @@ import {
   __resetAliyunCaptchaCache,
   type InitAliyunCaptcha,
 } from "../lib/captcha"
+import { ApiError } from "../lib/api-client"
 
 describe("makeCaptchaVerifyHandler", () => {
-  it("send 成功 → 返回 true 且 onSuccess 被调用一次", async () => {
-    let calls = 0
+  it("send 成功（200）→ 返回 true，onSuccess 被调用，onError 未被调用", async () => {
+    let successCalls = 0
+    let errorCalls = 0
     const handler = makeCaptchaVerifyHandler(
       async () => undefined,
       () => {
-        calls += 1
+        successCalls += 1
+      },
+      () => {
+        errorCalls += 1
       },
     )
     const ok = await handler("param-1")
     expect(ok).toBe(true)
-    expect(calls).toBe(1)
+    expect(successCalls).toBe(1)
+    expect(errorCalls).toBe(0)
   })
 
-  it("send 失败（后端 403/网络错）→ 返回 false 且 onSuccess 未被调用", async () => {
-    let calls = 0
+  it("send 拒绝 403（captcha_required，验签真失败）→ 返回 false，onSuccess/onError 均未被调用", async () => {
+    let successCalls = 0
+    let errorCalls = 0
     const handler = makeCaptchaVerifyHandler(
       async () => {
-        throw new Error("captcha_required")
+        throw new ApiError(403, "captcha_required")
       },
       () => {
-        calls += 1
+        successCalls += 1
+      },
+      () => {
+        errorCalls += 1
       },
     )
     const ok = await handler("param-1")
     expect(ok).toBe(false)
-    expect(calls).toBe(0)
+    expect(successCalls).toBe(0)
+    expect(errorCalls).toBe(0)
+  })
+
+  it("send 拒绝 429（限流，拼图已通过）→ 返回 true（收起滑块），onError 被调用带上原因，onSuccess 未被调用", async () => {
+    let successCalls = 0
+    let errorMessage: string | undefined
+    const handler = makeCaptchaVerifyHandler(
+      async () => {
+        throw new ApiError(429, undefined, 30)
+      },
+      () => {
+        successCalls += 1
+      },
+      (message) => {
+        errorMessage = message
+      },
+    )
+    const ok = await handler("param-1")
+    expect(ok).toBe(true)
+    expect(successCalls).toBe(0)
+    expect(errorMessage).toBeDefined()
+  })
+
+  it("send 拒绝其他错误（网络/5xx）→ 返回 true，onError 被调用，onSuccess 未被调用", async () => {
+    let successCalls = 0
+    let errorMessage: string | undefined
+    const handler = makeCaptchaVerifyHandler(
+      async () => {
+        throw new Error("network error")
+      },
+      () => {
+        successCalls += 1
+      },
+      (message) => {
+        errorMessage = message
+      },
+    )
+    const ok = await handler("param-1")
+    expect(ok).toBe(true)
+    expect(successCalls).toBe(0)
+    expect(errorMessage).toBe("发送失败，请稍后重试")
   })
 })
 
