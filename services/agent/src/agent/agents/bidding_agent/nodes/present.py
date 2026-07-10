@@ -3,8 +3,8 @@ import json
 import re
 from agent.framework.create_agent import run_submit_agent
 from agent.agents.bidding_agent.nodes.common import slim_read, upload_artifact
-from agent.agents.bidding_agent.schemas import DeckSpec
-from agent.agents.bidding_agent.prompts.present import PRESENT_SYSTEM_PROMPT
+from agent.agents.bidding_agent.schemas import DeckDraft, DeckSpec, Slide, SlideNotes
+from agent.agents.bidding_agent.prompts.present import PRESENT_SKELETON_PROMPT, PRESENT_NOTES_PROMPT
 from agent.agents.bidding_agent.render.pptx import render_pptx
 
 
@@ -13,9 +13,28 @@ def _plain(html: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html)).strip()
 
 
+def _notes_user_msg(draft: DeckDraft, duration: int) -> str:
+    """骨架页只喂 id/title/scoring/bullets（不含 qa/template），紧凑输入供口播稿段逐页写 notes。"""
+    skeleton = [{"id": s.id, "title": s.title, "scoring": s.scoring, "bullets": s.bullets}
+                for s in draft.slides]
+    return (f"为以下每页幻灯片写口播稿。时长 {duration} 分钟。\n"
+            f"{json.dumps(skeleton, ensure_ascii=False)}\n"
+            "用 submit_slide_notes 一次性提交，notes 数组每项 {id, notes}，id 必须与输入页 id 一一对应。")
+
+
+def _merge_deck(draft: DeckDraft, slide_notes: SlideNotes) -> DeckSpec:
+    """按 slide id 合并骨架 + 口播稿；缺页 notes 兜底空串，不因个别页缺稿整体失败。"""
+    note_map = {n.id: n.notes for n in slide_notes.notes}
+    slides = [Slide(**d.model_dump(), notes=note_map.get(d.id, "")) for d in draft.slides]
+    return DeckSpec(title=draft.title, duration=draft.duration, template=draft.template,
+                     enterprise_template_id=draft.enterprise_template_id, slides=slides, qa=draft.qa)
+
+
 def make_present_node(ctx):
-    """graph 节点（两段式 §4.2.1）：读 chapters+read → 产 DeckSpec（LLM）→ render_pptx 确定性渲染
-    → .pptx 落 MinIO → 写 state['deck'] / artifacts['pptx']；模型未提交即失败（可重试）。
+    """graph 节点（两段式 §4.2.1，spec318 Fix2）：读 chapters+read → 先产骨架 DeckDraft（不含 notes）
+    → 再逐页产口播稿 SlideNotes → 按 id 合并成 DeckSpec → render_pptx 确定性渲染 → .pptx 落 MinIO
+    → 写 state['deck'] / artifacts['pptx']；模型未提交即失败（可重试）。骨架 JSON 去掉最大最易崩的
+    notes 自由文本字段，单次提交体积更小更稳。
     spec315a：duration/template 取自 state['run_input']（App 每 run 透传），非法值回默认。"""
     async def present_node(state):
         run_input = state.get("run_input") or {}
@@ -26,12 +45,16 @@ def make_present_node(ctx):
         chapters = {cid: _plain(html) for cid, html in (state.get("chapters") or {}).items()}
         payload = {"chapters": chapters, "read": slim_read(state.get("read") or {}),
                    "duration": duration}
-        user = f"标书与评分点：\n{json.dumps(payload, ensure_ascii=False)}\n时长 {duration} 分钟，请产 DeckSpec。"
+        user = f"标书与评分点：\n{json.dumps(payload, ensure_ascii=False)}\n时长 {duration} 分钟，请产 DeckDraft 骨架。"
         if template:
             user += f"\n客户指定模板：{template}（template 字段必须用它）。"
-        deck = await run_submit_agent(
-            ctx, PRESENT_SYSTEM_PROMPT, user,
-            "submit_deck", DeckSpec, "提交述标 DeckSpec")
+        draft = await run_submit_agent(
+            ctx, PRESENT_SKELETON_PROMPT, user,
+            "submit_deck_draft", DeckDraft, "提交述标骨架（不含口播稿）")
+        slide_notes = await run_submit_agent(
+            ctx, PRESENT_NOTES_PROMPT, _notes_user_msg(draft, duration),
+            "submit_slide_notes", SlideNotes, "提交每页口播稿")
+        deck = _merge_deck(draft, slide_notes)
         if template:
             deck.template = template   # 客户指定优先：模型没照办也强制生效
         data = render_pptx(deck)   # 模板色取 deck.template

@@ -116,3 +116,32 @@ class DeckSpec(BaseModel):
     enterprise_template_id: str | None = None      # 企业自有模板（如 pe1/pe2），优先于 template
     slides: list[Slide]
     qa: list[QA] = Field(default_factory=list)
+
+
+class SlideDraft(BaseModel):
+    """述标骨架页：Slide 去掉 notes（最大最易崩的自由文本字段），两段式第一段产出（spec318 Fix2）。"""
+    id: str
+    title: str
+    scoring: str = ""
+    bullets: list[str] = Field(default_factory=list)
+    kind: Literal["cover", "content", "end"] = "content"
+
+
+class DeckDraft(BaseModel):
+    """述标骨架：DeckSpec 去掉每页 notes，两段式第一段提交对象。"""
+    title: str = ""
+    duration: Literal[10, 15, 20] = 15
+    template: Literal["blue", "tech", "gov"] = "blue"
+    enterprise_template_id: str | None = None
+    slides: list[SlideDraft]
+    qa: list[QA] = Field(default_factory=list)
+
+
+class SlideNote(BaseModel):
+    id: str                                        # 对应 SlideDraft.id
+    notes: str
+
+
+class SlideNotes(BaseModel):
+    """两段式第二段提交对象：逐页口播稿，按 id 与骨架合并。"""
+    notes: list[SlideNote] = Field(default_factory=list)
