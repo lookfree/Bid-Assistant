@@ -92,9 +92,10 @@ def test_present_missing_slide_notes_falls_back_to_empty(monkeypatch, submit_gat
     assert out["artifacts"]["pptx"] == "artifacts/proj-1/present.pptx"
 
 
-def test_present_notes_pass_all_empty_submission_fails_closed(monkeypatch, submit_gateway):
-    """口播稿段整段放弃（每次都提交 {} 缺 notes 字段）→ SlideNotes 校验失败、重试耗尽 →
-    present_node 抛 RuntimeError，而非静默把整份 deck 的 notes 全置空当成功（Task A 安全网保留）。"""
+@pytest.mark.parametrize("empty_notes", [{}, {"notes": []}])
+def test_present_notes_pass_all_empty_submission_fails_closed(monkeypatch, submit_gateway, empty_notes):
+    """口播稿段整段放弃（提交 {} 缺字段，或 {"notes": []} 空列表）→ SlideNotes 校验失败(必填+min_length=1)、
+    重试耗尽 → present_node 抛 RuntimeError，而非静默把整份 deck 的 notes 全置空当成功（Task A 安全网保留）。"""
     class _Storage:
         async def put_bytes(self, key, data, content_type=None):
             pass
@@ -102,7 +103,7 @@ def test_present_notes_pass_all_empty_submission_fails_closed(monkeypatch, submi
     monkeypatch.setattr(common_mod, "storage", _Storage())
     ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-1",
                      gateway=submit_gateway({"submit_deck_draft": _DRAFT_ARGS,
-                                             "submit_slide_notes": {}}))
+                                             "submit_slide_notes": empty_notes}))
     with pytest.raises(RuntimeError):
         asyncio.run(make_present_node(ctx)({"chapters": {}, "read": {}}))
 

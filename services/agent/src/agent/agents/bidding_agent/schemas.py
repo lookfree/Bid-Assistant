@@ -144,6 +144,6 @@ class SlideNote(BaseModel):
 
 class SlideNotes(BaseModel):
     """两段式第二段提交对象：逐页口播稿，按 id 与骨架合并。
-    notes 无默认值（必填）：模型整段放弃（提交 {} 缺字段）时应触发校验失败 → 强制提交重试，
-    而非静默通过让全 deck notes 置空（缺个别页由合并处兜底空串，整段缺失属高危失败）。"""
-    notes: list[SlideNote]
+    notes 必填且 min_length=1：模型整段放弃（提交 {} 缺字段，或 {"notes": []} 空列表）都应触发
+    校验失败 → 强制提交重试，而非静默通过让全 deck notes 置空（缺个别页由合并处兜底空串，整段缺失属高危失败）。"""
+    notes: list[SlideNote] = Field(min_length=1)
