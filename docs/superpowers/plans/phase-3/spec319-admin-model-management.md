@@ -85,11 +85,11 @@
 
 ## 决策记录
 
-1. **参数作用于主模型,降级链沿用现有字符串 failover(不做节点级逐项参数)**:读代码发现生成节点走 `get_chat(provider=None)` 单模型、**无 failover**,failover 只在 compressor。故"整条链每模型独立参数"对生成节点是过度设计——最高价值是让**主模型**参数真正作用到生成(修 `get_chat` 完全不传参、DeepSeek 走默认 max_tokens 的老问题,呼应 spec318 述标)。本轮:override 在现有 `{provider,model,fallbacks}` 上追加 `params`(主模型的),参数存 Settings 由 `get_chat` 读取,自动覆盖节点与 compressor 两条路径;降级链继续用 `fallbacks` 字符串喂 `_chain`(现状不改)。**已知取舍**:模型库里非主模型的 model 也能配参数,但运行时只有主模型(`chain[0]`)的参数生效,降级位模型的参数在它被设为主模型时才生效——UI 上不误导(参数是"该模型被用作主模型时的参数");给"节点级 failover + 逐项参数"是更大改造,留候选。
+1. **参数作用于主模型,降级链沿用现有字符串 failover(不做节点级逐项参数)**:读代码发现生成节点走 `get_chat(provider=None)` 单模型、**无 failover**,failover 只在 compressor。故"整条链每模型独立参数"对生成节点是过度设计——最高价值是让**主模型**参数真正作用到生成(修 `get_chat` 完全不传参、DeepSeek 走默认 max_tokens 的老问题,呼应 spec205.1 述标)。本轮:override 在现有 `{provider,model,fallbacks}` 上追加 `params`(主模型的),参数存 Settings 由 `get_chat` 读取,自动覆盖节点与 compressor 两条路径;降级链继续用 `fallbacks` 字符串喂 `_chain`(现状不改)。**已知取舍**:模型库里非主模型的 model 也能配参数,但运行时只有主模型(`chain[0]`)的参数生效,降级位模型的参数在它被设为主模型时才生效——UI 上不误导(参数是"该模型被用作主模型时的参数");给"节点级 failover + 逐项参数"是更大改造,留候选。
 2. **测试无状态、启用门槛服务端强制**:`/test` 只回结果不改配置(测试可发生在首次保存前);测试结果由 client 并入 model.test 随 PUT 落库;`PUT` 服务端校验 chain 全测通——这样"启用前必须测通"既有前端引导(开关禁用)又有服务端兜底(防绕过 API),符合"不破坏用户生成"的产品铁律。
 3. **复用 `billing_configs` 单 key `agent_model`,不建新表**:配置体量小(几条 model),单 JSON 够用;迁移读兼容旧结构,写才落新结构,读无副作用。避免迁移+新表的成本,与现有 config 存储一致。
 4. **连通性探针=固定短 prompt,平台承担成本**:按你的决策,只验 key/网络/延迟,不让运营自定义 prompt(更省成本更简单);探针在 agent 侧执行(key 在那)。回显延迟/token/错误。
-5. **参数默认与兜底双写**:App 校验时补默认,agent `get_chat` 也对缺失参数用默认——任一侧配置缺参都不崩,且行为一致(修了当前"完全不传 max_tokens"导致 DeepSeek 走 4096/8192 默认的隐患,现在主模型可显式设 8192,呼应 spec318 述标)。
+5. **参数默认与兜底双写**:App 校验时补默认,agent `get_chat` 也对缺失参数用默认——任一侧配置缺参都不崩,且行为一致(修了当前"完全不传 max_tokens"导致 DeepSeek 走 4096/8192 默认的隐患,现在主模型可显式设 8192,呼应 spec205.1 述标)。
 
 ## 本轮不做(候选池)
 - 按节点(读标/提纲/正文/审查/述标)分别配参数(矩阵式);本轮每模型一套全局参数。

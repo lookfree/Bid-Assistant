@@ -1,6 +1,6 @@
 # spec205.1 · 述标(present)生成健壮性:强制提交重试 + 两段式拆分 Implementation Plan
 
-> 命名:present 节点(spec205)的健壮性后续,故 spec205.1(phase-2)。历史提交信息/代码注释里以 "spec318" 标注的即本 spec。
+> 命名:present 节点(spec205)的健壮性后续,故 spec205.1(phase-2)。历史提交信息里以 "spec318" 标注的即本 spec(代码注释已同步为 spec205.1)。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -101,8 +101,8 @@ class SlideNotes(BaseModel):
 
 ## Tasks
 
-- [ ] **Task A(Fix 1)**:`_forced_submit` 加 invalid_tool_calls 喂回重试分支 + 四态单测(invalid→重试成功/耗尽/Pydantic 回归/彻底无调用回归)。
-- [ ] **Task B(Fix 2)**:schemas 加 DeckDraft/SlideNotes + present_node 两段式 + 提示词拆分 + present 合并单测。
+- [x] **Task A(Fix 1)**:`_forced_submit` 加 invalid_tool_calls 喂回重试分支 + 四态单测(invalid→重试成功/耗尽/Pydantic 回归/彻底无调用回归)。
+- [x] **Task B(Fix 2)**:schemas 加 DeckDraft/SlideNotes + present_node 两段式 + 提示词拆分 + present 合并单测。
 - [x] **Task C(验证/部署)**:`uv run pytest` 全绿 → `/code-review` 全修 → 合并 main → 部署 mbp → 真实项目端到端验收述标出 pptx。
 
 ## 决策记录
