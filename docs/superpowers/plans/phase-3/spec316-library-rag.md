@@ -42,7 +42,7 @@ CREATE INDEX IF NOT EXISTS rag_chunks_hnsw ON agent.rag_chunks USING hnsw (embed
 - 换 embedding 模型=换维度=**全量重建索引**（决策记录 §3），v1 锁 1024（BGE-M3 dense 输出天然 1024 维，与原 qwen 方案维度一致，schema 不受影响）。
 
 ### Agent 侧
-1. `rag/` 新包：`embedder.py`（OpenAI 兼容 `/v1/embeddings` HTTP 客户端，指向本地 `bge-embed` 服务，env `RAG_EMBED_ENDPOINT` 默认 `http://bge-embed:80/v1/embeddings`，无需 API key；批量≤16 条/请求；启动时探活 `/health`，探活失败或请求持续出错 → `enabled=False` 降级）、`chunker.py`（按段落切块，每块≤500 字、重叠 50）、`store.py`（psycopg upsert/delete/search，cosine top-k，2s 超时）。
+1. `rag/` 新包：`embedder.py`（OpenAI 兼容 `/v1/embeddings` HTTP 客户端，指向本地 `bge-embed` 服务，env `RAG_EMBED_ENDPOINT` 默认 `http://host.docker.internal:18080/v1/embeddings`(dev,经 mbp 宿主机转发到香港 bge-embed;见记忆 bidsaas-hk-bge-embed)，无需 API key；批量≤16 条/请求；启动时探活 `/health`，探活失败或请求持续出错 → `enabled=False` 降级）、`chunker.py`（按段落切块，每块≤500 字、重叠 50）、`store.py`（psycopg upsert/delete/search，cosine top-k，2s 超时）。
 2. 路由 `POST /rag/index`：body `{user_id, source_type: "library", source_id, title, text}` → 删旧 chunks → 切块 → embed → upsert → `{chunks: n}`；`DELETE /rag/index/{source_type}/{source_id}`（body/query 带 user_id 校验行属主一致才删）。RAG 禁用时返回 `{chunks: 0, disabled: true}`（200，App 无感）。
 3. read 节点：产出 doc_sections 后 best-effort 索引 `(user_id, "tender", thread_id)`（clauses 已是天然分块，直接逐句入库，meta 带 clause_id）；失败仅日志。
 4. content 节点：对每个提纲章节，用「章 no+标题+items 标签」作 query，检索 `source_type='library'` top-k（默认 3，run_input.rag.top_k 可调）+ 该 thread 的 tender 命中 top-2；命中拼「【参考资料·仅供撰写引用】」段注入该章上下文，总预算 ≤2000 字。rewrite_chapter 同款（query=章标题+instruction）。
