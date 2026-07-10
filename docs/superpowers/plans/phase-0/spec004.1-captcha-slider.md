@@ -74,9 +74,9 @@ export class AliyunCaptchaVerifier implements CaptchaVerifier {
 
 ## Tasks
 
-- [ ] **Task A（后端校验器）**：加 `@alicloud/captcha20230305` 依赖 + `ALIYUN_CAPTCHA_ENDPOINT` env + `AliyunCaptchaVerifier`（DI client）+ 工厂有凭据分支返回它 + 三态单测（mock 阿里云）+ auth 既有 captcha 测试保绿。
-- [ ] **Task B（前端滑块）**：`lib/captcha.ts` SDK 加载/初始化 helper + `login/page.tsx` 接入（开启走 SDK、关闭原样、加载失败 fail-closed）+ `NEXT_PUBLIC_CAPTCHA_SCENE_ID/PREFIX` 贯穿 env/Dockerfile + 逻辑单测（SDK mock）。
-- [ ] **Task C（验证/部署）**：`bun test`（mbp）+ `pnpm lint` 全绿 → `/code-review` 全修 → 合并 main → 部署 mbp（滑块 OFF，验证登录行为与今天一致）。
+- [x] **Task A（后端校验器）**：加 `@alicloud/captcha20230305` 依赖 + `ALIYUN_CAPTCHA_ENDPOINT` env + `AliyunCaptchaVerifier`（DI client）+ 工厂有凭据分支返回它 + 三态单测（mock 阿里云）+ auth 既有 captcha 测试保绿。
+- [x] **Task B（前端滑块）**：`lib/captcha.ts` SDK 加载/初始化 helper + `login/page.tsx` 接入（开启走 SDK、关闭原样、加载失败 fail-closed）+ `NEXT_PUBLIC_CAPTCHA_SCENE_ID/PREFIX` 贯穿 env/Dockerfile + 逻辑单测（SDK mock）。
+- [x] **Task C（验证/部署）**：`bun test`（mbp）+ `pnpm lint` 全绿 → `/code-review` 全修 → 合并 main → 部署 mbp（滑块 OFF，验证登录行为与今天一致）。
 - [ ] **Task D（人工+接真）**：用户在阿里云控制台建验证码2.0 场景 → 提供 SceneId/prefix/AK（或复用短信 AK 并授权）→ 配 env + 翻开关 → 端到端验收"拖动通过才发码"。
 
 ## 决策记录
