@@ -1,9 +1,9 @@
 import { Hono } from "hono"
 import { streamSSE } from "hono/streaming"
 import { z } from "zod"
-import { eq, and } from "drizzle-orm"
+import { eq, and, inArray } from "drizzle-orm"
 import { getDb } from "../db/client"
-import { agentRuns } from "../db/schema"
+import { agentRuns, projectFiles } from "../db/schema"
 import type { User } from "../db/schema"
 import { authMiddleware } from "../middleware/auth"
 import * as billing from "../services/billing-stub"
@@ -21,7 +21,20 @@ export type ReadDeps = {
   getRun: typeof client.getRun
 }
 
-const bodySchema = z.object({ fileKey: z.string().min(1) })
+// spec320：接受多文件 fileKeys 或旧单文件 fileKey（至少一个）；本端点不做属主校验（历史行为，未收窄）。
+const bodySchema = z
+  .object({
+    fileKey: z.string().min(1).optional(),
+    fileKeys: z.array(z.string().min(1)).min(1).max(10).optional(),
+  })
+  .refine((v) => !!v.fileKey || !!v.fileKeys, "fileKey 或 fileKeys 至少一个")
+
+/** run input 的 files 字段：文件名查 project_files（找不到兜底 key 的 basename）。 */
+async function filesForKeys(keys: string[]): Promise<Array<{ key: string; name: string }>> {
+  const rows = await getDb().select({ key: projectFiles.key, filename: projectFiles.filename }).from(projectFiles).where(inArray(projectFiles.key, keys))
+  const nameByKey = new Map(rows.map((f) => [f.key, f.filename]))
+  return keys.map((k) => ({ key: k, name: nameByKey.get(k) ?? k.split("/").pop() ?? k }))
+}
 
 export function readRoutes(deps: Partial<ReadDeps> = {}) {
   const preDeduct = deps.preDeduct ?? billing.preDeduct
@@ -38,7 +51,8 @@ export function readRoutes(deps: Partial<ReadDeps> = {}) {
   r.post("/", async (c) => {
     const parsed = bodySchema.safeParse(await c.req.json().catch(() => ({})))
     if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
-    const { fileKey } = parsed.data
+    const keys = parsed.data.fileKeys ?? [parsed.data.fileKey!]
+    const fileKey = keys[0] // 首个 key（向后兼容旧 agent 契约）
     const userId = c.get("user").id
     const threadId = `proj-${crypto.randomUUID()}`
 
@@ -50,8 +64,14 @@ export function readRoutes(deps: Partial<ReadDeps> = {}) {
       agentType: "bidding_agent",
       threadId,
       // 契约统一 { text, file_key, step }：text 为按步指令，key 也写进 text（避免 agent 端 input.text 落空）
-      // run_input.rag（spec316）：读标节点检索个人资料库时按 user_id 隔离
-      input: { text: `请对招标文件读标，key=${fileKey}`, file_key: fileKey, step: "read", run_input: { rag: await ragRunInput() } },
+      // files（spec320）：全部招标文件；run_input.rag（spec316）：读标节点检索个人资料库时按 user_id 隔离
+      input: {
+        text: `请对招标文件读标，key=${fileKey}`,
+        file_key: fileKey,
+        files: await filesForKeys(keys),
+        step: "read",
+        run_input: { rag: await ragRunInput() },
+      },
       model,
       userId,
     })

@@ -4,7 +4,7 @@ import { Hono } from "hono"
 import { projectRoutes, buildStateOverrides, type ProjectDeps } from "../src/routes/projects"
 import { loginWithPhone } from "../src/services/auth"
 import { getDb, closeDb } from "../src/db/client"
-import { users, bidProjects, projectSteps } from "../src/db/schema"
+import { users, bidProjects, projectSteps, projectFiles } from "../src/db/schema"
 import { uniquePhone, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连真库
@@ -73,6 +73,16 @@ beforeAll(async () => {
   const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
   token = r.token
   userId = r.user.id
+  // POST /api/projects 建项目校验 fileKey 属主（spec320）：先落一行本人已上传的 project_files
+  await getDb().insert(projectFiles).values({
+    userId,
+    bucket: "bidsaas",
+    key: "uploads/x/tender.pdf",
+    filename: "tender.pdf",
+    contentType: "application/pdf",
+    size: 1,
+    status: "uploaded",
+  })
 })
 
 afterAll(async () => {
@@ -114,6 +124,10 @@ describe("/api/projects 按步编排", () => {
     expect(captured.createRunOpts?.agentType).toBe("bidding_agent")
     expect((captured.createRunOpts?.input as { step: string }).step).toBe("read")
     expect((captured.createRunOpts?.input as { text: string }).text).toContain("key=uploads/x/tender.pdf")
+    // spec320：单文件项目 files 是一元素数组（恒等，名取 project_files.filename）
+    expect((captured.createRunOpts?.input as { files: Array<{ key: string; name: string }> }).files).toEqual([
+      { key: "uploads/x/tender.pdf", name: "tender.pdf" },
+    ])
     expect(captured.createRunOpts?.userId).toBe(userId) // spec316：user_id 随 run 下发
     expect(sse).toContain("data: 进度")
     expect(sse).toContain("event: step.done")

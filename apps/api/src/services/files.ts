@@ -30,8 +30,9 @@ export class ObjectMissingError extends Error {
 // 大小上限（字节）：MB→B 换算收一处，预签名与确认两处校验共用，边界不会各自漂移。
 const fileMaxBytes = () => getEnv().FILE_MAX_SIZE_MB * 1024 * 1024
 
-// 解析层（agent parsing）只支持这三种：上传入口 fail fast，别让用户走到读标扣费后才发现 .doc 解析必败。
-const SUPPORTED_EXTS = new Set(["pdf", "docx", "xlsx"])
+// 解析层（agent parsing）支持的扩展名：上传入口 fail fast，别让用户走到读标扣费后才发现解析必败。
+// doc/xls（旧格式）spec320 起经 agent 侧 LibreOffice 转 docx/xlsx 再解析。
+const SUPPORTED_EXTS = new Set(["pdf", "docx", "xlsx", "doc", "xls"])
 
 export class UnsupportedFileTypeError extends Error {
   constructor() {

@@ -79,6 +79,7 @@ describe("/api/read 编排", () => {
     expect(captured.createRunOpts?.input).toEqual({
       text: "请对招标文件读标，key=uploads/x/tender.pdf",
       file_key: "uploads/x/tender.pdf",
+      files: [{ key: "uploads/x/tender.pdf", name: "tender.pdf" }], // spec320：未查到 project_files 兜底 key basename
       step: "read",
       run_input: { rag: { enabled: true, top_k: 3 } }, // spec316：未改配置时的种子默认
     })
@@ -112,5 +113,32 @@ describe("/api/read 编排", () => {
       headers: { Authorization: `Bearer ${token}` },
     })
     expect(res.status).toBe(404)
+  })
+
+  // —— spec320：多文件 fileKeys ——
+  it("多文件 fileKeys：file_key=首个（兼容），files 带全部 key（未查到 project_files 兜底 basename）", async () => {
+    const res = await app.request("/api/read", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ fileKeys: ["uploads/x/公告.pdf", "uploads/x/技术规范书.docx"] }),
+    })
+    expect(res.status).toBe(200)
+    await res.text() // 耗尽 SSE
+    const input = captured.createRunOpts?.input as { file_key: string; files: Array<{ key: string; name: string }> }
+    expect(input.file_key).toBe("uploads/x/公告.pdf")
+    expect(input.files).toEqual([
+      { key: "uploads/x/公告.pdf", name: "公告.pdf" },
+      { key: "uploads/x/技术规范书.docx", name: "技术规范书.docx" },
+    ])
+  })
+
+  it("既无 fileKey 也无 fileKeys → 400 invalid_input", async () => {
+    const res = await app.request("/api/read", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({}),
+    })
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { error: string }).error).toBe("invalid_input")
   })
 })

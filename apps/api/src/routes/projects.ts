@@ -1,7 +1,7 @@
 import { Hono } from "hono"
 import { streamSSE } from "hono/streaming"
 import { z } from "zod"
-import { eq, and, desc, sql } from "drizzle-orm"
+import { eq, and, desc, sql, inArray } from "drizzle-orm"
 import { getDb } from "../db/client"
 import { bidProjects, projectSteps, projectFiles } from "../db/schema"
 import type { User } from "../db/schema"
@@ -81,6 +81,12 @@ const STEP_RESULT_SCHEMAS: Record<(typeof EDITABLE_STEPS)[number], z.ZodTypeAny>
 
 const rewriteBodySchema = z.object({ instruction: z.string().min(1) })
 
+// 建项目请求体（spec320）：新 fileKeys（1..10，多文件读标）或旧 fileKey（单文件，向后兼容）二选一。
+const createBodySchema = z.union([
+  z.object({ fileKeys: z.array(z.string().min(1)).min(1).max(10) }),
+  z.object({ fileKey: z.string().min(1) }),
+])
+
 // 项目名：优先落库的 name（建项时取 project_files.filename 原始文件名）；
 // 老数据兜底 key 的 basename（key 里是 sanitize 后的名，不做 decodeURIComponent——上传链路从不 URI 编码）。
 function projectName(name: string | null, tenderFileKey: string | null): string {
@@ -109,6 +115,17 @@ async function ownedProject(id: string, userId: string) {
     .from(bidProjects)
     .where(and(eq(bidProjects.id, id), eq(bidProjects.userId, userId)))
   return p
+}
+
+/** run input 的 files 字段（spec320）：tenderFileKeys 落库的多文件路径；老项目/单文件行只有
+ *  tenderFileKey 时兜底为一元素数组（read 节点行为对单文件保持恒等）。文件名查 project_files，
+ *  查不到（老数据/异常）兜底用 key 的 basename，不因文件名缺失挡读标。 */
+async function buildFilesInput(project: typeof bidProjects.$inferSelect): Promise<Array<{ key: string; name: string }>> {
+  const keys = project.tenderFileKeys?.length ? project.tenderFileKeys : project.tenderFileKey ? [project.tenderFileKey] : []
+  if (!keys.length) return []
+  const rows = await getDb().select({ key: projectFiles.key, filename: projectFiles.filename }).from(projectFiles).where(inArray(projectFiles.key, keys))
+  const nameByKey = new Map(rows.map((f) => [f.key, f.filename]))
+  return keys.map((k) => ({ key: k, name: nameByKey.get(k) ?? k.split("/").pop() ?? k }))
 }
 
 /** 取该项目某步最新 done 行（result 现值 = 编辑过即编辑后；snake 原样）。 */
@@ -187,20 +204,33 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
   const r = new Hono<{ Variables: { user: User } }>()
   r.use("*", authMiddleware)
 
-  // 建项目（上传招标文件拿到 fileKey 后调用）：一本标书一个 thread_id
+  // 建项目（上传招标文件拿到 fileKey(s) 后调用）：一本标书一个 thread_id。
+  // spec320：接受多文件 fileKeys（公告/主文件/技术规范书/附件…）或旧单文件 fileKey；
+  // 全部 key 须属本人已上传的文件，否则 400（不留半属主的项目行）。
   r.post("/", async (c) => {
-    const parsed = z.object({ fileKey: z.string().min(1) }).safeParse(await c.req.json().catch(() => ({})))
+    const parsed = createBodySchema.safeParse(await c.req.json().catch(() => ({})))
     if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
+    const keys = "fileKeys" in parsed.data ? parsed.data.fileKeys : [parsed.data.fileKey]
     const userId = c.get("user").id
-    const threadId = `proj-${crypto.randomUUID()}`
-    // 项目名取上传时的原始 filename（key 里是 sanitize 后的名，不可反解）；查不到落 null 由列表兜底
-    const [f] = await getDb()
-      .select({ filename: projectFiles.filename })
+
+    // 属主校验：每个 key 都必须是本人的 project_files 行；缺一即 400（查不到与越权同语义）
+    const rows = await getDb()
+      .select({ key: projectFiles.key, filename: projectFiles.filename })
       .from(projectFiles)
-      .where(and(eq(projectFiles.key, parsed.data.fileKey), eq(projectFiles.userId, userId)))
+      .where(and(inArray(projectFiles.key, keys), eq(projectFiles.userId, userId)))
+    const filenameByKey = new Map(rows.map((f) => [f.key, f.filename]))
+    if (keys.some((k) => !filenameByKey.has(k))) return c.json({ error: "invalid_files" }, 400)
+
+    const threadId = `proj-${crypto.randomUUID()}`
     const [p] = await getDb()
       .insert(bidProjects)
-      .values({ userId, threadId, tenderFileKey: parsed.data.fileKey, name: f?.filename ?? null })
+      .values({
+        userId,
+        threadId,
+        tenderFileKey: keys[0],
+        tenderFileKeys: keys,
+        name: filenameByKey.get(keys[0]!) ?? null,
+      })
       .returning()
     if (!p) return c.json({ error: "insert_failed" }, 500)
     return c.json({ id: p.id, threadId: p.threadId })
@@ -281,7 +311,8 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     // running 占位行永久卡死（部分唯一索引让重试恒 409）。这里抛错只是普通 500，无任何残留。
     const input = {
       text: `${STEP_TEXT[step as Step]}，key=${p.tenderFileKey}`,
-      file_key: p.tenderFileKey,
+      file_key: p.tenderFileKey, // 首个 key（向后兼容旧 agent 契约）
+      files: await buildFilesInput(p), // spec320：全部招标文件（多文件合并读标）
       step,
       // rag（spec316）并入 run_input：present 的 duration/template 等既有键不丢
       run_input: { ...runInput, rag: await ragRunInput() },
