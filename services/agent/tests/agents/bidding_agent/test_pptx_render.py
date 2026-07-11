@@ -2,7 +2,7 @@ import io
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
-from pptx.util import Emu
+from pptx.util import Emu, Inches
 from agent.agents.bidding_agent.schemas import DeckSpec
 from agent.agents.bidding_agent.render.pptx import render_pptx, _TEMPLATE_TOKENS
 
@@ -70,3 +70,40 @@ def test_end_slide_has_thank_you_and_page_number():
     texts = [sh.text_frame.text for sh in end.shapes if sh.has_text_frame]
     assert "感谢聆听" in texts
     assert "2 / 2" in texts
+
+
+def _tiny_master(width_in: float = 10.0, height_in: float = 7.5) -> bytes:
+    """构造一个自带 1 张示例页的迷你母版（复用 python-pptx 内置模板的 layouts/theme）。"""
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = Inches(width_in), Inches(height_in)
+    prs.slides.add_slide(prs.slide_layouts[0])   # 母版自带的示例页，渲染时应被清空
+    out = io.BytesIO()
+    prs.save(out)
+    return out.getvalue()
+
+
+def test_render_on_master_removes_example_slide_and_keeps_master_size():
+    data = render_pptx(_deck(), master_bytes=_tiny_master())
+    prs = Presentation(io.BytesIO(data))
+    assert len(prs.slides) == 3                 # 示例页被删，只剩我们的 3 页
+    assert prs.slide_width == Inches(10.0)       # 母版自身尺寸保留，不强制 16:9
+    assert prs.slide_height == Inches(7.5)
+
+
+def test_render_on_master_populates_titles_notes_and_chip():
+    data = render_pptx(_deck(), master_bytes=_tiny_master())
+    prs = Presentation(io.BytesIO(data))
+    all_texts = [sh.text_frame.text for sl in prs.slides for sh in sl.shapes if sh.has_text_frame]
+    assert {"封面", "运维体系", "感谢聆听"} <= set(all_texts)
+    assert prs.slides[1].notes_slide.notes_text_frame.text == "讲稿…"
+    chip = next(sh for sl in prs.slides for sh in sl.shapes
+                if sh.has_text_frame and "评分点｜" in sh.text_frame.text)
+    assert chip.text_frame.text == "评分点｜技术方案 50 分"
+
+
+def test_render_on_master_malformed_bytes_falls_back_to_blank():
+    data = render_pptx(_deck(), master_bytes=b"not a pptx")
+    assert data[:2] == b"PK"
+    prs = Presentation(io.BytesIO(data))
+    assert len(prs.slides) == 3
+    assert prs.slide_width == Emu(12192000)      # 回退空白设计：强制 16:9

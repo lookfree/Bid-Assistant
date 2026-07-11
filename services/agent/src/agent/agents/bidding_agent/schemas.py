@@ -138,7 +138,8 @@ class DeckSpec(BaseModel):
     title: str = ""                                # 述标主题（项目名）
     duration: Literal[10, 15, 20] = 15             # 讲标时长档（分钟）
     template: Literal["blue", "tech", "gov"] = "blue"  # 对齐原型 StyleId（商务蓝/科技感/政务红）
-    enterprise_template_id: str | None = None      # 企业自有模板（如 pe1/pe2），优先于 template
+    enterprise_template_id: str | None = None      # 企业自有模板（如 pe1/pe2）标识元数据，优先于
+    # template；渲染层不直接用它——节点按它解析出 MinIO key 后取 master_bytes 传给 render_pptx
     slides: list[Slide]
     qa: list[QA] = Field(default_factory=list)
 

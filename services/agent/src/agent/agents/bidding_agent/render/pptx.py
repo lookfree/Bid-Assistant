@@ -1,11 +1,14 @@
 from __future__ import annotations
 import io
+import logging
 from pptx import Presentation
 from pptx.dml.color import RGBColor
-from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.shapes import MSO_SHAPE, PP_PLACEHOLDER
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Inches, Pt
 from agent.agents.bidding_agent.schemas import DeckSpec, Slide
+
+logger = logging.getLogger(__name__)
 
 # 共用色（不随模板变化）；模板专属色见 _TEMPLATE_TOKENS。
 _SHARED = {
@@ -13,7 +16,8 @@ _SHARED = {
     "muted": RGBColor(107, 114, 128),
     "white": RGBColor(255, 255, 255),
 }
-# 模板 → 设计 token（主色/强调色/浅底色）。企业自有母版（enterprise_template_id）为后续加固项：加载 .pptx 模板文件。
+# 模板 → 设计 token（主色/强调色/浅底色）。企业自有母版走 render_pptx(master_bytes=...)：
+# 强调色/评分点角标/页码仍取这套 token，让自绘部分和母版主题不违和。
 _TEMPLATE_TOKENS = {
     "blue": {"primary": RGBColor(31, 78, 155), "accent": RGBColor(59, 130, 246), "tint": RGBColor(234, 241, 251)},
     "tech": {"primary": RGBColor(15, 118, 110), "accent": RGBColor(20, 184, 166), "tint": RGBColor(230, 246, 244)},
@@ -160,11 +164,25 @@ def _render_end(slide, s: Slide, deck: DeckSpec, tokens: dict, n: int, total: in
     _page_number(slide, n, total, tokens)
 
 
-def render_pptx(deck: DeckSpec, *, template: str | None = None) -> bytes:
-    """DeckSpec → .pptx 字节（确定性，无 LLM，§4.2.1 两段式的渲染段）。16:9，模板色系（blue/tech/gov）
-    决定封面色带/标题小方块/分隔线/评分点角标/底部强调条的配色；封面/正文/结束页各自的视觉版式见
-    _render_cover/_render_content/_render_end；页码统计 content+end 页（封面不计入分母/不显示页码）；
-    口播稿写入备注页，逻辑不变。"""
+def render_pptx(deck: DeckSpec, *, template: str | None = None,
+                 master_bytes: bytes | None = None) -> bytes:
+    """DeckSpec → .pptx 字节（确定性，无 LLM，§4.2.1 两段式的渲染段）。
+    master_bytes=None（默认）→ 走 _render_blank，行为和产物与改造前逐字节一致。
+    master_bytes 给定（企业自有 .pptx/.potx 母版）→ 尝试 _render_on_master，套用母版自身的
+    主题/母版/版式/logo；母版加载或渲染过程任何异常（损坏文件、版式异常等）一律吞掉只记警告，
+    回退 _render_blank——保证流水线里述标产物总能生成，不因客户母版问题整体失败。"""
+    if master_bytes is not None:
+        try:
+            return _render_on_master(deck, template, master_bytes)
+        except Exception:
+            logger.warning("企业母版渲染失败，回退空白设计", exc_info=True)
+    return _render_blank(deck, template)
+
+
+def _render_blank(deck: DeckSpec, template: str | None) -> bytes:
+    """空白设计路径（改造前的 render_pptx 原样保留）：16:9，模板色系（blue/tech/gov）决定封面色带/
+    标题小方块/分隔线/评分点角标/底部强调条的配色；页码统计 content+end 页（封面不计分母/不显示页码）；
+    口播稿写入备注页。"""
     tokens = _tokens_for(template, deck.template)
     prs = Presentation()
     prs.slide_width, prs.slide_height = _SLIDE_W, _SLIDE_H
@@ -181,6 +199,139 @@ def render_pptx(deck: DeckSpec, *, template: str | None = None) -> bytes:
         else:
             n += 1
             _render_content(slide, s, tokens, n, total)
+        if s.notes:
+            slide.notes_slide.notes_text_frame.text = s.notes
+    out = io.BytesIO()
+    prs.save(out)
+    return out.getvalue()
+
+
+def _clear_slides(prs: Presentation) -> None:
+    """删掉母版自带的示例页：既摘除 sldIdLst 引用也 drop 对应关系，让 slide part 在包里彻底
+    不可达（只摘 sldIdLst 会留下孤儿 part，新增页可能复用同一 partname 导致 zip 内重名）。
+    masters/layouts/theme 不在这条关系链上，不受影响。"""
+    sld_id_lst = prs.slides._sldIdLst
+    for sld_id in list(sld_id_lst):
+        prs.part.drop_rel(sld_id.rId)
+        sld_id_lst.remove(sld_id)
+
+
+def _pick_content_layout(layouts: list) -> object:
+    """内容版式启发式：优先名字含“Title and Content”/“content”；否则 index 1；
+    否则名字含“blank”；否则 index 5/6；否则退回 index 0（layouts 非空由调用方保证）。"""
+    for layout in layouts:
+        if "content" in (layout.name or "").lower():
+            return layout
+    if len(layouts) > 1:
+        return layouts[1]
+    for layout in layouts:
+        if "blank" in (layout.name or "").lower():
+            return layout
+    for idx in (5, 6):
+        if len(layouts) > idx:
+            return layouts[idx]
+    return layouts[0]
+
+
+def _pick_layouts(prs: Presentation) -> tuple:
+    """从母版版式里选（标题版式, 内容版式）：标题版式优先 index 0（封面/结束页共用）。"""
+    layouts = list(prs.slide_layouts)
+    if not layouts:
+        raise ValueError("母版没有可用版式")
+    return layouts[0], _pick_content_layout(layouts)
+
+
+_BODY_PLACEHOLDER_TYPES = (PP_PLACEHOLDER.BODY, PP_PLACEHOLDER.OBJECT, PP_PLACEHOLDER.SUBTITLE)
+
+
+def _title_placeholder(slide):
+    """母版标题占位符（idx=0/TITLE 类型），没有则 None。"""
+    return slide.shapes.title
+
+
+def _body_placeholder(slide):
+    """母版正文/副标题占位符（非标题的 BODY/OBJECT/SUBTITLE 类型），没有则 None。"""
+    for ph in slide.placeholders:
+        if ph.placeholder_format.idx != 0 and ph.placeholder_format.type in _BODY_PLACEHOLDER_TYPES:
+            return ph
+    return None
+
+
+def _fill_body_bullets(ph, bullets: list[str]) -> None:
+    """把要点逐条写进母版正文占位符，一条一段（不加“• ”前缀，列表符号交给母版自身样式）。"""
+    tf = ph.text_frame
+    tf.clear()
+    for i, bullet in enumerate(bullets):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        p.text = bullet
+
+
+def _render_cover_on_master(slide, s: Slide, tokens: dict) -> None:
+    """封面页（母版路径）：有标题占位符就写标题（+ 正文/副标题占位符写 bullets）；
+    没有占位符则整页退回空白设计的封面绘制（色带+标题+副标题+强调条），版式换汤不换药。"""
+    title_ph = _title_placeholder(slide)
+    if title_ph is None:
+        _render_cover(slide, s, tokens)
+        return
+    title_ph.text_frame.text = s.title
+    body_ph = _body_placeholder(slide)
+    if body_ph is not None and s.bullets:
+        _fill_body_bullets(body_ph, s.bullets)
+
+
+def _render_content_on_master(slide, s: Slide, tokens: dict, n: int, total: int) -> None:
+    """正文页（母版路径）：标题/正文优先落母版占位符，缺失则退回空白设计同款绘制；
+    评分点角标和页码母版版式不会自带，恒定自绘（配色取模板 token 的强调色，和母版视觉融合）。"""
+    title_ph = _title_placeholder(slide)
+    if title_ph is not None:
+        title_ph.text_frame.text = s.title
+    else:
+        _title_row(slide, s.title, tokens)
+    if s.bullets:
+        body_ph = _body_placeholder(slide)
+        if body_ph is not None:
+            _fill_body_bullets(body_ph, s.bullets)
+        else:
+            _bullets_box(slide, s.bullets, tokens)
+    if s.scoring:
+        _scoring_chip(slide, s.scoring, tokens)
+    _page_number(slide, n, total, tokens)
+
+
+def _render_end_on_master(slide, s: Slide, tokens: dict, n: int, total: int) -> None:
+    """结束页（母版路径）：标题占位符写致谢语；缺失则退回空白设计的居中致谢绘制。页码恒定自绘。"""
+    title = s.title or "感谢聆听"
+    title_ph = _title_placeholder(slide)
+    if title_ph is not None:
+        title_ph.text_frame.text = title
+    else:
+        _textbox(slide, Inches(1.5), Inches(3.1), _SLIDE_W - Inches(3.0), Inches(1.0),
+                  [title], size=34, color=tokens["primary"], bold=True, align=PP_ALIGN.CENTER)
+    _page_number(slide, n, total, tokens)
+
+
+def _render_on_master(deck: DeckSpec, template: str | None, master_bytes: bytes) -> bytes:
+    """企业母版路径：加载客户 .pptx/.potx，清空母版自带示例页只留 masters/layouts/theme，
+    再用母版自身版式承载我们的封面/正文/结束页（标题/正文占位符优先，缺失退回空白设计同款绘制）。
+    不强制 16:9——沿用母版自身的页面尺寸（prs.slide_width/height 不改）。"""
+    tokens = _tokens_for(template, deck.template)
+    prs = Presentation(io.BytesIO(master_bytes))
+    _clear_slides(prs)
+    title_layout, content_layout = _pick_layouts(prs)
+    total = sum(1 for s in deck.slides if s.kind != "cover")
+    n = 0
+    for s in deck.slides:
+        if s.kind == "cover":
+            slide = prs.slides.add_slide(title_layout)
+            _render_cover_on_master(slide, s, tokens)
+        elif s.kind == "end":
+            n += 1
+            slide = prs.slides.add_slide(title_layout)
+            _render_end_on_master(slide, s, tokens, n, total)
+        else:
+            n += 1
+            slide = prs.slides.add_slide(content_layout)
+            _render_content_on_master(slide, s, tokens, n, total)
         if s.notes:
             slide.notes_slide.notes_text_frame.text = s.notes
     out = io.BytesIO()

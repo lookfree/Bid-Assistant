@@ -6,6 +6,7 @@ from agent.agents.bidding_agent.nodes.common import slim_read, upload_artifact
 from agent.agents.bidding_agent.schemas import DeckDraft, DeckSpec, Slide, SlideNotes
 from agent.agents.bidding_agent.prompts.present import PRESENT_SKELETON_PROMPT, PRESENT_NOTES_PROMPT
 from agent.agents.bidding_agent.render.pptx import render_pptx
+from agent.parsing.storage_read import storage
 
 
 def _plain(html: str) -> str:
@@ -22,6 +23,17 @@ def _notes_user_msg(draft: DeckDraft, duration: int) -> str:
             "用 submit_slide_notes 一次性提交，notes 数组每项 {id, notes}，id 必须与输入页 id 一一对应。")
 
 
+async def _fetch_master_bytes(key: str | None) -> bytes | None:
+    """企业母版按 MinIO key 预取字节；缺 key 或取失败（网络抖动/坏 key/未上传）→ None——
+    render_pptx 自身在渲染失败时也会回退空白设计，这里再兜一层，双保险不阻断述标产出。"""
+    if not key:
+        return None
+    try:
+        return await storage.read_bytes(key)
+    except Exception:
+        return None
+
+
 def _merge_deck(draft: DeckDraft, slide_notes: SlideNotes) -> DeckSpec:
     """按 slide id 合并骨架 + 口播稿；缺页 notes 兜底空串，不因个别页缺稿整体失败。"""
     note_map = {n.id: n.notes for n in slide_notes.notes}
@@ -35,13 +47,17 @@ def make_present_node(ctx):
     → 再逐页产口播稿 SlideNotes → 按 id 合并成 DeckSpec → render_pptx 确定性渲染 → .pptx 落 MinIO
     → 写 state['deck'] / artifacts['pptx']；模型未提交即失败（可重试）。骨架 JSON 去掉最大最易崩的
     notes 自由文本字段，单次提交体积更小更稳。
-    spec315a：duration/template 取自 state['run_input']（App 每 run 透传），非法值回默认。"""
+    spec315a：duration/template 取自 state['run_input']（App 每 run 透传），非法值回默认。
+    企业母版：run_input['enterprise_template_key'] 若给出（App 侧按 enterprise_template_id 解析出的
+    MinIO key），预取字节传给 render_pptx 套用客户自有 .pptx/.potx 主题/母版/logo；缺失或取不到、
+    或母版本身渲染失败都会静默回退今天的空白设计，不影响述标产出。"""
     async def present_node(state):
         run_input = state.get("run_input") or {}
         duration = run_input.get("duration")
         duration = duration if duration in (10, 15, 20) else 15       # 对齐 DeckSpec.duration 档位
         template = run_input.get("template")
         template = template if template in ("blue", "tech", "gov") else None
+        master_bytes = await _fetch_master_bytes(run_input.get("enterprise_template_key"))
         chapters = {cid: _plain(html) for cid, html in (state.get("chapters") or {}).items()}
         payload = {"chapters": chapters, "read": slim_read(state.get("read") or {}),
                    "duration": duration}
@@ -57,7 +73,7 @@ def make_present_node(ctx):
         deck = _merge_deck(draft, slide_notes)
         if template:
             deck.template = template   # 客户指定优先：模型没照办也强制生效
-        data = render_pptx(deck)   # 模板色取 deck.template
+        data = render_pptx(deck, master_bytes=master_bytes)   # 模板色取 deck.template
         key = await upload_artifact(
             ctx, "present.pptx", data,
             "application/vnd.openxmlformats-officedocument.presentationml.presentation")
