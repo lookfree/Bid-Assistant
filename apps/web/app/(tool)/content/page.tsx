@@ -486,7 +486,10 @@ export default function ContentPage() {
       {/* 三栏工作区 */}
       <div
         className={`mt-4 grid min-h-0 flex-1 gap-4 ${
-          chatOpen ? "lg:grid-cols-[260px_minmax(0,1fr)_340px]" : "lg:grid-cols-[260px_minmax(0,1fr)]"
+          // 窄视口（小屏/页面放大）三栏收紧,编辑器保底;xl 以上恢复宽松布局
+          chatOpen
+            ? "lg:grid-cols-[200px_minmax(0,1fr)_280px] xl:grid-cols-[260px_minmax(0,1fr)_340px]"
+            : "lg:grid-cols-[200px_minmax(0,1fr)] xl:grid-cols-[260px_minmax(0,1fr)]"
         }`}
       >
         {/* 左：目录 */}
