@@ -87,10 +87,13 @@ def make_read_node(ctx):
                         f"{json.dumps(clauses, ensure_ascii=False)}\n\n请读标。")
             else:
                 user = f"请对招标文件读标，key={state['file_key']}"
+        # 条款已预解析注入 ⇒ 无需 parse_document 工具，走 _forced_submit 强制提交路径——
+        # 它带截断重试（大标书读标输出撞 max_tokens 实测：图路径截断=单轮即失败，无法恢复）。
+        # 仅预解析失败（clauses 空）才带工具走图路径，让模型自己调 parse_document 兜底。
         result = await run_submit_agent(
             ctx, READ_SYSTEM_PROMPT, user,
             "submit_read_result", ReadResult, "提交读标结构化结果",
-            extra_tools=[parse_document_tool])
+            extra_tools=None if clauses else [parse_document_tool])
         await _index_tender(ctx, state.get("run_input") or {}, clauses)
         return {"read": {**result.model_dump(), "doc_sections": clauses, **extra}}
     return read_node
