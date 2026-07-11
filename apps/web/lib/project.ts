@@ -59,10 +59,10 @@ export async function listProjects(
   return api.request(`/api/projects?page=${page}&pageSize=${pageSize}`)
 }
 
-export async function createProject(fileKey: string): Promise<string> {
+export async function createProject(fileKeys: string[]): Promise<string> {
   const { id } = await api.request<{ id: string; threadId: string }>("/api/projects", {
     method: "POST",
-    body: JSON.stringify({ fileKey }),
+    body: JSON.stringify({ fileKeys }),
   })
   localStorage.setItem(KEY, id)
   return id

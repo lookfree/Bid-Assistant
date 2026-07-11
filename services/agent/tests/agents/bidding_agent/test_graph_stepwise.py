@@ -98,3 +98,25 @@ def test_run2_resumes_to_outline(submit_gateway):
     done = [e for e in evs if e["type"] == "step.done"][-1]
     assert done["node"] == "outline"              # 续跑推进到了下一节点
     assert [c["id"] for c in done["data"]["result"]["chapters"]] == ["t1"]
+
+def test_run1_seeds_files_into_state(submit_gateway, monkeypatch):
+    """spec320 回归（评审 Critical）：agent.astream 播种 input['files'] 进 BiddingState——
+    不播种则 read 节点 state.get('files') 恒空，多文件路径整体死路。"""
+    import agent.agents.bidding_agent.nodes.read as read_mod
+    seen: dict = {}
+
+    async def fake_parse_multi(files):
+        seen["files"] = files
+        return ([{"id": "sec-1-c1", "text": "条款"}], [{"name": "a", "sec_from": 1, "sec_to": 1}])
+
+    monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
+    agent = get_agent("bidding_agent")
+    ctx = RunContext(run_id="r9", agent_type="bidding_agent", thread_id="proj-9",
+                     gateway=submit_gateway(_ARGS_BY_TOOL), checkpointer=MemorySaver())
+    files = [{"key": "u/a.docx", "name": "采购文件"}, {"key": "u/b.docx", "name": "技术规范书"}]
+
+    async def run():
+        return [e async for e in agent.astream({"file_key": "u/a.docx", "files": files}, ctx)]
+
+    asyncio.run(run())
+    assert seen.get("files") == files

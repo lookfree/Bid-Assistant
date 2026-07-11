@@ -54,11 +54,26 @@ describe("/files", () => {
     expect(await (await fetch(url)).text()).toBe(body)
   })
 
-  it("扩展名白名单：.doc 老格式 → 400 unsupported_file_type（解析层必败，入口 fail fast）", async () => {
-    const res = await app.request("/files/presign-upload", {
+  it("扩展名白名单：.doc/.xls 老格式 → 200 现已支持（spec320 agent 侧 LibreOffice 转换）", async () => {
+    const doc = await app.request("/files/presign-upload", {
       method: "POST",
       headers: auth(),
       body: JSON.stringify({ filename: "老标书.doc", contentType: "application/msword", size: 10 }),
+    })
+    expect(doc.status).toBe(200)
+    const xls = await app.request("/files/presign-upload", {
+      method: "POST",
+      headers: auth(),
+      body: JSON.stringify({ filename: "登记表.xls", contentType: "application/vnd.ms-excel", size: 10 }),
+    })
+    expect(xls.status).toBe(200)
+  })
+
+  it("扩展名白名单：其余不支持的扩展名（如 .zip）→ 400 unsupported_file_type（解析层必败，入口 fail fast）", async () => {
+    const res = await app.request("/files/presign-upload", {
+      method: "POST",
+      headers: auth(),
+      body: JSON.stringify({ filename: "附件.zip", contentType: "application/zip", size: 10 }),
     })
     expect(res.status).toBe(400)
     expect(((await res.json()) as { error: string }).error).toBe("unsupported_file_type")

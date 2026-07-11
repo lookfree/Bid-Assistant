@@ -9,7 +9,8 @@ def _merge_dict(a: dict | None, b: dict | None) -> dict:
 class BiddingState(TypedDict, total=False):
     """投标工作流贯穿状态：一本标书一个 thread_id，靠 checkpointer 续（§4.7）。
     各节点在自己的 create_agent 子图内持有消息，父图只透传结构化产物，故无 messages 通道。"""
-    file_key: str                  # 招标文件 MinIO key
+    file_key: str                  # 招标文件 MinIO key（首个文件，向后兼容单文件调用方）
+    files: list[dict[str, str]]    # [{key, name}, ...] 多份招标文件（spec320）；缺省时走 file_key 单文件路径不变
     run_input: dict[str, Any]      # 本 run 参数（duration/template…），每 run 整通道覆盖（spec315a）
     # 招标原文条款分句 doc_sections 不设独立通道：只并入 read result（唯一消费方是前端左栏），双份落地徒增 checkpoint 体积
     read: dict[str, Any]           # ReadResult.model_dump()（含 doc_sections） ← read（spec107/315a）
