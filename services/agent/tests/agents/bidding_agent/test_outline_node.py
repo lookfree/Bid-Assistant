@@ -60,3 +60,26 @@ def test_outline_node_with_required_structure_injects_skeleton(submit_gateway):
     assert "投标文件构成清单" in user_msg
     for item in _REQUIRED_STRUCTURE:
         assert item["id"] in user_msg and item["title"] in user_msg
+
+
+def test_outline_node_without_package_user_msg_unchanged(submit_gateway):
+    """run_input 无 package（未选包/单包）→ 用户消息与今天字节级一致（spec324 向后兼容）。"""
+    gw = submit_gateway({"submit_outline": _OUTLINE_ARGS})
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
+    node = make_outline_node(ctx)
+    asyncio.run(node({"read": {"risk_summary": ["缺 ISO27001"]}, "run_input": {}}))
+    user_msg = gw.chats[-1].last_messages[1].content
+    read = json.dumps(slim_read({"risk_summary": ["缺 ISO27001"]}), ensure_ascii=False)
+    assert user_msg == f"读标结论：\n{read}\n请据此产出提纲。"
+
+
+def test_outline_node_with_package_injects_scope_constraint(submit_gateway):
+    """run_input.package 存在 → 用户消息追加包件范围约束，含包名与 id。"""
+    gw = submit_gateway({"submit_outline": _OUTLINE_ARGS})
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
+    node = make_outline_node(ctx)
+    asyncio.run(node({"read": {"risk_summary": []},
+                       "run_input": {"package": {"id": "p1", "name": "实网攻防"}}}))
+    user_msg = gw.chats[-1].last_messages[1].content
+    assert "本项目仅投包件《实网攻防》(p1)" in user_msg
+    assert "其它包件内容一律忽略" in user_msg

@@ -41,6 +41,15 @@ export type StructureItem = {
   sourceQuote: string
 }
 
+/* ===================== 读标：包件划分（spec324，多包件招标才有；单包标书为空） ===================== */
+export type PackageInfo = {
+  id: string
+  name: string
+  budget: string
+  notes: string
+  clauseIds: string[]
+}
+
 /* ===================== 提纲 / 正文章节 ===================== */
 export type Group = "tech" | "business"
 export type OutlineItem = { id: string; label: string; clauseIds?: string[]; isNew?: boolean }

@@ -10,10 +10,13 @@ def make_export_node(ctx):
     """graph 节点：读 outline+chapters → 渲染完整标书 .docx → 落 MinIO → 写 artifacts['docx']。
     普通服务节点：确定性、无 LLM、不碰钱。与 present 的 pptx 由 state.artifacts 合并 reducer 并存。
     spec315a：state 有 deck（含 App 编辑回灌的）则同时重渲 .pptx，merge 覆盖旧 pptx key 同名对象。
-    spec323：docx 落库后 best-effort 转 .pdf；转换失败不写 artifacts['pdf']，不影响 docx 产出。"""
+    spec323：docx 落库后 best-effort 转 .pdf；转换失败不写 artifacts['pdf']，不影响 docx 产出。
+    spec324：run_input.package 存在时封面带包件名。"""
     async def export_node(state):
         meta = (state.get("read") or {}).get("project_meta", {})
-        data = render_docx(state.get("outline") or {}, state.get("chapters") or {}, meta=meta)
+        package = (state.get("run_input") or {}).get("package")
+        data = render_docx(state.get("outline") or {}, state.get("chapters") or {},
+                            meta=meta, package=package)
         key = await upload_artifact(
             ctx, "bid.docx", data,
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document")

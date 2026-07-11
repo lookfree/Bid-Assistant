@@ -52,11 +52,14 @@ def _cover_line(doc: Document, text: str, size: int) -> None:
     run.font.size = Pt(size)
 
 
-def _style_cover(doc: Document, meta: dict) -> None:
-    """封面：居中大标题（项目名）+ 信息块（采购人/编号/日期占位）+ 投标人盖章占位。"""
+def _style_cover(doc: Document, meta: dict, package: dict | None = None) -> None:
+    """封面：居中大标题（项目名）+ 信息块（采购人/编号/日期占位）+ 投标人盖章占位。
+    package 存在（选包，spec324）⇒ 项目名下加「包件：《name》」一行；未选包时逐字节不变。"""
     _cover_line(doc, meta.get("name", "投标文件"), 26)
     doc.paragraphs[-1].runs[0].bold = True
     doc.add_paragraph()
+    if package and package.get("name"):
+        _cover_line(doc, f"包件：《{package['name']}》", 14)
     if meta.get("buyer"):
         _cover_line(doc, f"采购人：{meta['buyer']}", 14)
     if meta.get("code"):
@@ -105,11 +108,13 @@ def _add_page_number_footer(doc: Document, project_name: str) -> None:
     _add_field(footer_p, "PAGE")
 
 
-def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None) -> bytes:
-    """完整标书 .docx：封面 + 真目录域页 + 按 outline 顺序各章正文 + 签章页。确定性，无 LLM。"""
+def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
+                 package: dict | None = None) -> bytes:
+    """完整标书 .docx：封面 + 真目录域页 + 按 outline 顺序各章正文 + 签章页。确定性，无 LLM。
+    package（选包，spec324）存在时封面项目名下加一行包件名。"""
     meta = meta or {}
     doc = Document()
-    _style_cover(doc, meta)
+    _style_cover(doc, meta, package)
     _add_toc_field(doc)
     _add_page_number_footer(doc, meta.get("name", "投标文件"))
     # 章节正文：按 outline 顺序（缺正文出占位，不报错）

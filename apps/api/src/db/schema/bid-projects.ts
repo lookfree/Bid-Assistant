@@ -14,6 +14,8 @@ export const bidProjects = pgTable(
     name: text("name"), // 项目名：建项时取 project_files.filename（原始文件名）；旧行/查不到为 null
     tenderFileKey: text("tender_file_key"), // 招标文件 MinIO key（=tenderFileKeys[0]，向后兼容旧读侧）
     tenderFileKeys: jsonb("tender_file_keys").$type<string[]>(), // spec320：全部招标文件 key（公告/主文件/技术规范书/附件…）
+    // spec324：多包件招标用户选投的包（{id,name}）；可空——单包标书/未选包时全链路行为不变。
+    selectedPackage: jsonb("selected_package").$type<{ id: string; name: string }>(),
     status: text("status").notNull().default("draft"), // draft/running/done
     currentStep: text("current_step").notNull().default("read"),
     createdAt: createdAt(),
