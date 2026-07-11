@@ -27,6 +27,20 @@ export type AnalysisItem = {
   risk?: boolean
 }
 
+/* ===================== 读标：投标文件构成清单（spec321） ===================== */
+export type StructureKind = "volume" | "chapter" | "form" | "rule"
+
+export type StructureItem = {
+  id: string
+  title: string
+  /** 分册 / 章节 / 表单 / 程序性要求（份数/密封/签章等） */
+  kind: StructureKind
+  required: boolean
+  notes: string
+  clauseIds: string[]
+  sourceQuote: string
+}
+
 /* ===================== 提纲 / 正文章节 ===================== */
 export type Group = "tech" | "business"
 export type OutlineItem = { id: string; label: string; clauseIds?: string[]; isNew?: boolean }

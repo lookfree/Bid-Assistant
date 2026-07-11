@@ -17,9 +17,10 @@ import {
   Wallet,
   Cpu,
   ClipboardList,
+  Layers,
   type LucideIcon,
 } from "lucide-react"
-import type { AnalysisItem, ScoringRow } from "@/lib/bid-types"
+import type { AnalysisItem, ScoringRow, StructureItem, StructureKind } from "@/lib/bid-types"
 import { useStep } from "@/lib/use-step"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
@@ -35,6 +36,20 @@ const CATEGORY_ICONS: Record<string, LucideIcon> = {
   format: ClipboardList,
 }
 
+// 投标文件构成清单（spec321）：kind 徽标样式，沿用页面已有 badge 配色（primary/accent/success/warning）
+const STRUCTURE_KIND_LABEL: Record<StructureKind, string> = {
+  volume: "分册",
+  chapter: "章节",
+  form: "表单",
+  rule: "程序要求",
+}
+const STRUCTURE_KIND_BADGE: Record<StructureKind, string> = {
+  volume: "bg-primary/10 text-primary",
+  chapter: "bg-accent text-accent-foreground",
+  form: "bg-success/10 text-success",
+  rule: "bg-warning/15 text-warning-foreground",
+}
+
 // agent ReadResult（App 已转 camelCase）→ 原型渲染形状；icon 按 key 从示例类目合并（agent 不产 UI 组件）。
 // docSections = 招标原文分句（spec315a），有真实结果时左栏渲染真实原文。
 type RealRead = {
@@ -42,6 +57,8 @@ type RealRead = {
   scoring?: ScoringRow[]
   riskSummary?: string[]
   docSections?: DocSentence[]
+  /** 投标文件构成清单（spec321），旧项目读标结果无该字段 */
+  requiredStructure?: StructureItem[]
 }
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepBanner } from "@/components/tool/step-banner"
@@ -79,6 +96,7 @@ export default function ReadPage() {
     [real],
   )
   const scoringTable = real?.scoring ?? []
+  const requiredStructure = real?.requiredStructure ?? []
   // 左栏原文：read 结果带分句时按 id 前缀分组渲染真实原文
   const docSections = useMemo(
     () => (real?.docSections?.length ? groupDocSections(real.docSections) : []),
@@ -405,6 +423,66 @@ export default function ReadPage() {
           </div>
         </section>
       </div>
+
+      {/* 投标文件构成（spec321）：旧项目读标结果无该字段时不渲染 */}
+      {requiredStructure.length > 0 && (
+        <section className="mt-5 rounded-2xl border border-border bg-card">
+          <header className="flex items-center gap-2 border-b border-border px-5 py-3.5">
+            <Layers className="size-4 shrink-0 text-primary" />
+            <span className="text-sm font-semibold text-foreground">投标文件构成</span>
+            <span className="ml-auto text-xs text-muted-foreground">{requiredStructure.length} 项</span>
+          </header>
+          <div className="flex flex-col gap-2 px-4 py-4">
+            {requiredStructure.map((item) => {
+              const key = `structure-${item.id}`
+              const hasClauses = (item.clauseIds?.length ?? 0) > 0
+              return (
+                <div
+                  key={item.id}
+                  className={`rounded-xl border bg-background p-3 transition-colors ${
+                    activeItem === key ? "border-primary ring-1 ring-primary/30" : "border-border"
+                  }`}
+                >
+                  <button
+                    onClick={() => hasClauses && handleItemClick(item.clauseIds, key)}
+                    disabled={!hasClauses}
+                    className="flex w-full items-start gap-2 text-left disabled:cursor-default"
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="flex flex-wrap items-center gap-1.5">
+                        <span
+                          className={`rounded-md px-1.5 py-0.5 text-[11px] font-medium ${STRUCTURE_KIND_BADGE[item.kind]}`}
+                        >
+                          {STRUCTURE_KIND_LABEL[item.kind]}
+                        </span>
+                        <span className="text-sm font-medium text-foreground">{item.title}</span>
+                        <span
+                          className={`rounded-md px-1.5 py-0.5 text-[11px] font-medium ${
+                            item.required
+                              ? "bg-destructive/10 text-destructive"
+                              : "bg-muted text-muted-foreground"
+                          }`}
+                        >
+                          {item.required ? "必备" : "可选"}
+                        </span>
+                      </span>
+                      {item.notes && (
+                        <span className="mt-0.5 block text-xs text-muted-foreground">{item.notes}</span>
+                      )}
+                      {hasClauses && (
+                        <span className="mt-1.5 inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+                          <MapPin className="size-3" />
+                          定位 {locate(item.clauseIds)}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        </section>
+      )}
 
       {/* 右下角悬浮：进入大纲生成 */}
       <Link
