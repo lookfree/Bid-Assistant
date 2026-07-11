@@ -32,7 +32,8 @@ const STEP_TEXT: Record<Step, string> = {
 }
 
 // 产物下载名（预签名 URL 的 Content-Disposition）
-const ARTIFACT_NAME: Record<string, string> = { docx: "投标文件.docx", pptx: "述标演示.pptx" }
+// spec323：pdf 由 export 步 best-effort 转换产出，缺失时 artifacts 无此 key（下面按 kind 404）
+const ARTIFACT_NAME: Record<string, string> = { docx: "投标文件.docx", pptx: "述标演示.pptx", pdf: "投标文件.pdf" }
 
 // 可编辑回写的步（spec315a 契约 1）：read/review/export 的 result 不接受前端覆写
 const EDITABLE_STEPS = ["outline", "content", "present"] as const

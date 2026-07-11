@@ -83,6 +83,13 @@ export default function ContentPage() {
   /* 步序闸 / 402 引导提示：文案 + 引导链接（区别于 3 秒即逝的 exportStatus） */
   const [exportGate, setExportGate] = useState<{ text: string; href: string; label: string } | null>(null)
   const [hasExported, setHasExported] = useState(false)
+  // spec323：已跑过 export 步且结果无 pdf key ⇒ 该次 docx→pdf 转换失败（agent best-effort），PDF 选项置灰
+  const exportedResult = stepResult<{ pdf?: string }>(info, "export")
+  const pdfUnavailable = !!exportedResult && !exportedResult.pdf
+  // 已知不可用时把停留在 pdf 的选择拨回 word，避免「已禁用但仍被选中」的怪状态
+  useEffect(() => {
+    if (pdfUnavailable) setExportFormat((f) => (f === "pdf" ? "word" : f))
+  }, [pdfUnavailable])
   const editorRef = useRef<HTMLDivElement>(null)
   const { openPaywall } = usePaywall()
 
@@ -328,7 +335,7 @@ export default function ContentPage() {
     }
   }
 
-  function doExport(_format: "word" | "pdf") {
+  function doExport(format: "word" | "pdf") {
     setExportConfirm(false)
     setExportOpen(false)
     setExportGate(null)
@@ -343,21 +350,24 @@ export default function ContentPage() {
       setExportGate(gate)
       return
     }
-    // 真实导出：export 步（渲染完整 .docx 落 MinIO）→ 预签名 URL 直下
-    setExportStatus("正在渲染完整标书…")
+    // 真实导出：export 步（渲染完整 .docx，best-effort 转 .pdf，落 MinIO）→ 预签名 URL 直下
+    const kind = format === "pdf" ? "pdf" : "docx"
+    setExportStatus(format === "pdf" ? "正在渲染完整标书（PDF）…" : "正在渲染完整标书…")
     void (async () => {
       try {
         if (!stepResult(info, "export")) await runStep(projectId, "export")
-        window.open(await artifactUrl(projectId, "docx"), "_blank")
+        window.open(await artifactUrl(projectId, kind), "_blank")
         setExportStatus("已导出，浏览器开始下载")
         setHasExported(true)
       } catch (e) {
-        // 错误码直通：402 引导充值（持久提示），409 步骤顺序，其余通用重试
+        // 错误码直通：402 引导充值（持久提示），409 步骤顺序，pdf 404=该次转换失败仅有 docx，其余通用重试
         if (e instanceof ApiError && e.status === 402) {
           setExportGate({ text: "积分不足，无法导出", href: "/membership", label: "去充值" })
           setExportStatus("")
         } else if (e instanceof ApiError && e.status === 409) {
           setExportStatus("步骤顺序不符，请先完成前序步骤")
+        } else if (kind === "pdf" && e instanceof ApiError && e.status === 404) {
+          setExportStatus("PDF 生成失败，仅提供 Word")
         } else {
           setExportStatus("导出失败，请重试")
         }
@@ -685,6 +695,7 @@ export default function ContentPage() {
                 format={exportFormat}
                 cost={EXPORT_COST}
                 balance={balance}
+                pdfUnavailable={pdfUnavailable}
                 onScope={setExportScope}
                 onFormat={setExportFormat}
                 onConfirm={() => void attemptExport()}
