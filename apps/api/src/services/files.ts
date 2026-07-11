@@ -32,7 +32,9 @@ const fileMaxBytes = () => getEnv().FILE_MAX_SIZE_MB * 1024 * 1024
 
 // 解析层（agent parsing）支持的扩展名：上传入口 fail fast，别让用户走到读标扣费后才发现解析必败。
 // doc/xls（旧格式）spec320 起经 agent 侧 LibreOffice 转 docx/xlsx 再解析。
-const SUPPORTED_EXTS = new Set(["pdf", "docx", "xlsx", "doc", "xls"])
+// png/jpg/jpeg（spec325）：资质证照图片附件——不进读标解析，只是资料库挂图供导出附录用，
+// 复用同一条预签名上传通道；agent 解析器对图片仍抛 UnsupportedDocument（白名单放宽不影响招标文件流）。
+const SUPPORTED_EXTS = new Set(["pdf", "docx", "xlsx", "doc", "xls", "png", "jpg", "jpeg"])
 
 export class UnsupportedFileTypeError extends Error {
   constructor() {
