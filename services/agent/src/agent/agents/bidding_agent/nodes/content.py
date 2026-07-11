@@ -7,13 +7,15 @@ from agent.models.usage import UsageCallback
 from agent.framework.create_agent import build_create_agent
 from agent.agents.bidding_agent.nodes.common import slim_read
 from agent.agents.bidding_agent.prompts.content import (
-    CONTENT_PLANNER_PROMPT, CHAPTER_WRITER_PROMPT, REWRITE_PROMPT)
+    CONTENT_PLANNER_PROMPT, CHAPTER_WRITER_PROMPT, REWRITE_PROMPT, DEVIATION_TABLE_GUIDE)
 from agent.rag import retrieve as rag_retrieve
 
 logger = logging.getLogger(__name__)
 
 _CHAPTER_PREFIX = "/chapters/"
 _REWRITE_QUERY_CHARS = 200   # 改写检索 query 取原章前 N 字，避免整章 HTML 顶穿 embed 输入
+_DEVIATION_KEYWORD = "偏离"          # 偏离表章节识别关键字（技术偏离表/商务偏离表，spec322）
+_DEVIATION_CATEGORY_KEYS = ("technical", "commercial", "qualification")
 
 
 def _default_top_k(run_input: dict) -> int:
@@ -36,6 +38,38 @@ def _outline_queries(outline: dict | None) -> list[str]:
         labels = " ".join(item.get("label", "") for item in chapter.get("items", []))
         queries.append(f"{chapter.get('title', '')} {labels}".strip())
     return queries
+
+
+def _deviation_structure_ids(structure: list[dict]) -> set[str]:
+    """required_structure 中标题含「偏离」的构成项 id 集合（如「技术偏离表」「商务偏离表」，spec321 带入）。"""
+    return {s.get("id") for s in structure if _DEVIATION_KEYWORD in (s.get("title") or "")}
+
+
+def _has_deviation_chapters(outline: dict, structure: list[dict]) -> bool:
+    """识别偏离表类章节（spec322）：标题含「偏离」，或 structure_ref 指向标题含「偏离」的构成项。"""
+    dev_ids = _deviation_structure_ids(structure)
+    for chapter in (outline or {}).get("chapters", []):
+        if _DEVIATION_KEYWORD in (chapter.get("title") or ""):
+            return True
+        if chapter.get("structure_ref") in dev_ids:
+            return True
+    return False
+
+
+def _deviation_items_block(read: dict) -> str:
+    """技术/商务/资格分类全量条目（title/value/clause_ids/star），供偏离表子写手逐条落表——
+    不动 slim_read 本身，这里另起一段附加给规划轮（spec322）。"""
+    cats = []
+    for c in (read.get("categories") or []):
+        if c.get("key") not in _DEVIATION_CATEGORY_KEYS:
+            continue
+        items = [{"title": it.get("title"), "value": it.get("value"),
+                  "clause_ids": it.get("clause_ids", []), "star": it.get("star", False)}
+                 for it in c.get("items", [])]
+        cats.append({"key": c.get("key"), "title": c.get("title"), "items": items})
+    return (f"{DEVIATION_TABLE_GUIDE}\n"
+            f"技术/商务/资格全量条目（供偏离表逐条落表，不得遗漏 ★/▲）：\n"
+            f"{json.dumps(cats, ensure_ascii=False)}")
 
 
 async def _content_reference_block(ctx, state: dict) -> str:
@@ -78,10 +112,16 @@ def make_content_node(ctx):
         # 读标依据走 slim_read（与 outline/review 一致）：read result 已并入全文分句 doc_sections
         # 与逐条 source_quote（token 大头），原样 dumps 会把整份招标原文灌进规划轮直接顶穿上下文。
         # 参考资料段插在「读标依据」与「请逐章生成」指令之间（brief §5）；ref 为空则消息与未启用 RAG 逐字节一致。
-        head = (f"提纲：\n{json.dumps(state.get('outline', {}), ensure_ascii=False)}\n\n"
-                f"读标依据：\n{json.dumps(slim_read(state.get('read') or {}), ensure_ascii=False)}")
+        outline = state.get("outline") or {}
+        read = state.get("read") or {}
+        head = (f"提纲：\n{json.dumps(outline, ensure_ascii=False)}\n\n"
+                f"读标依据：\n{json.dumps(slim_read(read), ensure_ascii=False)}")
+        # 偏离表章节存在时附加【偏离表指引】+ 全量条目数据（spec322）；无偏离表章节则与今天逐字节一致。
+        structure = read.get("required_structure") or []
+        deviation = _deviation_items_block(read) if _has_deviation_chapters(outline, structure) else ""
         ref = await _content_reference_block(ctx, state)
-        mid = f"{ref}\n\n" if ref else ""
+        mid_parts = [p for p in (deviation, ref) if p]
+        mid = ("\n\n".join(mid_parts) + "\n\n") if mid_parts else ""
         user = f"{head}\n\n{mid}请逐章生成正文，每章写入 chapters/<章id>.html。"
         # recursion_limit 放宽：10 章 ×（task 派发 + write_file）远超默认 25 步；
         # UsageCallback 补记 token（deepagent 直驱模型，不经 make_agent_node 埋点）。

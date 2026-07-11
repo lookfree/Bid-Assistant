@@ -12,7 +12,10 @@ REVIEW_SYSTEM_PROMPT = """你是投标合规审查专家（废标体检）。把
 6. 若用户消息给出 required_structure（投标文件构成清单）：其中 required=true 且 kind≠rule 的构成项，
    若提纲中无章节通过 structure_ref 或标题近似匹配响应 → 高风险（缺投标文件构成项，形式审查不过），
    写明缺失的构成项名称与对应招标条款。
-7. 已满足项归入 passed_items。
+7. 若提纲中存在偏离表类章节（章节标题含「偏离」，或 structure_ref 对应的构成项标题含「偏离」，
+   如技术偏离表/商务偏离表）：读标标记为 ★ 的条目，若该偏离表章节正文找不到对应条款（clause_ids 或
+   摘要）的表格行 → 高风险（★条款漏登偏离表，形式审查不过），写明缺失的★条款内容与对应招标条款。
+8. 已满足项归入 passed_items。
 对每条风险给 chapter_title、tender_ref（"对应：…"）、advice、target_tab(tech/business)、target_id(章id)。
 字段取值必须严格合规：level 只能取「高风险」或「中风险」；tone 只能取 destructive（高风险）或 warning（中风险）；
 target_tab 只能取 tech 或 business；score 为 0–100 整数。
