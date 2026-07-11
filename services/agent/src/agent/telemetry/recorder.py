@@ -19,6 +19,10 @@ class Recorder:
         with self._pool.connection() as conn:
             return conn.execute(sql, params).fetchone()
 
+    def _fetchall(self, sql: str, params: tuple) -> list[tuple]:
+        with self._pool.connection() as conn:
+            return conn.execute(sql, params).fetchall()
+
     def start_run(
         self, run_id: str, agent_type: str, thread_id: str,
         file_refs: list[str] | None = None, input_summary: dict[str, Any] | None = None,
@@ -107,6 +111,14 @@ class Recorder:
         """查 run 当前状态；None=无记录。清道夫判定孤儿用（spec317）。"""
         row = self._fetchone("select status from agent.agent_request where run_id=%s", (run_id,))
         return row[0] if row else None
+
+    def list_active_runs(self) -> list[tuple]:
+        """running/queued 状态的 run（run_id, status, created_at），供孤儿清道夫扫描（spec318）。
+        直接查 agent_request——它就是 run 状态的权威来源，比维护额外的 Redis 注册表/SCAN 更省事。"""
+        return self._fetchall(
+            "select run_id, status, created_at from agent.agent_request where status in ('running','queued')",
+            (),
+        )
 
     def usage_summary(self, run_id: str) -> dict[str, int]:
         row = self._fetchone(

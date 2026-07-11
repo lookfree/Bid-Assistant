@@ -1,13 +1,14 @@
 import asyncio
 import json
 import threading
+from datetime import datetime, timedelta, timezone
 
 from agent.db import get_pool
 from agent.redis_client import get_redis
 from agent.runtime import executor as executor_mod
 from agent.runtime.dispatch import create_run
 from agent.runtime.executor import process_run
-from agent.runtime.channels import progress_stream, result_key, runmeta_key
+from agent.runtime.channels import heartbeat_key, progress_stream, result_key, runmeta_key
 
 
 def test_create_run_stores_user_id_in_meta(cleanup_run):
@@ -36,12 +37,15 @@ def test_create_and_process_run_end_to_end(cleanup_run):
 
 
 class _FakePipeline:
-    """_publish 用到的 pipeline 三连（xadd/expire/execute）：全无操作。"""
+    """_publish 用到的 pipeline 四连（xadd/expire/set 心跳/execute）：全无操作。"""
 
     def xadd(self, *a, **kw):
         return self
 
     def expire(self, *a, **kw):
+        return self
+
+    def set(self, *a, **kw):
         return self
 
     def execute(self, *a, **kw):
@@ -254,3 +258,204 @@ async def test_reap_orphan_run_nonterminal_marks_failed_and_publishes_run_end(mo
     assert len(events) == 1
     assert events[0]["type"] == "run.end"
     assert events[0]["data"]["status"] == "failed"
+
+
+# ---------------------------------------------------------------------------
+# spec318：心跳续期（process_run 事件发布顺带续期） + sweep_stale_runs 心跳/queued 清道夫。
+# ---------------------------------------------------------------------------
+
+class _HeartbeatTrackingRedis(_FakeRedis):
+    """在 _FakeRedis 基础上真正记录 pipeline.set 写入的心跳键（键→ex 秒数），
+    验证 process_run 每次发布事件都续期 run:hb:<run_id>。"""
+
+    def __init__(self):
+        self.sets: dict[str, int] = {}
+
+    def pipeline(self):
+        outer = self
+
+        class _Pipe(_FakePipeline):
+            def set(self_inner, key, value, ex=None):
+                outer.sets[key] = ex
+                return self_inner
+
+        return _Pipe()
+
+
+async def test_process_run_refreshes_heartbeat_on_each_publish(monkeypatch):
+    """spec318：run 存活期间发布的每个事件（run.start/node.end/run.end...）都续期心跳——
+    这是最省事的存活证明落点，不需要额外的定时心跳任务。"""
+    fake_r = _HeartbeatTrackingRedis()
+    monkeypatch.setattr(executor_mod, "get_redis", lambda: fake_r)
+    monkeypatch.setattr(executor_mod, "_rec", lambda: _MinimalRecorder())
+    monkeypatch.setattr(executor_mod, "get_agent", lambda agent_type: _FakeAgent())
+    monkeypatch.setattr(executor_mod.settings, "app_callback_url", None)
+
+    await process_run("run-hb")
+
+    assert fake_r.sets.get(heartbeat_key("run-hb")) == executor_mod.settings.run_heartbeat_ttl_s
+
+
+class _FakeRecorderForSweep:
+    """sweep_stale_runs 用到的两个 Recorder 方法：list_active_runs 喂固定行、finish_run 记调用。"""
+
+    def __init__(self, rows: list[tuple]):
+        self._rows = rows
+        self.finish_calls: list[tuple] = []
+
+    def list_active_runs(self):
+        return self._rows
+
+    def finish_run(self, run_id, status=None, error=None, error_type=None, node_count=None):
+        self.finish_calls.append((run_id, status, error, error_type))
+
+
+class _FakeRedisForSweep:
+    """sweep_stale_runs 用到的 Redis 命令的最小假件：
+    - exists：心跳键是否存活，按 run_id in heartbeats 判定（不模拟真实 TTL 过期机制）。
+    - xpending_range + xrange：两段模拟"stream 侧还有该 run_id 对应 pending 条目"，
+      每个 pending run_id 分配一个假 message_id，xrange 按 id 查回 {run_id: ...} fields。
+    """
+
+    def __init__(self, *, heartbeats: set[str] | None = None, pending_ids: set[str] | None = None):
+        self._heartbeats = set(heartbeats or ())
+        self._pending = {f"p-{i}": rid for i, rid in enumerate(pending_ids or ())}
+        self.events: list[dict] = []
+
+    def exists(self, key: str) -> int:
+        run_id = key.rsplit(":", 1)[-1]
+        return 1 if run_id in self._heartbeats else 0
+
+    def xpending_range(self, name, group, min, max, count):
+        return [{"message_id": mid} for mid in self._pending]
+
+    def xrange(self, name, min, max):
+        rid = self._pending.get(min)
+        return [(min, {"run_id": rid})] if rid else []
+
+    def pipeline(self):
+        return _CapturingPipeline(self.events)
+
+
+async def test_sweep_stale_runs_running_without_heartbeat_is_reaped(monkeypatch):
+    """running 状态但心跳键已过期：worker 被杀、连 XAUTOCLAIM 都够不到（entry 早已 ack）= 孤儿。"""
+    created = datetime.now(timezone.utc) - timedelta(seconds=5)
+    rec = _FakeRecorderForSweep([("run-dead", "running", created)])
+    fake_r = _FakeRedisForSweep()
+    monkeypatch.setattr(executor_mod, "_rec", lambda: rec)
+    monkeypatch.setattr(executor_mod, "get_redis", lambda: fake_r)
+
+    result = await executor_mod.sweep_stale_runs()
+
+    assert result == {"running_reaped": 1, "queued_reaped": 0}
+    assert rec.finish_calls == [("run-dead", "failed", "worker 中断，run 孤儿回收", "HeartbeatMissing")]
+    end_events = [e for e in fake_r.events if e["type"] == "run.end"]
+    assert len(end_events) == 1
+    assert end_events[0]["data"]["status"] == "failed"
+
+
+async def test_sweep_stale_runs_running_with_live_heartbeat_untouched(monkeypatch):
+    """有心跳 = 仍在正常跑，绝不误伤。"""
+    created = datetime.now(timezone.utc) - timedelta(seconds=5)
+    rec = _FakeRecorderForSweep([("run-alive", "running", created)])
+    fake_r = _FakeRedisForSweep(heartbeats={"run-alive"})
+    monkeypatch.setattr(executor_mod, "_rec", lambda: rec)
+    monkeypatch.setattr(executor_mod, "get_redis", lambda: fake_r)
+
+    result = await executor_mod.sweep_stale_runs()
+
+    assert result == {"running_reaped": 0, "queued_reaped": 0}
+    assert rec.finish_calls == []
+
+
+async def test_sweep_stale_runs_queued_fresh_untouched(monkeypatch):
+    """queued 刚创建，远没到 QUEUED_STALE_S：不该被误判成丢单。"""
+    created = datetime.now(timezone.utc)
+    rec = _FakeRecorderForSweep([("run-fresh", "queued", created)])
+    fake_r = _FakeRedisForSweep()
+    monkeypatch.setattr(executor_mod, "_rec", lambda: rec)
+    monkeypatch.setattr(executor_mod, "get_redis", lambda: fake_r)
+
+    result = await executor_mod.sweep_stale_runs()
+
+    assert result == {"running_reaped": 0, "queued_reaped": 0}
+    assert rec.finish_calls == []
+
+
+async def test_sweep_stale_runs_queued_stale_and_not_pending_is_reaped(monkeypatch):
+    """queued 超过 QUEUED_STALE_S 且 stream 侧找不到对应 pending 条目 = 消息丢失。"""
+    stale_s = executor_mod.settings.queued_stale_s
+    created = datetime.now(timezone.utc) - timedelta(seconds=stale_s + 1)
+    rec = _FakeRecorderForSweep([("run-lost", "queued", created)])
+    fake_r = _FakeRedisForSweep()
+    monkeypatch.setattr(executor_mod, "_rec", lambda: rec)
+    monkeypatch.setattr(executor_mod, "get_redis", lambda: fake_r)
+
+    result = await executor_mod.sweep_stale_runs()
+
+    assert result == {"running_reaped": 0, "queued_reaped": 1}
+    assert rec.finish_calls == [("run-lost", "failed", "排队丢失，已回收", "QueuedStale")]
+
+
+async def test_sweep_stale_runs_queued_stale_but_still_pending_untouched(monkeypatch):
+    """stream 侧还有对应 pending 条目 = 仍在正常处理链路上（in-flight 或刚被投递），不是丢单。"""
+    stale_s = executor_mod.settings.queued_stale_s
+    created = datetime.now(timezone.utc) - timedelta(seconds=stale_s + 1)
+    rec = _FakeRecorderForSweep([("run-slow", "queued", created)])
+    fake_r = _FakeRedisForSweep(pending_ids={"run-slow"})
+    monkeypatch.setattr(executor_mod, "_rec", lambda: rec)
+    monkeypatch.setattr(executor_mod, "get_redis", lambda: fake_r)
+
+    result = await executor_mod.sweep_stale_runs()
+
+    assert result == {"running_reaped": 0, "queued_reaped": 0}
+    assert rec.finish_calls == []
+
+
+async def test_sweep_stale_runs_no_active_runs_short_circuits(monkeypatch):
+    """没有 running/queued 的 run：连 Redis 都不该查。"""
+    rec = _FakeRecorderForSweep([])
+    monkeypatch.setattr(executor_mod, "_rec", lambda: rec)
+
+    def boom():
+        raise AssertionError("不该在没有 active run 时还去查 Redis")
+
+    monkeypatch.setattr(executor_mod, "get_redis", boom)
+
+    result = await executor_mod.sweep_stale_runs()
+
+    assert result == {"running_reaped": 0, "queued_reaped": 0}
+
+
+async def test_sweep_stale_runs_list_error_is_swallowed(monkeypatch):
+    """list_active_runs 抛错（PG 瞬断）：本轮跳过，不冒泡打崩 worker 消费循环。"""
+    class _BoomRecorder:
+        def list_active_runs(self):
+            raise RuntimeError("PG 瞬断")
+
+    monkeypatch.setattr(executor_mod, "_rec", lambda: _BoomRecorder())
+
+    result = await executor_mod.sweep_stale_runs()
+
+    assert result == {"running_reaped": 0, "queued_reaped": 0}
+
+
+async def test_sweep_stale_runs_per_row_error_does_not_block_others(monkeypatch):
+    """单条处置失败（如某个 run 的心跳查询瞬断）不该拖垮同批其它条目的处置。"""
+    created = datetime.now(timezone.utc) - timedelta(seconds=5)
+    rec = _FakeRecorderForSweep([("run-boom", "running", created), ("run-ok", "running", created)])
+
+    class _BoomOnceRedis(_FakeRedisForSweep):
+        def exists(self, key):
+            if "run-boom" in key:
+                raise RuntimeError("redis 瞬断")
+            return super().exists(key)
+
+    fake_r = _BoomOnceRedis()
+    monkeypatch.setattr(executor_mod, "_rec", lambda: rec)
+    monkeypatch.setattr(executor_mod, "get_redis", lambda: fake_r)
+
+    result = await executor_mod.sweep_stale_runs()
+
+    assert result == {"running_reaped": 1, "queued_reaped": 0}
+    assert [c[0] for c in rec.finish_calls] == ["run-ok"]

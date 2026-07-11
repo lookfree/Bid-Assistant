@@ -64,6 +64,17 @@ def ran(monkeypatch):
     return calls
 
 
+@pytest.fixture(autouse=True)
+def no_sweep(monkeypatch):
+    """run_loop 启动即调一次 sweep_stale_runs、循环内按周期再调（spec318）——它连真库/Redis，
+    这里全文件默认打桩成无操作，跟其它测试一样只关心 consumer group 消费本身。
+    需要验证调用时机/次数的测试在自己的用例里覆写这个桩。"""
+    async def noop():
+        return {"running_reaped": 0, "queued_reaped": 0}
+
+    monkeypatch.setattr(main_worker, "sweep_stale_runs", noop)
+
+
 async def test_ensure_group_creates_from_zero_with_mkstream():
     r = FakeRedis()
     await ensure_group(r)
@@ -266,6 +277,27 @@ async def test_run_loop_caps_concurrent_dispatch_then_backfills(monkeypatch):
         subtasks = [t for t in asyncio.all_tasks() if t not in (current, task) and not t.done()]
         if subtasks:
             await asyncio.wait(subtasks, timeout=5)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def test_run_loop_calls_sweep_stale_runs_at_startup(monkeypatch):
+    """worker 重启恰是孤儿产生的时刻（spec318）：不等第一个 60s 周期，run_loop 一进来就扫一遍。"""
+    sweep_called = asyncio.Event()
+
+    async def fake_sweep():
+        sweep_called.set()
+        return {"running_reaped": 0, "queued_reaped": 0}
+
+    monkeypatch.setattr(main_worker, "sweep_stale_runs", fake_sweep)
+    r = FakeRedis()
+    monkeypatch.setattr(main_worker, "get_redis", lambda: r)
+
+    task = asyncio.create_task(main_worker.run_loop())
+    try:
+        await asyncio.wait_for(sweep_called.wait(), timeout=5)
+    finally:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task

@@ -8,19 +8,18 @@ import redis as redis_lib
 from agent import db, redis_client
 from agent.config import settings
 from agent.redis_client import get_redis
-from agent.runtime.channels import stream_key
-from agent.runtime.executor import process_run, reap_orphan_run
+from agent.runtime.channels import GROUP, stream_key
+from agent.runtime.executor import process_run, reap_orphan_run, sweep_stale_runs
 
 # consumer group 消费（替代旧 XREAD last_id="$"）：
 # "$" 只读订阅之后的新消息——worker 重启窗口内入队的 run 永远不被消费（生产实测积压 12 条，
 # 页面永久 running）。group 的消费游标持久在 Redis 侧：重启从上次 ack 位置继续，不丢窗口消息；
 # 处理完 XACK，配合 XAUTOCLAIM 认领死消费者名下的 pending，worker 崩溃也不丢单。
-GROUP = "workers"
 # idle 超 60s 且不在本进程 in-flight 集合 = 孤儿（单实例部署下属主进程必已消亡），
 # 清道夫标失败清理（spec317：认领路径不再重试执行，见 claim_stale）。多实例部署前必须重估——
 # in-flight 过滤跨不了进程，会把其它实例仍在正常跑的 run 误判孤儿，需加心跳列或大幅上调阈值。
 CLAIM_MIN_IDLE_MS = 60_000
-CLAIM_EVERY_S = 60.0  # 认领扫描周期（循环内到点才扫，启动即首扫一次）
+CLAIM_EVERY_S = 60.0  # 认领扫描/孤儿 run 扫描周期（循环内到点才扫，启动即首扫一次）
 
 
 def wait_for_deps(retries: int = 30, delay: float = 2.0) -> None:
@@ -130,12 +129,15 @@ async def _await_capacity(pending: set) -> None:
 
 async def run_loop() -> None:
     """信号量限流的并发派发：容量(agent_worker_concurrency)内尽量多读、多个 run 同时跑；
-    容量满时等一个任务完成腾位置；定期认领孤儿（不重执行，见 claim_stale）。
+    容量满时等一个任务完成腾位置；定期认领孤儿（不重执行，见 claim_stale）+ 扫描心跳失活的
+    running/queued run（spec318，见 sweep_stale_runs：XAUTOCLAIM 逮不到"已 ack 但没跑完"或
+    "消息丢失"这两类，靠心跳/queued 超时兜底）。
     pending/entry_of/inflight 是一份状态：task 创建时登记，回收时一起摘除。"""
     r = get_redis()
     await ensure_group(r)
     consumer = socket.gethostname()  # 容器内 hostname 即容器 id，天然区分实例
     print(f"[worker] consuming {stream_key()} (group={GROUP}, consumer={consumer}) ...", flush=True)
+    await sweep_stale_runs()  # 启动即扫一遍：worker 重启恰是孤儿产生的时刻，不等第一个周期
     last_claim = 0.0
     pending: set[asyncio.Task] = set()
     entry_of: dict[asyncio.Task, str] = {}
@@ -145,6 +147,7 @@ async def run_loop() -> None:
             if time.monotonic() - last_claim >= CLAIM_EVERY_S:
                 last_claim = time.monotonic()
                 await claim_stale(r, consumer, inflight)
+                await sweep_stale_runs()
             # max(1,...)：env 误配成 ≤0 时，pending 恒空、_await_capacity 直接返回，循环会 100% CPU 空转
             capacity = max(1, settings.agent_worker_concurrency) - len(pending)
             if capacity > 0:

@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     # Worker 并发执行的 run 上限（不同标书并发，spec317）
     agent_worker_concurrency: int = 5
 
+    # 孤儿 run 清道夫（spec318）：心跳存活窗口 + queued 判丢阈值
+    run_heartbeat_ttl_s: int = 120   # run:hb:<run_id> 的 EX；worker 每次发布事件续期
+    queued_stale_s: int = 600        # queued 状态超过此时长且 stream 侧无对应 pending 条目 = 判丢
+
     # 模型 Key（OpenAI 兼容；凭据就绪时填，当前可能缺失）
     deepseek_api_key: str | None = None
     dashscope_api_key: str | None = None      # 通义千问（DashScope）
