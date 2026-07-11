@@ -566,7 +566,16 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     if (!isUuid(id)) return c.json({ error: "not_found" }, 404) // 非 uuid 直接 404，避免 PG 22P02 → 500
     const p = await ownedProject(id, c.get("user").id)
     if (!p) return c.json({ error: "not_found" }, 404)
-    const steps = await getDb().select().from(projectSteps).where(eq(projectSteps.projectId, p.id))
+    // 失败重试会给同一步留下多行历史（自愈槽位只约束 running 唯一）——每步只回最新一行，
+    // 否则前端可能取到旧 failed 行，把已成功的读标渲染成空。
+    const rows = await getDb()
+      .select()
+      .from(projectSteps)
+      .where(eq(projectSteps.projectId, p.id))
+      .orderBy(projectSteps.createdAt)
+    const latest = new Map<string, (typeof rows)[number]>()
+    for (const s of rows) latest.set(s.step, s) // 后写覆盖 ⇒ 每步保留 createdAt 最新的一行
+    const steps = [...latest.values()]
     return c.json({ project: p, steps: steps.map((s) => ({ ...s, result: resultToClient(s.step, s.result) })) })
   })
 

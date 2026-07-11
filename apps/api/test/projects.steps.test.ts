@@ -153,6 +153,21 @@ describe("/api/projects 按步编排", () => {
     expect(JSON.stringify(body.steps[0]?.result)).toContain("clauseIds")
   })
 
+  it("GET /:id 同一步多行历史（失败重试残留）→ 只回最新一行（防前端取到旧 failed 行渲染成空）", async () => {
+    // 手工给 read 步插一条更早的 failed 历史行（自愈槽位只约束 running 唯一，failed 可并存）
+    await getDb().insert(projectSteps).values({
+      projectId,
+      step: "read",
+      status: "failed",
+      createdAt: new Date(Date.now() - 3600_000),
+    } as any)
+    const res = await app.request(`/api/projects/${projectId}`, { headers: auth() })
+    const body = (await res.json()) as { steps: Array<{ step: string; status: string }> }
+    const reads = body.steps.filter((s) => s.step === "read")
+    expect(reads.length).toBe(1)
+    expect(reads[0]!.status).toBe("done")
+  })
+
   it("再推 read（已不是当前步）→ 409", async () => {
     const res = await app.request(`/api/projects/${projectId}/steps/read`, { method: "POST", headers: auth() })
     expect(res.status).toBe(409)
