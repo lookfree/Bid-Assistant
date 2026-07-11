@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Annotated, TypedDict
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import StateGraph, START, END
@@ -33,9 +34,12 @@ def make_agent_node(ctx, hooks: list, tools: list):
     llm_with_tools = llm.bind_tools(tools) if (llm and tools) else llm
 
     async def agent_node(state, config=None):
+        t0 = time.monotonic()
         turn = await run_turn(hooks, llm_with_tools, state, config)
+        latency = int((time.monotonic() - t0) * 1000)
         # agent_node 走 get_chat(...).ainvoke 绕过 gateway.invoke，这里补记用量（否则 settle 汇总 0）。
-        record_ctx_usage(ctx, turn.result, node="agent", model=getattr(llm, "model_name", None))
+        record_ctx_usage(ctx, turn.result, node="agent",
+                         model=getattr(llm, "model_name", None), latency_ms=latency)
         return {"messages": [turn.result]}
 
     return agent_node
@@ -87,8 +91,11 @@ async def _forced_submit(ctx, prompt: str, user_msg: str, submit, tool_name: str
     forced = llm.bind_tools([submit], tool_choice=tool_name)
     messages: list = [SystemMessage(content=prompt), HumanMessage(content=user_msg)]
     for _ in range(attempts):
+        t0 = time.monotonic()
         msg = await forced.ainvoke(messages)
-        record_ctx_usage(ctx, msg, node="agent", model=getattr(llm, "model_name", None))
+        latency = int((time.monotonic() - t0) * 1000)
+        record_ctx_usage(ctx, msg, node="agent",
+                         model=getattr(llm, "model_name", None), latency_ms=latency)
         call = next((c for c in (getattr(msg, "tool_calls", None) or []) if c["name"] == tool_name), None)
         if call is not None:
             try:
