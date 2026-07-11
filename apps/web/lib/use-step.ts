@@ -49,6 +49,12 @@ async function pollStepResult<T>(projectId: string, step: StepName): Promise<T> 
   throw new Error(`step ${step} 轮询超时`)
 }
 
+/** 步骤完成（无论正常 start() 还是收敛轮询）都可能扣了积分：广播一个全局事件，
+ *  侧边栏积分卡监听后静默刷新（v1 用 window 事件，够用且不引入额外的跨组件状态管理）。 */
+function notifyCreditsChanged() {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event("credits:refresh"))
+}
+
 // 页面级数据源 hook：真实项目在（localStorage 有 projectId）就用真实步结果，否则回退示例数据（demo）。
 // data=null 且 projectId 在 → 该步还没跑：页面调 start() 触发（SSE 期间 running=true）。
 export function useStep<T>(step: StepName) {
@@ -65,10 +71,31 @@ export function useStep<T>(step: StepName) {
 
   useEffect(() => {
     if (!projectId) return
+    let alive = true
     getProject(projectId)
       .then((i) => {
+        if (!alive) return
         setInfo(i)
-        setData(stepResult<T>(i, step))
+        const result = stepResult<T>(i, step)
+        setData(result)
+        // 断点续看：该步在服务端已是 running（导航离开生成页再切回来，或跨设备重新打开）——
+        // 没有 done 行但也没失败，说明上次触发的 run 仍在跑。这里没有重新接 SSE 的通道
+        // （v1 限制，实时重连留作后续增强），改成收敛轮询：等它跑完再把结果灌回页面。
+        if (!result && i.steps.some((s) => s.step === step && s.status === "running")) {
+          setRunning(true)
+          pollStepResult<T>(projectId, step)
+            .then((r) => {
+              if (!alive) return
+              setData(r)
+              notifyCreditsChanged()
+            })
+            .catch(() => {
+              if (alive) setError(stepErrorMessage(null))
+            })
+            .finally(() => {
+              if (alive) setRunning(false)
+            })
+        }
       })
       .catch((e) => {
         // 404 = 本地 projectId 指向已删项目（生产实测：删项目后所有工具页陷入「加载项目失败」死胡同）
@@ -81,6 +108,9 @@ export function useStep<T>(step: StepName) {
         }
         setError("加载项目失败")
       })
+    return () => {
+      alive = false
+    }
   }, [projectId, step])
 
   // body 为该步运行参数（present 步透传 duration/template）；返回该步结果便于调用方即时使用（失败为 null）。
@@ -94,6 +124,7 @@ export function useStep<T>(step: StepName) {
       try {
         const result = await runStep<T>(projectId, step, undefined, body)
         setData(result)
+        notifyCreditsChanged()
         return result
       } catch (e) {
         // 409 step_already_running 不是错误：本步已有一次在途 run（双发/上次连接断但 run 仍在跑），
@@ -102,6 +133,7 @@ export function useStep<T>(step: StepName) {
           try {
             const result = await pollStepResult<T>(projectId, step)
             setData(result)
+            notifyCreditsChanged()
             return result
           } catch {
             setError(stepErrorMessage(null))

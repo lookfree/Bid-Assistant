@@ -2,6 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
+import { useEffect, useRef } from "react"
 import {
   Sparkles,
   FilePlus2,
@@ -56,7 +57,25 @@ const groups: { title: string; items: NavItem[] }[] = [
 export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname()
   /* 真实积分余额（GET /api/membership）；加载中显示占位 */
-  const { balance, loading: balanceLoading } = useMembership()
+  const { balance, loading: balanceLoading, reload } = useMembership()
+
+  // (tool) 布局跨路由常驻不重挂载，useMembership 的首次拉取不会随导航重跑——
+  // 这里补两条刷新路径，避免余额卡在首次进入时的旧值：
+  // 1) 路由切换（跳过首次挂载，首次已由 useMembership 自身拉取）；
+  // 2) 任意步骤跑完后广播的 credits:refresh（扣费发生在服务端，前端靠事件得知该重拉）。
+  const firstRender = useRef(true)
+  useEffect(() => {
+    if (firstRender.current) {
+      firstRender.current = false
+      return
+    }
+    reload()
+  }, [pathname, reload])
+
+  useEffect(() => {
+    window.addEventListener("credits:refresh", reload)
+    return () => window.removeEventListener("credits:refresh", reload)
+  }, [reload])
 
   return (
     <>
