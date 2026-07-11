@@ -363,12 +363,15 @@ function CustomEndpointFields({
   const [fetching, setFetching] = useState(false)
   const [fetchError, setFetchError] = useState<string | null>(null)
 
+  // 已保存条目 apiKey 打码不回显：本地无明文时带 id，让服务端从库回填 key（apiKeyHint 存在即证明库里有 key）。
+  const hasUsableKey = !!draft.apiKey || !!draft.apiKeyHint
+
   async function fetchModels() {
-    if (!draft.baseUrl || !draft.apiKey) return
+    if (!draft.baseUrl || !hasUsableKey) return
     setFetching(true)
     setFetchError(null)
     try {
-      const res = await adminApi.models.listModels({ baseUrl: draft.baseUrl, apiKey: draft.apiKey })
+      const res = await adminApi.models.listModels({ baseUrl: draft.baseUrl, apiKey: draft.apiKey, id: draft.id })
       if (res.ok && res.models) setModels(res.models)
       else setFetchError(res.error ?? "拉取失败，请检查 URL / Key")
     } catch {
@@ -400,7 +403,7 @@ function CustomEndpointFields({
           size="sm"
           variant="outline"
           type="button"
-          disabled={!draft.baseUrl || !draft.apiKey || fetching}
+          disabled={!draft.baseUrl || !hasUsableKey || fetching}
           onClick={fetchModels}
         >
           {fetching ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <Download data-icon="inline-start" />}

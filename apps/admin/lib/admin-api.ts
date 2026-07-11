@@ -95,7 +95,8 @@ export const adminApi = {
     save: (cfg: ModelConfig) => req<{ ok: true }>("/models", { method: "PUT", body: JSON.stringify(cfg) }),
     // ⚠️ /test 认 snake_case（agent 侧薄中转），PUT 认 camelCase：这里必须转换，否则参数在服务端悄悄变 {}。
     // base_url/api_key 只在自建端点探活时携带；未传（注册表模型）则不下发这两个字段。
-    test: (m: { provider: string; model?: string; params?: ModelParams; baseUrl?: string; apiKey?: string }) =>
+    // id：已保存自建条目重测时明文 key 不回显，带 id 让服务端从库里回填 key（否则空 key→假失败）。
+    test: (m: { provider: string; model?: string; params?: ModelParams; baseUrl?: string; apiKey?: string; id?: string }) =>
       req<{ ok: boolean; latencyMs?: number; tokens?: number; error?: string }>("/models/test", {
         method: "POST",
         body: JSON.stringify({
@@ -104,10 +105,12 @@ export const adminApi = {
           params: m.params ? camelToSnakeParams(m.params) : undefined,
           base_url: m.baseUrl,
           api_key: m.apiKey,
+          id: m.id,
         }),
       }),
-    // 自建端点连通性探针 + 拉可用模型列表：POST /list-models {baseUrl,apiKey}（camelCase，中转层不转换）。
-    listModels: (m: { baseUrl: string; apiKey: string }) =>
+    // 自建端点连通性探针 + 拉可用模型列表：POST /list-models {baseUrl,apiKey?,id?}（camelCase，中转层不转换）。
+    // apiKey 缺省时服务端按 id 从库回填 key（已保存条目明文不回显）。
+    listModels: (m: { baseUrl: string; apiKey?: string; id?: string }) =>
       req<{ ok: boolean; models?: string[]; error?: string }>("/models/list-models", {
         method: "POST",
         body: JSON.stringify(m),

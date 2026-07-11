@@ -237,6 +237,7 @@ async function probeModel(model: ModelEntry): Promise<{ test: ModelTest; tokens?
       params: model.params,
       baseUrl: model.baseUrl,
       apiKey: model.apiKey,
+      id: model.id, // 已保存自建条目：apiKey 已打码不回显，带 id 让服务端回填库里 key
     })
     return res.ok
       ? { test: { status: "passed", at: new Date().toISOString(), latencyMs: res.latencyMs }, tokens: res.tokens }

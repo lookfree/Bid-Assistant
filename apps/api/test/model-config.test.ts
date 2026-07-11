@@ -124,6 +124,18 @@ describe("spec319 model-config 纯逻辑", () => {
     expect(masked.models[1]).toEqual(cfg.models[1])
   })
 
+  it("maskModelConfig：按 apiKey 存在与否打码——无 baseUrl 但意外带 key 的条目也不得明文回显", () => {
+    const cfg: ModelConfig = {
+      models: [
+        { id: "x1", provider: "deepseek", model: "deepseek-chat", params: { temperature: 0.7, maxTokens: 8192, topP: 1 }, enabled: true, test: { status: "passed" }, apiKey: "sk-leakleakyZ" },
+      ],
+      chain: [],
+    }
+    const masked = maskModelConfig(cfg)
+    expect(masked.models[0]!.apiKey).toBeUndefined()
+    expect(JSON.stringify(masked)).not.toContain("sk-leakleakyZ")
+  })
+
   it("mergeModelSecrets：自建条目 apiKey 空/缺省 → 按 id 从 stored 取回旧值；带新值 → 用新值覆盖", () => {
     const stored: ModelConfig = {
       models: [{ id: "c1", provider: "custom", model: "qwen-x", params: { temperature: 0.7, maxTokens: 8192, topP: 1 }, enabled: true, test: { status: "passed" }, baseUrl: "http://h:8000/v1", apiKey: "sk-old" }],

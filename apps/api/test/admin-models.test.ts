@@ -139,4 +139,54 @@ describe("spec319 /admin-api/models", () => {
     const stored = await getModelConfig()
     expect(stored.models[0]!.apiKey).toBe("sk-secret-real")
   })
+
+  // 重测/拉取回归：已保存自建条目明文 key 不回显，前端只带 id → 服务端按 id 回填库里 key，
+  // 而不是用空 key 探活（否则假失败 → persistedChainFor 把仍可用的模型误踢出链）。
+  it("POST /test + /list-models：带 id、无 api_key ⇒ 服务端回填库里 key", async () => {
+    await clearAgentModel()
+    const { headers } = await makeAdminSession("ops", regA)
+    const custom = {
+      id: "c2",
+      provider: "custom",
+      model: "qwen-x",
+      params: { temperature: 0.7, maxTokens: 8192, topP: 1 },
+      enabled: true,
+      test: { status: "passed" as const },
+      baseUrl: "http://h:8000/v1",
+      apiKey: "sk-stored-key",
+    }
+    await app.request("http://x/admin-api/models", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ models: [custom], chain: ["c2"] }),
+    })
+    const orig = (globalThis as any).fetch
+    let testBody: any
+    let listBody: any
+    ;(globalThis as any).fetch = (async (url: string, init: any) => {
+      const body = JSON.parse(init.body)
+      if (String(url).endsWith("/models/list-models")) {
+        listBody = body
+        return new Response(JSON.stringify({ ok: true, models: ["qwen-x"] }), { status: 200 })
+      }
+      testBody = body
+      return new Response(JSON.stringify({ ok: true, latency_ms: 5, tokens: 1 }), { status: 200 })
+    }) as unknown as typeof fetch
+    try {
+      await app.request("http://x/admin-api/models/test", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ provider: "custom", model: "qwen-x", base_url: "http://h:8000/v1", id: "c2" }),
+      })
+      await app.request("http://x/admin-api/models/list-models", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ baseUrl: "http://h:8000/v1", id: "c2" }),
+      })
+      expect(testBody.api_key).toBe("sk-stored-key")
+      expect(listBody.api_key).toBe("sk-stored-key")
+    } finally {
+      ;(globalThis as any).fetch = orig
+    }
+  })
 })

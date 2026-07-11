@@ -49,6 +49,13 @@ modelsRouter.put("/", requirePermission("config.write"), async (c) => {
 })
 
 // 与 agent testModel(opts) 的 snake 入参直接对齐——纯中转，不做 camel/snake 转换。
+// 已保存的自建条目 apiKey 打码不回显（GET 只出 hint）；探针/拉取时前端不带 key、只带 id ⇒
+// 按 id 从库里取回明文 key（同 PUT 的 mergeModelSecrets 思路），否则会用空 key 探活→假失败→模型被误踢出链。
+async function resolveStoredKey(id: string | undefined): Promise<string | undefined> {
+  if (!id) return undefined
+  return (await getModelConfig()).models.find((m) => m.id === id)?.apiKey
+}
+
 const TestBody = z.object({
   provider: z.string().min(1),
   model: z.string().min(1).optional(),
@@ -61,17 +68,27 @@ const TestBody = z.object({
     .optional(),
   base_url: z.string().optional(),
   api_key: z.string().optional(),
+  id: z.string().optional(), // 已保存自建条目：无明文 key 时据此回填库里 key
 })
 modelsRouter.post("/test", requirePermission("config.write"), async (c) => {
   const parsed = TestBody.safeParse(await c.req.json().catch(() => null))
   if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
-  return c.json(await testModel(parsed.data))
+  const { id, ...body } = parsed.data
+  if (body.base_url && !body.api_key) body.api_key = await resolveStoredKey(id)
+  return c.json(await testModel(body))
 })
 
 // 自建端点探连通 + 拉可用模型列表——纯中转 agent /models/list-models，不落库。
-const ListModelsBody = z.object({ baseUrl: z.string().url(), apiKey: z.string().min(1) })
+// apiKey 可缺省：已保存条目走 id 回填库里 key（前端拿不到明文）。
+const ListModelsBody = z.object({
+  baseUrl: z.string().url(),
+  apiKey: z.string().optional(),
+  id: z.string().optional(),
+})
 modelsRouter.post("/list-models", requirePermission("config.write"), async (c) => {
   const parsed = ListModelsBody.safeParse(await c.req.json().catch(() => null))
   if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
-  return c.json(await listModels(parsed.data))
+  const apiKey = parsed.data.apiKey || (await resolveStoredKey(parsed.data.id))
+  if (!apiKey) return c.json({ ok: false, error: "缺少 API Key" })
+  return c.json(await listModels({ baseUrl: parsed.data.baseUrl, apiKey }))
 })

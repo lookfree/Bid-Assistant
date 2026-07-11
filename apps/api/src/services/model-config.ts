@@ -197,14 +197,15 @@ export function maskApiKey(key: string): string {
   return key.length > 5 ? `${key.slice(0, 3)}****${key.slice(-2)}` : "****"
 }
 
-/** GET 用：自建条目的明文 apiKey 从不出参，改为 apiKeyHint（打码展示）。注册表条目不变。 */
+/** GET 用：任何带明文 apiKey 的条目都不出参，改为 apiKeyHint（打码展示）。
+ *  按 apiKey 存在与否判定（非 baseUrl）——防御注册表条目意外落了 key 时明文回显。 */
 export function maskModelConfig(cfg: ModelConfig): ModelConfig {
   return {
     ...cfg,
     models: cfg.models.map((m) => {
-      if (!m.baseUrl) return m
+      if (!m.apiKey) return m
       const { apiKey, ...rest } = m
-      return { ...rest, apiKeyHint: apiKey ? maskApiKey(apiKey) : undefined }
+      return { ...rest, apiKeyHint: maskApiKey(apiKey) }
     }),
   }
 }
