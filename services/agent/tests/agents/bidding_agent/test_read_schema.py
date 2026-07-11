@@ -24,6 +24,25 @@ def test_read_result_validates():
     assert r.categories[0].items[0].risk is True and r.categories[0].items[1].status == "missing"
 
 
+def test_read_result_required_structure_defaults_empty():
+    """旧读标结果无 required_structure 字段 → 默认空列表（向后兼容，spec321）。"""
+    r = ReadResult(**_SAMPLE)
+    assert r.required_structure == []
+
+
+def test_read_result_required_structure_round_trip():
+    sample = {**_SAMPLE, "required_structure": [
+        {"id": "s1", "title": "技术标（分册）", "kind": "volume", "required": True,
+         "clause_ids": ["sec-format-c1"], "source_quote": "投标文件分为技术标、商务标两个分册"},
+        {"id": "s2", "title": "密封与签章", "kind": "rule", "required": True,
+         "notes": "正本1份副本4份，密封加盖公章骑缝章"},
+    ]}
+    r = ReadResult(**sample)
+    assert [s.id for s in r.required_structure] == ["s1", "s2"]
+    assert r.required_structure[0].kind == "volume" and r.required_structure[1].kind == "rule"
+    assert r.required_structure[0].required is True and r.required_structure[0].notes == ""
+
+
 def test_submit_read_tool_captures():
     tool, get = make_submit_tool("submit_read_result", ReadResult, "提交读标结果")
     asyncio.run(tool.ainvoke(_SAMPLE))

@@ -18,6 +18,15 @@ def test_outline_groups():
     assert o.tech[0].items[1].is_new is True
 
 
+def test_outline_chapter_structure_ref_defaults_none_and_accepted():
+    """旧提纲无 structure_ref → 默认 None（向后兼容）；新提纲可显式设置对齐 required_structure（spec321）。"""
+    o = Outline(**_SAMPLE)
+    assert o.chapters[0].structure_ref is None
+    sample = {"chapters": [{**_SAMPLE["chapters"][1], "structure_ref": "s1"}]}
+    o2 = Outline(**sample)
+    assert o2.chapters[0].structure_ref == "s1"
+
+
 def test_submit_outline_captures():
     tool, get = make_submit_tool("submit_outline", Outline, "提交提纲")
     asyncio.run(tool.ainvoke(_SAMPLE))

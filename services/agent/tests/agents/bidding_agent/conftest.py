@@ -22,12 +22,14 @@ class SubmitChat:
         self.reply = reply
         self.tool_names: list[str] = []
         self.n = 0
+        self.last_messages: list = []       # 每轮入参消息（供测试断言注入的 prompt/user 内容）
 
     def bind_tools(self, tools, **kw):                # 兼容 tool_choice 强制路径
         self.tool_names = [t.name for t in tools]
         return self
 
     async def ainvoke(self, messages):
+        self.last_messages = messages
         self.n += 1
         if self.n == 1:
             name = next((n for n in self.tool_names if n in self.args_by_tool), None)
@@ -37,14 +39,18 @@ class SubmitChat:
 
 
 class SubmitGateway:
-    """每次 get_chat 给一个新 SubmitChat：各节点的子 agent 轮次互不串扰。"""
+    """每次 get_chat 给一个新 SubmitChat：各节点的子 agent 轮次互不串扰。
+    chats 记录每个创建出的 SubmitChat 实例，供测试取 last_messages 断言注入的 prompt。"""
 
     def __init__(self, args_by_tool: dict, reply: str = "done"):
         self.args_by_tool = args_by_tool
         self.reply = reply
+        self.chats: list[SubmitChat] = []
 
     def get_chat(self, **kw):
-        return SubmitChat(self.args_by_tool, self.reply)
+        chat = SubmitChat(self.args_by_tool, self.reply)
+        self.chats.append(chat)
+        return chat
 
 
 @pytest.fixture
