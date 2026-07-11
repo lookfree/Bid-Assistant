@@ -440,9 +440,9 @@ export default function ContentPage() {
           </button>
         </div>
       )}
-      {/* 头部 */}
-      <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-3">
+      {/* 头部：与其他工具页统一的卡片式标题栏 */}
+      <header className="flex flex-col gap-4 rounded-2xl border border-border bg-card px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-start gap-3">
           <div className="flex size-10 shrink-0 items-center justify-center rounded-xl gradient-brand">
             <FileText className="size-5 text-white" />
           </div>
