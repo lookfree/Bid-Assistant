@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     model_temperature: float | None = None     # None=用 provider 默认；由 App run override 下发
     model_max_tokens: int | None = None
     model_top_p: float | None = None
+    # 结构化模型链（spec319.1）：每项 {provider, model, base_url, api_key}；仅由 App run override
+    # 经 model_copy(update=...) 注入，不从 env 解析（pydantic-settings 对 list[dict] 复杂字段不读 env）。
+    model_chain: list[dict] | None = None
 
     app_callback_url: str | None = None         # App 的用量回调端点；None 则跳过（dummy/dev）
 
