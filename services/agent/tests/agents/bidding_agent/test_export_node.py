@@ -87,6 +87,37 @@ def test_export_node_rerenders_pptx_when_deck_present(monkeypatch):
     assert saved["artifacts/proj-8/bid.docx"] > 0 and saved["artifacts/proj-8/present.pptx"] > 0
 
 
+def test_export_node_adds_package_cover_line_when_run_input_package_present(monkeypatch):
+    """spec324：state.run_input.package 存在 → 渲染出的 docx 封面含「包件：《name》」一行。"""
+    from docx import Document
+    import io as io_mod
+
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+    monkeypatch.setattr(export_mod, "docx_to_pdf", lambda data: None)
+    captured = {}
+    real_render_docx = export_mod.render_docx
+
+    def _capturing_render_docx(*args, **kwargs):
+        data = real_render_docx(*args, **kwargs)
+        captured["data"] = data
+        return data
+    monkeypatch.setattr(export_mod, "render_docx", _capturing_render_docx)
+    node = make_export_node(RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-11"))
+    asyncio.run(node({
+        "outline": {"chapters": [{"id": "t1", "no": "第一章", "title": "项目理解", "group": "tech"}]},
+        "chapters": {"t1": "<p>正文</p>"},
+        "read": {"project_meta": {"name": "投标文件"}},
+        "run_input": {"package": {"id": "p1", "name": "实网攻防"}},
+    }))
+    doc = Document(io_mod.BytesIO(captured["data"]))
+    texts = "\n".join(p.text for p in doc.paragraphs)
+    assert "包件：《实网攻防》" in texts
+
+
 def test_artifacts_reducer_keeps_pptx_and_docx():
     """spec201 state.artifacts 合并 reducer：present(pptx) 与 export(docx) 并存不互相覆盖。"""
     from agent.agents.bidding_agent.state import _merge_dict

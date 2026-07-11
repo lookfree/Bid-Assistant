@@ -43,6 +43,24 @@ def test_read_result_required_structure_round_trip():
     assert r.required_structure[0].required is True and r.required_structure[0].notes == ""
 
 
+def test_read_result_packages_defaults_empty():
+    """旧读标结果无 packages 字段（单包标书）→ 默认空列表（向后兼容，spec324）。"""
+    r = ReadResult(**_SAMPLE)
+    assert r.packages == []
+
+
+def test_read_result_packages_round_trip():
+    sample = {**_SAMPLE, "packages": [
+        {"id": "p1", "name": "实网攻防", "budget": "￥800 万", "notes": "需持攻防资质",
+         "clause_ids": ["sec-overview-c3"]},
+        {"id": "p2", "name": "态势感知平台建设", "budget": "￥880 万"},
+    ]}
+    r = ReadResult(**sample)
+    assert [p.id for p in r.packages] == ["p1", "p2"]
+    assert r.packages[0].name == "实网攻防" and r.packages[0].budget == "￥800 万"
+    assert r.packages[1].notes == ""                      # 未给 notes → 默认空串
+
+
 def test_submit_read_tool_captures():
     tool, get = make_submit_tool("submit_read_result", ReadResult, "提交读标结果")
     asyncio.run(tool.ainvoke(_SAMPLE))

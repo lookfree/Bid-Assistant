@@ -5,7 +5,7 @@ from deepagents import create_deep_agent          # 全流程唯一 deepagent �
 from langchain_core.messages import HumanMessage
 from agent.models.usage import UsageCallback
 from agent.framework.create_agent import build_create_agent
-from agent.agents.bidding_agent.nodes.common import slim_read
+from agent.agents.bidding_agent.nodes.common import slim_read, package_scope
 from agent.agents.bidding_agent.prompts.content import (
     CONTENT_PLANNER_PROMPT, CHAPTER_WRITER_PROMPT, REWRITE_PROMPT, DEVIATION_TABLE_GUIDE)
 from agent.rag import retrieve as rag_retrieve
@@ -123,6 +123,7 @@ def make_content_node(ctx):
         mid_parts = [p for p in (deviation, ref) if p]
         mid = ("\n\n".join(mid_parts) + "\n\n") if mid_parts else ""
         user = f"{head}\n\n{mid}请逐章生成正文，每章写入 chapters/<章id>.html。"
+        user += package_scope(state.get("run_input"))  # 选包时追加范围约束（spec324）
         # recursion_limit 放宽：10 章 ×（task 派发 + write_file）远超默认 25 步；
         # UsageCallback 补记 token（deepagent 直驱模型，不经 make_agent_node 埋点）。
         res = await deep.ainvoke(

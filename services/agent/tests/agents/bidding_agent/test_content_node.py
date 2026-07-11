@@ -225,3 +225,23 @@ def test_content_node_unchanged_when_rag_disabled(monkeypatch):
                 f"读标依据：\n{json.dumps(slim_read({}), ensure_ascii=False)}\n\n"
                 f"请逐章生成正文，每章写入 chapters/<章id>.html。")
     assert captured["user"] == expected
+
+
+def test_content_node_with_package_injects_scope_constraint(monkeypatch):
+    """run_input.package 存在 → 用户消息末尾追加包件范围约束（spec324）。"""
+    captured = {}
+
+    class _CapturingDeep(_FakeDeep):
+        async def ainvoke(self, _input, config=None):
+            captured["user"] = _input["messages"][0].content
+            return await super().ainvoke(_input, config)
+
+    files = {"/chapters/t1.html": {"content": "<p>…</p>"}}
+    monkeypatch.setattr(content_mod, "create_deep_agent", lambda **kw: _CapturingDeep(files))
+    outline = {"chapters": [{"id": "t1", "title": "需求理解", "items": []}]}
+    node = content_mod.make_content_node(_ctx())
+    asyncio.run(node({"outline": outline, "read": {},
+                       "run_input": {"package": {"id": "p1", "name": "实网攻防"}}}))
+    assert "本项目仅投包件《实网攻防》(p1)" in captured["user"]
+    assert "涉及分包件评分表/偏离表仅取该包件" in captured["user"]
+    assert captured["user"].endswith("该包件。")

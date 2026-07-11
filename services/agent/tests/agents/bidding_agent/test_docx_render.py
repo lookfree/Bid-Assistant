@@ -50,3 +50,27 @@ def test_render_docx_has_real_toc_and_page_number_fields():
     assert "在 Word 中按 F9 更新目录" in document_xml       # 保留人工提示文案
     assert "PAGE" in footer_xml                            # 页脚 PAGE 域
     assert "某项目 投标文件" in header_xml                  # 页眉=项目名
+
+
+def test_render_docx_without_package_byte_identical():
+    """spec324：不传 package（未选包/单包）→ 输出与今天逐字节一致（无「包件：」行）。"""
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]}
+    meta = {"name": "某项目 投标文件", "buyer": "某局"}
+    without_kw = render_docx(outline, {"t1": "<p>正文</p>"}, meta=meta)
+    without_default = render_docx(outline, {"t1": "<p>正文</p>"}, meta=meta, package=None)
+    assert without_kw == without_default
+    doc = Document(io.BytesIO(without_kw))
+    texts = "\n".join(p.text for p in doc.paragraphs)
+    assert "包件：" not in texts
+
+
+def test_render_docx_with_package_adds_cover_line():
+    """spec324：package 存在 → 封面项目名下加「包件：《name》」一行。"""
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]}
+    meta = {"name": "某项目 投标文件", "buyer": "某局"}
+    data = render_docx(outline, {"t1": "<p>正文</p>"}, meta=meta,
+                        package={"id": "p1", "name": "实网攻防"})
+    doc = Document(io.BytesIO(data))
+    texts = [p.text for p in doc.paragraphs]
+    assert "包件：《实网攻防》" in texts
+    assert texts.index("包件：《实网攻防》") < texts.index("采购人：某局")  # 位于项目名之下、其它信息之上

@@ -44,12 +44,23 @@ class StructureItem(BaseModel):
     source_quote: str = ""
 
 
+class PackageInfo(BaseModel):
+    """包件/标段信息（spec324）：多包件招标逐包抽取（id/名称/预算或限价/关键差异 notes）；
+    单包标书留空，不臆造。"""
+    id: str                                       # p1, p2...
+    name: str
+    budget: str = ""                               # 该包预算或最高限价
+    notes: str = ""                                # 该包关键差异（范围/资质要求等，简要）
+    clause_ids: list[str] = Field(default_factory=list)
+
+
 class ReadResult(BaseModel):
     project_meta: dict = Field(default_factory=dict)        # name/code/buyer/budget/deadline...
     categories: list[ReadCategory]
     scoring: list[ScoringRow] = Field(default_factory=list)
     risk_summary: list[str] = Field(default_factory=list)   # 废标红线汇总
     required_structure: list[StructureItem] = Field(default_factory=list)  # 投标文件构成清单（spec321）
+    packages: list[PackageInfo] = Field(default_factory=list)  # 包件划分（spec324），单包标书留空
 
 
 class OutlineItem(BaseModel):
