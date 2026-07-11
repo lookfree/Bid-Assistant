@@ -141,6 +141,71 @@ def test_content_node_gate_exception_does_not_break_generation(monkeypatch):
     assert "【参考资料·仅供撰写引用】" not in captured["user"]
 
 
+def test_content_node_deviation_chapter_by_title_injects_guide_and_full_items(monkeypatch):
+    """章标题含「偏离」⇒ 用户消息含【偏离表指引】+ technical/commercial/qualification 全量条目（含 star）。"""
+    captured = {}
+
+    class _CapturingDeep(_FakeDeep):
+        async def ainvoke(self, _input, config=None):
+            captured["user"] = _input["messages"][0].content
+            return await super().ainvoke(_input, config)
+
+    files = {"/chapters/t9.html": {"content": "<table>…</table>"}}
+    monkeypatch.setattr(content_mod, "create_deep_agent", lambda **kw: _CapturingDeep(files))
+    read = {
+        "categories": [
+            {"key": "technical", "title": "技术需求", "items": [
+                {"title": "SLA 要求", "value": "4h 响应", "clause_ids": ["sec-1-c1"],
+                 "star": True, "source_quote": "原文不该进偏离表全量条目块"},
+            ]},
+            {"key": "commercial", "title": "商务条款", "items": [
+                {"title": "质保期", "value": "3 年", "clause_ids": ["sec-2-c1"], "star": False},
+            ]},
+            {"key": "qualification", "title": "资格要求", "items": [
+                {"title": "ISO27001", "value": "须持有", "clause_ids": ["sec-3-c1"], "star": True},
+            ]},
+            {"key": "overview", "title": "项目概述", "items": [
+                {"title": "项目名称", "value": "某系统建设", "clause_ids": []},
+            ]},
+        ],
+    }
+    outline = {"chapters": [{"id": "t9", "title": "技术偏离表", "group": "tech"}]}
+    node = content_mod.make_content_node(_ctx())
+    asyncio.run(node({"outline": outline, "read": read}))
+    user = captured["user"]
+    assert "【偏离表指引】" in user
+    marker = "全量条目（供偏离表逐条落表，不得遗漏 ★/▲）：\n"
+    block = user.split(marker, 1)[1].split("\n\n请逐章生成", 1)[0]
+    assert "SLA 要求" in block and '"star": true' in block
+    assert "质保期" in block and "ISO27001" in block
+    assert "项目名称" not in block                     # overview 分类不进偏离全量块
+    assert "原文不该进偏离表全量条目块" not in user     # 全量块（及全消息）不含 source_quote
+    assert user.index("读标依据") < user.index("【偏离表指引】") < user.index("请逐章生成")
+
+
+def test_content_node_deviation_chapter_by_structure_ref_triggers(monkeypatch):
+    """章标题不含「偏离」，但 structure_ref 指向标题含「偏离」的构成项 ⇒ 同样触发。"""
+    captured = {}
+
+    class _CapturingDeep(_FakeDeep):
+        async def ainvoke(self, _input, config=None):
+            captured["user"] = _input["messages"][0].content
+            return await super().ainvoke(_input, config)
+
+    files = {"/chapters/b3.html": {"content": "<table>…</table>"}}
+    monkeypatch.setattr(content_mod, "create_deep_agent", lambda **kw: _CapturingDeep(files))
+    read = {
+        "categories": [{"key": "commercial", "title": "商务条款",
+                        "items": [{"title": "付款方式", "value": "验收后付", "star": False}]}],
+        "required_structure": [{"id": "s2", "title": "商务偏离表", "kind": "form", "required": True}],
+    }
+    outline = {"chapters": [{"id": "b3", "title": "响应清单", "group": "business", "structure_ref": "s2"}]}
+    node = content_mod.make_content_node(_ctx())
+    asyncio.run(node({"outline": outline, "read": read}))
+    assert "【偏离表指引】" in captured["user"]
+    assert "付款方式" in captured["user"]
+
+
 def test_content_node_unchanged_when_rag_disabled(monkeypatch):
     """硬不变式：RAG 不生效（无 user_id）→ user 消息与今天逐字节一致；
     用真实（未打桩）rag_retrieve，验证短路路径本身不发起任何网络调用。"""
