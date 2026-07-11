@@ -88,19 +88,29 @@ export const adminApi = {
     auditLogs: (p: { page?: number; pageSize?: number } = {}) => req<Paged<ApiAuditLog>>(`/audit-logs${qs(p)}`),
     rbac: () => req<{ permissions: string[]; roles: Record<string, string[]> }>("/rbac"),
   },
-  // 模型管理（spec319）：GET/PUT 整份 {models,chain}（camelCase），POST /test 单独探测一个模型。
+  // 模型管理（spec319 + spec319.1）：GET/PUT 整份 {models,chain}（camelCase），POST /test 单独探测
+  // 一个模型（自建端点加 base_url/api_key），POST /list-models 拉自建端点可用模型列表。
   models: {
     get: () => req<ModelConfig>("/models"),
     save: (cfg: ModelConfig) => req<{ ok: true }>("/models", { method: "PUT", body: JSON.stringify(cfg) }),
     // ⚠️ /test 认 snake_case（agent 侧薄中转），PUT 认 camelCase：这里必须转换，否则参数在服务端悄悄变 {}。
-    test: (m: { provider: string; model?: string; params?: ModelParams }) =>
+    // base_url/api_key 只在自建端点探活时携带；未传（注册表模型）则不下发这两个字段。
+    test: (m: { provider: string; model?: string; params?: ModelParams; baseUrl?: string; apiKey?: string }) =>
       req<{ ok: boolean; latencyMs?: number; tokens?: number; error?: string }>("/models/test", {
         method: "POST",
         body: JSON.stringify({
           provider: m.provider,
           model: m.model,
           params: m.params ? camelToSnakeParams(m.params) : undefined,
+          base_url: m.baseUrl,
+          api_key: m.apiKey,
         }),
+      }),
+    // 自建端点连通性探针 + 拉可用模型列表：POST /list-models {baseUrl,apiKey}（camelCase，中转层不转换）。
+    listModels: (m: { baseUrl: string; apiKey: string }) =>
+      req<{ ok: boolean; models?: string[]; error?: string }>("/models/list-models", {
+        method: "POST",
+        body: JSON.stringify(m),
       }),
   },
 }

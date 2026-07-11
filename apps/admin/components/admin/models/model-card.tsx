@@ -11,6 +11,7 @@ import {
   X,
   Trash2,
   PlusCircle,
+  Download,
 } from "lucide-react"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -25,13 +26,16 @@ import {
 } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { adminApi } from "@/lib/admin-api"
 import { ParamView, ParamEdit } from "./param-field"
 import {
   PROVIDER_OPTIONS,
-  PROVIDER_LABELS,
+  providerLabel,
+  modelDisplayName,
   canEnable,
   canAddToChain,
   resetTestOnEdit,
+  isCustomEntry,
   type ModelEntry,
 } from "@/lib/model-config"
 
@@ -39,6 +43,7 @@ const PROVIDER_LOGO: Record<string, { short: string; className: string }> = {
   deepseek: { short: "DS", className: "bg-primary text-primary-foreground" },
   qwen: { short: "通", className: "bg-amber-500 text-white" },
   glm: { short: "智", className: "bg-sky-500 text-white" },
+  custom: { short: "自", className: "bg-neutral-600 text-white" },
 }
 
 type CardProps = {
@@ -69,7 +74,11 @@ export function ModelCard({ model, isNew, inChain, testing, tokens, busy, onTest
 
   function commit() {
     const changed =
-      draft.provider !== model.provider || draft.model !== model.model || JSON.stringify(draft.params) !== JSON.stringify(model.params)
+      draft.provider !== model.provider ||
+      draft.model !== model.model ||
+      draft.baseUrl !== model.baseUrl ||
+      draft.apiKey !== model.apiKey ||
+      JSON.stringify(draft.params) !== JSON.stringify(model.params)
     onSave(changed ? resetTestOnEdit(draft) : draft)
     setEditing(false)
   }
@@ -91,6 +100,7 @@ export function ModelCard({ model, isNew, inChain, testing, tokens, busy, onTest
 
       <CardContent className="flex flex-col gap-3 px-4">
         <ParamsGrid editing={editing} model={model} draft={draft} setDraft={setDraft} />
+        {editing && isCustomEntry(draft) && <CustomEndpointFields draft={draft} setDraft={setDraft} />}
         <TestLine model={model} inChain={inChain} tokens={tokens} />
 
         <div className="flex items-center justify-between gap-2 border-t border-border pt-3">
@@ -127,6 +137,7 @@ function ProviderIdentity({
   setDraft: (updater: (d: ModelEntry) => ModelEntry) => void
 }) {
   const logo = PROVIDER_LOGO[model.provider] ?? PROVIDER_LOGO.deepseek
+  const subtitle = !model.model ? "（未填模型名）" : model.baseUrl ? modelDisplayName(model) : model.model
   return (
     <div className="flex items-center gap-2.5">
       <div className={`flex size-9 shrink-0 items-center justify-center rounded-lg text-xs font-bold ${logo.className}`}>
@@ -134,7 +145,7 @@ function ProviderIdentity({
       </div>
       {editing ? (
         <div className="flex flex-col gap-1">
-          <Select value={draft.provider} onValueChange={(v) => setDraft((d) => ({ ...d, provider: (v ?? d.provider) as ModelEntry["provider"] }))}>
+          <Select value={draft.provider} onValueChange={(v) => v && setDraft((d) => switchProvider(d, v))}>
             <SelectTrigger className="h-7 w-36">
               <SelectValue />
             </SelectTrigger>
@@ -155,12 +166,21 @@ function ProviderIdentity({
         </div>
       ) : (
         <div>
-          <div className="text-sm font-semibold text-foreground">{PROVIDER_LABELS[model.provider]}</div>
-          <div className="text-xs text-muted-foreground">{model.model || "（未填模型名）"}</div>
+          <div className="text-sm font-semibold text-foreground">{providerLabel(model.provider)}</div>
+          <div className="text-xs text-muted-foreground">{subtitle}</div>
         </div>
       )}
     </div>
   )
+}
+
+// provider 切到「custom」：清空 model（自建模型名与注册表不通用，避免带着旧值误导）；
+// 切离 custom：清掉自建专属字段（baseUrl/apiKey/apiKeyHint），避免残留 baseUrl 让服务端仍判定为自建条目。
+// 测试状态的失效交给 commit() 里既有的 diff 逻辑（provider 变了即视为 changed），这里不用重复处理。
+function switchProvider(d: ModelEntry, nextProvider: string): ModelEntry {
+  if (nextProvider === d.provider) return d
+  if (nextProvider === "custom") return { ...d, provider: nextProvider, model: "" }
+  return { ...d, provider: nextProvider, baseUrl: undefined, apiKey: undefined, apiKeyHint: undefined }
 }
 
 // 三个参数（temperature/max_tokens/top_p）：只读展示 or 编辑输入框，取决于 editing。
@@ -327,5 +347,109 @@ function AddToChainRow({ model, inChain, onAddToChain }: { model: ModelEntry; in
       <PlusCircle data-icon="inline-start" />
       加入运行编排
     </Button>
+  )
+}
+
+// 自建端点专属字段（仅编辑态 + 自建模式渲染）：base_url + api_key 输入、拉取可用模型下拉。
+// 下拉选中项与卡片头手填的 model 输入写同一个 draft.model 字段——二者并存，谁后写生效。
+function CustomEndpointFields({
+  draft,
+  setDraft,
+}: {
+  draft: ModelEntry
+  setDraft: (updater: (d: ModelEntry) => ModelEntry) => void
+}) {
+  const [models, setModels] = useState<string[]>([])
+  const [fetching, setFetching] = useState(false)
+  const [fetchError, setFetchError] = useState<string | null>(null)
+
+  async function fetchModels() {
+    if (!draft.baseUrl || !draft.apiKey) return
+    setFetching(true)
+    setFetchError(null)
+    try {
+      const res = await adminApi.models.listModels({ baseUrl: draft.baseUrl, apiKey: draft.apiKey })
+      if (res.ok && res.models) setModels(res.models)
+      else setFetchError(res.error ?? "拉取失败，请检查 URL / Key")
+    } catch {
+      setFetchError("请求失败，请重试")
+    } finally {
+      setFetching(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-dashed border-border p-3">
+      <div className="grid gap-2 sm:grid-cols-2">
+        <LabeledInput
+          label="Base URL"
+          placeholder="http://host:port/v1"
+          value={draft.baseUrl ?? ""}
+          onChange={(v) => setDraft((d) => ({ ...d, baseUrl: v || undefined }))}
+        />
+        <LabeledInput
+          label="API Key"
+          type="password"
+          placeholder={draft.apiKeyHint ? `当前 ${draft.apiKeyHint}，留空则不修改` : "sk-..."}
+          value={draft.apiKey ?? ""}
+          onChange={(v) => setDraft((d) => ({ ...d, apiKey: v || undefined }))}
+        />
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          type="button"
+          disabled={!draft.baseUrl || !draft.apiKey || fetching}
+          onClick={fetchModels}
+        >
+          {fetching ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <Download data-icon="inline-start" />}
+          拉取可用模型
+        </Button>
+        {models.length > 0 && (
+          <Select value={draft.model || undefined} onValueChange={(v) => v && setDraft((d) => ({ ...d, model: v }))}>
+            <SelectTrigger className="h-8 w-56">
+              <SelectValue placeholder="从拉取结果中选择" />
+            </SelectTrigger>
+            <SelectContent>
+              {models.map((id) => (
+                <SelectItem key={id} value={id}>
+                  {id}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+      </div>
+      {fetchError && <p className="text-xs text-destructive">{fetchError}</p>}
+    </div>
+  )
+}
+
+// 两输入字段（Base URL / API Key）共用的小号 label+input 组合。
+function LabeledInput({
+  label,
+  value,
+  placeholder,
+  onChange,
+  type = "text",
+}: {
+  label: string
+  value: string
+  placeholder?: string
+  onChange: (v: string) => void
+  type?: string
+}) {
+  return (
+    <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+      {label}
+      <Input
+        className="h-8 text-xs"
+        type={type}
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </label>
   )
 }

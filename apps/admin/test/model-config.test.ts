@@ -10,6 +10,9 @@ import {
   persistedChainFor,
   chainSummary,
   saveErrorMessage,
+  providerLabel,
+  modelDisplayName,
+  isCustomEntry,
   type ModelEntry,
   type ModelConfig,
 } from "../lib/model-config"
@@ -134,6 +137,42 @@ describe("spec319 model-config: chainSummary", () => {
     expect(chainSummary(cfg)).toBe(
       "当前生效：DeepSeek deepseek-chat，失败依次降级 通义千问 qwen-plus → 智谱 GLM glm-4-flash",
     )
+  })
+})
+
+describe("spec319.1 model-config: providerLabel", () => {
+  it("已知 provider → 对应中文标签", () => {
+    expect(providerLabel("deepseek")).toBe("DeepSeek")
+    expect(providerLabel("custom")).toBe("自建 (OpenAI 兼容)")
+  })
+  it("未知 provider → 兜底「自建」", () => {
+    expect(providerLabel("some-unknown-provider")).toBe("自建")
+  })
+})
+
+describe("spec319.1 model-config: isCustomEntry", () => {
+  it("provider 为 custom → 自建", () => {
+    expect(isCustomEntry({ provider: "custom", baseUrl: undefined })).toBe(true)
+  })
+  it("带 baseUrl → 自建（即使 provider 还是别的值）", () => {
+    expect(isCustomEntry({ provider: "deepseek", baseUrl: "http://h:8000/v1" })).toBe(true)
+  })
+  it("注册表条目（无 baseUrl，非 custom）→ 不是自建", () => {
+    expect(isCustomEntry({ provider: "qwen", baseUrl: undefined })).toBe(false)
+  })
+})
+
+describe("spec319.1 model-config: modelDisplayName", () => {
+  it("自建条目（带 baseUrl）→ `model @ host`", () => {
+    const m = entry({ provider: "custom", model: "qwen2.5-72b", baseUrl: "http://192.168.1.10:8000/v1" })
+    expect(modelDisplayName(m)).toBe("qwen2.5-72b @ 192.168.1.10:8000")
+  })
+  it("注册表条目 → `label model`（与旧展示逐字节一致）", () => {
+    expect(modelDisplayName(entry())).toBe("DeepSeek deepseek-chat")
+  })
+  it("baseUrl 格式异常 → 回退 `label model` 格式", () => {
+    const m = entry({ provider: "custom", model: "x", baseUrl: "not-a-url" })
+    expect(modelDisplayName(m)).toBe("自建 (OpenAI 兼容) x")
   })
 })
 
