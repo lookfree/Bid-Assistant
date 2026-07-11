@@ -14,6 +14,31 @@ from agent.rag import retrieve as rag_retrieve
 
 logger = logging.getLogger(__name__)
 
+# 分段读标阈值：条款数超过此值时,完整 ReadResult(逐条 technical)必然顶穿模型 8k 输出上限
+# (南瑞 4 文件标实测:两轮压缩重试仍 length 截断)——拆两轮提交,节点内合并。
+SEGMENT_CLAUSE_THRESHOLD = 200
+
+_PASS1_HINT = ("\n\n本轮为分段提交第 1/2 轮：只填 overview/qualification/commercial/format 四类、"
+               "project_meta、scoring、risk_summary、required_structure、packages；"
+               "categories 中不要包含 technical(技术需求下一轮单独提交)。")
+_PASS2_HINT = ("\n\n本轮为分段提交第 2/2 轮：categories 只包含 technical 一类(逐条覆盖技术规格,"
+               "带★/▲必须单列)；其余字段(project_meta/scoring/risk_summary/required_structure/packages)"
+               "一律给空值/空列表——它们已在上一轮提交,本轮不要重复。")
+
+
+async def _segmented_read(ctx, user: str) -> ReadResult:
+    """大标书分段读标：两轮 forced-submit(各自带截断压缩重试),合并为一份 ReadResult。
+    第 1 轮交除 technical 外的全部字段,第 2 轮只交 technical 逐条——单轮输出压进 8k 上限。"""
+    pass1 = await run_submit_agent(
+        ctx, READ_SYSTEM_PROMPT, user + _PASS1_HINT,
+        "submit_read_result", ReadResult, "提交读标结构化结果(第1/2轮,不含 technical)")
+    pass2 = await run_submit_agent(
+        ctx, READ_SYSTEM_PROMPT, user + _PASS2_HINT,
+        "submit_read_result", ReadResult, "提交读标结构化结果(第2/2轮,仅 technical)")
+    tech = [c for c in pass2.categories if c.key == "technical"]
+    merged = [c for c in pass1.categories if c.key != "technical"] + tech
+    return pass1.model_copy(update={"categories": merged})
+
 
 async def _index_tender(ctx, run_input: dict, clauses: list[dict]) -> None:
     """best-effort 索引招标条款分句供 RAG 检索（spec316 A2）：条款已是天然分块，不再过 chunker。
@@ -90,10 +115,13 @@ def make_read_node(ctx):
         # 条款已预解析注入 ⇒ 无需 parse_document 工具，走 _forced_submit 强制提交路径——
         # 它带截断重试（大标书读标输出撞 max_tokens 实测：图路径截断=单轮即失败，无法恢复）。
         # 仅预解析失败（clauses 空）才带工具走图路径，让模型自己调 parse_document 兜底。
-        result = await run_submit_agent(
-            ctx, READ_SYSTEM_PROMPT, user,
-            "submit_read_result", ReadResult, "提交读标结构化结果",
-            extra_tools=None if clauses else [parse_document_tool])
+        if len(clauses) > SEGMENT_CLAUSE_THRESHOLD:
+            result = await _segmented_read(ctx, user)   # 大标书:两轮分段提交(输出上限硬约束)
+        else:
+            result = await run_submit_agent(
+                ctx, READ_SYSTEM_PROMPT, user,
+                "submit_read_result", ReadResult, "提交读标结构化结果",
+                extra_tools=None if clauses else [parse_document_tool])
         await _index_tender(ctx, state.get("run_input") or {}, clauses)
         return {"read": {**result.model_dump(), "doc_sections": clauses, **extra}}
     return read_node
