@@ -168,6 +168,18 @@ describe("/api/projects 按步编排", () => {
     expect(reads[0]!.status).toBe("done")
   })
 
+  it("currentStep=done 时允许重跑 export（渲染升级后重新出文件）；其它步仍 409", async () => {
+    // 独立项目验门（不碰共享项目的流水线状态）
+    const [p3] = await getDb()
+      .insert(bidProjects)
+      .values({ userId, threadId: `proj-${crypto.randomUUID()}`, currentStep: "done", status: "active" })
+      .returning()
+    const readAgain = await app.request(`/api/projects/${p3!.id}/steps/read`, { method: "POST", headers: auth() })
+    expect(readAgain.status).toBe(409) // 其它步仍被顺序门拦住
+    const rerun = await app.request(`/api/projects/${p3!.id}/steps/export`, { method: "POST", headers: auth() })
+    expect(rerun.status).not.toBe(409) // export 过了顺序门（后续 2xx/402 由计费与 mock 决定）
+  })
+
   it("再推 read（已不是当前步）→ 409", async () => {
     const res = await app.request(`/api/projects/${projectId}/steps/read`, { method: "POST", headers: auth() })
     expect(res.status).toBe(409)

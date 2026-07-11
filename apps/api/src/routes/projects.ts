@@ -354,7 +354,11 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     if (!p) return c.json({ error: "not_found" }, 404)
 
     // 跳步校验：只允许推进「当前步」（draft 项目限 read），避免与 agent checkpoint 顺序错位。
-    const allowed = p.status === "draft" ? step === "read" : step === p.currentStep
+    // done 后允许重跑 export（正常计费）：渲染器升级/模板调整后,已完成项目才能重新出文件——
+    // 否则导出入口只会一直下载 MinIO 里的旧产物。
+    const allowed = p.status === "draft"
+      ? step === "read"
+      : step === p.currentStep || (step === "export" && p.currentStep === "done")
     if (!allowed) return c.json({ error: "out_of_order", expected: p.currentStep }, 409)
 
     // spec315a 契约 3：input 扩为五键——run_input（本 run 参数）+ state_overrides（已存/已编辑结果回灌 state）。
