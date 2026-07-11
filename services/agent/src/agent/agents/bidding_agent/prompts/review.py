@@ -6,7 +6,10 @@ REVIEW_SYSTEM_PROMPT = """你是投标合规审查专家（废标体检）。把
 2. 实质性要求未明确承诺（如分级 SLA、服务期、保证金）→ 中风险（tone=warning）。
 3. 业绩/资质举证不足、价格构成缺失 → 中风险。
 4. 查重：章节间是否大段重复/套话堆砌 → 中风险提示。
-5. 已满足项归入 passed_items。
+5. 程序性格式红线（读标 format 分类）：招标要求编入投标文件的表单（偏离表/报价一览/声明承诺）在提纲与正文中
+   缺章 → 高风险；份数/装订/密封封套书写/签字盖章/递交方式等操作性要求 → 若正文未体现响应，出一条中风险
+   汇总提醒（逐项列出待人工核对的操作要求，勿逐条刷屏）。
+6. 已满足项归入 passed_items。
 对每条风险给 chapter_title、tender_ref（"对应：…"）、advice、target_tab(tech/business)、target_id(章id)。
 字段取值必须严格合规：level 只能取「高风险」或「中风险」；tone 只能取 destructive（高风险）或 warning（中风险）；
 target_tab 只能取 tech 或 business；score 为 0–100 整数。
