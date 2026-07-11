@@ -51,25 +51,27 @@ export type SlideStyle = {
 }
 
 export const slideStyles: SlideStyle[] = [
+  // 色块对齐 PPT 渲染器实际输出（render/pptx.py 设计令牌），不要用品牌色——品牌是红的，
+  // 「商务蓝」曾套 gradient-brand 导致选择器里显示红色（用户实测困惑）。
   {
     id: "blue",
     name: "商务蓝",
-    swatch: "gradient-brand",
-    coverBg: "gradient-brand",
-    bar: "gradient-brand",
-    dot: "bg-primary",
-    chip: "bg-primary/10 text-primary",
-    accent: "text-primary",
+    swatch: "bg-blue-800",
+    coverBg: "bg-blue-800",
+    bar: "bg-blue-600",
+    dot: "bg-blue-600",
+    chip: "bg-blue-600/10 text-blue-700",
+    accent: "text-blue-700",
   },
   {
     id: "tech",
     name: "科技感",
-    swatch: "bg-slate-900",
-    coverBg: "bg-slate-900",
-    bar: "bg-cyan-500",
-    dot: "bg-cyan-500",
-    chip: "bg-cyan-500/10 text-cyan-600",
-    accent: "text-cyan-600",
+    swatch: "bg-teal-700",
+    coverBg: "bg-teal-700",
+    bar: "bg-teal-500",
+    dot: "bg-teal-500",
+    chip: "bg-teal-500/10 text-teal-700",
+    accent: "text-teal-700",
   },
   {
     id: "gov",
