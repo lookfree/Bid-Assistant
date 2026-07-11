@@ -96,3 +96,28 @@ async def test_no_tool_call_at_all_gives_up_immediately():
         await run_submit_agent(ctx, "sys", "user", "submit_x", Toy, "desc")
 
     assert chat.n == 1
+
+
+async def test_truncated_output_retries_with_compression_hint():
+    """回归（南瑞 4 文件标实测）：输出撞 max_tokens（finish_reason=length）且 tool_calls/
+    invalid_tool_calls 双空——此前被当"没提交"一次放弃；应喂回压缩指令重试。"""
+    truncated = AIMessage(content="……（被截断的长输出", response_metadata={"finish_reason": "length"})
+    chat = _ScriptedChat([truncated, _valid_call(x=7)])
+    ctx = _ctx(_ScriptedGateway(chat))
+
+    result = await run_submit_agent(ctx, "sys", "user", "submit_x", Toy, "desc")
+
+    assert isinstance(result, Toy) and result.x == 7
+    assert chat.n == 2
+
+
+async def test_truncated_output_exhausts_attempts_then_raises():
+    """连续截断用尽预算 → 仍抛"未提交"（不无限重试）。"""
+    truncated = AIMessage(content="x", response_metadata={"finish_reason": "length"})
+    chat = _ScriptedChat([truncated, truncated, truncated])
+    ctx = _ctx(_ScriptedGateway(chat))
+
+    with pytest.raises(RuntimeError, match="未通过.*提交"):
+        await run_submit_agent(ctx, "sys", "user", "submit_x", Toy, "desc")
+
+    assert chat.n == 3

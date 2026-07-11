@@ -112,4 +112,13 @@ async def _forced_submit(ctx, prompt: str, user_msg: str, submit, tool_name: str
                       "只输出一个合法 JSON 对象，一次性提交，不要多余包装键或注释。")
             messages = [*messages, *_reject_msg(msg, invalid.get("id") or "invalid", reason)]
             continue
+        finish = (getattr(msg, "response_metadata", None) or {}).get("finish_reason")
+        if finish == "length":
+            # 输出撞 max_tokens 被截断（大标书读标实测：截断可致 tool_calls 与 invalid_tool_calls 双空，
+            # 此前被当"没提交"直接放弃）——喂回压缩指令重试，而非 fail-closed。
+            messages = [*messages, HumanMessage(content=(
+                "你上一次的提交因输出超过长度上限被截断，未能送达。请大幅压缩后重新提交同一结构："
+                "value 逐条精炼（≤50字）；source_quote 只保留★/▲/废标风险条目的关键句（≤40字），"
+                "其余条目一律留空；不要遗漏条目本身。"))]
+            continue
         return                           # 模型完全没产出提交调用（如 fake 模型）：交给上层抛"未提交"
