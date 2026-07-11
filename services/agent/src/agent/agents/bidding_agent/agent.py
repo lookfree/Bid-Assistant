@@ -31,8 +31,9 @@ class BiddingAgent(BaseAgent):
             except InvalidUpdateError:
                 await graph.aupdate_state(config, _resume_update(input), as_node="__start__")
             payload = None
-        else:                                        # 新标书 → 从 read 起（read 节点用 state['file_key']）
+        else:                                        # 新标书 → 从 read 起（read 节点用 state['file_key']/['files']）
             payload = {"file_key": input.get("file_key", ""),
+                       "files": input.get("files") or [],   # spec320：不播种 files，多文件路径永不触发
                        "run_input": input.get("run_input") or {}}
         # 记「本 run 实际跑过的最后一个节点」：靠流事件而非 state 真值判定——
         # 否则节点产空结果（如模型没 submit → read={}）会被当成没跑，漏发 step.done、假成功。

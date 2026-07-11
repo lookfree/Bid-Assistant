@@ -68,8 +68,10 @@ def make_read_node(ctx):
         extra: dict = {}
         if files:
             clauses, file_ranges = await _parse_multi_files(files)
+            # 全部预解析失败的兜底：列出各文件 key，模型才有 key 可调 parse_document 重试
+            keys = "、".join(f"{f.get('name', '')}(key={f.get('key', '')})" for f in files)
             user = (_multi_file_prompt(clauses, file_ranges) if clauses
-                    else "多文件招标解析均失败，请调用 parse_document 工具读标。")
+                    else f"多文件招标预解析失败，请逐个调用 parse_document 读标，文件：{keys}")
             extra["doc_files"] = file_ranges
         else:
             # boto3/解析皆同步 → 丢线程池。注意：工具兜底走的是同一个 read_and_parse——

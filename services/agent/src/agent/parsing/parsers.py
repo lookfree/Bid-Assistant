@@ -100,8 +100,12 @@ def _convert_legacy(data: bytes, ext: str) -> tuple[bytes, str]:
         with open(src, "wb") as f:
             f.write(data)
         try:
+            # 每次转换独立 UserInstallation profile：默认 profile 有单实例锁，
+            # 多个 .doc/.xls 并发转换会互相拿不到锁而静默失败（评审 Important 项）。
+            profile = os.path.join(tmp, "lo-profile")
             subprocess.run(
-                ["soffice", "--headless", "--convert-to", target_ext, "--outdir", tmp, src],
+                ["soffice", "--headless", f"-env:UserInstallation=file://{profile}",
+                 "--convert-to", target_ext, "--outdir", tmp, src],
                 timeout=60, check=True, capture_output=True,
             )
         except (subprocess.SubprocessError, OSError) as e:
