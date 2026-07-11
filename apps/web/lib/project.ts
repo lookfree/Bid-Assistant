@@ -20,6 +20,8 @@ export type ProjectInfo = {
     status: string
     currentStep: string
     tenderFileKey: string | null
+    // 已选投标包件（spec324，多包件招标才有；单包/未选包为 null，outline 及之后步骤行为不变）
+    selectedPackage: { id: string; name: string } | null
   }
   steps: ProjectStep[]
 }
@@ -70,6 +72,29 @@ export async function createProject(fileKeys: string[]): Promise<string> {
 
 export async function getProject(id: string): Promise<ProjectInfo> {
   return api.request<ProjectInfo>(`/api/projects/${id}`)
+}
+
+// 选包（spec324）：body 裸 {id,name} 设置该包，传 null 清除。只影响 outline 及之后步骤的 run_input
+// （read 步/单包标书不受影响，与后端 PATCH /:id/package 契约一致——不用 {package:...} 包一层）。
+export async function setProjectPackage(
+  projectId: string,
+  pkg: { id: string; name: string } | null,
+): Promise<void> {
+  await api.request(`/api/projects/${projectId}/package`, {
+    method: "PATCH",
+    body: JSON.stringify(pkg),
+  })
+}
+
+// 克隆项目（spec324）：兼投多个包件=另建一个项目（同一招标文件，read 步重新跑）。
+// 返回同 createProject 的 {id,threadId} 形状；同样把新 id 落 localStorage，贯穿后续工具页。
+export async function cloneProject(projectId: string): Promise<string> {
+  const { id } = await api.request<{ id: string; threadId: string }>(`/api/projects/${projectId}/clone`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  })
+  localStorage.setItem(KEY, id)
+  return id
 }
 
 // 已完成步的结果（camelCase，App 层已转）

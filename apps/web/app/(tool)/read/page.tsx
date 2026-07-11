@@ -18,13 +18,16 @@ import {
   Cpu,
   ClipboardList,
   Layers,
+  Boxes,
+  Check,
   type LucideIcon,
 } from "lucide-react"
-import type { AnalysisItem, ScoringRow, StructureItem, StructureKind } from "@/lib/bid-types"
+import type { AnalysisItem, PackageInfo, ScoringRow, StructureItem, StructureKind } from "@/lib/bid-types"
 import { useStep } from "@/lib/use-step"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import { clauseLocationIn, groupDocSections, type DocSentence } from "@/lib/doc-sections"
+import { cloneProject, setProjectPackage } from "@/lib/project"
 
 // 分类解读类目 icon（agent 结果只带 key，不产 UI 组件），未知 key 兜底 FileText
 const CATEGORY_ICONS: Record<string, LucideIcon> = {
@@ -59,6 +62,8 @@ type RealRead = {
   docSections?: DocSentence[]
   /** 投标文件构成清单（spec321），旧项目读标结果无该字段 */
   requiredStructure?: StructureItem[]
+  /** 包件划分（spec324），单包标书为空/缺省 */
+  packages?: PackageInfo[]
 }
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepBanner } from "@/components/tool/step-banner"
@@ -97,6 +102,43 @@ export default function ReadPage() {
   )
   const scoringTable = real?.scoring ?? []
   const requiredStructure = real?.requiredStructure ?? []
+  const packages = real?.packages ?? []
+
+  // 已选包件（spec324）：初值取项目详情的 selectedPackage，用户可随时重选。
+  const [selectedPackageId, setSelectedPackageId] = useState<string | null>(null)
+  useEffect(() => {
+    setSelectedPackageId(info?.project.selectedPackage?.id ?? null)
+  }, [info])
+  const [pkgState, setPkgState] = useState<"idle" | "saving" | "saved" | "error">("idle")
+  const [pkgMessage, setPkgMessage] = useState("")
+  async function selectPackage(pkg: PackageInfo) {
+    if (!projectId || pkgState === "saving") return
+    setPkgState("saving")
+    try {
+      await setProjectPackage(projectId, { id: pkg.id, name: pkg.name })
+      setSelectedPackageId(pkg.id)
+      setPkgMessage(`已选择包件：${pkg.name}（提纲及后续步骤将只覆盖该包件）`)
+      setPkgState("saved")
+      setTimeout(() => setPkgState((s) => (s === "saved" ? "idle" : s)), 3000)
+    } catch {
+      setPkgState("error")
+    }
+  }
+
+  // 兼投多包件：另建项目（同一招标文件，read 步重新跑）。
+  const [cloneState, setCloneState] = useState<"idle" | "cloning" | "error">("idle")
+  async function handleClone() {
+    if (!projectId || cloneState === "cloning") return
+    setCloneState("cloning")
+    try {
+      await cloneProject(projectId)
+      // 目标仍是 /read（当前路由）：router.push 到相同路径不会重新挂载组件，
+      // useStep 的 projectId 初始 state 不会重读 localStorage；改整页跳转确保新项目 id 生效。
+      window.location.href = "/read"
+    } catch {
+      setCloneState("error")
+    }
+  }
   // 左栏原文：read 结果带分句时按 id 前缀分组渲染真实原文
   const docSections = useMemo(
     () => (real?.docSections?.length ? groupDocSections(real.docSections) : []),
@@ -244,6 +286,21 @@ export default function ReadPage() {
             </Link>
           </div>
         </div>
+      )}
+
+      {/* 多包件招标选包（spec324）：≤1 包不渲染，行为与今天一致 */}
+      {packages.length > 1 && (
+        <PackageSelector
+          packages={packages}
+          selectedId={selectedPackageId}
+          saving={pkgState === "saving"}
+          message={pkgState === "saved" ? pkgMessage : null}
+          error={pkgState === "error" ? "选择包件失败，请重试" : null}
+          onSelect={(pkg) => void selectPackage(pkg)}
+          onClone={() => void handleClone()}
+          cloning={cloneState === "cloning"}
+          cloneError={cloneState === "error" ? "创建新项目失败，请重试" : null}
+        />
       )}
 
       <div className="mt-5 grid gap-5 lg:grid-cols-2">
@@ -494,5 +551,84 @@ export default function ReadPage() {
         <ArrowRight className="size-4" />
       </Link>
     </div>
+  )
+}
+
+/* 多包件招标选包卡（spec324）：单选卡片组，选中 → PATCH 选包；下方「再建一个项目」= 兼投多包件的分开制作入口。 */
+function PackageSelector({
+  packages,
+  selectedId,
+  saving,
+  message,
+  error,
+  onSelect,
+  onClone,
+  cloning,
+  cloneError,
+}: {
+  packages: PackageInfo[]
+  selectedId: string | null
+  saving: boolean
+  message: string | null
+  error: string | null
+  onSelect: (pkg: PackageInfo) => void
+  onClone: () => void
+  cloning: boolean
+  cloneError: string | null
+}) {
+  return (
+    <section className="mt-5 rounded-2xl border border-border bg-card">
+      <header className="flex items-center gap-2 border-b border-border px-5 py-3.5">
+        <Boxes className="size-4 shrink-0 text-primary" />
+        <span className="text-sm font-semibold text-foreground">选择投标包件</span>
+        <span className="ml-auto text-xs text-muted-foreground">本项目为多包件招标，请选择投哪个包</span>
+      </header>
+      <div className="flex flex-col gap-2 px-4 py-4">
+        {packages.map((pkg) => {
+          const selected = selectedId === pkg.id
+          return (
+            <button
+              key={pkg.id}
+              onClick={() => onSelect(pkg)}
+              disabled={saving}
+              className={`flex items-start justify-between gap-3 rounded-xl border p-3 text-left transition-colors disabled:opacity-60 ${
+                selected ? "border-primary/50 gradient-brand-soft" : "border-border bg-background hover:border-primary/30"
+              }`}
+            >
+              <span className="min-w-0 flex-1">
+                <span className="flex flex-wrap items-center gap-1.5 text-sm font-medium text-foreground">
+                  {pkg.name}
+                  {pkg.budget && (
+                    <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+                      {pkg.budget}
+                    </span>
+                  )}
+                </span>
+                {pkg.notes && <span className="mt-1 block text-xs text-muted-foreground">{pkg.notes}</span>}
+              </span>
+              {selected ? (
+                <Check className="mt-0.5 size-4 shrink-0 text-primary" />
+              ) : (
+                <span className="mt-0.5 size-4 shrink-0 rounded-full border border-border" />
+              )}
+            </button>
+          )
+        })}
+        {message && <p className="text-xs font-medium text-success">{message}</p>}
+        {error && <p className="text-xs font-medium text-destructive">{error}</p>}
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-4 py-3">
+        <p className="text-xs text-muted-foreground">兼投多个包件需分开制作投标文件</p>
+        <button
+          onClick={onClone}
+          disabled={cloning}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-60"
+        >
+          {cloning && <Loader2 className="size-3.5 animate-spin" />}
+          要投多个包件？再建一个项目
+        </button>
+      </div>
+      {cloneError && <p className="px-4 pb-3 text-xs font-medium text-destructive">{cloneError}</p>}
+    </section>
   )
 }
