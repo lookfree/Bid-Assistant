@@ -1,4 +1,5 @@
 import io
+import zipfile
 from docx import Document
 from agent.agents.bidding_agent.render.docx import render_docx
 
@@ -31,3 +32,21 @@ def test_render_docx_handles_ragged_table_and_container():
     texts = [p.text for p in doc.paragraphs]
     assert "标题" in texts and "正文" in texts        # div 内结构保留（各自成段）
     assert doc.tables[0].rows[1].cells[1].text == "c"  # 参差行不越界
+
+
+def test_render_docx_has_real_toc_and_page_number_fields():
+    """spec323：目录不是静态文本而是真域（Word 打开按 F9 更新）；页脚是居中 PAGE 域页码。"""
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]}
+    data = render_docx(outline, {"t1": "<p>正文</p>"}, meta={"name": "某项目 投标文件"})
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    document_xml = zf.read("word/document.xml").decode("utf-8")
+    footer_xml = "".join(
+        zf.read(n).decode("utf-8") for n in zf.namelist() if n.startswith("word/footer")
+    )
+    header_xml = "".join(
+        zf.read(n).decode("utf-8") for n in zf.namelist() if n.startswith("word/header")
+    )
+    assert 'TOC \\o "1-3" \\h \\z \\u' in document_xml     # 真 TOC 域 instrText
+    assert "在 Word 中按 F9 更新目录" in document_xml       # 保留人工提示文案
+    assert "PAGE" in footer_xml                            # 页脚 PAGE 域
+    assert "某项目 投标文件" in header_xml                  # 页眉=项目名

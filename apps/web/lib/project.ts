@@ -152,8 +152,8 @@ export async function rewriteChapter(
   })
 }
 
-// 产物预签名下载 URL（docx/pptx），浏览器直下 MinIO。
-export async function artifactUrl(id: string, kind: "docx" | "pptx"): Promise<string> {
+// 产物预签名下载 URL（docx/pptx/pdf，pdf 为 spec323 best-effort 转换产物，可能不存在），浏览器直下 MinIO。
+export async function artifactUrl(id: string, kind: "docx" | "pptx" | "pdf"): Promise<string> {
   const { url } = await api.request<{ url: string }>(`/api/projects/${id}/artifacts/${kind}`)
   return url
 }

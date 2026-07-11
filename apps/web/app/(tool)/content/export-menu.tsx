@@ -12,12 +12,14 @@ const exportScopes: { id: BidType; name: string; desc: string; icon: React.Eleme
   { id: "full", name: "标书全文", desc: "技术标 + 商务标合并导出", icon: Layers },
 ]
 
-/** 导出菜单弹层：选择范围 / 格式 + 积分预估确认。 */
+/** 导出菜单弹层：选择范围 / 格式 + 积分预估确认。
+ * pdfUnavailable：该项目已跑过导出且本次未产出 pdf（agent 侧 soffice 转换失败），PDF 选项置灰不可选。 */
 export function ExportMenu({
   scope,
   format,
   cost,
   balance,
+  pdfUnavailable = false,
   onScope,
   onFormat,
   onConfirm,
@@ -27,6 +29,7 @@ export function ExportMenu({
   format: ExportFormat
   cost: number
   balance: number
+  pdfUnavailable?: boolean
   onScope: (s: BidType) => void
   onFormat: (f: ExportFormat) => void
   onConfirm: () => void
@@ -73,7 +76,9 @@ export function ExportMenu({
           </button>
           <button
             onClick={() => onFormat("pdf")}
-            className={`inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2.5 text-sm font-medium transition-colors ${
+            disabled={pdfUnavailable}
+            title={pdfUnavailable ? "PDF 生成失败，仅提供 Word" : undefined}
+            className={`inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
               format === "pdf" ? "border-primary/40 gradient-brand-soft text-foreground" : "border-border bg-background text-foreground hover:bg-muted"
             }`}
           >
@@ -81,6 +86,8 @@ export function ExportMenu({
             PDF
           </button>
         </div>
+        {/* TOC 用 Word 域实现，需 Word/WPS 打开后手动刷新一次页码 */}
+        <p className="px-1 pt-1.5 text-[10px] text-muted-foreground">Word 打开后按 F9 可更新目录页码</p>
 
         {/* 积分预估 */}
         <div className="mt-3">

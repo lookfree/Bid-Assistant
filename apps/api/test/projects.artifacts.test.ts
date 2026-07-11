@@ -40,12 +40,13 @@ beforeAll(async () => {
     status: "done",
     result: { slides: [], qa: [] },
   })
-  // export 步：result 即 BiddingState.artifacts 合并快照（顶层 docx + pptx，e2e 实测形状）
+  // export 步：result 即 BiddingState.artifacts 合并快照（顶层 docx + pptx + pdf，e2e 实测形状）
+  // pdf 由 spec323 best-effort 转换产出，本项目的转换假定成功（key 存在）
   await getDb().insert(projectSteps).values({
     projectId,
     step: "export",
     status: "done",
-    result: { docx: "artifacts/t/bid.docx", pptx: "artifacts/t/present.pptx" },
+    result: { docx: "artifacts/t/bid.docx", pptx: "artifacts/t/present.pptx", pdf: "artifacts/t/bid.pdf" },
   })
 })
 
@@ -69,6 +70,33 @@ describe("/api/projects/:id/artifacts/:kind", () => {
     const res = await app.request(`/api/projects/${projectId}/artifacts/docx`, { headers: auth() })
     expect(res.status).toBe(200)
     expect(((await res.json()) as { url: string }).url).toContain("artifacts/t/bid.docx")
+  })
+
+  it("pdf：spec323 best-effort 转换产出，存在时同 docx/pptx 一样可预签名下载", async () => {
+    const res = await app.request(`/api/projects/${projectId}/artifacts/pdf`, { headers: auth() })
+    expect(res.status).toBe(200)
+    const { url } = (await res.json()) as { url: string }
+    expect(url).toContain("artifacts/t/bid.pdf")
+    expect(presigned).toContain("artifacts/t/bid.pdf")
+  })
+
+  it("pdf 转换失败（artifacts 无 pdf key）→ 404，不影响 docx 仍可下载", async () => {
+    const [p2] = await getDb()
+      .insert(bidProjects)
+      .values({ userId, threadId: `proj-${crypto.randomUUID()}` })
+      .returning()
+    await getDb()
+      .insert(projectSteps)
+      .values({
+        projectId: p2!.id,
+        step: "export",
+        status: "done",
+        result: { docx: "artifacts/t2/bid.docx" }, // pdf 转换失败：agent 只写了 docx
+      })
+    const noPdf = await app.request(`/api/projects/${p2!.id}/artifacts/pdf`, { headers: auth() })
+    expect(noPdf.status).toBe(404)
+    const stillDocx = await app.request(`/api/projects/${p2!.id}/artifacts/docx`, { headers: auth() })
+    expect(stillDocx.status).toBe(200)
   })
 
   it("未知 kind → 400；无产物项目 → 404", async () => {

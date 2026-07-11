@@ -1,6 +1,7 @@
 import asyncio
 from agent.runtime.registry import RunContext
 from agent.agents.bidding_agent.nodes import common as common_mod
+from agent.agents.bidding_agent.nodes import export as export_mod
 from agent.agents.bidding_agent.nodes.export import make_export_node
 
 
@@ -12,6 +13,7 @@ def test_export_node_writes_docx_key(monkeypatch):
             saved["key"], saved["len"], saved["ct"] = key, len(data), content_type
 
     monkeypatch.setattr(common_mod, "storage", _Storage())
+    monkeypatch.setattr(export_mod, "docx_to_pdf", lambda data: None)  # PDF 转换与本测试无关
     node = make_export_node(RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-7"))
     out = asyncio.run(node({
         "outline": {"chapters": [{"id": "t1", "no": "第一章", "title": "项目理解", "group": "tech"}]},
@@ -20,6 +22,47 @@ def test_export_node_writes_docx_key(monkeypatch):
     }))
     assert out["artifacts"]["docx"] == "artifacts/proj-7/bid.docx"
     assert saved["len"] > 0 and "wordprocessingml" in saved["ct"]
+
+
+def test_export_node_pdf_conversion_failure_keeps_docx_only(monkeypatch):
+    """spec323：docx_to_pdf 返回 None（soffice 缺失/失败）→ artifacts 里没有 pdf key，docx 仍产出。"""
+    saved = {}
+
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            saved[key] = len(data)
+
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+    monkeypatch.setattr(export_mod, "docx_to_pdf", lambda data: None)
+    node = make_export_node(RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-9"))
+    out = asyncio.run(node({
+        "outline": {"chapters": [{"id": "t1", "no": "第一章", "title": "项目理解", "group": "tech"}]},
+        "chapters": {"t1": "<p>正文</p>"},
+        "read": {"project_meta": {"name": "投标文件"}},
+    }))
+    assert out["artifacts"] == {"docx": "artifacts/proj-9/bid.docx"}
+    assert "pdf" not in out["artifacts"]
+    assert "artifacts/proj-9/bid.pdf" not in saved
+
+
+def test_export_node_pdf_conversion_success_adds_pdf_key(monkeypatch):
+    """docx_to_pdf 返回字节 → 上传 bid.pdf，artifacts 携带 pdf key。"""
+    saved = {}
+
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            saved[key] = (len(data), content_type)
+
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+    monkeypatch.setattr(export_mod, "docx_to_pdf", lambda data: b"%PDF-1.4 fake")
+    node = make_export_node(RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-10"))
+    out = asyncio.run(node({
+        "outline": {"chapters": [{"id": "t1", "no": "第一章", "title": "项目理解", "group": "tech"}]},
+        "chapters": {"t1": "<p>正文</p>"},
+        "read": {"project_meta": {"name": "投标文件"}},
+    }))
+    assert out["artifacts"] == {"docx": "artifacts/proj-10/bid.docx", "pdf": "artifacts/proj-10/bid.pdf"}
+    assert saved["artifacts/proj-10/bid.pdf"] == (13, "application/pdf")
 
 
 def test_export_node_rerenders_pptx_when_deck_present(monkeypatch):
@@ -31,6 +74,7 @@ def test_export_node_rerenders_pptx_when_deck_present(monkeypatch):
             saved[key] = len(data)
 
     monkeypatch.setattr(common_mod, "storage", _Storage())
+    monkeypatch.setattr(export_mod, "docx_to_pdf", lambda data: None)  # PDF 转换与本测试无关
     node = make_export_node(RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-8"))
     out = asyncio.run(node({
         "outline": {"chapters": [{"id": "t1", "no": "第一章", "title": "项目理解", "group": "tech"}]},

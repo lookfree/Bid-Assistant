@@ -21,5 +21,5 @@ class BiddingState(TypedDict, total=False):
     chapters: Annotated[dict[str, str], _merge_dict]
     risk: dict[str, Any]           # RiskReport.model_dump()      ← review（spec204）
     deck: dict[str, Any]           # DeckSpec.model_dump()        ← present（spec205）
-    # {"docx": key, "pptx": key} ← export/present（spec205/206）；合并 reducer 让二者并存
+    # {"docx": key, "pptx": key, "pdf": key} ← export/present（spec205/206/323）；合并 reducer 让三者并存
     artifacts: Annotated[dict[str, str], _merge_dict]
