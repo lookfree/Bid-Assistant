@@ -3,6 +3,18 @@ import zipfile
 from docx import Document
 from agent.agents.bidding_agent.render.docx import render_docx
 
+# 1x1 透明 PNG，最小合法图片字节（spec325 测试专用）
+_TINY_PNG = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06"
+             b"\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01"
+             b"\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+# 1x1 红/绿 PNG：与 _TINY_PNG 内容不同，用于验证 python-docx 按内容去重时仍各自入 media
+_TINY_PNG_RED = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02"
+                 b"\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\xcf\xc0\x00\x00\x03\x01"
+                 b"\x01\x00\xc9\xfe\x92\xef\x00\x00\x00\x00IEND\xaeB`\x82")
+_TINY_PNG_GREEN = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02"
+                   b"\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc`\xf8\xcf\x00\x00\x02\x02"
+                   b"\x01\x00{\t\x81x\x00\x00\x00\x00IEND\xaeB`\x82")
+
 
 def test_render_docx_assembles_chapters():
     outline = {"chapters": [
@@ -74,3 +86,58 @@ def test_render_docx_with_package_adds_cover_line():
     texts = [p.text for p in doc.paragraphs]
     assert "包件：《实网攻防》" in texts
     assert texts.index("包件：《实网攻防》") < texts.index("采购人：某局")  # 位于项目名之下、其它信息之上
+
+
+def test_render_docx_without_credentials_byte_identical():
+    """spec325：不传 credentials（缺省 None）→ 输出与今天逐字节一致。"""
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]}
+    without_kw = render_docx(outline, {"t1": "<p>正文</p>"})
+    without_default = render_docx(outline, {"t1": "<p>正文</p>"}, credentials=None)
+    assert without_kw == without_default
+
+
+def test_render_docx_with_credentials_adds_appendix_and_media():
+    """spec325：credentials 非空 → 追加「资格证明文件」附录（一级标题+条目二级标题），
+    图片以 media 形式内嵌（word/media/ 计数与图片数一致）。"""
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]}
+    credentials = [{"title": "营业执照", "images": [
+        {"name": "license.png", "data": _TINY_PNG_RED},
+        {"name": "license2.png", "data": _TINY_PNG_GREEN},
+    ]}]
+    data = render_docx(outline, {"t1": "<p>正文</p>"}, credentials=credentials)
+    doc = Document(io.BytesIO(data))
+    texts = [p.text for p in doc.paragraphs]
+    assert "资格证明文件" in texts
+    assert "营业执照" in texts
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    media = [n for n in zf.namelist() if n.startswith("word/media/")]
+    assert len(media) == 2
+
+
+def test_render_docx_credential_image_fetch_failure_placeholder():
+    """spec325：某图 data=None（取图失败）→ 该图占位一行「（图片加载失败：name）」，不崩，
+    不影响其余图片正常内嵌。"""
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]}
+    credentials = [{"title": "营业执照", "images": [
+        {"name": "missing.png", "data": None},
+        {"name": "license.png", "data": _TINY_PNG},
+    ]}]
+    data = render_docx(outline, {"t1": "<p>正文</p>"}, credentials=credentials)
+    doc = Document(io.BytesIO(data))
+    texts = "\n".join(p.text for p in doc.paragraphs)
+    assert "（图片加载失败：missing.png）" in texts
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    media = [n for n in zf.namelist() if n.startswith("word/media/")]
+    assert len(media) == 1
+
+
+def test_render_docx_credential_corrupt_image_placeholder():
+    """spec325：图片字节损坏（add_picture 抛错）→ 占位一行，不崩，不影响导出。"""
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]}
+    credentials = [{"title": "资质证书", "images": [
+        {"name": "bad.png", "data": b"not a real image"},
+    ]}]
+    data = render_docx(outline, {"t1": "<p>正文</p>"}, credentials=credentials)
+    doc = Document(io.BytesIO(data))
+    texts = "\n".join(p.text for p in doc.paragraphs)
+    assert "（图片加载失败：bad.png）" in texts

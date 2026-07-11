@@ -1,9 +1,32 @@
 from __future__ import annotations
+import asyncio
 from agent.agents.bidding_agent.render.docx import render_docx
 from agent.agents.bidding_agent.render.pdf import docx_to_pdf
 from agent.agents.bidding_agent.render.pptx import render_pptx
 from agent.agents.bidding_agent.schemas import DeckSpec
 from agent.agents.bidding_agent.nodes.common import upload_artifact
+from agent.parsing import storage_read
+
+
+async def _fetch_credential_image(key: str) -> dict:
+    """单张证照图片按 MinIO key 预取字节；取图失败（网络抖动/坏 key）→ data=None，
+    交渲染层落一行占位文字，绝不中断导出（spec325 best-effort）。"""
+    name = key.rsplit("/", 1)[-1]
+    try:
+        data = await asyncio.to_thread(storage_read.read_bytes, key)
+    except Exception:
+        data = None
+    return {"name": name, "data": data}
+
+
+async def _fetch_credentials(credentials: list[dict]) -> list[dict]:
+    """逐条目逐图预取字节：render_docx 保持纯同步渲染，取图（唯一的 I/O）放在节点层。"""
+    result = []
+    for cred in credentials:
+        images = await asyncio.gather(
+            *(_fetch_credential_image(key) for key in cred.get("images", [])))
+        result.append({"title": cred.get("title", ""), "images": list(images)})
+    return result
 
 
 def make_export_node(ctx):
@@ -11,12 +34,18 @@ def make_export_node(ctx):
     普通服务节点：确定性、无 LLM、不碰钱。与 present 的 pptx 由 state.artifacts 合并 reducer 并存。
     spec315a：state 有 deck（含 App 编辑回灌的）则同时重渲 .pptx，merge 覆盖旧 pptx key 同名对象。
     spec323：docx 落库后 best-effort 转 .pdf；转换失败不写 artifacts['pdf']，不影响 docx 产出。
-    spec324：run_input.package 存在时封面带包件名。"""
+    spec324：run_input.package 存在时封面带包件名。
+    spec325：run_input.credentials 非空时预取图片字节，渲染追加「资格证明文件」附录；
+    缺省不带 credentials 键时渲染调用与今天一致。"""
     async def export_node(state):
         meta = (state.get("read") or {}).get("project_meta", {})
-        package = (state.get("run_input") or {}).get("package")
+        run_input = state.get("run_input") or {}
+        package = run_input.get("package")
+        credentials_input = run_input.get("credentials")
+        credentials = (await _fetch_credentials(credentials_input)
+                       if credentials_input else None)
         data = render_docx(state.get("outline") or {}, state.get("chapters") or {},
-                            meta=meta, package=package)
+                            meta=meta, package=package, credentials=credentials)
         key = await upload_artifact(
             ctx, "bid.docx", data,
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document")

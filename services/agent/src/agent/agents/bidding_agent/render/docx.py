@@ -5,7 +5,7 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Pt
+from docx.shared import Inches, Pt
 
 _CONTAINERS = ("div", "section", "article", "body")
 
@@ -108,10 +108,32 @@ def _add_page_number_footer(doc: Document, project_name: str) -> None:
     _add_field(footer_p, "PAGE")
 
 
+def _append_credentials(doc: Document, credentials: list[dict]) -> None:
+    """资格证明文件附录（spec325）：分页 + 一级标题 + 逐条目二级标题 title + 逐图插入。
+    单图 data=None（取图失败）或 add_picture 抛错（坏图）→ 占位一行「（图片加载失败：name）」，
+    不影响同条目其余图片，也不影响导出整体（best-effort）。"""
+    doc.add_page_break()
+    doc.add_heading("资格证明文件", level=1)
+    for cred in credentials:
+        doc.add_heading(cred.get("title", ""), level=2)
+        for img in cred.get("images", []):
+            name = img.get("name", "")
+            data = img.get("data")
+            if data is None:
+                doc.add_paragraph(f"（图片加载失败：{name}）")
+                continue
+            try:
+                doc.add_picture(io.BytesIO(data), width=Inches(6))
+            except Exception:
+                doc.add_paragraph(f"（图片加载失败：{name}）")
+
+
 def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
-                 package: dict | None = None) -> bytes:
-    """完整标书 .docx：封面 + 真目录域页 + 按 outline 顺序各章正文 + 签章页。确定性，无 LLM。
-    package（选包，spec324）存在时封面项目名下加一行包件名。"""
+                 package: dict | None = None,
+                 credentials: list[dict] | None = None) -> bytes:
+    """完整标书 .docx：封面 + 真目录域页 + 按 outline 顺序各章正文 + 资格证明文件附录（可选）
+    + 签章页。确定性，无 LLM。package（选包，spec324）存在时封面项目名下加一行包件名。
+    credentials（资质证照，spec325）非空时在签章页之前追加附录；缺省 None 时输出与今天一致。"""
     meta = meta or {}
     doc = Document()
     _style_cover(doc, meta, package)
@@ -126,6 +148,8 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
             _emit_html(doc, body)
         else:
             doc.add_paragraph("（本章正文待生成）")
+    if credentials:
+        _append_credentials(doc, credentials)
     # 签章页
     doc.add_page_break()
     doc.add_heading("投标人承诺与签章", level=1)
