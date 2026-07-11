@@ -2,7 +2,17 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { ApiError } from "./api-client"
-import { clearCurrentProjectId, currentProjectId, getProject, runStep, stepResult, STEP_ORDER, type ProjectInfo, type StepName } from "./project"
+import {
+  clearCurrentProjectId,
+  currentProjectId,
+  getProject,
+  peekProjectCache,
+  runStep,
+  stepResult,
+  STEP_ORDER,
+  type ProjectInfo,
+  type StepName,
+} from "./project"
 
 /** 步骤运行失败的用户可读文案：402 积分不足、409 步骤顺序、其余通用重试。 */
 export function stepErrorMessage(status: number | null): string {
@@ -40,7 +50,8 @@ async function pollStepResult<T>(projectId: string, step: StepName): Promise<T> 
   const deadline = Date.now() + POLL_TIMEOUT_MS
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
-    const info = await getProject(projectId)
+    // 轮询专门等状态变化，必须绕过短时缓存，否则可能连续几次读到同一份陈旧快照
+    const info = await getProject(projectId, { fresh: true })
     const done = stepResult<T>(info, step)
     if (done) return done
     // 无 done 行且该步不再有 running 行 → 在途那次已失败（占位行被标 failed）
@@ -59,9 +70,15 @@ function notifyCreditsChanged() {
 // data=null 且 projectId 在 → 该步还没跑：页面调 start() 触发（SSE 期间 running=true）。
 export function useStep<T>(step: StepName) {
   const [projectId, setProjectId] = useState<string | null>(() => currentProjectId())
-  const [info, setInfo] = useState<ProjectInfo | null>(null)
-  const [data, setData] = useState<T | null>(null)
-  const [running, setRunning] = useState(false)
+  // 挂载即刻乐观取值：同一项目若刚被别的工具页缓存过（3s 内），直接从缓存派生初值，
+  // 这样该步已在服务端 running 时首帧就是「生成中」，不会先闪一下空态再切换——
+  // 命中与否不影响正确性，下面的 effect 仍会发起一次 getProject 校准真实状态。
+  const [info, setInfo] = useState<ProjectInfo | null>(() => {
+    const id = currentProjectId()
+    return id ? peekProjectCache(id) : null
+  })
+  const [data, setData] = useState<T | null>(() => stepResult<T>(info, step))
+  const [running, setRunning] = useState(() => !!info?.steps.some((s) => s.step === step && s.status === "running"))
   const [error, setError] = useState<string | null>(null)
   // 最近一次 start() 失败的 HTTP 状态码（402 积分不足 / 409 步骤顺序…），非 ApiError 为 null
   const [errorStatus, setErrorStatus] = useState<number | null>(null)

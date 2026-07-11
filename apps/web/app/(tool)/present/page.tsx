@@ -344,10 +344,9 @@ export default function PresentPage() {
 
   return (
     <div className="flex h-[calc(100vh-4rem)] flex-col">
-      {/* 流程返回区：上一步 + 面包屑 */}
-      <div className="shrink-0 px-4 pt-4 sm:px-6">
+      {/* 流程返回区：上一步 + 面包屑 + 与其他工具页统一的卡片式标题栏 */}
+      <div className="shrink-0 px-4 pt-4 pb-4 sm:px-6">
         <FlowNav current="present" />
-      {
         <StepBanner
           running={stepRunning}
           error={stepError}
@@ -355,18 +354,16 @@ export default function PresentPage() {
           onRetry={() => void start(presentRunBody())}
           action={stepErrorAction ?? undefined}
         />
-      }
-      </div>
-      {/* 顶部工具条 */}
-      <div className="shrink-0 border-b border-border bg-card px-4 py-3 sm:px-6">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <header className="flex flex-col gap-4 rounded-2xl border border-border bg-card px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-start gap-3">
-            <span className="flex size-9 shrink-0 items-center justify-center rounded-xl gradient-brand">
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-xl gradient-brand">
               <Presentation className="size-5 text-white" />
             </span>
             <div>
-              <h1 className="text-base font-bold tracking-tight text-foreground">述标演示</h1>
-              <p className="text-xs text-muted-foreground">一键把标书提炼成述标/答辩 PPT，含演讲备注与预计问答</p>
+              <h1 className="text-lg font-bold tracking-tight text-foreground sm:text-xl">述标演示</h1>
+              <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">
+                一键把标书提炼成述标/答辩 PPT，含演讲备注与预计问答
+              </p>
             </div>
           </div>
 
@@ -439,7 +436,7 @@ export default function PresentPage() {
               </button>
             </div>
           )}
-        </div>
+        </header>
 
         {/* 导出菜单 */}
         {exportOpen && canAfford && (

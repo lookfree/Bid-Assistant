@@ -70,8 +70,45 @@ export async function createProject(fileKeys: string[]): Promise<string> {
   return id
 }
 
-export async function getProject(id: string): Promise<ProjectInfo> {
-  return api.request<ProjectInfo>(`/api/projects/${id}`)
+// 短时内存缓存（模块级，跨工具页共享）：GET /:id 会带回全部步骤的 result（content 步 17 章 HTML，
+// 单次不轻），切工具页（read→outline→content…）挂载时若已在 3s 内取过同一项目，直接复用，
+// 减掉一次等价重取——TTL 短到用户感知不到数据陈旧，又能覆盖同一操作触发的多个工具页连续挂载。
+// 正确性：仅缓存「无步骤在跑」的整份项目；一旦命中时发现有 running 行，视为未命中（断点续看轮询
+// 需要看到最新状态）。任何 mutation（保存/选包/推进步骤）后显式失效，避免读到过期结果。
+type ProjectCacheEntry = { info: ProjectInfo; ts: number }
+const PROJECT_CACHE_TTL_MS = 3_000
+const projectCache = new Map<string, ProjectCacheEntry>()
+
+/** 使某项目的缓存失效：mutation（PATCH 步结果 / 选包 / runStep）后调用，防止读到旧值。 */
+export function invalidateProjectCache(id: string): void {
+  projectCache.delete(id)
+}
+
+// 积分变动（任意步骤跑完，见 use-step.ts notifyCreditsChanged）意味着该项目步骤状态大概率已变，
+// 整体清空比逐项目失效更简单也更安全（v1 用户量下清空成本可忽略）。
+if (typeof window !== "undefined") {
+  window.addEventListener("credits:refresh", () => projectCache.clear())
+}
+
+// 同步查看模块缓存（不发请求、不做「命中即排除 running」的过滤）：仅供页面挂载时做乐观初始渲染——
+// 断点续看场景下让 running 初值直接来自缓存，避免先闪一下「尚未生成」占位再切成生成中。
+// 真实状态仍由调用方紧接着发起的 getProject（effect 内）校准，这里只解决首帧视觉闪烁。
+export function peekProjectCache(id: string): ProjectInfo | null {
+  const hit = projectCache.get(id)
+  return hit && Date.now() - hit.ts < PROJECT_CACHE_TTL_MS ? hit.info : null
+}
+
+export async function getProject(id: string, opts?: { fresh?: boolean }): Promise<ProjectInfo> {
+  if (!opts?.fresh) {
+    const hit = projectCache.get(id)
+    // 命中但该项目当时有步骤在跑：不可信（断点续看轮询需要拿到最新状态），当未命中处理
+    if (hit && Date.now() - hit.ts < PROJECT_CACHE_TTL_MS && !hit.info.steps.some((s) => s.status === "running")) {
+      return hit.info
+    }
+  }
+  const info = await api.request<ProjectInfo>(`/api/projects/${id}`)
+  projectCache.set(id, { info, ts: Date.now() })
+  return info
 }
 
 // 选包（spec324）：body 裸 {id,name} 设置该包，传 null 清除。只影响 outline 及之后步骤的 run_input
@@ -84,6 +121,7 @@ export async function setProjectPackage(
     method: "PATCH",
     body: JSON.stringify(pkg),
   })
+  invalidateProjectCache(projectId)
 }
 
 // 克隆项目（spec324）：兼投多个包件=另建一个项目（同一招标文件，read 步重新跑）。
@@ -143,6 +181,8 @@ export async function runStep<T>(
     console.error(`step ${step} failed:`, payload.error ?? "(no detail)")
     throw new Error(`step ${step} 失败`)
   }
+  // 该项目步骤状态已变（新 done 行）：失效缓存，避免其他工具页挂载时读到跑之前的旧快照
+  invalidateProjectCache(id)
   return payload.result
 }
 
@@ -162,6 +202,7 @@ export async function patchStep(
     method: "PATCH",
     body: JSON.stringify({ result }),
   })
+  invalidateProjectCache(id)
 }
 
 // 单章 AI 改写（App 侧按 rewrite 口径计费 25 积分）：成功返回新正文 HTML（后端已合入 content 步结果）。
@@ -171,10 +212,12 @@ export async function rewriteChapter(
   chapterId: string,
   instruction: string,
 ): Promise<{ chapterId: string; html: string; cost: number }> {
-  return api.request(`/api/projects/${id}/chapters/${chapterId}/rewrite`, {
-    method: "POST",
-    body: JSON.stringify({ instruction }),
-  })
+  const result = await api.request<{ chapterId: string; html: string; cost: number }>(
+    `/api/projects/${id}/chapters/${chapterId}/rewrite`,
+    { method: "POST", body: JSON.stringify({ instruction }) },
+  )
+  invalidateProjectCache(id)
+  return result
 }
 
 // 产物预签名下载 URL（docx/pptx/pdf，pdf 为 spec323 best-effort 转换产物，可能不存在），浏览器直下 MinIO。
