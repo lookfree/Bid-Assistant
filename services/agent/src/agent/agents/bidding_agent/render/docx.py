@@ -28,6 +28,7 @@ def _emit_el(doc: Document, el) -> None:
             # 列数取所有行最大值：模型产出的表格行列可能参差，固定取首行会越界
             cols = max(len(r.find_all(["td", "th"])) for r in rows)
             t = doc.add_table(rows=len(rows), cols=cols)
+            t.style = "Table Grid"   # 网格线：偏差表/报价表没有边框不可读（e2e PDF 实测）
             for i, r in enumerate(rows):
                 for j, c in enumerate(r.find_all(["td", "th"])):
                     t.rows[i].cells[j].text = c.get_text(strip=True)
@@ -51,6 +52,25 @@ def _cover_line(doc: Document, text: str, size: int) -> None:
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     run = p.add_run(text)
     run.font.size = Pt(size)
+
+
+# project_meta 键名归一：读标 schema 里是自由 dict,历史数据用中文键(项目名称/采购编号/采购人),
+# 渲染读英文键(name/code/buyer)导致封面/页眉落兜底(e2e 实测)。取值时按别名依次找。
+_META_ALIASES = {
+    "name": ("name", "项目名称", "项目名"),
+    "code": ("code", "采购编号", "招标编号", "项目编号"),
+    "buyer": ("buyer", "采购人", "招标人", "采购单位"),
+}
+
+
+def _norm_meta(meta: dict) -> dict:
+    out = dict(meta)
+    for key, aliases in _META_ALIASES.items():
+        if not out.get(key):
+            val = next((meta[a] for a in aliases if meta.get(a)), None)
+            if val:
+                out[key] = val
+    return out
 
 
 def _style_cover(doc: Document, meta: dict, package: dict | None = None) -> None:
@@ -135,7 +155,7 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
     """完整标书 .docx：封面 + 真目录域页 + 按 outline 顺序各章正文 + 资格证明文件附录（可选）
     + 签章页。确定性，无 LLM。package（选包，spec324）存在时封面项目名下加一行包件名。
     credentials（资质证照，spec325）非空时在签章页之前追加附录；缺省 None 时输出与今天一致。"""
-    meta = meta or {}
+    meta = _norm_meta(meta or {})
     doc = Document()
     _style_cover(doc, meta, package)
     _add_toc_field(doc)
