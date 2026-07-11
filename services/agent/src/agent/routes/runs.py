@@ -27,6 +27,9 @@ class RunModelOverride(BaseModel):
     model: str | None = None
     fallbacks: str | None = None
     params: dict | None = None  # spec319：主模型采样参数 {temperature,max_tokens,top_p}；缺省继承 env
+    # spec319.1：结构化模型链，每项 {provider,model,base_url?,api_key?}，可携带自建端点凭据；
+    # 未声明则 pydantic 会丢弃 App 下发的 chain（同 spec319 params 漏字段的坑）。
+    chain: list[dict] | None = None
 
 
 class CreateRunBody(BaseModel):

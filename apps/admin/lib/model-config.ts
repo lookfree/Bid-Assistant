@@ -1,7 +1,9 @@
 // 模型管理（spec319 Task C）：与 App API `/admin-api/models` 契约对齐的类型 + 纯逻辑。
 // 纯逻辑（无 React/DOM 依赖）单独放这里，便于 bun test 直接测；页面/组件只做渲染与状态编排。
 
-export type Provider = "deepseek" | "qwen" | "glm"
+// provider 放宽为自由字符串（spec319.1）：自建/任意 OpenAI 兼容端点条目的 provider 是自由标签
+// （固定用 "custom"），不再限于注册表 3 家；PROVIDER_LABELS 对未知 key 用 providerLabel() 兜底。
+export type Provider = string
 
 export type ModelParams = { temperature: number; maxTokens: number; topP: number }
 
@@ -16,6 +18,11 @@ export type ModelEntry = {
   params: ModelParams
   enabled: boolean
   test: ModelTest
+  // 自建端点专属（spec319.1）：baseUrl 非空 ⇒ 自建条目。apiKey 仅当用户新填时携带（save 用）；
+  // apiKeyHint 是 GET 回来的打码提示（如 sk-****yA），从不是明文，仅用于展示 placeholder。
+  baseUrl?: string
+  apiKey?: string
+  apiKeyHint?: string
 }
 
 export type ModelConfig = { models: ModelEntry[]; chain: string[] }
@@ -23,17 +30,43 @@ export type ModelConfig = { models: ModelEntry[]; chain: string[] }
 // 新建模型卡片的默认参数（brief 指定）。
 export const DEFAULT_MODEL_PARAMS: ModelParams = { temperature: 0.7, maxTokens: 8192, topP: 1.0 }
 
-export const PROVIDER_LABELS: Record<Provider, string> = {
+export const PROVIDER_LABELS: Record<string, string> = {
   deepseek: "DeepSeek",
   qwen: "通义千问",
   glm: "智谱 GLM",
+  custom: "自建 (OpenAI 兼容)",
 }
 
 export const PROVIDER_OPTIONS: { value: Provider; label: string }[] = [
   { value: "deepseek", label: PROVIDER_LABELS.deepseek },
   { value: "qwen", label: PROVIDER_LABELS.qwen },
   { value: "glm", label: PROVIDER_LABELS.glm },
+  { value: "custom", label: PROVIDER_LABELS.custom },
 ]
+
+// PROVIDER_LABELS 的兜底查找：未知 provider（理论上不该出现，防御性兜底）一律显示「自建」。
+export function providerLabel(provider: string): string {
+  return PROVIDER_LABELS[provider] ?? "自建"
+}
+
+// 是否自建模式：provider 选了「custom」，或条目已带 baseUrl（编辑已保存的自建条目时 provider 恒为 custom，
+// 但草稿新建时可能只先有其一）。model-card 的自建 UI 判据与 provider 切换逻辑共用。
+export function isCustomEntry(m: Pick<ModelEntry, "provider" | "baseUrl">): boolean {
+  return m.provider === "custom" || !!m.baseUrl
+}
+
+// 展示名：自建条目（带 baseUrl）用 `model @ host`；否则回退注册表 `label model`
+// （host 解析失败时也回退这个格式）。chainSummary / model-card 共用。
+export function modelDisplayName(m: ModelEntry): string {
+  if (m.baseUrl) {
+    try {
+      return `${m.model} @ ${new URL(m.baseUrl).host}`
+    } catch {
+      // 格式异常的 baseUrl：落回下面的通用格式。
+    }
+  }
+  return `${providerLabel(m.provider)} ${m.model}`
+}
 
 // PUT /admin-api/models 是 camelCase（maxTokens/topP），POST /models/test 是 snake_case
 // （max_tokens/top_p，agent 侧薄中转）。两者不同，混用会让参数在服务端悄悄变成 {}。
@@ -91,11 +124,10 @@ export function chainSummary(cfg: ModelConfig): string {
   const byId = (id: string) => cfg.models.find((m) => m.id === id)
   const primary = cfg.chain[0] ? byId(cfg.chain[0]) : undefined
   if (!primary) return "尚未配置主模型，请先在下方模型库启用并测试一个模型"
-  const name = (m: ModelEntry) => `${PROVIDER_LABELS[m.provider]} ${m.model}`
   const fallbacks = cfg.chain.slice(1).map(byId).filter((m): m is ModelEntry => !!m)
-  const head = `当前生效：${name(primary)}`
+  const head = `当前生效：${modelDisplayName(primary)}`
   if (fallbacks.length === 0) return head
-  return `${head}，失败依次降级 ${fallbacks.map(name).join(" → ")}`
+  return `${head}，失败依次降级 ${fallbacks.map(modelDisplayName).join(" → ")}`
 }
 
 // PUT 400 的 error code → 可读提示；未知 code 给通用失败文案。

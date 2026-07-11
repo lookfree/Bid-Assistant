@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 import pytest
 from agent.config import Settings
-from agent.models.gateway import ModelGateway
+from agent.models.gateway import ModelGateway, model_override_to_settings
 
 
 def _settings(**over):
@@ -116,3 +116,65 @@ def test_get_chat_explicit_kw_overrides_settings(monkeypatch):
     assert calls[-1]["temperature"] == 0.1   # 三参数对称覆盖
     assert calls[-1]["max_tokens"] == 4096
     assert calls[-1]["top_p"] == 0.5
+
+
+def test_get_chat_custom_endpoint_uses_base_url():
+    """自建端点（base_url 非空）直连，绕过 PROVIDERS/KEY_FIELD/env——不要求任何注册表 key。"""
+    gw = ModelGateway(_settings())
+    chat = gw.get_chat("custom", "qwen-x", base_url="http://h:8000/v1", api_key="sk-x")
+    assert chat.model_name == "qwen-x"
+    assert "h:8000" in str(chat.openai_api_base)
+
+
+def test_get_chat_custom_endpoint_defaults_api_key_when_missing():
+    """自建端点未给 api_key ⇒ 用占位 'sk-noauth'，不因缺 key 报错。"""
+    gw = ModelGateway(_settings())
+    chat = gw.get_chat("custom", "m", base_url="http://h:8000/v1")
+    assert chat.openai_api_key.get_secret_value() == "sk-noauth"
+
+
+def test_chain_from_model_chain_override():
+    """settings.model_chain 非空 ⇒ _chain() 原样返回；为空则回退旧的 provider/model/fallbacks 拼装，
+    且每项补 base_url=None, api_key=None（向后兼容）。"""
+    chain = [
+        {"provider": "custom", "model": "m1", "base_url": "http://h/v1", "api_key": "k1"},
+        {"provider": "qwen", "model": "qwen-plus", "base_url": None, "api_key": None},
+    ]
+    gw = ModelGateway(_settings(model_chain=chain))
+    assert gw._chain(None, None) == chain
+
+    gw2 = ModelGateway(_settings())  # 无 model_chain override
+    assert gw2._chain(None, None) == [
+        {"provider": "deepseek", "model": None, "base_url": None, "api_key": None},
+        {"provider": "qwen", "model": "qwen-plus", "base_url": None, "api_key": None},
+    ]
+
+
+def test_override_maps_chain():
+    """model_override_to_settings({"chain":[...]}) 只保留合法项：model 非空且（无 base_url 或 base_url 为 http/https）。"""
+    out = model_override_to_settings({"chain": [
+        {"provider": "custom", "model": "m1", "base_url": "http://h/v1", "api_key": "k1"},
+        {"provider": "custom", "model": "", "base_url": "http://h/v1", "api_key": "k1"},   # model 空 → 丢
+        {"provider": "custom", "model": "m2", "base_url": "not-a-url", "api_key": "k2"},   # base_url 非法 → 丢
+    ]})
+    assert out == {"model_chain": [
+        {"provider": "custom", "model": "m1", "base_url": "http://h/v1", "api_key": "k1"},
+    ]}
+
+
+def test_override_chain_empty_list_not_set():
+    """chain 全部被清洗掉（或原本为空列表）⇒ 不设 model_chain 键（继承 env/默认）。"""
+    assert model_override_to_settings({"chain": []}) == {}
+    assert model_override_to_settings({"chain": [{"provider": "x", "model": ""}]}) == {}
+
+
+def test_run_model_override_preserves_chain():
+    """spec319.1：RunModelOverride 必须声明 chain，否则 model_dump() 会丢掉 App 下发的自建端点链
+    （同 spec319 params 漏字段的坑）——丢了自建模型运行时永远用不上。"""
+    from agent.routes.runs import RunModelOverride
+
+    sel = RunModelOverride(chain=[{"provider": "custom", "model": "m1",
+                                   "base_url": "http://h/v1", "api_key": "k1"}]).model_dump()
+    assert sel["chain"] == [{"provider": "custom", "model": "m1",
+                             "base_url": "http://h/v1", "api_key": "k1"}]
+    assert model_override_to_settings(sel)["model_chain"][0]["base_url"] == "http://h/v1"

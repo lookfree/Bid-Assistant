@@ -31,7 +31,17 @@ class ModelGateway:
             out["top_p"] = self.s.model_top_p
         return out
 
-    def get_chat(self, provider: str | None = None, model: str | None = None, **kw: Any) -> ChatOpenAI:
+    def get_chat(
+        self, provider: str | None = None, model: str | None = None, *,
+        base_url: str | None = None, api_key: str | None = None, **kw: Any,
+    ) -> ChatOpenAI:
+        if base_url:   # 自建 / 任意 OpenAI 兼容端点：绕过 PROVIDERS/KEY_FIELD/env，直连
+            return ChatOpenAI(
+                model=model,
+                base_url=base_url,
+                api_key=api_key or "sk-noauth",
+                **{**self._model_params(), **kw},
+            )
         provider = provider or self.s.model_default_provider   # 容忍 provider=None，回退默认家
         p = PROVIDERS[provider]
         return ChatOpenAI(
@@ -41,14 +51,22 @@ class ModelGateway:
             **{**self._model_params(), **kw},   # 显式 kw 优先级更高，覆盖 settings
         )
 
-    def _chain(self, provider: str | None, model: str | None) -> list[tuple[str, str | None]]:
-        first = (provider or self.s.model_default_provider, model or self.s.model_default_model)
-        fb: list[tuple[str, str | None]] = []
+    def _chain(self, provider: str | None, model: str | None) -> list[dict]:
+        """结构化故障转移链：settings.model_chain 非空（run override 注入）⇒ 原样返回；
+        否则由 provider/model/fallbacks 拼旧行为，每项补 base_url=None, api_key=None（向后兼容）。"""
+        if self.s.model_chain:
+            return self.s.model_chain
+        first = {
+            "provider": provider or self.s.model_default_provider,
+            "model": model or self.s.model_default_model,
+            "base_url": None, "api_key": None,
+        }
+        fb: list[dict] = []
         for item in (self.s.model_fallbacks or "").split(","):
             item = item.strip()
             if ":" in item:
                 prov, mdl = item.split(":", 1)
-                fb.append((prov.strip(), mdl.strip()))
+                fb.append({"provider": prov.strip(), "model": mdl.strip(), "base_url": None, "api_key": None})
         return [first, *fb]
 
     def _log_model_error(
@@ -72,10 +90,11 @@ class ModelGateway:
         node: str | None = None, thread_id: str | None = None,
     ) -> Any:
         last_err: Exception | None = None
-        for prov, mdl in self._chain(provider, model):
+        for it in self._chain(provider, model):
+            prov, mdl = it["provider"], it["model"]
             try:
                 t0 = time.monotonic()
-                chat = self.get_chat(prov, mdl)
+                chat = self.get_chat(prov, mdl, base_url=it["base_url"], api_key=it["api_key"])
                 resp = chat.invoke(messages)
             except Exception as e:  # noqa: BLE001 provider/调用失败 → 故障转移到下一家
                 last_err = e
@@ -114,10 +133,36 @@ def _params_override(params: dict) -> dict:
     return out
 
 
+def _clean_chain_item(item: Any) -> dict | None:
+    """校验/清洗单个结构化链条目：model 非空；有 base_url 则须 http/https；否则丢弃整项。
+    不校验 provider 白名单（自建端点 provider 是自由标签）。"""
+    if not isinstance(item, dict):
+        return None
+    model = item.get("model")
+    if not model:
+        return None
+    base_url = item.get("base_url")
+    if base_url and not (isinstance(base_url, str) and base_url.startswith(("http://", "https://"))):
+        return None
+    return {
+        "provider": item.get("provider"),
+        "model": model,
+        "base_url": base_url or None,
+        "api_key": item.get("api_key") or None,
+    }
+
+
+def _chain_override(chain: Any) -> list[dict]:
+    if not isinstance(chain, list):
+        return []
+    cleaned = (_clean_chain_item(item) for item in chain)
+    return [c for c in cleaned if c is not None]
+
+
 def model_override_to_settings(sel: dict | None) -> dict:
-    """把 run 携带的 {provider,model,fallbacks,params} 映射为 Settings 字段；覆盖 env 默认（spec311）。
+    """把 run 携带的 {provider,model,fallbacks,params,chain} 映射为 Settings 字段；覆盖 env 默认（spec311）。
     空串/None/缺失 → 丢弃（继承 env，默认配置即 no-op）；未知 provider → 丢弃（避免 run 时 KeyError）；
-    params 不在 _OVERRIDE_MAP 里，单独校验后映射（spec319）。"""
+    params/chain 不在 _OVERRIDE_MAP 里，单独校验后映射（spec319/spec319.1）。"""
     if not sel:
         return {}
     out: dict = {}
@@ -125,6 +170,11 @@ def model_override_to_settings(sel: dict | None) -> dict:
         if k == "params":
             if isinstance(v, dict):
                 out.update(_params_override(v))
+            continue
+        if k == "chain":
+            cleaned = _chain_override(v)
+            if cleaned:
+                out["model_chain"] = cleaned
             continue
         if k not in _OVERRIDE_MAP or not v:
             continue

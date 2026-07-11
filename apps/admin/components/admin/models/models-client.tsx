@@ -227,10 +227,18 @@ export function ModelsClient() {
 }
 
 // 连通性探测：/models/test 认 snake_case 参数（adminApi.models.test 内部已转换）。
+// 自建条目（带 baseUrl）把 baseUrl/apiKey 一并透传，agent 侧才能直连该端点而非查注册表。
 // 返回持久化用的 ModelTest（不含 tokens）+ 展示用的 tokens（瞬态，不落库）。
 async function probeModel(model: ModelEntry): Promise<{ test: ModelTest; tokens?: number }> {
   try {
-    const res = await adminApi.models.test({ provider: model.provider, model: model.model, params: model.params })
+    const res = await adminApi.models.test({
+      provider: model.provider,
+      model: model.model,
+      params: model.params,
+      baseUrl: model.baseUrl,
+      apiKey: model.apiKey,
+      id: model.id, // 已保存自建条目：apiKey 已打码不回显，带 id 让服务端回填库里 key
+    })
     return res.ok
       ? { test: { status: "passed", at: new Date().toISOString(), latencyMs: res.latencyMs }, tokens: res.tokens }
       : { test: { status: "failed", error: res.error ?? "测试失败" } }

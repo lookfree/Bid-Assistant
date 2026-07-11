@@ -6,37 +6,56 @@ import {
   ModelConfigSchema,
   getModelConfig,
   saveModelConfig,
+  maskModelConfig,
+  mergeModelSecrets,
   UnknownProviderError,
   InvalidParamsError,
   ChainRequiresTestedError,
 } from "../../services/model-config"
-import { testModel } from "../../services/agent-client"
+import { testModel, listModels } from "../../services/agent-client"
 import type { AdminUser } from "../../db/schema"
 
-// 模型库 + 编排链管理（spec319 Task B）：读=沿用 /plans/configs 的只读约定（不加 requirePermission）；
-// 写/测试连通性=config.write。
+// 模型库 + 编排链管理（spec319 Task B，spec319.1 加自建端点）：读=沿用 /plans/configs 的只读约定
+// （不加 requirePermission）；写/测试连通性/list-models 中转=config.write。
 export const modelsRouter = new Hono<{ Variables: { admin: AdminUser } }>()
 
-modelsRouter.get("/", async (c) => c.json(await getModelConfig()))
+// GET 永不回显明文 apiKey——自建条目只出 apiKeyHint（打码）。
+modelsRouter.get("/", async (c) => c.json(maskModelConfig(await getModelConfig())))
 
 modelsRouter.put("/", requirePermission("config.write"), async (c) => {
   // 形状校验（zod，同 plans.ts 的 ConfigBody 套路）；语义校验（白名单/params 范围/chain 测通）在 saveModelConfig 里做。
   const parsed = ModelConfigSchema.safeParse(await c.req.json().catch(() => null))
   if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
-  const before = await getModelConfig()
+  const stored = await getModelConfig()
+  // 自建条目未带新 apiKey（前端展示的是打码 hint，不是明文）⇒ 按 id 从库里旧值合并回填，避免覆盖成空。
+  const merged = mergeModelSecrets(parsed.data, stored)
   try {
-    await saveModelConfig(parsed.data)
+    await saveModelConfig(merged)
   } catch (e) {
     if (e instanceof UnknownProviderError) return c.json({ error: "unknown_provider" }, 400)
     if (e instanceof InvalidParamsError) return c.json({ error: "invalid_params" }, 400)
     if (e instanceof ChainRequiresTestedError) return c.json({ error: "chain_requires_tested_models" }, 400)
     throw e
   }
-  await writeAudit({ operator: c.var.admin.username, action: "config.write", target: "config:agent_model", before, after: parsed.data })
+  // 审计 before/after 一律打码——明文 apiKey 不进 adminAuditLogs。
+  await writeAudit({
+    operator: c.var.admin.username,
+    action: "config.write",
+    target: "config:agent_model",
+    before: maskModelConfig(stored),
+    after: maskModelConfig(merged),
+  })
   return c.json({ ok: true })
 })
 
 // 与 agent testModel(opts) 的 snake 入参直接对齐——纯中转，不做 camel/snake 转换。
+// 已保存的自建条目 apiKey 打码不回显（GET 只出 hint）；探针/拉取时前端不带 key、只带 id ⇒
+// 按 id 从库里取回明文 key（同 PUT 的 mergeModelSecrets 思路），否则会用空 key 探活→假失败→模型被误踢出链。
+async function resolveStoredKey(id: string | undefined): Promise<string | undefined> {
+  if (!id) return undefined
+  return (await getModelConfig()).models.find((m) => m.id === id)?.apiKey
+}
+
 const TestBody = z.object({
   provider: z.string().min(1),
   model: z.string().min(1).optional(),
@@ -47,9 +66,29 @@ const TestBody = z.object({
       top_p: z.number().optional(),
     })
     .optional(),
+  base_url: z.string().optional(),
+  api_key: z.string().optional(),
+  id: z.string().optional(), // 已保存自建条目：无明文 key 时据此回填库里 key
 })
 modelsRouter.post("/test", requirePermission("config.write"), async (c) => {
   const parsed = TestBody.safeParse(await c.req.json().catch(() => null))
   if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
-  return c.json(await testModel(parsed.data))
+  const { id, ...body } = parsed.data
+  if (body.base_url && !body.api_key) body.api_key = await resolveStoredKey(id)
+  return c.json(await testModel(body))
+})
+
+// 自建端点探连通 + 拉可用模型列表——纯中转 agent /models/list-models，不落库。
+// apiKey 可缺省：已保存条目走 id 回填库里 key（前端拿不到明文）。
+const ListModelsBody = z.object({
+  baseUrl: z.string().url(),
+  apiKey: z.string().optional(),
+  id: z.string().optional(),
+})
+modelsRouter.post("/list-models", requirePermission("config.write"), async (c) => {
+  const parsed = ListModelsBody.safeParse(await c.req.json().catch(() => null))
+  if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
+  const apiKey = parsed.data.apiKey || (await resolveStoredKey(parsed.data.id))
+  if (!apiKey) return c.json({ ok: false, error: "缺少 API Key" })
+  return c.json(await listModels({ baseUrl: parsed.data.baseUrl, apiKey }))
 })

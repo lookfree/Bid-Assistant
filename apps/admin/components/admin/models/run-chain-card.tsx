@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import {
   chainSummary,
-  PROVIDER_LABELS,
+  providerLabel,
   type ModelConfig,
   type ModelEntry,
 } from "@/lib/model-config"
@@ -114,7 +114,7 @@ function ChainSlot({
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-          {PROVIDER_LABELS[model.provider]} · {model.model}
+          {providerLabel(model.provider)} · {model.model}
           {isPrimary && (
             <Badge className="h-4 px-1.5 text-[10px]" variant="default">
               主模型
