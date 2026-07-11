@@ -2,6 +2,7 @@ from __future__ import annotations
 import io
 from bs4 import BeautifulSoup
 from docx import Document
+from agent.agents.bidding_agent.render.sanitize import strip_document_shell
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -143,7 +144,8 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
     for ch in outline.get("chapters", []):
         group = "技术标" if ch.get("group") == "tech" else "商务标"
         doc.add_heading(f"{ch.get('no', '')} {ch.get('title', '')}（{group}）", level=1)
-        body = chapters.get(ch.get("id", ""), "")
+        # 防御清洗：库存章节可能带完整文档壳（<head><style>...），不剥会把样式文本吐进正文
+        body = strip_document_shell(chapters.get(ch.get("id", ""), ""))
         if body:
             _emit_html(doc, body)
         else:

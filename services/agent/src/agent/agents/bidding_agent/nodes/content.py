@@ -9,6 +9,7 @@ from agent.agents.bidding_agent.nodes.common import slim_read, package_scope
 from agent.agents.bidding_agent.prompts.content import (
     CONTENT_PLANNER_PROMPT, CHAPTER_WRITER_PROMPT, REWRITE_PROMPT, DEVIATION_TABLE_GUIDE)
 from agent.rag import retrieve as rag_retrieve
+from agent.agents.bidding_agent.render.sanitize import strip_document_shell
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,7 @@ def _collect_chapters(files: dict | None) -> dict[str, str]:
         cid = norm[len(_CHAPTER_PREFIX):].removesuffix(".html")
         # content 允许缺省（deepagents 自身也按可缺处理）；空稿跳过——全空最终触发 fail-loud
         content = data.get("content", "") if isinstance(data, dict) else str(data)
+        content = strip_document_shell(content)   # 模型可能交整份 HTML 文档，收稿剥壳去 <style>（防全页样式泄漏）
         if content:
             chapters[cid] = content
     return chapters
@@ -160,4 +162,4 @@ async def rewrite_chapter(ctx, chapter_id: str, instruction: str, state: dict) -
     sub = build_create_agent(REWRITE_PROMPT, [], ctx)
     msg = _rewrite_msg(old, instruction, ref)
     out = await sub.ainvoke({"messages": [HumanMessage(content=msg)]})
-    return out["messages"][-1].content
+    return strip_document_shell(out["messages"][-1].content)

@@ -1,6 +1,7 @@
 "use client"
 
 import Link from "next/link"
+import { stripDocumentShell } from "@/lib/bid-types"
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
   FileText,
@@ -518,7 +519,7 @@ export default function ContentPage() {
               suppressContentEditableWarning
               onBlur={saveEditor}
               className="prose-sm min-h-0 min-w-0 flex-1 overflow-y-auto break-words px-6 py-5 text-sm leading-relaxed text-foreground outline-none [&_h3]:mb-2 [&_h3]:mt-4 [&_h3]:text-base [&_h3]:font-semibold [&_li]:ml-5 [&_li]:list-disc [&_p]:mb-3 [&_table]:my-3 [&_table]:w-full [&_table]:table-fixed [&_table]:border-collapse [&_th]:border [&_th]:border-border [&_th]:bg-muted/40 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-medium [&_th]:break-words [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_td]:break-words"
-              dangerouslySetInnerHTML={{ __html: active.html }}
+              dangerouslySetInnerHTML={{ __html: stripDocumentShell(active.html) }}
             />
           ) : (
             <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 py-10 text-center">

@@ -89,3 +89,17 @@ export type RiskReport = {
   items: RiskFinding[]
   passedItems: string[]
 }
+
+
+// 章节 HTML 防御清洗（e2e 实测）：模型可能把整章写成完整 HTML 文档,<style> 会泄漏劫持全页布局。
+// agent 侧已在收稿处剥壳;这里兜底救已入库的旧数据(渲染前过一遍,幂等)。
+export function stripDocumentShell(html: string): string {
+  if (!html) return html
+  return html
+    .replace(/<head[\s>][\s\S]*?<\/head>/gi, "")
+    .replace(/<style[\s>][\s\S]*?<\/style>/gi, "")
+    .replace(/<script[\s>][\s\S]*?<\/script>/gi, "")
+    .replace(/<meta[^>]*>|<title[^>]*>[\s\S]*?<\/title>/gi, "")
+    .replace(/<!DOCTYPE[^>]*>|<\/?(?:html|body)[^>]*>/gi, "")
+    .trim()
+}
