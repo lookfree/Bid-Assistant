@@ -43,8 +43,8 @@ type UploadFile = {
   file?: File // 原始 File：失败后单文件「重试」重传用（格式拦截项不存，重试无意义）
 }
 
-// 与后端 presign 白名单一致（解析层只支持这三种；.doc/.xls 老格式必须先另存为新格式）
-const SUPPORTED_EXTS = new Set(["pdf", "docx", "xlsx"])
+// 与后端 presign 白名单一致
+const SUPPORTED_EXTS = new Set(["pdf", "docx", "xlsx", "doc", "xls"])
 
 // 已传完文件跨页留存（列表是组件内存态，切菜单即丢；文件本体已在存储，只需记住条目）。
 // 只存 done 项（uploading/error 依赖内存里的 File 对象，无法恢复）；建项目成功后清除。
@@ -100,7 +100,7 @@ function putWithProgress(url: string, file: File, onProgress: (pct: number) => v
 function uploadErrorText(e: unknown): string {
   if (e instanceof ApiError) {
     if (e.code === "file_too_large") return "文件超过大小限制（单文件最大 50MB）"
-    if (e.code === "unsupported_file_type") return "文件格式不支持，仅支持 PDF / DOCX / XLSX"
+    if (e.code === "unsupported_file_type") return "文件格式不支持，仅支持 PDF / DOCX / XLSX / DOC / XLS"
     return "上传服务异常，请点击重试"
   }
   if (e instanceof Error && e.message === "network") return "网络异常，请检查网络后点击重试"
@@ -163,14 +163,14 @@ export default function UploadPage() {
     if (!fileList || fileList.length === 0) return
     for (const file of Array.from(fileList)) {
       const id = `${file.name}-${file.size}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
-      // 前置格式拦截：老格式 .doc/.xls 解析必败，别等上传/读标才失败
+      // 前置格式拦截：别等上传/读标才失败
       const ext = file.name.split(".").pop()?.toLowerCase() ?? ""
       if (!SUPPORTED_EXTS.has(ext)) {
         setFiles((prev) => [
           ...prev,
           {
             id, name: file.name, size: file.size, progress: 0, status: "error",
-            errorText: ext === "doc" || ext === "xls" ? "不支持老版 Office 格式，请用 Word/WPS 另存为 .docx / .xlsx 后重传" : "仅支持 PDF / DOCX / XLSX",
+            errorText: "仅支持 PDF / DOCX / XLSX / DOC / XLS",
           },
         ])
         continue
@@ -190,11 +190,12 @@ export default function UploadPage() {
   // 建项目（一本标书一个 thread）→ 进入读标；后续各页经 localStorage 的 projectId 贯穿。
   // ?autostart=1：本按钮已标注读标费用，这一下点击即计费授权，read 页据此自动跑一次读标。
   async function startRead() {
-    const key = files.find((f) => f.status === "done")?.fileKey
-    if (!key || creating) return
+    // 多文件招标：按上传顺序收集所有已完成文件的 fileKey，一并传给建项目接口
+    const keys = files.filter((f) => f.status === "done").map((f) => f.fileKey).filter((k): k is string => !!k)
+    if (keys.length === 0 || creating) return
     setCreating(true)
     try {
-      await createProject(key)
+      await createProject(keys)
       clearDoneFiles() // 文件已归属新项目，跨页缓存使命完成
       router.push("/read?autostart=1")
     } finally {
@@ -260,7 +261,7 @@ export default function UploadPage() {
             </span>
             <p className="mt-5 text-lg font-semibold text-foreground">上传【招标文件】</p>
             <p className="mt-1.5 text-sm text-muted-foreground">
-              支持 DOCX、PDF、XLSX 格式，单文件最大 50MB，可一次选择多个文件
+              支持 DOCX、PDF、XLSX、DOC、XLS 格式，单文件最大 50MB，可一次选择多个文件
             </p>
 
             <div className="mt-6 flex flex-col items-center gap-3 sm:flex-row">
@@ -406,7 +407,7 @@ export default function UploadPage() {
           ref={inputRef}
           type="file"
           multiple
-          accept=".pdf,.docx,.xlsx"
+          accept=".pdf,.docx,.xlsx,.doc,.xls"
           className="hidden"
           onChange={(e) => handleFiles(e.target.files)}
         />
