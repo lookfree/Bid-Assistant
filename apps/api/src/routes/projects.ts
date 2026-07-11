@@ -91,6 +91,12 @@ const createBodySchema = z.union([
   z.object({ fileKey: z.string().min(1) }),
 ])
 
+// 选包请求体（spec324）：裸 body——{id,name} 设置该包，JSON null 清除（不用 {package:...} 包一层）。
+const packageBodySchema = z.union([z.object({ id: z.string().min(1), name: z.string().min(1) }), z.null()])
+
+// 克隆项目请求体（spec324）：同一招标文件投另一个包=另建项目；name 缺省时用「原名（再投）」。
+const cloneBodySchema = z.object({ name: z.string().min(1) }).partial()
+
 // 项目名：优先落库的 name（建项时取 project_files.filename 原始文件名）；
 // 老数据兜底 key 的 basename（key 里是 sanitize 后的名，不做 decodeURIComponent——上传链路从不 URI 编码）。
 function projectName(name: string | null, tenderFileKey: string | null): string {
@@ -240,6 +246,39 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     return c.json({ id: p.id, threadId: p.threadId })
   })
 
+  // 选包（spec324）：body 裸 {id,name} 设置，JSON null 清除。只影响 outline 及之后步骤的 run_input
+  // （read 步/单包标书不受影响）。属主校验同其它项目路由。
+  r.patch("/:id/package", async (c) => {
+    const id = c.req.param("id")
+    if (!isUuid(id)) return c.json({ error: "not_found" }, 404) // 非 uuid 直接 404，避免 PG 22P02 → 500
+    const p = await ownedProject(id, c.get("user").id)
+    if (!p) return c.json({ error: "not_found" }, 404)
+    const parsed = packageBodySchema.safeParse(await c.req.json().catch(() => undefined))
+    if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
+    await getDb().update(bidProjects).set({ selectedPackage: parsed.data }).where(eq(bidProjects.id, p.id))
+    return c.json({ ok: true, selectedPackage: parsed.data })
+  })
+
+  // 克隆项目（spec324）：同一招标文件投另一个包=另建一个项目（不留在同项目内多包并行）。
+  // 复制 tenderFileKey(s)/文件名；不复制 selectedPackage/步骤/任何 run 状态——新项目从 read 重新开始。
+  r.post("/:id/clone", async (c) => {
+    const id = c.req.param("id")
+    if (!isUuid(id)) return c.json({ error: "not_found" }, 404) // 非 uuid 直接 404，避免 PG 22P02 → 500
+    const userId = c.get("user").id
+    const p = await ownedProject(id, userId)
+    if (!p) return c.json({ error: "not_found" }, 404)
+    const parsed = cloneBodySchema.safeParse(await c.req.json().catch(() => ({})))
+    if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
+    const threadId = `proj-${crypto.randomUUID()}`
+    const name = parsed.data.name ?? `${projectName(p.name, p.tenderFileKey)}（再投）`
+    const [clone] = await getDb()
+      .insert(bidProjects)
+      .values({ userId, threadId, tenderFileKey: p.tenderFileKey, tenderFileKeys: p.tenderFileKeys, name })
+      .returning()
+    if (!clone) return c.json({ error: "insert_failed" }, 500)
+    return c.json({ id: clone.id, threadId: clone.threadId })
+  })
+
   // 我的项目列表（分页，按创建时间倒序）。注意：必须先于 GET /:id 注册，否则被参数路由吞掉。
   r.get("/", async (c) => {
     let pg
@@ -318,8 +357,13 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       file_key: p.tenderFileKey, // 首个 key（向后兼容旧 agent 契约）
       files: await buildFilesInput(p), // spec320：全部招标文件（多文件合并读标）
       step,
-      // rag（spec316）并入 run_input：present 的 duration/template 等既有键不丢
-      run_input: { ...runInput, rag: await ragRunInput() },
+      // rag（spec316）并入 run_input：present 的 duration/template 等既有键不丢；
+      // package（spec324）：已选包且非 read 步才带（read 面向全文，不分包；未选包=今天行为不变）。
+      run_input: {
+        ...runInput,
+        rag: await ragRunInput(),
+        ...(step !== "read" && p.selectedPackage ? { package: p.selectedPackage } : {}),
+      },
       state_overrides: await stateOverrides(p.id, step as Step),
     }
 
