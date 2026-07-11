@@ -5,6 +5,7 @@ import { getDb, closeDb } from "../src/db/client"
 import { adminUsers, billingConfigs } from "../src/db/schema"
 import { eq } from "drizzle-orm"
 import { makeAdminSession, TEST_TIMEOUT_MS } from "./repos/helpers"
+import { getModelConfig } from "../src/services/model-config"
 
 // admin-api /models 路由（spec319 Task B）—— 连真库+admin 鉴权，跑法：
 // ./test-on-mbp.sh test/admin-models.test.ts
@@ -74,5 +75,68 @@ describe("spec319 /admin-api/models", () => {
     } finally {
       ;(globalThis as any).fetch = orig
     }
+  })
+
+  it("POST /list-models 中转 agent（mock fetch），原样返回 {ok, models}", async () => {
+    const { headers } = await makeAdminSession("ops", regA)
+    const orig = (globalThis as any).fetch
+    let capturedBody: any
+    ;(globalThis as any).fetch = (async (_url: string, init: any) => {
+      capturedBody = JSON.parse(init.body)
+      return new Response(JSON.stringify({ ok: true, models: ["qwen2.5-72b", "qwen2.5-7b"] }), { status: 200 })
+    }) as unknown as typeof fetch
+    try {
+      const res = await app.request("http://x/admin-api/models/list-models", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ baseUrl: "http://h:8000/v1", apiKey: "sk-x" }),
+      })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true, models: ["qwen2.5-72b", "qwen2.5-7b"] })
+      expect(capturedBody).toEqual({ base_url: "http://h:8000/v1", api_key: "sk-x" })
+    } finally {
+      ;(globalThis as any).fetch = orig
+    }
+  })
+
+  // 密钥策略核心回归（REQUIRED）：GET 从不回显明文 key；PUT 携带空 apiKey 时保留库里旧 key（按 id 合并）。
+  it("自建条目密钥往返：PUT 建自建带 key → GET 打码不回显明文 → PUT 回去 key 留空 → 库里 key 不变", async () => {
+    await clearAgentModel()
+    const { headers } = await makeAdminSession("ops", regA)
+    const custom = {
+      id: "c1",
+      provider: "custom",
+      model: "qwen-x",
+      params: { temperature: 0.7, maxTokens: 8192, topP: 1 },
+      enabled: true,
+      test: { status: "passed" as const },
+      baseUrl: "http://h:8000/v1",
+      apiKey: "sk-secret-real",
+    }
+    const putRes1 = await app.request("http://x/admin-api/models", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ models: [custom], chain: ["c1"] }),
+    })
+    expect(putRes1.status).toBe(200)
+
+    const getRes = await app.request("http://x/admin-api/models", { headers })
+    const got = (await getRes.json()) as any
+    expect(got.models[0].apiKey).toBeUndefined()
+    expect(JSON.stringify(got)).not.toContain("sk-secret-real")
+    expect(got.models[0].apiKeyHint).toBe("sk-****al")
+
+    // 用 GET 回来的（打码、无明文 apiKey）形状原样 PUT 回去——模拟前端"未改密钥"的保存路径。
+    const { apiKeyHint, ...withoutHint } = got.models[0]
+    const putRes2 = await app.request("http://x/admin-api/models", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ models: [withoutHint], chain: got.chain }),
+    })
+    expect(putRes2.status).toBe(200)
+
+    // 直接读库（跳过 maskModelConfig）核实旧 key 被保留，没有被空值覆盖。
+    const stored = await getModelConfig()
+    expect(stored.models[0]!.apiKey).toBe("sk-secret-real")
   })
 })

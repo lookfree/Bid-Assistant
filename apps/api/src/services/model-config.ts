@@ -7,7 +7,19 @@ import { getConfig, setConfig } from "./config"
 
 export type ModelParams = { temperature: number; maxTokens: number; topP: number }
 export type ModelTest = { status: "passed" | "failed" | "untested"; at?: string; latencyMs?: number; error?: string | null }
-export type ModelEntry = { id: string; provider: string; model: string; params: ModelParams; enabled: boolean; test: ModelTest }
+// baseUrl 非空 ⇒ 自建/任意 OpenAI 兼容端点条目（spec319.1）：provider 为自由标签，apiKey 明文存库。
+// apiKeyHint 仅 GET 出参展示（maskModelConfig 产出），从不由写路径消费。
+export type ModelEntry = {
+  id: string
+  provider: string
+  model: string
+  params: ModelParams
+  enabled: boolean
+  test: ModelTest
+  baseUrl?: string
+  apiKey?: string
+  apiKeyHint?: string
+}
 export type ModelConfig = { models: ModelEntry[]; chain: string[] }
 
 export const PROVIDERS = ["deepseek", "qwen", "glm"] as const
@@ -61,6 +73,9 @@ const ModelEntrySchema = z.object({
   params: ModelParamsSchema,
   enabled: z.boolean(),
   test: ModelTestSchema,
+  baseUrl: z.string().url().optional(),
+  apiKey: z.string().optional(),
+  apiKeyHint: z.string().optional(),
 })
 export const ModelConfigSchema = z.object({
   models: z.array(ModelEntrySchema),
@@ -113,6 +128,8 @@ function normalizeEntry(m: Record<string, unknown>): ModelEntry {
     params: { ...DEFAULT_PARAMS, ...params },
     enabled: m.enabled !== false,
     test: (m.test as ModelTest) ?? { status: "untested" },
+    ...(typeof m.baseUrl === "string" && m.baseUrl ? { baseUrl: m.baseUrl } : {}),
+    ...(typeof m.apiKey === "string" && m.apiKey ? { apiKey: m.apiKey } : {}),
   }
 }
 
@@ -144,11 +161,17 @@ function validateParams(id: string, p: ModelParams): void {
   }
 }
 
-/** 语义校验（假定形状已合法）：provider 白名单、params 数值范围、id 唯一、chain 必须全员启用+测通。 */
+/** 语义校验（假定形状已合法）：自建条目（有 baseUrl）校验 baseUrl 协议 + apiKey 非空、不查 provider 白名单；
+ *  注册表条目（无 baseUrl）沿用 provider 白名单校验，逐字节不变。params 数值范围/id 唯一/chain 门槛两支共用。 */
 export function validateModelConfig(cfg: ModelConfig): void {
   const ids = new Set<string>()
   for (const m of cfg.models) {
-    if (!(PROVIDERS as readonly string[]).includes(m.provider)) throw new UnknownProviderError(m.provider)
+    if (m.baseUrl) {
+      if (!/^https?:\/\//.test(m.baseUrl)) throw new InvalidParamsError(`model ${m.id}: baseUrl 须为 http/https`)
+      if (!m.apiKey) throw new InvalidParamsError(`model ${m.id}: 自建端点必须提供 apiKey`)
+    } else if (!(PROVIDERS as readonly string[]).includes(m.provider)) {
+      throw new UnknownProviderError(m.provider)
+    }
     if (!m.model) throw new InvalidParamsError(`model ${m.id}: model 不可为空`)
     validateParams(m.id, m.params)
     if (!m.id) throw new InvalidParamsError("model id 不可为空")
@@ -165,4 +188,36 @@ export function validateModelConfig(cfg: ModelConfig): void {
 export async function saveModelConfig(cfg: ModelConfig): Promise<void> {
   validateModelConfig(cfg)
   await setConfig("agent_model", cfg)
+}
+
+// —— 密钥策略（spec319.1）：GET 出参打码、PUT 入参合并旧密钥，二者都只在 route 层调用 ——
+
+/** len>5 ⇒ 首3+****+尾2；否则一律 "****"（太短没法留可辨认前后缀）。 */
+export function maskApiKey(key: string): string {
+  return key.length > 5 ? `${key.slice(0, 3)}****${key.slice(-2)}` : "****"
+}
+
+/** GET 用：自建条目的明文 apiKey 从不出参，改为 apiKeyHint（打码展示）。注册表条目不变。 */
+export function maskModelConfig(cfg: ModelConfig): ModelConfig {
+  return {
+    ...cfg,
+    models: cfg.models.map((m) => {
+      if (!m.baseUrl) return m
+      const { apiKey, ...rest } = m
+      return { ...rest, apiKeyHint: apiKey ? maskApiKey(apiKey) : undefined }
+    }),
+  }
+}
+
+/** PUT 用：自建条目若未带新 apiKey（空/缺省），按 id 从 stored 取回旧值；带了新值则用新值覆盖。
+ *  合并后仍需 validateModelConfig 把关（新建自建条目无任何旧值可填回 ⇒ 校验时因 apiKey 缺失被拒）。 */
+export function mergeModelSecrets(incoming: ModelConfig, stored: ModelConfig): ModelConfig {
+  const storedById = new Map(stored.models.map((m) => [m.id, m]))
+  return {
+    ...incoming,
+    models: incoming.models.map((m) => {
+      if (!m.baseUrl || m.apiKey) return m
+      return { ...m, apiKey: storedById.get(m.id)?.apiKey }
+    }),
+  }
 }

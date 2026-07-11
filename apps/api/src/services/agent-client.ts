@@ -4,26 +4,40 @@ import { getModelConfig, type ModelConfig } from "./model-config"
 // 封装 Agent Service 的 run 契约（spec104）。App 对 agent 内部无知，只发 {agent_type, thread_id, input}。
 // base_url 走惰性 getEnv（AGENT_BASE_URL），import 无副作用。
 
+// chain 条目 snake（spec319.1）：自建端点带 base_url/api_key；注册表条目二者皆无——agent
+// model_override_to_settings 按此形状清洗写入 Settings.model_chain。
+export type AgentChainEntry = { provider: string; model: string; base_url?: string; api_key?: string }
 export type AgentModelSelection = {
   provider?: string
   model?: string | null
   fallbacks?: string
   params?: { temperature: number; max_tokens: number; top_p: number } // agent 侧认 snake（spec319）
+  chain?: AgentChainEntry[] // 结构化链（spec319.1）：携带每跳的自建端点，agent 端优先于 fallbacks 字符串
 }
 
 /** 从模型注册表派生 run override（纯函数，本机可测）：chain[0]=主，chain[1:]=降级串；
  *  chain 为空或主模型引用失效 → undefined（agent 用 env 默认）。
- *  注意：不检查 test.status——测通门槛只在 saveModelConfig 时把关，run 时永远用已配置的跑（降级铁律）。 */
+ *  注意：不检查 test.status——测通门槛只在 saveModelConfig 时把关，run 时永远用已配置的跑（降级铁律）。
+ *  spec319.1：额外派生结构化 chain（自建条目带 base_url/api_key）；旧 fallbacks 字符串保留但自建条目跳过
+ *  （agent 端 chain 优先，fallbacks 仅遗留兜底，字符串形状装不下 base_url/api_key）。 */
 export function deriveRunOverride(cfg: ModelConfig): AgentModelSelection | undefined {
   if (!cfg.chain.length) return undefined
   const primary = cfg.models.find((m) => m.id === cfg.chain[0])
   if (!primary) return undefined
-  const fallbacks = cfg.chain
-    .slice(1)
+  const chainEntries = cfg.chain
     .map((id) => cfg.models.find((m) => m.id === id))
     .filter((m): m is NonNullable<typeof m> => !!m)
+  const fallbacks = chainEntries
+    .slice(1)
+    .filter((m) => !m.baseUrl)
     .map((m) => `${m.provider}:${m.model}`)
     .join(",")
+  const chain: AgentChainEntry[] = chainEntries.map((m) => ({
+    provider: m.provider,
+    model: m.model,
+    ...(m.baseUrl ? { base_url: m.baseUrl } : {}),
+    ...(m.apiKey ? { api_key: m.apiKey } : {}),
+  }))
   return {
     provider: primary.provider,
     model: primary.model,
@@ -33,6 +47,7 @@ export function deriveRunOverride(cfg: ModelConfig): AgentModelSelection | undef
       max_tokens: primary.params.maxTokens,
       top_p: primary.params.topP,
     },
+    chain,
   }
 }
 
@@ -41,12 +56,15 @@ export async function getAgentModel(): Promise<AgentModelSelection | undefined> 
   return deriveRunOverride(await getModelConfig())
 }
 
-/** 模型连通性测试中转（spec319）：relay 到 agent `/models/test`，不落库不改配置——纯探针。
+/** 模型连通性测试中转（spec319/spec319.1）：relay 到 agent `/models/test`，不落库不改配置——纯探针。
+ *  base_url/api_key 非空 ⇒ 自建端点探活（agent 侧跳过 provider 白名单）；二者皆缺省 ⇒ 原注册表路径不变。
  *  超时放宽 20s（LLM 首 token 慢）；agent 恒回 JSON（含 400 非白名单场景），原样解析、camel 化字段名。 */
 export async function testModel(opts: {
   provider: string
   model?: string
   params?: { temperature?: number; max_tokens?: number; top_p?: number }
+  base_url?: string
+  api_key?: string
 }): Promise<{ ok: boolean; latencyMs?: number; tokens?: number; error?: string }> {
   const r = await fetch(`${getEnv().AGENT_BASE_URL}/models/test`, {
     method: "POST",
@@ -56,6 +74,18 @@ export async function testModel(opts: {
   })
   const body = (await r.json()) as { ok: boolean; latency_ms?: number; tokens?: number; error?: string }
   return { ok: body.ok, latencyMs: body.latency_ms, tokens: body.tokens, error: body.error }
+}
+
+/** 自建端点可用模型列举中转（spec319.1）：relay 到 agent `/models/list-models`，纯查询、不落库。
+ *  agent 恒回 JSON（httpx 超时/连接拒绝/解析错都收敛成 {ok:false,error}，永不 500）；超时放宽 15s。 */
+export async function listModels(opts: { baseUrl: string; apiKey: string }): Promise<{ ok: boolean; models?: string[]; error?: string }> {
+  const r = await fetch(`${getEnv().AGENT_BASE_URL}/models/list-models`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ base_url: opts.baseUrl, api_key: opts.apiKey }),
+    signal: AbortSignal.timeout(15_000),
+  })
+  return (await r.json()) as { ok: boolean; models?: string[]; error?: string }
 }
 
 export async function createRun(opts: {

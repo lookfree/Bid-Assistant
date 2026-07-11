@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test"
-import { createRun, rewriteChapter, ragIndex, ragDelete } from "../src/services/agent-client"
+import { createRun, rewriteChapter, ragIndex, ragDelete, testModel, listModels } from "../src/services/agent-client"
 
 function fakeFetch(capture: { body?: any }) {
   return (async (_url: string, init: any) => {
@@ -119,5 +119,61 @@ test("ragDelete 非 2xx → 抛错（调用方 try/catch 吞）", async () => {
   ;(globalThis as any).fetch = (async () => new Response("boom", { status: 500 })) as unknown as typeof fetch
   try {
     await expect(ragDelete({ userId: "u1", sourceType: "library", sourceId: "item-1" })).rejects.toThrow()
+  } finally { (globalThis as any).fetch = orig }
+})
+
+// spec319.1：testModel/listModels 支持自建端点（base_url/api_key）。
+test("testModel 带 base_url/api_key → 原样透传给 agent /models/test", async () => {
+  const cap: { url?: string; body?: any } = {}
+  const orig = (globalThis as any).fetch
+  ;(globalThis as any).fetch = (async (url: string, init: any) => {
+    cap.url = url
+    cap.body = JSON.parse(init.body)
+    return new Response(JSON.stringify({ ok: true, latency_ms: 50, tokens: 3 }), { status: 200 })
+  }) as unknown as typeof fetch
+  try {
+    const out = await testModel({ provider: "custom", model: "qwen-x", base_url: "http://h:8000/v1", api_key: "sk-x" })
+    expect(cap.url).toContain("/models/test")
+    expect(cap.body).toEqual({ provider: "custom", model: "qwen-x", base_url: "http://h:8000/v1", api_key: "sk-x" })
+    expect(out).toEqual({ ok: true, latencyMs: 50, tokens: 3 })
+  } finally { (globalThis as any).fetch = orig }
+})
+
+test("testModel 不带 base_url/api_key → 请求体无该字段（注册表路径不回归）", async () => {
+  const cap: { body?: any } = {}
+  const orig = (globalThis as any).fetch
+  ;(globalThis as any).fetch = (async (_url: string, init: any) => {
+    cap.body = JSON.parse(init.body)
+    return new Response(JSON.stringify({ ok: true }), { status: 200 })
+  }) as unknown as typeof fetch
+  try {
+    await testModel({ provider: "deepseek" })
+    expect("base_url" in cap.body).toBe(false)
+    expect("api_key" in cap.body).toBe(false)
+  } finally { (globalThis as any).fetch = orig }
+})
+
+test("listModels POST 到 /models/list-models，body snake {base_url,api_key}", async () => {
+  const cap: { url?: string; body?: any } = {}
+  const orig = (globalThis as any).fetch
+  ;(globalThis as any).fetch = (async (url: string, init: any) => {
+    cap.url = url
+    cap.body = JSON.parse(init.body)
+    return new Response(JSON.stringify({ ok: true, models: ["qwen2.5-72b", "qwen2.5-7b"] }), { status: 200 })
+  }) as unknown as typeof fetch
+  try {
+    const out = await listModels({ baseUrl: "http://h:8000/v1", apiKey: "sk-x" })
+    expect(cap.url).toContain("/models/list-models")
+    expect(cap.body).toEqual({ base_url: "http://h:8000/v1", api_key: "sk-x" })
+    expect(out).toEqual({ ok: true, models: ["qwen2.5-72b", "qwen2.5-7b"] })
+  } finally { (globalThis as any).fetch = orig }
+})
+
+test("listModels 失败探针 → agent 恒回 {ok:false,error}，原样透传（永不抛）", async () => {
+  const orig = (globalThis as any).fetch
+  ;(globalThis as any).fetch = (async () => new Response(JSON.stringify({ ok: false, error: "连接超时" }), { status: 200 })) as unknown as typeof fetch
+  try {
+    const out = await listModels({ baseUrl: "http://unreachable:9/v1", apiKey: "sk-x" })
+    expect(out).toEqual({ ok: false, error: "连接超时" })
   } finally { (globalThis as any).fetch = orig }
 })
