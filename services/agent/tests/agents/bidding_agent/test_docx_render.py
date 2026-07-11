@@ -131,6 +131,24 @@ def test_render_docx_credential_image_fetch_failure_placeholder():
     assert len(media) == 1
 
 
+def test_render_docx_applies_bid_convention_styles():
+    """标书排版惯例：正文宋体小四(12pt)、标题黑体加粗黑色（覆盖 Word 默认标题蓝）。"""
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]}
+    data = render_docx(outline, {"t1": "<p>正文</p>"})
+    doc = Document(io.BytesIO(data))
+    normal = doc.styles["Normal"]
+    assert normal.font.name == "宋体"
+    assert normal.font.size.pt == 12
+    assert normal.element.rPr.rFonts.get(
+        "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}eastAsia"
+    ) == "宋体"
+    h1 = doc.styles["Heading 1"]
+    assert h1.font.color.rgb == (0, 0, 0)
+    assert h1.font.name == "黑体"
+    assert h1.font.bold is True
+    assert h1.font.size.pt == 16
+
+
 def test_render_docx_credential_corrupt_image_placeholder():
     """spec325：图片字节损坏（add_picture 抛错）→ 占位一行，不崩，不影响导出。"""
     outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]}

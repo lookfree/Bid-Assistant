@@ -6,9 +6,32 @@ from agent.agents.bidding_agent.render.sanitize import strip_document_shell
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Inches, Pt
+from docx.shared import Inches, Pt, RGBColor
 
 _CONTAINERS = ("div", "section", "article", "body")
+
+# H1/H2/H3 → (磅值, 中文习惯字号名，仅注释用) 见 _apply_bid_styles
+_HEADING_SIZES = {"Heading 1": Pt(16), "Heading 2": Pt(14), "Heading 3": Pt(12)}
+
+
+def _apply_bid_styles(doc: Document) -> None:
+    """标书排版惯例（一次性设在 Document 的样式上，覆盖 python-docx 默认模板）：
+    正文宋体小四(12pt)；一/二/三级标题黑体加粗黑色——Word 默认标题走主题色蓝，
+    投标文件要求严肃的黑白配色，不能保留默认蓝。
+    注：服务端镜像目前只装了 fonts-noto-cjk（没有宋体/黑体字体文件），LibreOffice
+    转 PDF 时找不到这两个字体名会退回 Noto CJK 渲染；用户在 Word 里打开 .docx 本身
+    是原生渲染，不受影响。"""
+    normal = doc.styles["Normal"]
+    normal.font.name = "宋体"
+    normal.font.size = Pt(12)
+    normal.element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+    for style_name, size in _HEADING_SIZES.items():
+        style = doc.styles[style_name]
+        style.font.name = "黑体"
+        style.font.size = size
+        style.font.bold = True
+        style.font.color.rgb = RGBColor(0, 0, 0)
+        style.element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
 
 
 def _emit_el(doc: Document, el) -> None:
@@ -157,6 +180,7 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
     credentials（资质证照，spec325）非空时在签章页之前追加附录；缺省 None 时输出与今天一致。"""
     meta = _norm_meta(meta or {})
     doc = Document()
+    _apply_bid_styles(doc)
     _style_cover(doc, meta, package)
     _add_toc_field(doc)
     _add_page_number_footer(doc, meta.get("name", "投标文件"))
