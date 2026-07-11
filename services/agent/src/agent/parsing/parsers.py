@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import io
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 
 from agent.parsing.types import ParsedDoc, UnsupportedDocument
 
@@ -82,7 +86,45 @@ def parse_xlsx(data: bytes) -> ParsedDoc:
                      clauses=_split_clauses(lines))
 
 
-_DISPATCH = {"docx": parse_docx, "pdf": parse_pdf, "xlsx": parse_xlsx}
+_LEGACY_TARGET = {"doc": "docx", "xls": "xlsx"}
+
+
+def _convert_legacy(data: bytes, ext: str) -> tuple[bytes, str]:
+    """经 LibreOffice headless 把旧格式 .doc/.xls 转成 .docx/.xlsx 字节（spec320）。
+    soffice 缺失或转换失败/超时 → 抛 UnsupportedDocument，调用方（多文件读标）按文件降级跳过，不崩整体。"""
+    target_ext = _LEGACY_TARGET[ext]
+    if shutil.which("soffice") is None:
+        raise UnsupportedDocument(f"缺少 soffice，无法转换 .{ext}")
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, f"input.{ext}")
+        with open(src, "wb") as f:
+            f.write(data)
+        try:
+            subprocess.run(
+                ["soffice", "--headless", "--convert-to", target_ext, "--outdir", tmp, src],
+                timeout=60, check=True, capture_output=True,
+            )
+        except (subprocess.SubprocessError, OSError) as e:
+            raise UnsupportedDocument(f".{ext} 转换失败: {e}") from e
+        out_path = os.path.join(tmp, f"input.{target_ext}")
+        if not os.path.exists(out_path):
+            raise UnsupportedDocument(f".{ext} 转换未产出文件")
+        with open(out_path, "rb") as f:
+            return f.read(), target_ext
+
+
+def _parse_doc(data: bytes) -> ParsedDoc:
+    converted, _ = _convert_legacy(data, "doc")
+    return parse_docx(converted)
+
+
+def _parse_xls(data: bytes) -> ParsedDoc:
+    converted, _ = _convert_legacy(data, "xls")
+    return parse_xlsx(converted)
+
+
+_DISPATCH = {"docx": parse_docx, "pdf": parse_pdf, "xlsx": parse_xlsx,
+             "doc": _parse_doc, "xls": _parse_xls}
 
 
 def parse_bytes(data: bytes, filename: str) -> ParsedDoc:
