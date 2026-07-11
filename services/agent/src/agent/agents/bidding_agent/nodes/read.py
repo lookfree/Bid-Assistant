@@ -50,7 +50,8 @@ async def _parse_multi_files(files: list[dict]) -> tuple[list[dict], list[dict]]
 def _multi_file_prompt(clauses: list[dict], file_ranges: list[dict]) -> str:
     """多文件 prompt：条款 JSON 前加一段文件清单，标出每个文件占用的章节区间。"""
     file_list = "\n".join(
-        f"文件{i}《{fr['name']}》＝章节 {fr['sec_from']}..{fr['sec_to']}"
+        (f"文件{i}《{fr['name']}》＝章节 {fr['sec_from']}..{fr['sec_to']}"
+         if fr["sec_to"] >= fr["sec_from"] else f"文件{i}《{fr['name']}》＝无可解析条款")
         for i, fr in enumerate(file_ranges, start=1))
     return (f"{file_list}\n\n招标文件已解析为条款分句（id 为稳定锚点，clause_ids 直接引用，"
             f"无需再调 parse_document）：\n{json.dumps(clauses, ensure_ascii=False)}\n\n请读标。")

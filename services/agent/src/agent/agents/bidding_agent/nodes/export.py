@@ -50,7 +50,8 @@ def make_export_node(ctx):
             ctx, "bid.docx", data,
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         artifacts = {"docx": key}
-        pdf_bytes = docx_to_pdf(data)
+        # soffice 子进程最长 120s：丢线程池，别把单进程事件循环整体卡死（终审 Important 项）
+        pdf_bytes = await asyncio.to_thread(docx_to_pdf, data)
         if pdf_bytes is not None:
             artifacts["pdf"] = await upload_artifact(ctx, "bid.pdf", pdf_bytes, "application/pdf")
         deck = state.get("deck")
