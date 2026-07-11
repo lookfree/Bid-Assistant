@@ -57,6 +57,9 @@ const outlineChapterSchema = z
     title: z.string(),
     group: z.enum(["tech", "business"]),
     items: z.array(z.unknown()),
+    // spec321：对应 required_structure 项 id（agent 侧 snake_case structure_ref），可空/可缺省。
+    // 显式声明只为文档化契约——本对象是 .passthrough()，未声明也不会被剥掉。
+    structureRef: z.string().nullable().optional(),
   })
   .passthrough()
 

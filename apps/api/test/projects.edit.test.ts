@@ -123,6 +123,24 @@ describe("PATCH /api/projects/:id/steps/:step 编辑回写", () => {
     expect(JSON.stringify(outline!.result)).toContain('"clauseIds":["sec-2-c3"]')
   })
 
+  it("spec321：章带 structureRef → toSnake 落库为 structure_ref，GET 读回 structureRef（往返不丢字段）", async () => {
+    const res = await patch(projectId, "outline", { result: { chapters: [chapter({ structureRef: "s1" })] } }, tokenA)
+    expect(res.status).toBe(200)
+
+    // 落库为 snake 原样
+    const [row] = await getDb()
+      .select()
+      .from(projectSteps)
+      .where(and(eq(projectSteps.projectId, projectId), eq(projectSteps.step, "outline")))
+    expect(JSON.stringify(row!.result)).toContain('"structure_ref":"s1"')
+
+    // GET 读回 camel，字段完整往返
+    const detail = await app.request(`/api/projects/${projectId}`, { headers: { Authorization: `Bearer ${tokenA}` } })
+    const body = (await detail.json()) as { steps: Array<{ step: string; result: unknown }> }
+    const outline = body.steps.find((s) => s.step === "outline")
+    expect(JSON.stringify(outline!.result)).toContain('"structureRef":"s1"')
+  })
+
   it("content 步：章 id 键含下划线/大写 → 原样落库、GET 原样读回（不做大小写转换）", async () => {
     const edited = { ch_1: "<p>编辑后的正文</p>", T2_Chapter: "<p>大写键章节</p>" }
     const res = await patch(projectId2, "content", { result: edited }, tokenA)
