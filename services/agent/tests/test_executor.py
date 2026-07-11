@@ -459,3 +459,31 @@ async def test_sweep_stale_runs_per_row_error_does_not_block_others(monkeypatch)
 
     assert result == {"running_reaped": 1, "queued_reaped": 0}
     assert [c[0] for c in rec.finish_calls] == ["run-ok"]
+
+
+async def test_heartbeat_pump_refreshes_independent_of_events(monkeypatch):
+    """spec318 修正回归：心跳泵与事件解耦——长节点(content 3~8 分钟)执行期间无事件,
+    泵仍按 interval 持续续期,不会中途过期被 sweep_stale_runs 误回收(多节点致命竞态)。"""
+    import agent.runtime.executor as executor_mod
+
+    sets: list = []
+
+    class _R:
+        def set(self, key, val, ex=None):
+            sets.append((key, ex))
+
+    n = {"c": 0}
+    real_sleep = asyncio.sleep
+
+    async def fast_sleep(_s):
+        n["c"] += 1
+        if n["c"] >= 3:
+            raise asyncio.CancelledError
+        await real_sleep(0)
+
+    monkeypatch.setattr(executor_mod.asyncio, "sleep", fast_sleep)
+    await executor_mod._heartbeat_pump(_R(), "run-x")
+
+    hb = [k for k, _ in sets if "run:hb:run-x" in k]
+    assert len(hb) >= 3, f"泵应多次续期,实际 {len(hb)} 次"
+    assert all(ex and ex > 0 for _, ex in sets), "每次续期都要带 EX(过期兜底)"

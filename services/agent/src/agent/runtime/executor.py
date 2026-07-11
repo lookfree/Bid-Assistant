@@ -45,6 +45,20 @@ async def _apublish(r, run_id: str, event: dict) -> None:
     await asyncio.to_thread(_publish, r, run_id, event)
 
 
+async def _heartbeat_pump(r, run_id: str) -> None:
+    """独立心跳泵（spec318 修正）：run 存活期间每 ttl/3 秒续期 run:hb:<run_id>，与事件解耦。
+    关键——单个节点（如 content deepagent 3~8 分钟）执行期间 astream 不产事件，若心跳只搭事件
+    顺风车续期，会在节点内途中过期，被其它副本的 sweep_stale_runs 误判为孤儿而杀掉正在跑的 run。
+    多节点部署下这是致命竞态：泵保证只要 worker 进程活着、run 在跑，心跳就一直新鲜。"""
+    interval = max(10, settings.run_heartbeat_ttl_s // 3)
+    try:
+        while True:
+            await asyncio.to_thread(r.set, heartbeat_key(run_id), "1", ex=settings.run_heartbeat_ttl_s)
+            await asyncio.sleep(interval)
+    except asyncio.CancelledError:
+        pass  # run 结束（正常/异常）即取消，不再续期 → 心跳到期后 sweeper 才可回收真孤儿
+
+
 async def process_run(run_id: str) -> None:
     """执行单个 run：跑 agent 的 astream → 逐事件埋点 + 推进度流 → 结果落 Redis → finish + 用量回调。
     事件契约 {type,data,node?}：node.start/node.end/step.done/error 落 event_log；
@@ -77,6 +91,8 @@ async def process_run(run_id: str) -> None:
                      recorder=rec, gateway=gateway, redis=r, user_id=user_id)
     result = None
     nodes = set()
+    # 独立心跳泵：run 全程续期，与节点事件解耦（防长节点途中心跳过期被误回收）。
+    hb_pump = asyncio.create_task(_heartbeat_pump(r, run_id))
     try:
         agent = get_agent(agent_type)
         async for ev in agent.astream(input, ctx):
@@ -102,6 +118,10 @@ async def process_run(run_id: str) -> None:
                                  error=str(e), error_type=type(e).__name__)
         await _apublish(r, run_id, {"type": "run.end", "data": {"status": "failed", "error": str(e)}})
         await _callback(run_id, agent_type, "failed")
+    finally:
+        # run 落终态后立即停泵：心跳自然到期,真孤儿(worker 崩溃时泵随进程消失)才能被 sweeper 回收。
+        hb_pump.cancel()
+        await asyncio.gather(hb_pump, return_exceptions=True)
 
 
 async def _terminate_run(rec: Recorder, r, run_id: str, error: str, error_type: str) -> None:
