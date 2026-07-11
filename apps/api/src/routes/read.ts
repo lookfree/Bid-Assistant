@@ -80,8 +80,14 @@ export function readRoutes(deps: Partial<ReadDeps> = {}) {
       .values({ userId, agentType: "bidding_agent", runId: run_id, threadId, status: "running" })
 
     return streamSSE(c, async (stream) => {
+      // 同 projects 步进流：客户端断连不改变 run/账务终态，写失败静默丢弃、继续等 run 真实结果。
+      let clientGone = false
+      const safeWrite = async (chunk: string) => {
+        if (clientGone) return
+        try { await stream.write(chunk) } catch { clientGone = true }
+      }
       try {
-        for await (const chunk of relayStream(run_id)) await stream.write(chunk) // 透传 agent SSE
+        for await (const chunk of relayStream(run_id)) await safeWrite(chunk) // 透传 agent SSE
         const run = await getRun(run_id) // 取六大分类结果
         const failed = run.status !== "succeeded"
         let cost = 0
@@ -94,7 +100,11 @@ export function readRoutes(deps: Partial<ReadDeps> = {}) {
           .update(agentRuns)
           .set({ status: failed ? "failed" : "done", result: run.result ?? null, costPoints: cost })
           .where(eq(agentRuns.runId, run_id))
-        await stream.writeSSE({ event: "done", data: JSON.stringify({ runId: run_id, cost, status: failed ? "failed" : "done" }) })
+        if (!clientGone) {
+          try {
+            await stream.writeSSE({ event: "done", data: JSON.stringify({ runId: run_id, cost, status: failed ? "failed" : "done" }) })
+          } catch { clientGone = true }
+        }
       } catch {
         // 中继/收尾中途炸：退还预扣（若已 settle 则被"每 hold 一条了结"唯一索引吞掉，不会双返还）+ run 标 failed
         await settleFailed(threadId, hold.holdId!).catch(() => {})

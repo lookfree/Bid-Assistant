@@ -107,14 +107,30 @@ export async function createRun(opts: {
   return (await r.json()) as { run_id: string }
 }
 
-export async function* relayStream(runId: string): AsyncGenerator<string> {
+// SSE 心跳间隔：LLM 步骤事件间隙可达 60s（read）~数分钟（content 单节点），无数据流动会被
+// Bun idleTimeout（默认 10s）/反向代理掐连接 → 步骤被误判失败。心跳是 SSE 注释行，EventSource 自动忽略。
+export const RELAY_HEARTBEAT_MS = 8000
+
+export async function* relayStream(runId: string, heartbeatMs = RELAY_HEARTBEAT_MS): AsyncGenerator<string> {
   const r = await fetch(`${getEnv().AGENT_BASE_URL}/runs/${runId}/stream`)
   const reader = r.body!.getReader()
   const dec = new TextDecoder()
   for (;;) {
-    const { value, done } = await reader.read()
-    if (done) break
-    yield dec.decode(value) // 透传 SSE 分片给前端
+    const next = reader.read() // 同一个 read promise 跨多次心跳保留，不能丢弃重发
+    let chunk: { done: boolean; value?: Uint8Array } | undefined
+    while (chunk === undefined) {
+      const winner = await Promise.race([
+        next.then((v) => ({ v })),
+        new Promise<"hb">((res) => setTimeout(() => res("hb"), heartbeatMs)),
+      ])
+      if (winner === "hb") {
+        yield ": hb\n\n" // 心跳注释帧：保活连接
+        continue
+      }
+      chunk = winner.v
+    }
+    if (chunk.done) break
+    yield dec.decode(chunk.value) // 透传 SSE 分片给前端
   }
 }
 

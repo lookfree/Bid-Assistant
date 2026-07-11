@@ -402,14 +402,27 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     }
 
     return streamSSE(c, async (stream) => {
+      // 客户端断连（关页/空闲超时/网络抖动）绝不能把仍在跑的 run 误判失败退款——写失败静默丢弃、
+      // 继续消费 agent 流直到 run 终态，步骤终态永远由 run 真实结果（finishStep/getRun）决定。
+      let clientGone = false
+      const safe = {
+        write: async (chunk: string) => {
+          if (clientGone) return
+          try { await stream.write(chunk) } catch { clientGone = true }
+        },
+        writeSSE: async (m: { event: string; data: string }) => {
+          if (clientGone) return
+          try { await stream.writeSSE(m) } catch { clientGone = true }
+        },
+      }
       try {
-        for await (const chunk of relayStream(run_id)) await stream.write(chunk) // 透传 agent SSE
-        await finishStep(stream, { project: p, stepRow: s, step: step as Step, runId: run_id, hold })
+        for await (const chunk of relayStream(run_id)) await safe.write(chunk) // 透传 agent SSE
+        await finishStep(safe, { project: p, stepRow: s, step: step as Step, runId: run_id, hold })
       } catch (e) {
-        // 中继/收尾中途炸（agent 掉线等）：退还预扣（已结算则被了结唯一索引吞掉）+ 占位行标 failed
+        // 中继/收尾真炸（agent 掉线等，非客户端断连）：退还预扣（已结算则被了结唯一索引吞掉）+ 占位行标 failed
         await settleFailed(s.id, hold.holdId!).catch(() => {})
         await getDb().update(projectSteps).set({ status: "failed" }).where(eq(projectSteps.id, s.id))
-        await stream.writeSSE({
+        await safe.writeSSE({
           event: "step.done",
           data: JSON.stringify({ step, cost: 0, status: "failed", error: String(e) }),
         })
