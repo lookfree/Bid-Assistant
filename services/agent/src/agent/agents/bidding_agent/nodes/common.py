@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+
+from agent.parsing import storage_read
 from agent.parsing.storage_read import storage      # spec106 MinIO 单例
+
+logger = logging.getLogger(__name__)
 
 
 async def upload_artifact(ctx, filename: str, data: bytes, content_type: str) -> str:
@@ -8,6 +14,19 @@ async def upload_artifact(ctx, filename: str, data: bytes, content_type: str) ->
     key = f"artifacts/{ctx.thread_id}/{filename}"
     await storage.put_bytes(key, data, content_type=content_type)
     return key
+
+
+async def fetch_master_bytes(key: str | None) -> bytes | None:
+    """企业自有 .pptx/.potx 母版按 MinIO key 预取字节；present（首渲）/export（重渲）共用。
+    缺 key 或取失败（网络抖动/坏 key/未上传）→ 记警告日志并回 None——render_pptx 自身在母版
+    加载/渲染失败时也会回退空白设计，这里再兜一层，双保险不阻断述标/导出产出。"""
+    if not key:
+        return None
+    try:
+        return await asyncio.to_thread(storage_read.read_bytes, key)
+    except Exception:
+        logger.warning("企业母版拉取失败 key=%s", key, exc_info=True)
+        return None
 
 
 def package_scope(run_input: dict | None) -> str:

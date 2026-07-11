@@ -136,3 +136,90 @@ def test_present_run_input_invalid_falls_back(monkeypatch):
     assert "时长 15 分钟" in user
     assert "客户指定模板" not in user
     assert out["deck"]["template"] == "gov"       # 取自模型提交，未被覆盖
+
+
+def test_present_enterprise_template_key_fetches_master_and_sets_deck_id(monkeypatch, submit_gateway):
+    """企业母版：run_input.enterprise_template_key 给出 → 预取字节（storage_read.read_bytes）
+    并传给 render_pptx 的 master_bytes；deck.enterprise_template_id 写回同一 key。"""
+    from agent.parsing import storage_read as storage_read_mod
+    from agent.agents.bidding_agent.nodes import present as present_mod
+
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+
+    fetched = []
+    monkeypatch.setattr(storage_read_mod, "read_bytes",
+                        lambda key: fetched.append(key) or b"fake-master-bytes")
+    captured = {}
+
+    def _fake_render_pptx(deck, *, template=None, master_bytes=None):
+        captured["master_bytes"] = master_bytes
+        return b"PK\x03\x04fake"
+    monkeypatch.setattr(present_mod, "render_pptx", _fake_render_pptx)
+
+    key = "library/u1/master.pptx"
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-1",
+                     gateway=submit_gateway({"submit_deck_draft": _DRAFT_ARGS,
+                                             "submit_slide_notes": _NOTES_ARGS}))
+    out = asyncio.run(make_present_node(ctx)(
+        {"chapters": {}, "read": {}, "run_input": {"enterprise_template_key": key}}))
+    assert fetched == [key]
+    assert captured["master_bytes"] == b"fake-master-bytes"
+    assert out["deck"]["enterprise_template_id"] == key
+
+
+def test_present_enterprise_template_fetch_failure_falls_back_blank(monkeypatch, submit_gateway):
+    """取母版字节失败（网络抖动/坏 key）→ master_bytes=None 传给 render_pptx，不抛错；
+    deck.enterprise_template_id 仍写回 key（供 export 之后重试）。"""
+    from agent.parsing import storage_read as storage_read_mod
+    from agent.agents.bidding_agent.nodes import present as present_mod
+
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+
+    def _raising_read_bytes(key):
+        raise RuntimeError("object not found")
+    monkeypatch.setattr(storage_read_mod, "read_bytes", _raising_read_bytes)
+    captured = {}
+
+    def _fake_render_pptx(deck, *, template=None, master_bytes=None):
+        captured["master_bytes"] = master_bytes
+        return b"PK\x03\x04fake"
+    monkeypatch.setattr(present_mod, "render_pptx", _fake_render_pptx)
+
+    key = "library/u1/missing.pptx"
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-1",
+                     gateway=submit_gateway({"submit_deck_draft": _DRAFT_ARGS,
+                                             "submit_slide_notes": _NOTES_ARGS}))
+    out = asyncio.run(make_present_node(ctx)(
+        {"chapters": {}, "read": {}, "run_input": {"enterprise_template_key": key}}))
+    assert captured["master_bytes"] is None
+    assert out["deck"]["enterprise_template_id"] == key
+
+
+def test_present_without_enterprise_template_key_unchanged(monkeypatch, submit_gateway):
+    """没有 enterprise_template_key（今天的行为）→ master_bytes=None，deck.enterprise_template_id
+    保持模型提交的默认值 None，不因新增功能改变现有产出。"""
+    from agent.agents.bidding_agent.nodes import present as present_mod
+
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+    captured = {}
+
+    def _fake_render_pptx(deck, *, template=None, master_bytes=None):
+        captured["master_bytes"] = master_bytes
+        return b"PK\x03\x04fake"
+    monkeypatch.setattr(present_mod, "render_pptx", _fake_render_pptx)
+
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-1",
+                     gateway=submit_gateway({"submit_deck_draft": _DRAFT_ARGS,
+                                             "submit_slide_notes": _NOTES_ARGS}))
+    out = asyncio.run(make_present_node(ctx)({"chapters": {}, "read": {}}))
+    assert captured["master_bytes"] is None
+    assert out["deck"]["enterprise_template_id"] is None

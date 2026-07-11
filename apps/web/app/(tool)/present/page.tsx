@@ -32,6 +32,7 @@ import { uploadFile } from "@/lib/files"
 import {
   estimateMinutes,
   slideStyles,
+  enterpriseTemplateStyle,
   type Slide,
   type StyleId,
   type SlideStyle,
@@ -70,8 +71,9 @@ export default function PresentPage() {
   const [tplOpen, setTplOpen] = useState(false)
   const [enterpriseStyle, setEnterpriseStyle] = useState<SlideStyle | null>(null)
   const [refPpt, setRefPpt] = useState<string | null>(null)
-  /* 临时上传的企业模板（演示用） */
-  const [uploadedTpls, setUploadedTpls] = useState<SlideStyle[]>([])
+  /* 当前套用的企业模板对应的资料库条目 id（present 步 run body 的 enterpriseTemplateItemId）；
+     选内置预设时清空——只有真正选中「企业自有模板」才带这个键。 */
+  const [enterpriseItemId, setEnterpriseItemId] = useState<string | null>(null)
 
   /* 幻灯编辑状态（present 步结果到位后填充） */
   const [slides, setSlides] = useState<Slide[]>([])
@@ -109,6 +111,7 @@ export default function PresentPage() {
   function pickBuiltin(id: StyleId) {
     setStyleId(id)
     setEnterpriseStyle(null)
+    setEnterpriseItemId(null)
     setTplOpen(false)
   }
   /* 会员权益 gate：会员信息加载中不判定（防按未登录口径误跳），非会员跳会员页 */
@@ -120,31 +123,31 @@ export default function PresentPage() {
     }
     return true
   }
-  /* 套用企业模板 / 参考历史 PPT / 上传：会员专享，免费用户跳会员页 */
-  function pickEnterprise(s: SlideStyle) {
+  /* 套用已有的企业模板资料库条目：会员专享（进选择器前已 gate，这里兜底一次） */
+  function pickEnterprise(s: SlideStyle, itemId: string) {
     if (!ensureMember()) return
     setEnterpriseStyle(s)
+    setEnterpriseItemId(itemId)
     setTplOpen(false)
   }
   function pickReference(name: string) {
     if (!ensureMember()) return
     setRefPpt(name)
   }
-  function uploadTemplate() {
-    if (!ensureMember()) return
-    const n = uploadedTpls.length + 1
-    const s: SlideStyle = {
-      id: `upload-${Date.now()}`,
-      name: `已上传模板 ${n}.pptx`,
-      swatch: "bg-emerald-600",
-      coverBg: "bg-emerald-700",
-      bar: "bg-emerald-600",
-      dot: "bg-emerald-600",
-      chip: "bg-emerald-600/10 text-emerald-700",
-      accent: "text-emerald-700",
-    }
-    setUploadedTpls((arr) => [...arr, s])
-    setEnterpriseStyle(s)
+  /* 上传企业 PPT 母版（.pptx/.potx）：真实直传 MinIO 后落资料库 presentation 分类条目
+     （企业模板 tags 契约，与已有条目同一批次筛选逻辑），并立即选中套用该模板。 */
+  async function uploadTemplate(file: File) {
+    const uploaded = await uploadFile(file)
+    const entry = await createEntry({
+      category: "presentation",
+      tags: ["企业模板"],
+      title: file.name,
+      attachments: [uploaded],
+    })
+    await reloadLibrary()
+    setEnterpriseStyle(enterpriseTemplateStyle(entry.id, entry.title))
+    setEnterpriseItemId(entry.id)
+    setTplOpen(false)
   }
   /* 上传参考历史述标 PPT：真实直传 MinIO 后入资料库（历史述标 tags 契约），并设为本次参考 */
   async function uploadReference(file: File) {
@@ -158,18 +161,15 @@ export default function PresentPage() {
     await reloadLibrary()
     setRefPpt(file.name)
   }
-  /* 把本次上传的企业模板存入资料库（真实 POST /api/library）。
-     企业模板/历史述标目前按 tags 契约判定（spec315 考虑改为子分类字段）。 */
-  async function saveTemplateToLibrary(name: string) {
-    await createEntry({ category: "presentation", tags: ["企业模板"], title: name })
-    // 入库成功：从「本次上传」临时列表移除，改由资料库数据渲染，避免同名重复展示
-    setUploadedTpls((arr) => arr.filter((s) => s.name !== name))
-    await reloadLibrary()
-  }
 
+  /* present 步 run body：企业模板选中时（非内置三款预设）附带 enterpriseTemplateItemId，
+     后端据此解析出 MinIO key 传给 agent 套用客户自有母版。 */
+  function presentRunBody(): Record<string, unknown> {
+    return { duration, template: styleId, ...(enterpriseItemId ? { enterpriseTemplateItemId: enterpriseItemId } : {}) }
+  }
   /* ---------------- 生成大纲（用户显式点击才跑，透传当前时长/模板） ---------------- */
   function runGenerate() {
-    void start({ duration, template: styleId })
+    void start(presentRunBody())
   }
 
   /* 切换时长：只更新选择器（新时长随下次生成透传，或经「保存」回写 deck.duration，
@@ -352,7 +352,7 @@ export default function PresentPage() {
           running={stepRunning}
           error={stepError}
           runningText="AI 正在基于标书与评分点生成述标稿与 PPT…"
-          onRetry={() => void start({ duration, template: styleId })}
+          onRetry={() => void start(presentRunBody())}
           action={stepErrorAction ?? undefined}
         />
       }
@@ -689,7 +689,6 @@ export default function PresentPage() {
           isMember={isMember}
           currentStyleId={style.id}
           refPpt={refPpt}
-          uploadedTpls={uploadedTpls}
           libItems={libItems}
           libLoading={libLoading}
           onClose={() => setTplOpen(false)}
@@ -698,7 +697,6 @@ export default function PresentPage() {
           onPickReference={pickReference}
           onUploadTemplate={uploadTemplate}
           onUploadReference={uploadReference}
-          onSaveToLibrary={saveTemplateToLibrary}
           ensureMember={ensureMember}
         />
       )}

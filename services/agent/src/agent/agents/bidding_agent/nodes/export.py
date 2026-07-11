@@ -4,7 +4,7 @@ from agent.agents.bidding_agent.render.docx import render_docx
 from agent.agents.bidding_agent.render.pdf import docx_to_pdf
 from agent.agents.bidding_agent.render.pptx import render_pptx
 from agent.agents.bidding_agent.schemas import DeckSpec
-from agent.agents.bidding_agent.nodes.common import upload_artifact
+from agent.agents.bidding_agent.nodes.common import upload_artifact, fetch_master_bytes
 from agent.parsing import storage_read
 
 
@@ -36,7 +36,10 @@ def make_export_node(ctx):
     spec323：docx 落库后 best-effort 转 .pdf；转换失败不写 artifacts['pdf']，不影响 docx 产出。
     spec324：run_input.package 存在时封面带包件名。
     spec325：run_input.credentials 非空时预取图片字节，渲染追加「资格证明文件」附录；
-    缺省不带 credentials 键时渲染调用与今天一致。"""
+    缺省不带 credentials 键时渲染调用与今天一致。
+    企业母版：deck.enterprise_template_id 若给出（present 阶段已落库的 MinIO key），重渲时
+    重新预取母版字节传给 render_pptx，保持编辑后重导出仍套用同一份企业母版；取不到静默回退
+    空白设计，不影响 pptx 重渲。"""
     async def export_node(state):
         meta = (state.get("read") or {}).get("project_meta", {})
         run_input = state.get("run_input") or {}
@@ -56,7 +59,8 @@ def make_export_node(ctx):
             artifacts["pdf"] = await upload_artifact(ctx, "bid.pdf", pdf_bytes, "application/pdf")
         deck = state.get("deck")
         if deck:   # 编辑后 deck 的导出由此生效（overrides 已在续跑前灌入 state）
-            pptx = render_pptx(DeckSpec.model_validate(deck))
+            master_bytes = await fetch_master_bytes(deck.get("enterprise_template_id"))
+            pptx = render_pptx(DeckSpec.model_validate(deck), master_bytes=master_bytes)
             artifacts["pptx"] = await upload_artifact(
                 ctx, "present.pptx", pptx,
                 "application/vnd.openxmlformats-officedocument.presentationml.presentation")

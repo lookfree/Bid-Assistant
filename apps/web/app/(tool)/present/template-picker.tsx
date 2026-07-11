@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react"
 import Link from "next/link"
-import { Building2, Check, ChevronRight, History, Loader2, Lock, Palette, Save, Upload, X } from "lucide-react"
+import { Building2, Check, ChevronRight, History, Loader2, Lock, Palette, Upload, X } from "lucide-react"
 import { useEscapeClose } from "@/hooks/use-escape-close"
 import { slideStyles, enterpriseTemplateStyle, type StyleId, type SlideStyle } from "@/lib/present"
 import type { LibraryEntry } from "@/lib/library-api"
@@ -11,16 +11,14 @@ type TemplatePickerProps = {
   isMember: boolean
   currentStyleId: string
   refPpt: string | null
-  uploadedTpls: SlideStyle[]
   libItems: LibraryEntry[]
   libLoading: boolean
   onClose: () => void
   onPickBuiltin: (id: StyleId) => void
-  onPickEnterprise: (s: SlideStyle) => void
+  onPickEnterprise: (s: SlideStyle, itemId: string) => void
   onPickReference: (name: string) => void
-  onUploadTemplate: () => void
+  onUploadTemplate: (file: File) => Promise<void>
   onUploadReference: (file: File) => Promise<void>
-  onSaveToLibrary: (name: string) => Promise<void>
   /** 会员权益 gate（加载中不判定、非会员跳会员页），返回是否放行 */
   ensureMember: () => boolean
 }
@@ -61,6 +59,7 @@ export function TemplatePicker(props: TemplatePickerProps) {
 
   const { busy, busyMsg, run } = useBusyTask()
   const refFileRef = useRef<HTMLInputElement>(null)
+  const entFileRef = useRef<HTMLInputElement>(null)
 
   return (
     <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
@@ -82,12 +81,11 @@ export function TemplatePicker(props: TemplatePickerProps) {
             isMember={props.isMember}
             currentStyleId={props.currentStyleId}
             items={enterpriseItems}
-            uploadedTpls={props.uploadedTpls}
             loading={libLoading}
-            busy={busy}
             onPickEnterprise={props.onPickEnterprise}
-            onUploadTemplate={props.onUploadTemplate}
-            onSave={(name) => void run("正在存入资料库…", () => props.onSaveToLibrary(name), "保存到资料库失败，请重试")}
+            onUploadClick={() => {
+              if (ensureMember()) entFileRef.current?.click()
+            }}
           />
           <HistorySection
             isMember={props.isMember}
@@ -108,6 +106,17 @@ export function TemplatePicker(props: TemplatePickerProps) {
               const file = e.target.files?.[0]
               e.target.value = ""
               if (file) void run("正在上传参考 PPT…", () => props.onUploadReference(file), "参考 PPT 上传失败，请重试")
+            }}
+          />
+          <input
+            ref={entFileRef}
+            type="file"
+            accept=".pptx,.potx"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0]
+              e.target.value = ""
+              if (file) void run("正在上传企业模板…", () => props.onUploadTemplate(file), "企业模板上传失败，请重试")
             }}
           />
           {busyMsg && (
@@ -183,26 +192,20 @@ type EnterpriseSectionProps = {
   isMember: boolean
   currentStyleId: string
   items: LibraryEntry[]
-  uploadedTpls: SlideStyle[]
   loading: boolean
-  busy: boolean
-  onPickEnterprise: (s: SlideStyle) => void
-  onUploadTemplate: () => void
-  onSave: (name: string) => void
+  onPickEnterprise: (s: SlideStyle, itemId: string) => void
+  onUploadClick: () => void
 }
 
-/* 企业模板行数据：资料库条目（按条目 id 稳定哈希取预览配色）+ 本次上传 */
-function enterpriseRows(items: LibraryEntry[], uploadedTpls: SlideStyle[]) {
-  return [
-    ...items.map((it) => ({ key: it.id, name: it.title, meta: it.meta ?? null, style: enterpriseTemplateStyle(it.id, it.title), isUploaded: false })),
-    ...uploadedTpls.map((s) => ({ key: s.id, name: s.name, meta: "本次上传", style: s, isUploaded: true })),
-  ]
+/* 企业模板行数据：资料库 presentation 分类下「企业模板」标签的条目，按条目 id 稳定哈希取预览配色。 */
+function enterpriseRows(items: LibraryEntry[]) {
+  return items.map((it) => ({ itemId: it.id, name: it.title, meta: it.meta ?? null, style: enterpriseTemplateStyle(it.id, it.title) }))
 }
 
-/* 企业自有模板 */
+/* 企业自有模板：真实上传（presign+PUT）后即落资料库条目，重进选择器仍可见并可复用套版式。 */
 function EnterpriseSection(props: EnterpriseSectionProps) {
-  const { isMember, currentStyleId, loading, busy } = props
-  const rows = enterpriseRows(props.items, props.uploadedTpls)
+  const { isMember, currentStyleId, loading } = props
+  const rows = enterpriseRows(props.items)
   return (
     <>
       <div className="mt-5 flex items-center gap-2">
@@ -218,40 +221,29 @@ function EnterpriseSection(props: EnterpriseSectionProps) {
         {rows.map((tpl) => {
           const selected = currentStyleId === tpl.style.id
           return (
-            <div
-              key={tpl.key}
-              className={`flex flex-col gap-2 rounded-xl border p-3 transition-colors ${
-                selected ? "border-primary/50 gradient-brand-soft" : "border-border bg-background"
+            <button
+              key={tpl.itemId}
+              onClick={() => props.onPickEnterprise(tpl.style, tpl.itemId)}
+              className={`flex items-start gap-3 rounded-xl border p-3 text-left transition-colors ${
+                selected ? "border-primary/50 gradient-brand-soft" : "border-border bg-background hover:border-primary/30"
               }`}
             >
-              <button onClick={() => props.onPickEnterprise(tpl.style)} className="flex items-start gap-3 text-left">
-                <span className={`h-10 w-14 shrink-0 rounded-md ${tpl.style.coverBg}`} />
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-                    <span className="truncate">{tpl.name}</span>
-                    {selected && <Check className="size-3.5 shrink-0 text-primary" />}
-                    {!isMember && <Lock className="size-3 shrink-0 text-primary" />}
-                  </span>
-                  {tpl.meta && <span className="mt-0.5 block text-[11px] text-muted-foreground">{tpl.meta}</span>}
-                  <span className="mt-1 block text-[11px] text-primary">套用此模板版式</span>
+              <span className={`h-10 w-14 shrink-0 rounded-md ${tpl.style.coverBg}`} />
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                  <span className="truncate">{tpl.name}</span>
+                  {selected && <Check className="size-3.5 shrink-0 text-primary" />}
+                  {!isMember && <Lock className="size-3 shrink-0 text-primary" />}
                 </span>
-              </button>
-              {tpl.isUploaded && (
-                <button
-                  onClick={() => props.onSave(tpl.name)}
-                  disabled={busy}
-                  className="inline-flex items-center justify-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-[11px] font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
-                >
-                  <Save className="size-3" />
-                  保存到资料库
-                </button>
-              )}
-            </div>
+                {tpl.meta && <span className="mt-0.5 block text-[11px] text-muted-foreground">{tpl.meta}</span>}
+                <span className="mt-1 block text-[11px] text-primary">套用此模板版式</span>
+              </span>
+            </button>
           )
         })}
         {/* 上传企业模板 */}
         <button
-          onClick={props.onUploadTemplate}
+          onClick={props.onUploadClick}
           className="flex items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-background p-3 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
         >
           <Upload className="size-4" />

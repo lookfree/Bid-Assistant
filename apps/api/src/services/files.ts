@@ -34,7 +34,9 @@ const fileMaxBytes = () => getEnv().FILE_MAX_SIZE_MB * 1024 * 1024
 // doc/xls（旧格式）spec320 起经 agent 侧 LibreOffice 转 docx/xlsx 再解析。
 // png/jpg/jpeg（spec325）：资质证照图片附件——不进读标解析，只是资料库挂图供导出附录用，
 // 复用同一条预签名上传通道；agent 解析器对图片仍抛 UnsupportedDocument（白名单放宽不影响招标文件流）。
-const SUPPORTED_EXTS = new Set(["pdf", "docx", "xlsx", "doc", "xls", "png", "jpg", "jpeg"])
+// pptx/potx（企业 PPT 母版）：同理不进读标解析，只是资料库 presentation 分类条目挂的母版文件，
+// 供 present/export 步按 enterprise_template_key 取字节套用客户自有主题。
+const SUPPORTED_EXTS = new Set(["pdf", "docx", "xlsx", "doc", "xls", "png", "jpg", "jpeg", "pptx", "potx"])
 
 export class UnsupportedFileTypeError extends Error {
   constructor() {

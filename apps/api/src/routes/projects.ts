@@ -3,7 +3,7 @@ import { streamSSE } from "hono/streaming"
 import { z } from "zod"
 import { eq, and, desc, sql, inArray } from "drizzle-orm"
 import { getDb } from "../db/client"
-import { bidProjects, projectSteps, projectFiles } from "../db/schema"
+import { bidProjects, projectSteps, projectFiles, libraryItems } from "../db/schema"
 import type { User } from "../db/schema"
 import { authMiddleware } from "../middleware/auth"
 import { getUserId } from "../lib/auth-user"
@@ -39,10 +39,13 @@ const ARTIFACT_NAME: Record<string, string> = { docx: "投标文件.docx", pptx:
 // 可编辑回写的步（spec315a 契约 1）：read/review/export 的 result 不接受前端覆写
 const EDITABLE_STEPS = ["outline", "content", "present"] as const
 
-// present 步的 run 参数（spec315a 契约 3）：时长限 10/15/20 分钟，模板限内置三款
+// present 步的 run 参数（spec315a 契约 3）：时长限 10/15/20 分钟，模板限内置三款；
+// enterpriseTemplateItemId（企业 PPT 母版）：资料库条目 id，解析见 resolveEnterpriseTemplateKey——
+// 格式非法（非 uuid）在此 400；条目存在但非本人/非 presentation 分类/无合规附件在解析层静默忽略。
 const presentBodySchema = z.object({
   duration: z.union([z.literal(10), z.literal(15), z.literal(20)]).optional(),
   template: z.enum(["blue", "tech", "gov"]).optional(),
+  enterpriseTemplateItemId: z.string().uuid().optional(),
 })
 
 // 编辑回写请求体：非空 camelCase 对象（外形校验；按步结构校验见 STEP_RESULT_SCHEMAS）
@@ -157,13 +160,42 @@ async function latestDoneStep(projectId: string, step: string) {
   return row
 }
 
-/** present 步 run 参数解析：只保留显式传入的 duration/template；非法值返回 null（调用方 400，不留占位行）。 */
-function parsePresentInput(body: unknown): Record<string, unknown> | null {
+// 企业母版可用的附件扩展名：.pptx/.potx；条目/附件存在但非这两种一律当「未提供」处理。
+const ENTERPRISE_TEMPLATE_EXTS = new Set(["pptx", "potx"])
+
+/** 企业 PPT 母版 key 解析：itemId → 本人 presentation 分类资料库条目 → 首个附件 fileId →
+ *  project_files 行 → 扩展名合规的 key。任一环节失败（条目不存在/非本人/非 presentation 分类/
+ *  无附件/附件文件不存在/扩展名不是 pptx|potx）都返回 undefined——不 400 挡掉整个 present 步，
+ *  只是这次不套用企业母版（agent 侧 render_pptx 本就 fallback-safe）。 */
+async function resolveEnterpriseTemplateKey(itemId: string | undefined, userId: string): Promise<string | undefined> {
+  if (!itemId) return undefined
+  const [item] = await getDb()
+    .select()
+    .from(libraryItems)
+    .where(and(eq(libraryItems.id, itemId), eq(libraryItems.userId, userId), eq(libraryItems.category, "presentation")))
+    .limit(1)
+  const fileId = item?.attachments?.[0]?.fileId
+  if (!fileId) return undefined
+  const [file] = await getDb()
+    .select({ key: projectFiles.key })
+    .from(projectFiles)
+    .where(and(eq(projectFiles.id, fileId), eq(projectFiles.userId, userId)))
+    .limit(1)
+  const ext = file?.key.split(".").pop()?.toLowerCase()
+  return file && ext && ENTERPRISE_TEMPLATE_EXTS.has(ext) ? file.key : undefined
+}
+
+/** present 步 run 参数解析：只保留显式传入的 duration/template；enterpriseTemplateItemId 给出
+ *  时按上面的规则解析成 run_input.enterprise_template_key（解析失败静默不带该键）；
+ *  body 外形非法（如 duration 不在 10/15/20）返回 null（调用方 400，不留占位行）。 */
+async function parsePresentInput(body: unknown, userId: string): Promise<Record<string, unknown> | null> {
   const parsed = presentBodySchema.safeParse(body)
   if (!parsed.success) return null
   const out: Record<string, unknown> = {}
   if (parsed.data.duration !== undefined) out.duration = parsed.data.duration
   if (parsed.data.template !== undefined) out.template = parsed.data.template
+  const key = await resolveEnterpriseTemplateKey(parsed.data.enterpriseTemplateItemId, userId)
+  if (key) out.enterprise_template_key = key
   return out
 }
 
@@ -345,11 +377,13 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     if (!isUuid(id)) return c.json({ error: "not_found" }, 404) // 非 uuid 直接 404，避免 PG 22P02 → 500
     if (!STEP_ORDER.includes(step as Step)) return c.json({ error: "bad_step" }, 400)
 
-    // 本 run 参数（spec315a 契约 3）：仅 present 步接受 {duration, template}，先于占位行校验（400 不留残行）
-    const runInput = step === "present" ? parsePresentInput(await c.req.json().catch(() => ({}))) : {}
+    const userId = c.get("user").id
+
+    // 本 run 参数（spec315a 契约 3）：仅 present 步接受 {duration, template, enterpriseTemplateItemId}，
+    // 先于占位行校验（400 不留残行）；企业模板解析需要 userId（属主+分类校验），故 userId 提到这之前取。
+    const runInput = step === "present" ? await parsePresentInput(await c.req.json().catch(() => ({})), userId) : {}
     if (!runInput) return c.json({ error: "invalid_input" }, 400)
 
-    const userId = c.get("user").id
     const p = await ownedProject(id, userId)
     if (!p) return c.json({ error: "not_found" }, 404)
 

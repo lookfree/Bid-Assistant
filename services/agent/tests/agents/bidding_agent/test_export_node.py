@@ -224,6 +224,41 @@ def test_export_node_credential_fetch_failure_no_crash(monkeypatch):
     assert "（图片加载失败：missing.png）" in texts
 
 
+def test_export_node_rerender_fetches_master_from_deck_enterprise_template_id(monkeypatch):
+    """企业母版：deck.enterprise_template_id 给出 → export 重渲时按它重新预取母版字节，
+    传给 render_pptx 的 master_bytes，保持编辑后重导出仍套用同一份企业母版。"""
+    from agent.parsing import storage_read as storage_read_mod
+    saved = {}
+
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            saved[key] = len(data)
+
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+    monkeypatch.setattr(export_mod, "docx_to_pdf", lambda data: None)
+    fetched = []
+    monkeypatch.setattr(storage_read_mod, "read_bytes",
+                        lambda key: fetched.append(key) or b"fake-master-bytes")
+    captured = {}
+
+    def _fake_render_pptx(deck, *, template=None, master_bytes=None):
+        captured["master_bytes"] = master_bytes
+        return b"PK\x03\x04fake"
+    monkeypatch.setattr(export_mod, "render_pptx", _fake_render_pptx)
+
+    key = "library/u1/master.pptx"
+    node = make_export_node(RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-15"))
+    out = asyncio.run(node({
+        "outline": {"chapters": [{"id": "t1", "no": "第一章", "title": "项目理解", "group": "tech"}]},
+        "chapters": {"t1": "<p>正文</p>"},
+        "deck": {"title": "述标", "template": "tech", "enterprise_template_id": key,
+                 "slides": [{"id": "s0", "title": "封面", "kind": "cover"}]},
+    }))
+    assert fetched == [key]
+    assert captured["master_bytes"] == b"fake-master-bytes"
+    assert out["artifacts"]["pptx"] == "artifacts/proj-15/present.pptx"
+
+
 def test_artifacts_reducer_keeps_pptx_and_docx():
     """spec201 state.artifacts 合并 reducer：present(pptx) 与 export(docx) 并存不互相覆盖。"""
     from agent.agents.bidding_agent.state import _merge_dict

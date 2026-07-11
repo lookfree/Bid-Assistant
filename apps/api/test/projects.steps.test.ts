@@ -4,7 +4,7 @@ import { Hono } from "hono"
 import { projectRoutes, buildStateOverrides, type ProjectDeps } from "../src/routes/projects"
 import { loginWithPhone } from "../src/services/auth"
 import { getDb, closeDb } from "../src/db/client"
-import { users, bidProjects, projectSteps, projectFiles } from "../src/db/schema"
+import { users, bidProjects, projectSteps, projectFiles, libraryItems } from "../src/db/schema"
 import { uniquePhone, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连真库
@@ -307,5 +307,100 @@ describe("/api/projects 按步编排", () => {
     const [p] = await getDb().select().from(bidProjects).where(eq(bidProjects.id, projectId))
     expect(p?.currentStep).toBe("done")
     expect(p?.status).toBe("done")
+  })
+})
+
+describe("present 步：企业 PPT 母版解析（enterpriseTemplateItemId → run_input.enterprise_template_key）", () => {
+  /** 新建项目并快速推进到 present 步（read/outline/content/review 用默认 body，走同一套 mockDeps）。 */
+  async function projectAtPresent(): Promise<string> {
+    const create = await app.request("/api/projects", {
+      method: "POST",
+      headers: auth(),
+      body: JSON.stringify({ fileKey: "uploads/x/tender.pdf" }),
+    })
+    const pid = ((await create.json()) as { id: string }).id
+    for (const step of ["read", "outline", "content", "review"]) {
+      const res = await app.request(`/api/projects/${pid}/steps/${step}`, { method: "POST", headers: auth() })
+      expect(res.status).toBe(200)
+      await res.text() // 耗尽 SSE
+    }
+    return pid
+  }
+
+  it("presentation 分类条目 + 本人 pptx 附件 → run_input.enterprise_template_key 命中该 key", async () => {
+    const [pptxFile] = await getDb()
+      .insert(projectFiles)
+      .values({
+        userId,
+        bucket: "bidsaas",
+        key: `uploads/${userId}/enterprise-master.pptx`,
+        filename: "企业模板.pptx",
+        contentType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        size: 1,
+        status: "uploaded",
+      })
+      .returning()
+    const [item] = await getDb()
+      .insert(libraryItems)
+      .values({
+        userId,
+        category: "presentation",
+        title: "企业模板",
+        attachments: [{ fileId: pptxFile!.id, name: "企业模板.pptx" }],
+      })
+      .returning()
+
+    const pid = await projectAtPresent()
+    const res = await app.request(`/api/projects/${pid}/steps/present`, {
+      method: "POST",
+      headers: auth(),
+      body: JSON.stringify({ duration: 15, enterpriseTemplateItemId: item!.id }),
+    })
+    expect(res.status).toBe(200)
+    await res.text()
+    expect((captured.createRunOpts?.input as { run_input: Record<string, unknown> }).run_input).toEqual({
+      duration: 15,
+      enterprise_template_key: pptxFile!.key,
+      rag: { enabled: true, top_k: 3 },
+    })
+  })
+
+  it("他人的资料库条目（越权引用）→ 静默忽略，不带 enterprise_template_key，不 400 挡掉整个 present 步", async () => {
+    const other = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+    const [otherFile] = await getDb()
+      .insert(projectFiles)
+      .values({
+        userId: other.user.id,
+        bucket: "bidsaas",
+        key: `uploads/${other.user.id}/other-master.pptx`,
+        filename: "别人的模板.pptx",
+        contentType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        size: 1,
+        status: "uploaded",
+      })
+      .returning()
+    const [otherItem] = await getDb()
+      .insert(libraryItems)
+      .values({
+        userId: other.user.id,
+        category: "presentation",
+        title: "别人的模板",
+        attachments: [{ fileId: otherFile!.id, name: "别人的模板.pptx" }],
+      })
+      .returning()
+
+    const pid = await projectAtPresent()
+    const res = await app.request(`/api/projects/${pid}/steps/present`, {
+      method: "POST",
+      headers: auth(),
+      body: JSON.stringify({ duration: 15, enterpriseTemplateItemId: otherItem!.id }),
+    })
+    expect(res.status).toBe(200)
+    await res.text()
+    expect((captured.createRunOpts?.input as { run_input: Record<string, unknown> }).run_input).toEqual({
+      duration: 15,
+      rag: { enabled: true, top_k: 3 },
+    })
+    await getDb().delete(users).where(eq(users.id, other.user.id))
   })
 })

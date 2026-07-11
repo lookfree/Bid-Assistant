@@ -80,6 +80,21 @@ describe("/files", () => {
     }
   })
 
+  it("扩展名白名单：.pptx/.potx 企业 PPT 母版 → 200 现已支持（企业 PPT 母版套用）", async () => {
+    for (const filename of ["企业模板.pptx", "企业模板.potx"]) {
+      const res = await app.request("/files/presign-upload", {
+        method: "POST",
+        headers: auth(),
+        body: JSON.stringify({
+          filename,
+          contentType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+          size: 10,
+        }),
+      })
+      expect(res.status).toBe(200)
+    }
+  })
+
   it("扩展名白名单：其余不支持的扩展名（如 .zip）→ 400 unsupported_file_type（解析层必败，入口 fail fast）", async () => {
     const res = await app.request("/files/presign-upload", {
       method: "POST",
