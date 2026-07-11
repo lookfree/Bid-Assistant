@@ -2,6 +2,10 @@ from __future__ import annotations
 import io
 from bs4 import BeautifulSoup
 from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Pt
 
 _CONTAINERS = ("div", "section", "article", "body")
 
@@ -40,22 +44,74 @@ def _emit_html(doc: Document, html: str) -> None:
         _emit_el(doc, el)
 
 
+def _cover_line(doc: Document, text: str, size: int) -> None:
+    """封面居中一行：统一走 run 设字号，标题行调用方另设加粗。"""
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run(text)
+    run.font.size = Pt(size)
+
+
+def _style_cover(doc: Document, meta: dict) -> None:
+    """封面：居中大标题（项目名）+ 信息块（采购人/编号/日期占位）+ 投标人盖章占位。"""
+    _cover_line(doc, meta.get("name", "投标文件"), 26)
+    doc.paragraphs[-1].runs[0].bold = True
+    doc.add_paragraph()
+    if meta.get("buyer"):
+        _cover_line(doc, f"采购人：{meta['buyer']}", 14)
+    if meta.get("code"):
+        _cover_line(doc, f"招标编号：{meta['code']}", 14)
+    _cover_line(doc, f"日期：{meta.get('date', '____年__月__日')}", 14)
+    doc.add_paragraph()
+    _cover_line(doc, "投标人：____________________（盖章）", 14)
+    doc.add_page_break()
+
+
+def _add_field(paragraph, instr_text: str) -> None:
+    """在段落里插入一个 Word 域（fldChar begin/instrText/separate/end 四件套 OXML）；
+    TOC 域与页脚 PAGE 域复用同一拼接逻辑。"""
+    run = paragraph.add_run()
+    r = run._r
+    begin = OxmlElement("w:fldChar")
+    begin.set(qn("w:fldCharType"), "begin")
+    instr = OxmlElement("w:instrText")
+    instr.set(qn("xml:space"), "preserve")
+    instr.text = instr_text
+    separate = OxmlElement("w:fldChar")
+    separate.set(qn("w:fldCharType"), "separate")
+    end = OxmlElement("w:fldChar")
+    end.set(qn("w:fldCharType"), "end")
+    for node in (begin, instr, separate, end):
+        r.append(node)
+
+
+def _add_toc_field(doc: Document) -> None:
+    """真目录域（非静态文本）：TOC \\o "1-3" \\h \\z \\u。目录页码只有 Word 排版引擎知道，
+    导出域交由 Word 打开时按 F9 更新，比人工维护的静态占位准确。"""
+    doc.add_heading("目录", level=1)
+    doc.add_paragraph("（在 Word 中按 F9 更新目录）")
+    field_p = doc.add_paragraph()
+    _add_field(field_p, 'TOC \\o "1-3" \\h \\z \\u')
+    doc.add_page_break()
+
+
+def _add_page_number_footer(doc: Document, project_name: str) -> None:
+    """默认节：页眉写项目名、页脚居中 PAGE 域页码（逐页连续编码，招标方常见硬要求）。"""
+    section = doc.sections[0]
+    header_p = section.header.paragraphs[0]
+    header_p.text = project_name
+    footer_p = section.footer.paragraphs[0]
+    footer_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _add_field(footer_p, "PAGE")
+
+
 def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None) -> bytes:
-    """完整标书 .docx：封面 + 目录占位 + 按 outline 顺序各章正文 + 签章页。确定性，无 LLM。"""
+    """完整标书 .docx：封面 + 真目录域页 + 按 outline 顺序各章正文 + 签章页。确定性，无 LLM。"""
     meta = meta or {}
     doc = Document()
-    # 封面
-    doc.add_heading(meta.get("name", "投标文件"), level=0)
-    if meta.get("buyer"):
-        doc.add_paragraph(f"采购人：{meta['buyer']}")
-    if meta.get("code"):
-        doc.add_paragraph(f"招标编号：{meta['code']}")
-    doc.add_paragraph("投标人：____________________（盖章）")
-    doc.add_page_break()
-    # 目录占位
-    doc.add_heading("目录", level=1)
-    doc.add_paragraph("（请在 Word 中更新域以生成目录）")
-    doc.add_page_break()
+    _style_cover(doc, meta)
+    _add_toc_field(doc)
+    _add_page_number_footer(doc, meta.get("name", "投标文件"))
     # 章节正文：按 outline 顺序（缺正文出占位，不报错）
     for ch in outline.get("chapters", []):
         group = "技术标" if ch.get("group") == "tech" else "商务标"
