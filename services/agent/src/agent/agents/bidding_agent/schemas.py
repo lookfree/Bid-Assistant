@@ -32,11 +32,24 @@ class ScoringRow(BaseModel):
     chapter_id: str = ""                           # 评分点 → 标书章节映射（对齐原型 chapterId）
 
 
+class StructureItem(BaseModel):
+    """投标文件构成清单条目（spec321）：机器可读的必备构成，供 outline/review 对齐用；与
+    ReadCategory(key=format) 允许内容重叠——format 供人读，本结构供机器比对。"""
+    id: str                                       # s1, s2...
+    title: str                                    # 如「开标一览表」「技术偏离表」「资格证明文件（分册）」
+    kind: Literal["volume", "chapter", "form", "rule"]  # 分册/章节/表单/程序性要求(份数密封签章)
+    required: bool = True                         # 招标文件强制=true；可选项=false
+    notes: str = ""                                # 份数/密封/签章/装订等操作说明（kind=rule 为主）
+    clause_ids: list[str] = Field(default_factory=list)
+    source_quote: str = ""
+
+
 class ReadResult(BaseModel):
     project_meta: dict = Field(default_factory=dict)        # name/code/buyer/budget/deadline...
     categories: list[ReadCategory]
     scoring: list[ScoringRow] = Field(default_factory=list)
     risk_summary: list[str] = Field(default_factory=list)   # 废标红线汇总
+    required_structure: list[StructureItem] = Field(default_factory=list)  # 投标文件构成清单（spec321）
 
 
 class OutlineItem(BaseModel):
@@ -53,6 +66,7 @@ class OutlineChapter(BaseModel):
     group: Literal["tech", "business"]
     sourced: bool = True                          # 能否在招标文件索引到来源
     items: list[OutlineItem] = Field(default_factory=list)
+    structure_ref: str | None = None              # 对应 required_structure 项 id（spec321，可空）
 
 
 class Outline(BaseModel):
