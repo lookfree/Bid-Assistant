@@ -69,6 +69,17 @@ describe("/files", () => {
     expect(xls.status).toBe(200)
   })
 
+  it("扩展名白名单：.png/.jpg/.jpeg 证照图片 → 200 现已支持（spec325 资质证照附件）", async () => {
+    for (const filename of ["证照.png", "证照.jpg", "证照.jpeg"]) {
+      const res = await app.request("/files/presign-upload", {
+        method: "POST",
+        headers: auth(),
+        body: JSON.stringify({ filename, contentType: "image/png", size: 10 }),
+      })
+      expect(res.status).toBe(200)
+    }
+  })
+
   it("扩展名白名单：其余不支持的扩展名（如 .zip）→ 400 unsupported_file_type（解析层必败，入口 fail fast）", async () => {
     const res = await app.request("/files/presign-upload", {
       method: "POST",

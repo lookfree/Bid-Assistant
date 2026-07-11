@@ -13,6 +13,7 @@ import * as client from "../services/agent-client"
 import { healStuckStep } from "../services/stuck-steps"
 import { getAgentModel } from "../services/agent-client"
 import { ragRunInput } from "../services/rag-config"
+import { credentialsRunInput, type CredentialInput } from "../services/credentials"
 import { toCamel, toSnake } from "../lib/case"
 import { parsePagination, pagedBody, pagedResult } from "../lib/pagination"
 import { presignGet } from "../storage/s3"
@@ -136,6 +137,13 @@ async function buildFilesInput(project: typeof bidProjects.$inferSelect): Promis
   const rows = await getDb().select({ key: projectFiles.key, filename: projectFiles.filename }).from(projectFiles).where(inArray(projectFiles.key, keys))
   const nameByKey = new Map(rows.map((f) => [f.key, f.filename]))
   return keys.map((k) => ({ key: k, name: nameByKey.get(k) ?? k.split("/").pop() ?? k }))
+}
+
+/** export 步 run_input.credentials（spec325）：查该用户资质类资料库条目的图片附件，
+ *  无则返回空对象（调用方不带该键，导出行为与今天一致）。 */
+async function exportCredentials(userId: string): Promise<{ credentials?: CredentialInput[] }> {
+  const credentials = await credentialsRunInput(userId)
+  return credentials ? { credentials } : {}
 }
 
 /** 取该项目某步最新 done 行（result 现值 = 编辑过即编辑后；snake 原样）。 */
@@ -358,11 +366,13 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       files: await buildFilesInput(p), // spec320：全部招标文件（多文件合并读标）
       step,
       // rag（spec316）并入 run_input：present 的 duration/template 等既有键不丢；
-      // package（spec324）：已选包且非 read 步才带（read 面向全文，不分包；未选包=今天行为不变）。
+      // package（spec324）：已选包且非 read 步才带（read 面向全文，不分包；未选包=今天行为不变）；
+      // credentials（spec325）：仅 export 步查询下发，用户无资质图片附件则不带该键。
       run_input: {
         ...runInput,
         rag: await ragRunInput(),
         ...(step !== "read" && p.selectedPackage ? { package: p.selectedPackage } : {}),
+        ...(step === "export" ? await exportCredentials(userId) : {}),
       },
       state_overrides: await stateOverrides(p.id, step as Step),
     }
