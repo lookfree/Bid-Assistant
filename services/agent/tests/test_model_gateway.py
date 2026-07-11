@@ -166,3 +166,15 @@ def test_override_chain_empty_list_not_set():
     """chain 全部被清洗掉（或原本为空列表）⇒ 不设 model_chain 键（继承 env/默认）。"""
     assert model_override_to_settings({"chain": []}) == {}
     assert model_override_to_settings({"chain": [{"provider": "x", "model": ""}]}) == {}
+
+
+def test_run_model_override_preserves_chain():
+    """spec319.1：RunModelOverride 必须声明 chain，否则 model_dump() 会丢掉 App 下发的自建端点链
+    （同 spec319 params 漏字段的坑）——丢了自建模型运行时永远用不上。"""
+    from agent.routes.runs import RunModelOverride
+
+    sel = RunModelOverride(chain=[{"provider": "custom", "model": "m1",
+                                   "base_url": "http://h/v1", "api_key": "k1"}]).model_dump()
+    assert sel["chain"] == [{"provider": "custom", "model": "m1",
+                             "base_url": "http://h/v1", "api_key": "k1"}]
+    assert model_override_to_settings(sel)["model_chain"][0]["base_url"] == "http://h/v1"

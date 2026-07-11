@@ -24,6 +24,7 @@
 **Files:**
 - Modify: `services/agent/src/agent/config.py`（加 `model_chain` 字段）
 - Modify: `services/agent/src/agent/models/gateway.py`（get_chat 接受 base_url/api_key；_chain 产出 dict；invoke 用之；override 映射 chain）
+- Modify: `services/agent/src/agent/routes/runs.py`（`RunModelOverride` 加 `chain: list[dict] | None = None`——否则 pydantic `model_dump()` 丢掉 App 下发的 chain，自建端点运行时永远用不上；chapters.py 复用同一模型，自动带上）
 - Test: `services/agent/tests/test_model_gateway.py`
 
 **Interfaces:**
