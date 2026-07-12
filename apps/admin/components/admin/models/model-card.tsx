@@ -406,12 +406,17 @@ function AddToChainRow({ model, inChain, onAddToChain }: { model: ModelEntry; in
         </Badge>
       </p>
     )
-  if (!canAddToChain(model)) return null
+  // 不满足条件时按钮禁用+说明原因,而不是整个消失——否则(实测)删掉链上唯一模型后,
+  // 新模型「测通但未启用」时用户找不到任何编排入口。
+  const blocked = model.test.status !== "passed" ? "测试通过并启用后可加入" : !model.enabled ? "启用后可加入编排" : null
   return (
-    <Button size="sm" variant="outline" className="w-fit" onClick={onAddToChain}>
-      <PlusCircle data-icon="inline-start" />
-      加入运行编排
-    </Button>
+    <span className="flex items-center gap-2">
+      <Button size="sm" variant="outline" className="w-fit" disabled={!!blocked} onClick={onAddToChain}>
+        <PlusCircle data-icon="inline-start" />
+        加入运行编排
+      </Button>
+      {blocked && <span className="text-xs text-muted-foreground">{blocked}</span>}
+    </span>
   )
 }
 
