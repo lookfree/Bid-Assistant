@@ -62,7 +62,11 @@ export default function ContentPage() {
   const [data, setData] = useState<Record<Group, Chapter[]>>({ tech: [], business: [] })
 
   // outline 树 + content 各章 HTML → 构建章节树；计费步绝不自动触发，生成一律走显式按钮
-  const { projectId, info, data: realBodies, running, error, errorAction, start } = useStep<RealChapters>("content")
+  const { projectId, info, data: realBodies, running, progress, error, errorAction, start } = useStep<RealChapters>("content")
+  // 正文运行态文案：有逐章进度就实时显示「X/N 章」，否则给不吓人的耗时预期(大标书本就慢)。
+  const contentRunningText = progress
+    ? `AI 正在逐章撰写：已完成 ${progress.done}/${progress.total} 章${progress.title ? `（刚写完「${progress.title}」）` : ""}，请稍候…`
+    : "AI 写手团队正在逐章撰写正文…章节多、招标文件大时约需 5–15 分钟，可离开本页，回来会自动接着显示进度。"
   // outline 结果一到位就先建树（正文缺失章显示"待生成"占位），content 结果到位后填充各章 HTML
   useEffect(() => {
     if (!info) return
@@ -400,7 +404,7 @@ export default function ContentPage() {
         <StepBanner
           running={running}
           error={error}
-          runningText="AI 写手团队正在按章撰写正文（多章并行，约 3–8 分钟）…"
+          runningText={contentRunningText}
           onRetry={() => void start()}
           action={errorAction ?? undefined}
         />
@@ -420,7 +424,7 @@ export default function ContentPage() {
       <StepBanner
         running={running}
         error={error}
-        runningText="AI 写手团队正在按章撰写正文（多章并行，约 3–8 分钟）…"
+        runningText={contentRunningText}
         onRetry={() => void start()}
         action={errorAction ?? undefined}
       />

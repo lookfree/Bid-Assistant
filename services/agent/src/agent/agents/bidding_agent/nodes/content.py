@@ -1,7 +1,10 @@
 from __future__ import annotations
+import asyncio
 import json
 import logging
+from typing import Any
 from deepagents import create_deep_agent          # 全流程唯一 deepagent 节点（§4.5）
+from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import HumanMessage
 from agent.models.usage import UsageCallback
 from agent.framework.create_agent import build_create_agent
@@ -10,8 +13,43 @@ from agent.agents.bidding_agent.prompts.content import (
     CONTENT_PLANNER_PROMPT, CHAPTER_WRITER_PROMPT, REWRITE_PROMPT, DEVIATION_TABLE_GUIDE)
 from agent.rag import retrieve as rag_retrieve
 from agent.agents.bidding_agent.render.sanitize import strip_document_shell
+from agent.runtime.channels import progress_stream
 
 logger = logging.getLogger(__name__)
+
+
+class ChapterProgressCallback(AsyncCallbackHandler):
+    """逐章进度埋点:deepagent 每次 write_file 到 chapters/<id>.html 就往进度流推一条 chapter.progress
+    事件(done/total + 已完成章 id),前端据此实时勾选「哪章写完、还剩几章」。best-effort,推送失败不影响生成。"""
+
+    def __init__(self, ctx: Any, total: int, titles: dict[str, str]):
+        self.ctx = ctx
+        self.total = total
+        self.titles = titles          # chapter_id → 标题(前端展示用)
+        self.done: list[str] = []
+
+    async def on_tool_start(self, serialized, input_str, *, inputs=None, **kwargs):
+        name = (serialized or {}).get("name") if isinstance(serialized, dict) else None
+        path = (inputs or {}).get("file_path") or (inputs or {}).get("path") or ""
+        if not path and "chapters/" in (input_str or ""):
+            path = input_str
+        if name != "write_file" and "chapters/" not in str(path):
+            return
+        if "chapters/" not in str(path):
+            return
+        cid = str(path).split("chapters/")[-1].split('"')[0].split("\\")[0].removesuffix(".html")
+        if not cid or cid in self.done:
+            return
+        self.done.append(cid)
+        ev = {"type": "progress", "data": {"kind": "chapter", "chapterId": cid,
+              "title": self.titles.get(cid, cid), "done": len(self.done), "total": self.total,
+              "doneIds": list(self.done)}}
+        try:
+            if self.ctx.redis and self.ctx.run_id:
+                await asyncio.to_thread(self.ctx.redis.xadd, progress_stream(self.ctx.run_id),
+                                        {"event": json.dumps(ev, ensure_ascii=False)})
+        except Exception:  # noqa: BLE001 进度埋点 best-effort,推送失败绝不影响正文生成
+            logger.warning("chapter progress publish failed", exc_info=True)
 
 _CHAPTER_PREFIX = "/chapters/"
 _REWRITE_QUERY_CHARS = 200   # 改写检索 query 取原章前 N 字，避免整章 HTML 顶穿 embed 输入
@@ -126,11 +164,16 @@ def make_content_node(ctx):
         mid = ("\n\n".join(mid_parts) + "\n\n") if mid_parts else ""
         user = f"{head}\n\n{mid}请逐章生成正文，每章写入 chapters/<章id>.html。"
         user += package_scope(state.get("run_input"))  # 选包时追加范围约束（spec324）
+        # 逐章进度:从 outline 取章 id→标题,写完一章推一条 chapter.progress(前端实时勾选)。
+        chapters_meta = {c.get("id"): c.get("title", c.get("id"))
+                         for c in outline.get("chapters", []) if c.get("id")}
         # recursion_limit 放宽：10 章 ×（task 派发 + write_file）远超默认 25 步；
         # UsageCallback 补记 token（deepagent 直驱模型，不经 make_agent_node 埋点）。
         res = await deep.ainvoke(
             {"messages": [HumanMessage(content=user)]},
-            config={"recursion_limit": 100, "callbacks": [UsageCallback(ctx, "content")]})
+            config={"recursion_limit": 100, "callbacks": [
+                UsageCallback(ctx, "content"),
+                ChapterProgressCallback(ctx, len(chapters_meta), chapters_meta)]})
         chapters = _collect_chapters(res.get("files"))
         if not chapters:
             raise RuntimeError("deepagent 未产出任何章节草稿（chapters/*.html）")

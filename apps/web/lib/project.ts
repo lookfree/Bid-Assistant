@@ -10,6 +10,9 @@ import { tokenStore } from "./token-store"
 export type StepName = "read" | "outline" | "content" | "review" | "present" | "export"
 export const STEP_ORDER: StepName[] = ["read", "outline", "content", "review", "present", "export"]
 
+/** 正文生成的逐章进度（agent 每写完一章推一条 chapter.progress SSE 事件，前端实时勾选）。 */
+export type ChapterProgress = { kind?: string; done: number; total: number; doneIds: string[]; title?: string }
+
 export type ProjectStep = { step: string; status: string; result: unknown; costPoints: number }
 export type ProjectInfo = {
   // name：项目名（spec314 落库，取上传时原始文件名；老数据可能为 null，展示侧兜底"我的项目"）
@@ -148,6 +151,7 @@ export async function runStep<T>(
   step: StepName,
   onChunk?: (text: string) => void,
   body?: Record<string, unknown>,
+  onProgress?: (p: ChapterProgress) => void,
 ): Promise<T> {
   const res = await fetch(`${baseUrl}/api/projects/${id}/steps/${step}`, {
     method: "POST",
@@ -171,6 +175,16 @@ export async function runStep<T>(
     const text = dec.decode(value)
     buf += text
     onChunk?.(text)
+    // 逐章进度：取缓冲区里最后一条 progress 帧（doneIds 是累计值，最新即最全）实时上报。
+    if (onProgress) {
+      const pm = [...buf.matchAll(/event:\s*progress\s*\ndata:\s*(.+)/g)].at(-1)
+      if (pm) {
+        try {
+          const d = (JSON.parse(pm[1]!) as { data?: ChapterProgress }).data
+          if (d && d.kind === "chapter") onProgress(d)
+        } catch { /* 帧可能被 chunk 截断，下轮再解 */ }
+      }
+    }
   }
   // SSE 末尾的 step.done 事件带该步结果；失败（status=failed / 无 step.done）即抛错
   const m = [...buf.matchAll(/event:\s*step\.done\s*\ndata:\s*(.+)/g)].at(-1)

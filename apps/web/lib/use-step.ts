@@ -10,6 +10,7 @@ import {
   runStep,
   stepResult,
   STEP_ORDER,
+  type ChapterProgress,
   type ProjectInfo,
   type StepName,
 } from "./project"
@@ -80,6 +81,8 @@ export function useStep<T>(step: StepName) {
   const [data, setData] = useState<T | null>(() => stepResult<T>(info, step))
   const [running, setRunning] = useState(() => !!info?.steps.some((s) => s.step === step && s.status === "running"))
   const [error, setError] = useState<string | null>(null)
+  // 正文逐章进度（content 步 SSE 实时；其余步为 null）。切页/刷新走轮询无法重连 SSE，故只在本次 start() 期间有值。
+  const [progress, setProgress] = useState<ChapterProgress | null>(null)
   // 最近一次 start() 失败的 HTTP 状态码（402 积分不足 / 409 步骤顺序…），非 ApiError 为 null
   const [errorStatus, setErrorStatus] = useState<number | null>(null)
   // 防重（同步守卫）：running 是异步 state，双调用（自动触发 effect 重跑/双击）间隙读到的都是 false，
@@ -142,9 +145,10 @@ export function useStep<T>(step: StepName) {
       inFlight.current = true
       setRunning(true)
       setError(null)
+      setProgress(null)
       setErrorStatus(null)
       try {
-        const result = await runStep<T>(projectId, step, undefined, body)
+        const result = await runStep<T>(projectId, step, undefined, body, (p) => setProgress(p))
         setData(result)
         notifyCreditsChanged()
         return result
@@ -185,5 +189,5 @@ export function useStep<T>(step: StepName) {
         ? { href: prereq.href, label: `前往${prereq.label}` }
         : null
 
-  return { projectId, info, data, running, error: displayError, errorStatus, errorAction, start }
+  return { projectId, info, data, running, progress, error: displayError, errorStatus, errorAction, start }
 }
