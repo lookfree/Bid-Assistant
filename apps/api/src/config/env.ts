@@ -27,7 +27,7 @@ const schema = z.object({
   ALIYUN_SMS_SIGN_NAME: z.string().optional(),
   ALIYUN_SMS_TEMPLATE_CODE: z.string().optional(),
 
-  AUTH_SESSION_TTL_DAYS: z.coerce.number().int().positive().default(30),
+  AUTH_SESSION_TTL_DAYS: z.coerce.number().int().positive().default(7),
 
   // —— 前端跨域白名单（逗号分隔的允许 Origin；CORS 用）——
   WEB_ORIGINS: z.string().default("http://localhost:3000,http://localhost:3001"),

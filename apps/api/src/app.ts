@@ -50,7 +50,7 @@ export function createApp(deps: AppDeps) {
       "/auth",
       authRoutes({
         smsCode: deps.smsCode,
-        sessionTtlDays: deps.sessionTtlDays ?? 30,
+        sessionTtlDays: deps.sessionTtlDays ?? 7,
         captchaEnabled: deps.captchaEnabled ?? false,
         verifyCaptcha: deps.verifyCaptcha ?? (async () => true),
       }),
