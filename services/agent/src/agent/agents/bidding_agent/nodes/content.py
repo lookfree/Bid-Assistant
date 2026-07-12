@@ -8,7 +8,7 @@ from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import HumanMessage
 from agent.models.usage import UsageCallback
 from agent.framework.create_agent import build_create_agent
-from agent.agents.bidding_agent.nodes.common import slim_read, package_scope
+from agent.agents.bidding_agent.nodes.common import slim_read, package_scope, filter_read_by_package
 from agent.agents.bidding_agent.prompts.content import (
     CONTENT_PLANNER_PROMPT, CHAPTER_WRITER_PROMPT, REWRITE_PROMPT, DEVIATION_TABLE_GUIDE)
 from agent.rag import retrieve as rag_retrieve
@@ -153,7 +153,8 @@ def make_content_node(ctx):
         # 与逐条 source_quote（token 大头），原样 dumps 会把整份招标原文灌进规划轮直接顶穿上下文。
         # 参考资料段插在「读标依据」与「请逐章生成」指令之间（brief §5）；ref 为空则消息与未启用 RAG 逐字节一致。
         outline = state.get("outline") or {}
-        read = state.get("read") or {}
+        # 选包时把读标收窄到该包(spec324 优化):slim_read/偏离表/构成都只喂该包数据,上下文大降。
+        read = filter_read_by_package(state.get("read") or {}, state.get("run_input"))
         head = (f"提纲：\n{json.dumps(outline, ensure_ascii=False)}\n\n"
                 f"读标依据：\n{json.dumps(slim_read(read), ensure_ascii=False)}")
         # 偏离表章节存在时附加【偏离表指引】+ 全量条目数据（spec322）；无偏离表章节则与今天逐字节一致。

@@ -13,6 +13,7 @@ class ReadItem(BaseModel):
     status: Literal["found", "missing"] = "found"  # 文件未明确 -> missing
     risk: bool = False                             # 废标风险点
     star: bool = False                             # ★不可偏离
+    packages: list[str] = Field(default_factory=list)  # 包件归属（spec324 优化）：空=全包通用，["p1"]=仅包1
 
 
 class ReadCategory(BaseModel):
@@ -30,6 +31,7 @@ class ScoringRow(BaseModel):
     desc: str = ""
     clause_ids: list[str] = Field(default_factory=list)  # 条款 id（对齐原型 clauseIds）
     chapter_id: str = ""                           # 评分点 → 标书章节映射（对齐原型 chapterId）
+    packages: list[str] = Field(default_factory=list)  # 包件归属（spec324 优化）：空=全包通用，["p1"]=仅包1
 
 
 class StructureItem(BaseModel):
@@ -42,6 +44,7 @@ class StructureItem(BaseModel):
     notes: str = ""                                # 份数/密封/签章/装订等操作说明（kind=rule 为主）
     clause_ids: list[str] = Field(default_factory=list)
     source_quote: str = ""
+    packages: list[str] = Field(default_factory=list)  # 包件归属（spec324 优化）：空=全包通用，["p1"]=仅包1
 
 
 class PackageInfo(BaseModel):

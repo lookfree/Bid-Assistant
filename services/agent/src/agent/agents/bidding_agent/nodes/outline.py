@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json
 from agent.framework.create_agent import run_submit_agent
-from agent.agents.bidding_agent.nodes.common import slim_read, package_scope
+from agent.agents.bidding_agent.nodes.common import slim_read, package_scope, filter_read_by_package
 from agent.agents.bidding_agent.schemas import Outline
 from agent.agents.bidding_agent.prompts.outline import OUTLINE_SYSTEM_PROMPT
 
@@ -20,7 +20,8 @@ def make_outline_node(ctx):
     read.required_structure 非空时追加骨架约束（spec321）；run_input.package 存在时追加包件范围约束
     （spec324）；均缺省时用户消息与此前行为字节级一致。"""
     async def outline_node(state):
-        read_state = state.get("read") or {}
+        # 选包时读标收窄到该包(spec324 优化):提纲只按该包的需求/评分/构成搭建,上下文大降。
+        read_state = filter_read_by_package(state.get("read") or {}, state.get("run_input"))
         read = json.dumps(slim_read(read_state), ensure_ascii=False)
         user = f"读标结论：\n{read}\n请据此产出提纲。"
         structure = read_state.get("required_structure") or []

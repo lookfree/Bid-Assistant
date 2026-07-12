@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json
 from agent.framework.create_agent import run_submit_agent
-from agent.agents.bidding_agent.nodes.common import slim_read
+from agent.agents.bidding_agent.nodes.common import slim_read, filter_read_by_package
 from agent.agents.bidding_agent.schemas import RiskReport
 from agent.agents.bidding_agent.prompts.review import REVIEW_SYSTEM_PROMPT
 
@@ -14,7 +14,8 @@ def make_review_node(ctx):
     read 走 slim_read 裁 source_quote；章节正文按 _CHAPTER_CAP 截断（防超窗）；
     read.required_structure 非空时一并注入（spec321，供构成覆盖比对），为空时 payload 与此前一致。"""
     async def review_node(state):
-        read_state = state.get("read") or {}
+        # 选包时读标收窄到该包(spec324 优化):审查只比对该包要求,不会把别包的要求误判成缺失。
+        read_state = filter_read_by_package(state.get("read") or {}, state.get("run_input"))
         chapters = {cid: (html[:_CHAPTER_CAP] + "…（截断）" if len(html) > _CHAPTER_CAP else html)
                     for cid, html in (state.get("chapters") or {}).items()}
         payload = {"read": slim_read(read_state), "outline": state.get("outline") or {},

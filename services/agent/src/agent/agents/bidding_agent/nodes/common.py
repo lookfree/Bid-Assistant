@@ -41,6 +41,31 @@ def package_scope(run_input: dict | None) -> str:
             "其它包件内容一律忽略；涉及分包件评分表/偏离表仅取该包件。")
 
 
+def _pkg_id(run_input: dict | None) -> str | None:
+    return ((run_input or {}).get("package") or {}).get("id") or None
+
+
+def filter_read_by_package(read: dict, run_input: dict | None) -> dict:
+    """选包时把读标结论收窄到该包(spec324 上下文优化):保留 packages 为空(全包通用)或含所选包 id 的条目,
+    别的包专属条目丢弃——喂给 LLM 的上下文从「全部包」缩到「单包」,大标书速度/成本降 2-3 倍。
+    未选包(单包/缺省) → 原样返回,行为逐字节不变。categories.items / scoring / required_structure 三处过滤。"""
+    pid = _pkg_id(run_input)
+    if not pid:
+        return read
+
+    def keep(it: dict) -> bool:
+        pk = it.get("packages") or []
+        return not pk or pid in pk
+
+    out = dict(read)
+    out["categories"] = [{**c, "items": [i for i in c.get("items", []) if keep(i)]}
+                         for c in read.get("categories", [])]
+    out["scoring"] = [s for s in read.get("scoring", []) if keep(s)]
+    if "required_structure" in read:
+        out["required_structure"] = [s for s in read.get("required_structure", []) if keep(s)]
+    return out
+
+
 def slim_read(read: dict) -> dict:
     """白名单出下游提示词需要的读标字段（项目信息/分类/评分表/红线），
     并裁掉 source_quote（原文摘录，token 大头）。outline / review 共用。"""
