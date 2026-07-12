@@ -87,6 +87,9 @@ export default function ReadPage() {
     if (new URLSearchParams(window.location.search).get("autostart") !== "1") return
     if (info.project.currentStep !== "read") return
     autoStarted.current = true
+    // 授权即消费：立刻把 autostart 从地址栏摘掉。ref 只活在本次挂载——刷新/登录态恢复导致
+    // 重挂载时 ref 归零,若参数还留在 URL,一次点击授权会被重放成再次自动扣费跑读标(生产实测)。
+    window.history.replaceState(null, "", window.location.pathname)
     void start()
   }, [projectId, info, real, running, start])
   // 数据一律来自真实 read 步结果；该步未跑时页面停在显式生成入口，绝不渲染示例
