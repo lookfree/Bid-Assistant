@@ -20,15 +20,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
 
   // 启动/刷新时用本地令牌向 /auth/me 还原当前用户。
-  // 只有 401（令牌真的失效/撤销）才清令牌；网络抖动/瞬时 5xx 重试两次——
-  // 否则一次闪断就把登录态吹掉，用户回退个页面就被迫重新登录。
+  // 只有 401（令牌真的失效/撤销）才清令牌；非 401 失败按退避重试、总共扛 ~30s——
+  // 服务发版重启 api 有 10~30s 不可用窗口，此前只重试 ~3s，撞上就把有效登录态误判成"要重新登录"。
+  const RETRY_DELAYS_MS = [1500, 3000, 6000, 9000, 12000]
   async function refresh() {
     if (!tokenStore.get()) {
       setUser(null)
       setLoading(false)
       return
     }
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
       try {
         setUser(await api.authApi.me())
         setLoading(false)
@@ -40,16 +41,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setLoading(false)
           return
         }
-        if (attempt < 2) await new Promise((r) => setTimeout(r, 1500))
+        const delay = RETRY_DELAYS_MS[attempt]
+        if (delay !== undefined) await new Promise((r) => setTimeout(r, delay))
       }
     }
-    // 连续失败（服务暂不可用）：保留令牌，仅本次未能还原——守卫会引导去登录页，令牌恢复后仍可用
+    // 连续失败（服务长时间不可用）：保留令牌，仅本次未能还原——守卫会引导去登录页，令牌恢复后仍可用
     setUser(null)
     setLoading(false)
   }
   useEffect(() => {
     void refresh()
   }, [])
+
+  // 兜底自动接回：上面放弃后（user=null 但令牌还在=服务当时不可用），窗口重获焦点/网络恢复时
+  // 自动再还原一次——服务恢复后用户切回页面即自动登录，不必手动重登。
+  useEffect(() => {
+    const retry = () => {
+      if (!user && !loading && tokenStore.get()) void refresh()
+    }
+    window.addEventListener("focus", retry)
+    window.addEventListener("online", retry)
+    return () => {
+      window.removeEventListener("focus", retry)
+      window.removeEventListener("online", retry)
+    }
+  }, [user, loading])
 
   // 后台请求 401（令牌过期/撤销）时立即复位登录态，交由守卫跳登录，不必等下次刷新。
   useEffect(() => {
