@@ -30,8 +30,8 @@ async def get_checkpointer() -> AsyncPostgresSaver:
         if _pool is not None:
             try:
                 await _pool.close()  # best-effort 释放旧池，别每次切 loop 都漏
-            except Exception:  # noqa: BLE001 旧 loop 多已关闭，关不掉就交给 GC
-                pass
+            except BaseException:  # noqa: BLE001 旧 loop 已关闭：close 内部 gather 旧 loop 上的任务会抛
+                pass               # CancelledError（BaseException，非 Exception）——一律吞，交给 GC/OS 回收
         _pool = AsyncConnectionPool(
             _CONNINFO, min_size=1, max_size=8, open=False, kwargs=_CONN_KW,
             check=AsyncConnectionPool.check_connection, max_lifetime=1800, reconnect_timeout=10,
