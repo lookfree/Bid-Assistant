@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 
 import httpx
@@ -59,11 +60,39 @@ async def test_model(body: TestBody):
         resp = await asyncio.wait_for(chat.ainvoke([HumanMessage(content="请回复：OK")]), timeout=15)
         latency = int((time.monotonic() - t0) * 1000)
         tokens = (getattr(resp, "usage_metadata", None) or {}).get("total_tokens", 0)
-        return JSONResponse({"ok": True, "latency_ms": latency, "tokens": tokens})
+        max_output = await _probe_max_output(gw, body)   # 探真实输出上限（探不到回 None，不影响测通）
+        return JSONResponse({"ok": True, "latency_ms": latency, "tokens": tokens, "max_output": max_output})
     except asyncio.TimeoutError:
         return JSONResponse({"ok": False, "error": "调用超时（15s）"})
     except Exception as e:  # noqa: BLE001 回可读错误，不 500
         return JSONResponse({"ok": False, "error": str(e)[:200]})
+
+
+_MAXTOK_KW = re.compile(r"max_?tokens", re.IGNORECASE)
+_NUM_RE = re.compile(r"\d{3,7}")
+
+
+def _parse_max_output(text: str) -> int | None:
+    """从「max_tokens 超限」报错里抠真实上限:定位关键词后取其后一窗口内最大的 3~7 位数字
+    (形如 "range of max_tokens is [1, 8192]" —— 取 8192 而非区间下限的 1;探测发的 200000 也在
+    关键词之前,不会被误取)。找不到关键词或窗口无合适数字 → None。"""
+    kw = _MAXTOK_KW.search(text)
+    if not kw:
+        return None
+    nums = [int(n) for n in _NUM_RE.findall(text[kw.end():kw.end() + 60]) if int(n) != 200000]
+    return max(nums) if nums else None
+
+
+async def _probe_max_output(gw: ModelGateway, body: "TestBody") -> int | None:
+    """探测模型真实最大输出:故意发一个超大 max_tokens,供应商拒绝时从错误信息里解析出上限数字。
+    /v1/models 不返回该值,这是最可靠的探法。探不到(调用竟成功/错误不含数字)→ None,不影响测通结论。"""
+    try:
+        chat = gw.get_chat(body.provider, body.model, base_url=body.base_url,
+                           api_key=body.api_key, max_tokens=200000)
+        await asyncio.wait_for(chat.ainvoke([HumanMessage(content="hi")]), timeout=15)
+        return None   # 20万 token 竟被接受:无法据此判定上限,交给用户按模型文档填
+    except Exception as e:  # noqa: BLE001 正是要从这个「超限」错误里抠数字
+        return _parse_max_output(str(e))
 
 
 @router.post("/models/list-models")
