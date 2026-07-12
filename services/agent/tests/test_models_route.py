@@ -186,3 +186,29 @@ def test_models_list_models_http_error_returns_ok_false_200(monkeypatch):
     body = res.json()
     assert body["ok"] is False
     assert "401" in body["error"]
+
+
+def test_models_list_models_builtin_provider_resolves_endpoint(monkeypatch):
+    """内置服务商 provider(deepseek):服务端从注册表取 base_url、从 env 取 key,前端不接触密钥。"""
+    import agent.routes.models as models_mod
+    monkeypatch.setattr(models_mod.settings, "deepseek_api_key", "sk-env-ds", raising=False)
+    client = TestClient(create_app())
+    fake_httpx = _patch_httpx(
+        monkeypatch, resp=_FakeHttpResp(json_data={"data": [{"id": "deepseek-chat"}, {"id": "deepseek-reasoner"}]}))
+    res = client.post("/models/list-models", json={"provider": "deepseek"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True and body["models"] == ["deepseek-chat", "deepseek-reasoner"]
+    call = fake_httpx._client.calls[0]
+    assert call["url"] == "https://api.deepseek.com/v1/models"
+    assert call["headers"]["Authorization"] == "Bearer sk-env-ds"
+
+
+def test_models_list_models_builtin_provider_missing_key_returns_ok_false(monkeypatch):
+    """env 未配该服务商 key → {ok:false},用户仍可手填模型名。"""
+    import agent.routes.models as models_mod
+    monkeypatch.setattr(models_mod.settings, "deepseek_api_key", None, raising=False)
+    client = TestClient(create_app())
+    res = client.post("/models/list-models", json={"provider": "deepseek"})
+    assert res.status_code == 200
+    assert res.json()["ok"] is False

@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from agent.config import settings
 from agent.models.gateway import ModelGateway, model_override_to_settings
-from agent.models.providers import PROVIDERS
+from agent.models.providers import PROVIDERS, KEY_FIELD
 
 # spec319/spec319.1：模型连通性测试探针 + 自建端点可用模型列举——
 # App/admin relay 过来的一次性调用，不落库不计费。
@@ -28,8 +28,19 @@ class TestBody(BaseModel):
 
 
 class ListModelsBody(BaseModel):
-    base_url: str
-    api_key: str
+    base_url: str | None = None   # 自建端点直连
+    api_key: str | None = None
+    provider: str | None = None   # 内置服务商（deepseek/qwen/glm）：base_url + key 由服务端注册表/env 解析
+
+
+def _resolve_provider_endpoint(provider: str) -> tuple[str | None, str | None]:
+    """内置服务商 → (base_url, api_key)：base_url 取注册表，key 取 env（KEY_FIELD 映射的 Settings 字段）。
+    未知 provider 或 env 缺 key → (None, None)，调用方按「拉取失败」处理，用户仍可手填模型名。"""
+    if provider not in PROVIDERS:
+        return None, None
+    base_url = PROVIDERS[provider]["base_url"]
+    api_key = getattr(settings, KEY_FIELD.get(provider, ""), None)
+    return base_url, api_key
 
 
 @router.post("/models/test")
@@ -57,10 +68,18 @@ async def test_model(body: TestBody):
 
 @router.post("/models/list-models")
 async def list_models(body: ListModelsBody):
-    """探自建端点的 GET /models，取可用模型 id 列表。任何失败都不 500——超时/网络/非 2xx/解析错
-    统一收敛成 {ok: false, error}，供 admin 在填 base_url/api_key 后拉取下拉候选。"""
-    url = f"{body.base_url.rstrip('/')}/models"
-    headers = {"Authorization": f"Bearer {body.api_key}"}
+    """探 provider 的 GET /models，取可用模型 id 列表。自建端点用传入 base_url/api_key；
+    内置服务商(provider)则由服务端从注册表/env 解析 base_url+key(前端不接触 env 密钥)。
+    任何失败都不 500——超时/网络/非 2xx/解析错统一收敛成 {ok: false, error}，供 admin 拉取下拉候选。"""
+    base_url, api_key = body.base_url, body.api_key
+    if not base_url and body.provider:
+        base_url, api_key = _resolve_provider_endpoint(body.provider)
+    if not base_url:
+        return JSONResponse({"ok": False, "error": "缺少 base_url 或未知服务商"})
+    if not api_key:
+        return JSONResponse({"ok": False, "error": "服务端未配置该服务商的 API Key"})
+    url = f"{base_url.rstrip('/')}/models"
+    headers = {"Authorization": f"Bearer {api_key}"}
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(url, headers=headers)
