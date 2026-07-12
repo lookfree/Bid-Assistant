@@ -29,6 +29,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { TablePagination } from "@/components/admin/table-pagination"
 import { LedgerTypeBadge } from "@/components/admin/status-badges"
+import { formatBeijing } from "@/lib/utils"
 import { type LedgerType } from "@/lib/mock-data"
 import { adminApi, type ApiLedgerTx } from "@/lib/admin-api"
 
@@ -53,7 +54,7 @@ function apiLedgerToRow(l: ApiLedgerTx, userName: string): LedgerRow {
     amount: l.amount,
     batch: "-",
     ref: l.ref ?? "-",
-    createdAt: l.createdAt.slice(0, 19).replace("T", " "),
+    createdAt: formatBeijing(l.createdAt),
   }
 }
 

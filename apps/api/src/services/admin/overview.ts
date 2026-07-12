@@ -54,7 +54,9 @@ export async function computeTrend(days = 14): Promise<TrendPoint[]> {
   // SQL 与 JS 都锚定同一时区(Asia/Shanghai)分桶,否则 to_char(会话TZ) 与 new Date(NodeTZ) 会把
   // 临近午夜的单归到不同日 → 边界日数据丢失/错位。
   const TZ = "Asia/Shanghai"
-  const dayExpr = (col: unknown) => sql<string>`to_char(${col} AT TIME ZONE ${TZ}, 'MM/DD')`
+  // TZ 必须内联为 SQL 字面量，不能走绑定参数：${TZ} 会让 SELECT 与 GROUP BY 各得一个不同占位符
+  // ($1 vs $2)，Postgres 视为不同表达式 → "must appear in the GROUP BY clause" 报错（趋势接口 500）。
+  const dayExpr = (col: unknown) => sql<string>`to_char(${col} AT TIME ZONE 'Asia/Shanghai', 'MM/DD')`
   const fmtDay = new Intl.DateTimeFormat("en-US", { timeZone: TZ, month: "2-digit", day: "2-digit" })
   const [rev, cr] = await Promise.all([
     db
