@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 from agent.runtime.registry import RunContext
 from agent.parsing.types import ParsedDoc
 from agent.agents.bidding_agent.nodes import read as read_mod
@@ -161,6 +162,58 @@ def test_segmented_read_runs_rounds_concurrently(monkeypatch, submit_gateway):
 
     assert inflight["peak"] > 1                                  # 真并发,没有被串行化
     assert inflight["peak"] <= read_mod.SEG_CONCURRENCY          # 且被信号量限住
+
+
+def test_segmented_read_resumes_from_cache_on_retry(monkeypatch, submit_gateway):
+    """断点续跑回归(92 块标书 14/95 失败重试全重烧之痛):首跑某轮失败 → 成功轮已存 Redis 缓存;
+    重试时命中缓存的轮不再调模型,只重跑失败的那轮。"""
+    import agent.agents.bidding_agent.nodes.read as read_mod
+
+    n = read_mod.SEGMENT_CLAUSE_THRESHOLD + 1     # 201 条 → 3 技术块 + 3 骨架 = 6 轮
+    big = [{"id": f"sec-1-c{i}", "text": f"条款{i}"} for i in range(n)]
+
+    async def fake_parse_multi(files):
+        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}]
+    monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
+
+    class _FakeRedis:                                # 极简 get/set(str) 假 redis
+        def __init__(self):
+            self.kv: dict[str, str] = {}
+
+        def get(self, k):
+            return self.kv.get(k)
+
+        def set(self, k, v, ex=None):
+            self.kv[k] = v
+
+    calls = {"n": 0}
+    real_seg_submit = read_mod._seg_submit
+
+    async def failing_seg_submit(ctx, user, hint, label):
+        calls["n"] += 1
+        if "技术第2/" in label:                       # 首跑:技术第2块失败
+            raise RuntimeError("peer closed connection")
+        return await real_seg_submit(ctx, user, hint, label)
+    monkeypatch.setattr(read_mod, "_seg_submit", failing_seg_submit)
+
+    args = {"submit_read_result": {"categories": [{"key": "overview", "title": "概况", "items": []}]}}
+    redis = _FakeRedis()
+    state = {"file_key": "a.docx", "files": [{"key": "a.docx", "name": "采购文件"}]}
+    ctx1 = RunContext(run_id="r1", agent_type="bidding_agent", thread_id="t-resume",
+                      gateway=submit_gateway(args), redis=redis)
+    with pytest.raises(RuntimeError, match="peer closed"):
+        asyncio.run(read_mod.make_read_node(ctx1)(state))
+    assert calls["n"] == 6                           # 6 轮都跑了(不因单轮失败取消其他轮)
+    assert len(redis.kv) == 5                        # 成功的 5 轮已存档
+
+    # 重试(同 thread、同文档):5 轮命中缓存,只重跑失败的技术第2块 → 模型只多调 1 次
+    monkeypatch.setattr(read_mod, "_seg_submit", real_seg_submit)
+    gw2 = submit_gateway(args)
+    ctx2 = RunContext(run_id="r2", agent_type="bidding_agent", thread_id="t-resume",
+                      gateway=gw2, redis=redis)
+    out = asyncio.run(read_mod.make_read_node(ctx2)(state))
+    assert len(gw2.chats) == 1                       # 只有失败那轮真正调了模型
+    assert "categories" in out["read"]
 
 
 def test_tech_chunk_rounds_carry_only_own_chunk(monkeypatch, submit_gateway):

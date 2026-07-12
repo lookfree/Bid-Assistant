@@ -1,7 +1,9 @@
 from __future__ import annotations
 import asyncio
+import hashlib
 import json
 import logging
+from agent.config import settings
 from agent.framework.create_agent import run_submit_agent
 from agent.parsing.service import read_and_parse
 from agent.parsing.merge import merge_parsed
@@ -54,6 +56,40 @@ async def _seg_submit(ctx, user: str, hint: str, label: str) -> ReadResult:
 # (三包 2100 条款标实测:24 轮串行 ~16 分钟 → 并发后 ~2-3 分钟)。上限防服务商限流。
 SEG_CONCURRENCY = 6
 
+# 分段轮结果缓存(断点续跑):每轮成功即按 thread_id+轮id+输入哈希 存 Redis,重试时命中直接跳过,
+# 只重跑没完成的轮——92 块标书在 14/95 处失败重试,不再把已花的几十轮 token 全部重烧(生产实测之痛)。
+# 输入哈希保证换文件/条款变化即失效;TTL 24h(重试窗口足够,过期自动清)。
+_SEG_CACHE_TTL_S = 24 * 3600
+
+
+def _seg_cache_key(ctx, round_id: str, payload: str) -> str:
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    return f"{settings.redis_prefix}segread:{ctx.thread_id}:{round_id}:{digest}"
+
+
+async def _seg_cache_get(ctx, key: str) -> ReadResult | None:
+    """best-effort 读缓存:无 redis/读失败/反序列化失败都回 None(照常跑模型),绝不影响主流程。"""
+    r = getattr(ctx, "redis", None)
+    if not r:
+        return None
+    try:
+        raw = await asyncio.to_thread(r.get, key)
+        return ReadResult.model_validate_json(raw) if raw else None
+    except Exception:  # noqa: BLE001
+        logger.warning("segread cache get failed key=%s", key, exc_info=True)
+        return None
+
+
+async def _seg_cache_set(ctx, key: str, part: ReadResult) -> None:
+    """best-effort 写缓存:失败只记警告,不影响该轮结果交付。"""
+    r = getattr(ctx, "redis", None)
+    if not r:
+        return
+    try:
+        await asyncio.to_thread(r.set, key, part.model_dump_json(), ex=_SEG_CACHE_TTL_S)
+    except Exception:  # noqa: BLE001
+        logger.warning("segread cache set failed key=%s", key, exc_info=True)
+
 
 async def _segmented_read(ctx, user: str, clauses: list[dict]) -> ReadResult:
     """大标书分段读标:基础轮 + 格式构成轮 + 评分轮 + 技术需求按条款分块,节点内合并成一份 ReadResult。
@@ -66,22 +102,40 @@ async def _segmented_read(ctx, user: str, clauses: list[dict]) -> ReadResult:
     sem = asyncio.Semaphore(SEG_CONCURRENCY)
     await publish_phase(ctx, f"读标·并行提取中(共 {total} 轮:基础/格式/评分 + 技术 {len(chunks)} 块)")
 
-    async def _run(user_msg: str, hint: str, label: str) -> ReadResult:
-        nonlocal done
-        async with sem:
-            part = await _seg_submit(ctx, user_msg, hint, label)
+    cached_hits = 0
+
+    async def _run(round_id: str, user_msg: str, hint: str, label: str) -> ReadResult:
+        nonlocal done, cached_hits
+        key = _seg_cache_key(ctx, round_id, user_msg + hint)
+        part = await _seg_cache_get(ctx, key)   # 断点续跑:上次已完成的轮直接复用,不重烧 token
+        if part is None:
+            async with sem:
+                part = await _seg_submit(ctx, user_msg, hint, label)
+            await _seg_cache_set(ctx, key, part)
+        else:
+            cached_hits += 1
         done += 1   # asyncio 单线程,计数无竞态
-        await publish_phase(ctx, f"读标·并行提取中 已完成 {done}/{total} 轮")
+        suffix = f"(续跑复用 {cached_hits})" if cached_hits else ""
+        await publish_phase(ctx, f"读标·并行提取中 已完成 {done}/{total} 轮{suffix}")
         return part
 
     # 骨架三轮喂全文(user);技术块轮喂独立瘦身消息(只含本块条款,见 _tech_chunk_user)。
-    base, fmt, score, *tech_parts = await asyncio.gather(
-        _run(user, _SEG_BASE, "读标·基础轮(meta+概况/资格/商务)"),
-        _run(user, _SEG_FMT, "读标·格式构成轮(format+构成+包件+红线)"),
-        _run(user, _SEG_SCORE, "读标·评分轮"),
-        *[_run(_tech_chunk_user(chunk, idx, len(chunks)), "", f"读标·技术第{idx}/{len(chunks)}块")
+    # return_exceptions:单轮失败不取消其他在途轮——让能成功的轮都跑完并存档,重试时只补失败的
+    # (默认 gather 会立刻取消同批任务,在途轮的 token 就白花了)。全部落定后再抛第一个错。
+    results = await asyncio.gather(
+        _run("base", user, _SEG_BASE, "读标·基础轮(meta+概况/资格/商务)"),
+        _run("fmt", user, _SEG_FMT, "读标·格式构成轮(format+构成+包件+红线)"),
+        _run("score", user, _SEG_SCORE, "读标·评分轮"),
+        *[_run(f"tech{idx}", _tech_chunk_user(chunk, idx, len(chunks)), "",
+               f"读标·技术第{idx}/{len(chunks)}块")
           for idx, chunk in enumerate(chunks, start=1)],
+        return_exceptions=True,
     )
+    errs = [r for r in results if isinstance(r, BaseException)]
+    if errs:
+        logger.error("分段读标 %d/%d 轮失败(成功轮已存档,重试续跑)", len(errs), total)
+        raise errs[0]
+    base, fmt, score, *tech_parts = results
     # gather 保序:tech_parts 与 chunks 顺序一致,技术项合并后条款顺序不变。
     tech_items = [it for part in tech_parts
                   for c in part.categories if c.key == "technical" for it in c.items]
