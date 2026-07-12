@@ -60,12 +60,36 @@ async def test_model(body: TestBody):
         resp = await asyncio.wait_for(chat.ainvoke([HumanMessage(content="请回复：OK")]), timeout=15)
         latency = int((time.monotonic() - t0) * 1000)
         tokens = (getattr(resp, "usage_metadata", None) or {}).get("total_tokens", 0)
-        max_output = await _probe_max_output(gw, body)   # 探真实输出上限（探不到回 None，不影响测通）
+        # 先查已知上限表(供应商文档,可靠);查不到再探测(对会报错的家有效,对静默截断的家—如 deepseek—回 None)
+        max_output = _known_max_output(body.model) or await _probe_max_output(gw, body)
         return JSONResponse({"ok": True, "latency_ms": latency, "tokens": tokens, "max_output": max_output})
     except asyncio.TimeoutError:
         return JSONResponse({"ok": False, "error": "调用超时（15s）"})
     except Exception as e:  # noqa: BLE001 回可读错误，不 500
         return JSONResponse({"ok": False, "error": str(e)[:200]})
+
+
+# 已知模型的最大输出 token(供应商文档,best-effort;按模型名子串匹配,长键在前先命中)。
+# 探测法对「静默截断不报错」的家(如 deepseek)无效,故查表优先。表外模型 → 探测/手填。
+_KNOWN_MAX_OUTPUT: list[tuple[str, int]] = [
+    ("deepseek-reasoner", 8192),
+    ("deepseek-chat", 8192),
+    ("deepseek-v4", 8192),
+    ("deepseek", 8192),
+    ("glm-4-flash", 4095),
+    ("glm-4.5", 8192),
+    ("glm-4", 4095),
+    ("glm", 4095),
+    ("qwen-max", 8192),
+    ("qwen-plus", 8192),
+    ("qwen2.5", 8192),
+    ("qwen", 8192),
+]
+
+
+def _known_max_output(model: str | None) -> int | None:
+    m = (model or "").lower()
+    return next((v for k, v in _KNOWN_MAX_OUTPUT if k in m), None)
 
 
 _MAXTOK_KW = re.compile(r"max_?tokens", re.IGNORECASE)

@@ -227,3 +227,15 @@ def test_parse_max_output_extracts_limit():
     }
     for text, expect in cases.items():
         assert m._parse_max_output(text) == expect, text
+
+
+def test_known_max_output_table():
+    """已知模型上限表:按模型名子串匹配,长键先命中;表外 → None。"""
+    import agent.routes.models as m
+    assert m._known_max_output("deepseek-chat") == 8192
+    assert m._known_max_output("deepseek-v4-pro") == 8192
+    assert m._known_max_output("glm-4-flash") == 4095      # 长键先于 glm-4 命中
+    assert m._known_max_output("glm-4-plus") == 4095
+    assert m._known_max_output("qwen-max") == 8192
+    assert m._known_max_output("some-unknown-model") is None
+    assert m._known_max_output(None) is None
