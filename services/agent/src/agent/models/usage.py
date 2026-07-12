@@ -43,12 +43,13 @@ def record_llm_usage(recorder: Any, *, run_id: str | None, agent_type: str | Non
 
 
 def record_ctx_usage(ctx: Any, msg: Any, *, node: str | None, model: str | None = None,
-                     latency_ms: int | None = None) -> None:
+                     provider: str | None = None, latency_ms: int | None = None) -> None:
     """按 RunContext 记一条 LLM 用量（best-effort）。make_agent_node 与 UsageCallback 共用，
-    provider/run 维度参数只在这里拼一次，避免两条埋点路径漂移。latency_ms 由调用方计时传入。"""
+    provider/run 维度参数只在这里拼一次，避免两条埋点路径漂移。latency_ms 由调用方计时传入。
+    provider 显式给了用它（降级/结构化链跑的是非默认服务商，需按实际归属，否则错记成默认家）。"""
     _s = getattr(ctx.gateway, "s", None) if ctx.gateway else None
     record_llm_usage(ctx.recorder, run_id=ctx.run_id, agent_type=ctx.agent_type,
-                     provider=getattr(_s, "model_default_provider", None),
+                     provider=provider or getattr(_s, "model_default_provider", None),
                      model=model or (getattr(msg, "response_metadata", None) or {}).get("model_name"),
                      msg=msg, node=node, thread_id=ctx.thread_id, latency_ms=latency_ms)
 

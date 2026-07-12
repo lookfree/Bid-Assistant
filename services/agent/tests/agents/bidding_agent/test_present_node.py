@@ -1,6 +1,7 @@
 import asyncio
+import json
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
 from agent.runtime.registry import RunContext
 from agent.agents.bidding_agent.nodes import common as common_mod
 from agent.agents.bidding_agent.nodes.present import make_present_node
@@ -37,6 +38,12 @@ class _CapGateway:
                 gw.msgs.append(messages)
                 args = gw.draft_args if self.name == "submit_deck_draft" else gw.notes_args
                 return AIMessage(content="", tool_calls=[{"name": self.name, "args": args, "id": "c1"}])
+
+            async def astream(self, messages, **kw2):     # 流式路径（forced_stream_submit）
+                gw.msgs.append(messages)
+                args = gw.draft_args if self.name == "submit_deck_draft" else gw.notes_args
+                yield AIMessageChunk(content="", tool_call_chunks=[
+                    {"name": self.name, "args": json.dumps(args), "id": "c1", "index": 0}])
         return _Chat()
 
 

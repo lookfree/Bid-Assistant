@@ -1,28 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 
 from agent.parsing import storage_read
 from agent.parsing.storage_read import storage      # spec106 MinIO 单例
-from agent.runtime.channels import progress_stream
+from agent.runtime.progress import publish_phase     # 各节点推阶段事件（read/outline/review/present 共用）
 
 logger = logging.getLogger(__name__)
 
-
-async def publish_phase(ctx, label: str) -> None:
-    """向进度流推一条 phase 事件（读标分段/各步阶段名），前端订阅后实时显示「跑到哪一步」。
-    best-effort:无 redis/run_id 或推送失败都静默,绝不影响主流程。"""
-    try:
-        r = getattr(ctx, "redis", None)
-        rid = getattr(ctx, "run_id", None)
-        if not r or not rid:
-            return
-        ev = {"type": "progress", "data": {"kind": "phase", "label": label}}
-        await asyncio.to_thread(r.xadd, progress_stream(rid), {"event": json.dumps(ev, ensure_ascii=False)})
-    except Exception:  # noqa: BLE001 进度推送 best-effort
-        logger.warning("publish_phase failed", exc_info=True)
+__all__ = ["publish_phase", "upload_artifact", "fetch_master_bytes", "package_scope",
+           "filter_read_by_package", "slim_read"]
 
 
 async def upload_artifact(ctx, filename: str, data: bytes, content_type: str) -> str:

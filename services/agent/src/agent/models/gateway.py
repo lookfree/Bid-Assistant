@@ -54,6 +54,10 @@ class ModelGateway:
             **{**self._model_params(), **kw},   # 显式 kw 优先级更高，覆盖 settings
         )
 
+    def chain(self) -> list[dict]:
+        """对外暴露解析后的模型链（首项=主模型，其后=降级模型），供流式调用做空闲超时后的降级重试。"""
+        return self._chain(None, None)
+
     def _chain(self, provider: str | None, model: str | None) -> list[dict]:
         """结构化故障转移链：settings.model_chain 非空（run override 注入）⇒ 原样返回；
         否则由 provider/model/fallbacks 拼旧行为，每项补 base_url=None, api_key=None（向后兼容）。"""

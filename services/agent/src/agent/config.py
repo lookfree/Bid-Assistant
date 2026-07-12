@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     model_temperature: float | None = None     # None=用 provider 默认；由 App run override 下发
     model_max_tokens: int | None = None
     model_top_p: float | None = None
+    # 流式空闲超时（大标书读标实测：单块生成慢而健康达数分钟，"总超时"会误杀——只在"连续无 token"时判挂死）。
+    model_idle_timeout_s: int = 30              # 流式中连续 N 秒无新 token = 连接挂死 → 降级重试
+    model_first_token_timeout_s: int = 120      # 首 token（含连接+大 prompt 预填）宽限，避免误杀慢启动
     # 结构化模型链（spec319.1）：每项 {provider, model, base_url, api_key}；仅由 App run override
     # 经 model_copy(update=...) 注入，不从 env 解析（pydantic-settings 对 list[dict] 复杂字段不读 env）。
     model_chain: list[dict] | None = None

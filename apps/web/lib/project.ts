@@ -58,6 +58,11 @@ export function openStepEvents(
             onEvent({ kind: "chapter", progress: data as ChapterProgress })
           } else if (type === "progress" && (data as { kind?: string })?.kind === "phase") {
             onEvent({ kind: "phase", phase: { label: (data as { label: string }).label } })
+          } else if (type === "progress" && (data as { kind?: string })?.kind === "heartbeat") {
+            // 块内心跳：长块生成时 token 持续吐，附「已 N 字」让运行横幅动起来（不再看着卡住）。
+            const hb = data as { label: string; chars?: number }
+            const suffix = hb.chars ? `（已 ${hb.chars} 字）` : ""
+            onEvent({ kind: "phase", phase: { label: `${hb.label}${suffix}` } })
           } else if (type === "node.start" || type === "step.done") {
             const node = (data as { node?: string })?.node
             if (node) onEvent({ kind: "phase", phase: { label: node } })

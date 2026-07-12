@@ -1,5 +1,7 @@
+import json
+
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
 
 
 @pytest.fixture(autouse=True)
@@ -28,14 +30,29 @@ class SubmitChat:
         self.tool_names = [t.name for t in tools]
         return self
 
-    async def ainvoke(self, messages):
-        self.last_messages = messages
+    def _turn(self):
         self.n += 1
         if self.n == 1:
             name = next((n for n in self.tool_names if n in self.args_by_tool), None)
             if name:
-                return AIMessage(content="", tool_calls=[{"name": name, "args": self.args_by_tool[name], "id": "c1"}])
+                return name
+        return None
+
+    async def ainvoke(self, messages):
+        self.last_messages = messages
+        name = self._turn()
+        if name:
+            return AIMessage(content="", tool_calls=[{"name": name, "args": self.args_by_tool[name], "id": "c1"}])
         return AIMessage(content=self.reply)
+
+    async def astream(self, messages, **kw):          # 流式路径（forced_stream_submit）：单块即整条结果
+        self.last_messages = messages
+        name = self._turn()
+        if name:
+            yield AIMessageChunk(content="", tool_call_chunks=[
+                {"name": name, "args": json.dumps(self.args_by_tool[name]), "id": "c1", "index": 0}])
+        else:
+            yield AIMessageChunk(content=self.reply)
 
 
 class SubmitGateway:
@@ -51,6 +68,9 @@ class SubmitGateway:
         chat = SubmitChat(self.args_by_tool, self.reply)
         self.chats.append(chat)
         return chat
+
+    def chain(self):                                  # 单项链：无降级模型，forced_stream_submit 同模型重试
+        return [{"provider": None, "model": None, "base_url": None, "api_key": None}]
 
 
 @pytest.fixture

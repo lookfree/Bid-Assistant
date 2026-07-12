@@ -7,6 +7,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import tools_condition
 from langgraph.graph.message import add_messages
 from agent.framework.hooks import run_turn, BuildMessagesHook, DropMalformedToolCallsHook
+from agent.framework.model_stream import forced_stream_submit
 from agent.framework.resilient import resilient_tool_node
 from agent.framework.structured import make_submit_tool
 from agent.models.usage import record_ctx_usage
@@ -67,7 +68,7 @@ async def run_submit_agent(ctx, prompt: str, user_msg: str,
         sub = build_create_agent(prompt, [*extra_tools, submit], ctx)
         await sub.ainvoke({"messages": [{"role": "user", "content": user_msg}]})
     else:
-        await _forced_submit(ctx, prompt, user_msg, submit, tool_name)
+        await _forced_submit(ctx, prompt, user_msg, submit, tool_name, label=desc)
     result = get_result()
     if result is None:
         raise RuntimeError(f"模型未通过 {tool_name} 提交结构化结果")
@@ -79,23 +80,29 @@ def _reject_msg(msg, call_id: str, reason: str) -> list:
     return [msg, ToolMessage(content=reason, tool_call_id=call_id)]
 
 
-async def _forced_submit(ctx, prompt: str, user_msg: str, submit, tool_name: str, attempts: int = 3) -> None:
+async def _forced_submit(ctx, prompt: str, user_msg: str, submit, tool_name: str,
+                         attempts: int = 3, label: str | None = None) -> None:
     """纯 submit 节点：tool_choice 锁定提交工具，模型无法只回文字（e2e 实测：自由发挥不调工具
     是真实高频失败模式）；Pydantic 校验失败、或大嵌套 JSON 写成非法语法（langchain 归入
     invalid_tool_calls，此前被当"没提交"直接放弃——是 bug）都把错误喂回，最多重试 attempts 轮。
     仅当模型这一轮真的完全没产出提交调用（tool_calls 与 invalid_tool_calls 均空）才 fail-closed 放弃。
-    不走 build_create_agent：强制 tool_choice 下图循环永不停机（每轮都被迫调工具），单轮循环才可控。"""
-    llm = ctx.gateway.get_chat(provider=None) if ctx.gateway else None
-    if llm is None:
+    不走 build_create_agent：强制 tool_choice 下图循环永不停机（每轮都被迫调工具），单轮循环才可控。
+    模型调用走 forced_stream_submit：流式 + 空闲超时降级重试（大标书单块慢生成不误杀，真挂死秒级降级）。"""
+    if ctx.gateway is None:
         return                           # 无 gateway（异常装配）：交给上层抛"未提交"
-    forced = llm.bind_tools([submit], tool_choice=tool_name)
     messages: list = [SystemMessage(content=prompt), HumanMessage(content=user_msg)]
     for _ in range(attempts):
-        t0 = time.monotonic()
-        msg = await forced.ainvoke(messages)
-        latency = int((time.monotonic() - t0) * 1000)
-        record_ctx_usage(ctx, msg, node="agent",
-                         model=getattr(llm, "model_name", None), latency_ms=latency)
+        msg = await forced_stream_submit(ctx, messages, submit, tool_name, label)
+        # 截断必须先于 tool_calls 判定：流式下 langchain 用 parse_partial_json 把被截断的 args
+        # 补成"看似合法"的 dict → 截断输出也会落进 tool_calls。若先接受，要么校验失败空耗预算、
+        # 要么静默把残缺结果当成功交付（大标书读标漏条款）。故 finish_reason=length 一律走压缩重试。
+        finish = (getattr(msg, "response_metadata", None) or {}).get("finish_reason")
+        if finish == "length":
+            messages = [*messages, HumanMessage(content=(
+                "你上一次的提交因输出超过长度上限被截断，未能送达。请大幅压缩后重新提交同一结构："
+                "value 逐条精炼（≤50字）；source_quote 只保留★/▲/废标风险条目的关键句（≤40字），"
+                "其余条目一律留空；不要遗漏条目本身。"))]
+            continue
         call = next((c for c in (getattr(msg, "tool_calls", None) or []) if c["name"] == tool_name), None)
         if call is not None:
             try:
@@ -111,14 +118,5 @@ async def _forced_submit(ctx, prompt: str, user_msg: str, submit, tool_name: str
             reason = (f"submit 参数不是合法 JSON（{invalid.get('error')}）。"
                       "只输出一个合法 JSON 对象，一次性提交，不要多余包装键或注释。")
             messages = [*messages, *_reject_msg(msg, invalid.get("id") or "invalid", reason)]
-            continue
-        finish = (getattr(msg, "response_metadata", None) or {}).get("finish_reason")
-        if finish == "length":
-            # 输出撞 max_tokens 被截断（大标书读标实测：截断可致 tool_calls 与 invalid_tool_calls 双空，
-            # 此前被当"没提交"直接放弃）——喂回压缩指令重试，而非 fail-closed。
-            messages = [*messages, HumanMessage(content=(
-                "你上一次的提交因输出超过长度上限被截断，未能送达。请大幅压缩后重新提交同一结构："
-                "value 逐条精炼（≤50字）；source_quote 只保留★/▲/废标风险条目的关键句（≤40字），"
-                "其余条目一律留空；不要遗漏条目本身。"))]
             continue
         return                           # 模型完全没产出提交调用（如 fake 模型）：交给上层抛"未提交"
