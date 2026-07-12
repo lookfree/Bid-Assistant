@@ -517,3 +517,69 @@ async def test_heartbeat_pump_refreshes_independent_of_events(monkeypatch):
     hb = [k for k, _ in sets if "run:hb:run-x" in k]
     assert len(hb) >= 3, f"泵应多次续期,实际 {len(hb)} 次"
     assert all(ex and ex > 0 for _, ex in sets), "每次续期都要带 EX(过期兜底)"
+
+
+def test_create_run_writes_runmeta_before_enqueue():
+    """顺序铁律回归:runmeta 必须先写、消息后入队——否则 worker 可能在 runmeta 落地前消费到消息、
+    读到空误判「missing」失败(网络抖动放大窗口,曾致连环失败)。用记录调用序的 fake redis 断言。"""
+    import agent.runtime.dispatch as dispatch_mod
+
+    calls: list[str] = []
+
+    class _OrderRedis:
+        def set(self, key, val, ex=None):
+            calls.append("set:runmeta" if "runmeta" in key else f"set:{key}")
+
+        def xadd(self, key, fields):
+            calls.append("xadd")
+            return "1-0"
+
+    class _FakePool:
+        def connection(self):
+            import contextlib
+
+            @contextlib.contextmanager
+            def _cm():
+                class _C:
+                    def execute(self, *a, **k): pass
+                    def commit(self): pass
+                yield _C()
+            return _cm()
+
+    import unittest.mock as mock
+    with mock.patch.object(dispatch_mod, "get_redis", lambda: _OrderRedis()), \
+         mock.patch.object(dispatch_mod, "get_pool", lambda: _FakePool()):
+        dispatch_mod.create_run("bidding_agent", {"x": 1})
+
+    # 第一个 runmeta 写入必须在 xadd 之前
+    assert calls.index("set:runmeta") < calls.index("xadd"), calls
+    # 入队后还有一次回填 entry_id 的 runmeta 写
+    assert calls.count("set:runmeta") == 2, calls
+
+
+async def test_run_end_published_even_when_finish_run_raises(monkeypatch):
+    """稳健性回归:agent 跑挂 + finish_run 因 PG 断连再次抛错时,run.end failed 仍必须发出——
+    否则 App SSE relay 永久等待、前端卡 running(实测 PG 瞬断触发)。"""
+    class _Boom:
+        async def astream(self, input, ctx):
+            raise RuntimeError("节点炸了")
+            yield  # pragma: no cover
+
+    class _PGDownRec:
+        def start_run(self, *a, **kw): pass
+        def log_event(self, *a, **kw): raise RuntimeError("PG down")
+        def finish_run(self, *a, **kw): raise RuntimeError("PG down")
+        def usage_summary(self, run_id): return {}
+
+    events: list[dict] = []
+    fake_r = _FakeRedis()
+    fake_r.pipeline = lambda: _CapturingPipeline(events)
+    monkeypatch.setattr(executor_mod, "get_redis", lambda: fake_r)
+    monkeypatch.setattr(executor_mod, "_rec", lambda: _PGDownRec())
+    monkeypatch.setattr(executor_mod, "get_agent", lambda agent_type: _Boom())
+    monkeypatch.setattr(executor_mod.settings, "app_callback_url", None)
+
+    await process_run("run-pg-down")   # 不抛(best-effort 收尾吞掉 PG 错误)
+
+    ends = [e for e in events if e["type"] == "run.end"]
+    assert len(ends) == 1 and ends[0]["data"]["status"] == "failed"

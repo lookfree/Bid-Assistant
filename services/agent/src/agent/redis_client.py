@@ -1,6 +1,9 @@
 import logging
 
 import redis
+from redis.backoff import ExponentialBackoff
+from redis.exceptions import ConnectionError as RedisConnectionError, TimeoutError as RedisTimeoutError
+from redis.retry import Retry
 
 from agent.config import settings
 
@@ -24,6 +27,12 @@ def get_redis() -> redis.Redis:
             # "Timeout reading from socket"。socket_timeout=10s 让阻塞读到点正常返回；keepalive 探活死连接。
             socket_timeout=10,
             socket_keepalive=True,
+            socket_connect_timeout=10,
+            # 抗网络抖动(WAN 隧道实测瞬断):坏连接自动重连+重试短暂失败,而非把错误直接抛给调用方
+            # (曾致 create_run 的 runmeta 写失败/命令读到坏连接连环报错)。health_check 定期探活淘汰死连接。
+            retry=Retry(ExponentialBackoff(base=0.1, cap=2), retries=3),
+            retry_on_error=[RedisConnectionError, RedisTimeoutError],
+            health_check_interval=30,
         )
     return _client
 

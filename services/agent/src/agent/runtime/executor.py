@@ -45,6 +45,15 @@ async def _apublish(r, run_id: str, event: dict) -> None:
     await asyncio.to_thread(_publish, r, run_id, event)
 
 
+async def _try(awaitable) -> None:
+    """吞掉 best-effort 收尾步骤(finish_run/log_event/callback)的异常——PG 断连时它们可能再次抛错,
+    绝不能让收尾步骤挡住必须发出的 run.end(那是 App SSE relay 结束等待的唯一信号)。"""
+    try:
+        await awaitable
+    except Exception as e:  # noqa: BLE001
+        print(f"[worker] best-effort 收尾失败(已忽略,不阻断 run.end): {e}", flush=True)
+
+
 async def _heartbeat_pump(r, run_id: str) -> None:
     """独立心跳泵（spec318 修正）：run 存活期间每 ttl/3 秒续期 run:hb:<run_id>，与事件解耦。
     关键——单个节点（如 content deepagent 3~8 分钟）执行期间 astream 不产事件，若心跳只搭事件
@@ -79,8 +88,10 @@ async def process_run(run_id: str) -> None:
         await _apublish(r, run_id, {"type": "run.end", "data": {"status": "failed", "error": "runmeta missing or expired"}})
         return
 
-    await asyncio.to_thread(rec.start_run, run_id, agent_type, thread_id)
-    await asyncio.to_thread(rec.log_event, run_id, agent_type, "run.start", thread_id=thread_id)
+    # 开跑记录 best-effort:PG 断连时 start_run/log_event 抛错也不能让 run 起步就崩(agent 靠 Redis
+    # runmeta 就能跑,PG 只是观测)——否则 PG 一抖新 run 全废,还没到 except 就带着未终态化跑飞。
+    await _try(asyncio.to_thread(rec.start_run, run_id, agent_type, thread_id))
+    await _try(asyncio.to_thread(rec.log_event, run_id, agent_type, "run.start", thread_id=thread_id))
     await _apublish(r, run_id, {"type": "run.start"})
 
     model = meta.get("model")
@@ -99,8 +110,9 @@ async def process_run(run_id: str) -> None:
             if ev.get("node"):
                 nodes.add(ev["node"])
             if ev["type"] in ("node.start", "node.end", "step.done", "error"):
-                await asyncio.to_thread(rec.log_event, run_id, agent_type, ev["type"], node=ev.get("node"),
-                                         data=ev.get("data"), thread_id=thread_id)
+                # 事件埋点 best-effort:PG 瞬断不该中断正在跑的生成(埋点只是观测,结果照样产出+推 SSE)。
+                await _try(asyncio.to_thread(rec.log_event, run_id, agent_type, ev["type"], node=ev.get("node"),
+                                             data=ev.get("data"), thread_id=thread_id))
             # 单循环 agent 结果在 node.end.data.result；工作流每步结果在 step.done.data.result。
             if ev["type"] in ("node.end", "step.done") and isinstance(ev.get("data"), dict) and "result" in ev["data"]:
                 result = ev["data"]["result"]
@@ -112,12 +124,15 @@ async def process_run(run_id: str) -> None:
         await _apublish(r, run_id, {"type": "run.end", "data": {"status": "succeeded"}})
         await _callback(run_id, agent_type, "succeeded")
     except Exception as e:  # noqa: BLE001
-        await asyncio.to_thread(rec.log_event, run_id, agent_type, "error", level="error",
-                                 data={"error": str(e)}, thread_id=thread_id)
-        await asyncio.to_thread(rec.finish_run, run_id, status="failed",
-                                 error=str(e), error_type=type(e).__name__)
-        await _apublish(r, run_id, {"type": "run.end", "data": {"status": "failed", "error": str(e)}})
-        await _callback(run_id, agent_type, "failed")
+        err = str(e)
+        # PG 写入 best-effort:即便 finish_run/log_event 因断连再次抛错,也绝不能挡住下面的 run.end——
+        # run.end 是 App SSE relay 结束等待的唯一信号,发不出去 = 前端永久卡 running(实测 PG 瞬断触发)。
+        await _try(asyncio.to_thread(rec.log_event, run_id, agent_type, "error", level="error",
+                                     data={"error": err}, thread_id=thread_id))
+        await _try(asyncio.to_thread(rec.finish_run, run_id, status="failed",
+                                     error=err, error_type=type(e).__name__))
+        await _apublish(r, run_id, {"type": "run.end", "data": {"status": "failed", "error": err}})
+        await _try(_callback(run_id, agent_type, "failed"))
     finally:
         # run 落终态后立即停泵：心跳自然到期,真孤儿(worker 崩溃时泵随进程消失)才能被 sweeper 回收。
         hb_pump.cancel()

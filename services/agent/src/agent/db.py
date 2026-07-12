@@ -17,7 +17,12 @@ def get_pool() -> ConnectionPool:
         # 取 floor 10 保证 api 角色与低并发配置不缩水（spec317）。
         max_size = max(10, settings.agent_worker_concurrency + 4)
         # open=False + 显式 open()：避免构造参数 open=True 的弃用告警。
-        _pool = ConnectionPool(conninfo=settings.database_url, min_size=1, max_size=max_size, open=False)
+        # check=check_connection：借出前先探活,淘汰网络抖动留下的坏连接(WAN 隧道实测瞬断后
+        # 池里残留 [BAD] 连接不自愈,曾致 finish_run 写终态失败、run 卡 running);max_lifetime 定期换血。
+        _pool = ConnectionPool(
+            conninfo=settings.database_url, min_size=1, max_size=max_size, open=False,
+            check=ConnectionPool.check_connection, max_lifetime=1800, reconnect_timeout=10,
+        )
         _pool.open()
     return _pool
 
