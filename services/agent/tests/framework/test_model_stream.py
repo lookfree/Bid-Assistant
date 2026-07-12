@@ -147,6 +147,58 @@ async def test_thinking_on_uses_ainvoke_not_stream(_fast_timeout):
     assert chat.astream_calls == 0 and chat.ainvoke_calls == 1
 
 
+class _CutChat:
+    """模拟对端掐流：astream 吐一半抛 httpx 式 'peer closed connection'（生产实测两例的死因）。"""
+
+    def bind_tools(self, tools, **kw):
+        return self
+
+    async def astream(self, messages, **kw):
+        yield AIMessageChunk(content="部分输出")
+        raise RuntimeError("peer closed connection without sending complete message body (incomplete chunked read)")
+
+
+async def test_stream_cut_retries_on_downgrade(_fast_timeout):
+    """回归（92 块并行读标实测）：主模型流被对端掐断 → 并入降级重试通道换模型再试，
+    而不是异常直接炸掉调用方（那会让并发读标几十轮成功全作废）。"""
+    healthy = _CountingChat()
+    gw = _Gateway([_CutChat(), healthy], chain=[{"model": "big"}, {"model": "small"}])
+
+    async def _submit(**kw):
+        ...
+    msg = await ms.forced_stream_submit(_ctx(gw), [], _submit, "submit_x", label="读标·技术块")
+    assert msg.tool_calls[0]["name"] == "submit_x"
+    assert healthy.astream_calls == 1   # 降级模型接手成功
+
+
+async def test_stream_cut_on_both_tries_raises(_fast_timeout):
+    """主与降级都被掐 → 仍失败（本节点失败，run 可重试），不无限重试。"""
+    gw = _Gateway([_CutChat(), _CutChat()], chain=[{"model": "big"}, {"model": "small"}])
+
+    async def _submit(**kw):
+        ...
+    with pytest.raises(RuntimeError, match="peer closed"):
+        await ms.forced_stream_submit(_ctx(gw), [], _submit, "submit_x", label="读标·技术块")
+
+
+async def test_semantic_error_not_retried(_fast_timeout):
+    """语义错误（4xx 参数问题等）不属于瞬断，不得吞进重试通道——原样抛给上层。"""
+    class _BadRequestChat:
+        def bind_tools(self, tools, **kw):
+            return self
+
+        async def astream(self, messages, **kw):
+            raise RuntimeError("Error code: 400 - invalid request: max_tokens exceeds limit")
+            yield  # noqa
+
+    gw = _Gateway([_BadRequestChat(), _CountingChat()], chain=[{"model": "big"}, {"model": "small"}])
+
+    async def _submit(**kw):
+        ...
+    with pytest.raises(RuntimeError, match="max_tokens"):
+        await ms.forced_stream_submit(_ctx(gw), [], _submit, "submit_x", label="读标")
+
+
 async def test_thinking_off_uses_stream(_fast_timeout):
     """思考关（默认）的模型：走流式（get_chat 下发关闭思考参），不走 ainvoke。"""
     chat = _CountingChat()

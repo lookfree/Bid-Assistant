@@ -19,6 +19,18 @@ class ModelIdleTimeout(Exception):
     """流式调用连续超时秒数无新 token —— 判定连接挂死；正常慢生成（token 持续吐）不会触发。"""
 
 
+def _is_transient_stream_error(e: Exception) -> bool:
+    """网络层瞬断（对端掐流/连接重置/服务器断开）——非模型语义错误，重试大概率成功。
+    生产实测两例：92 块并行读标中单路被掐（httpx 'peer closed connection without sending
+    complete message body (incomplete chunked read)'），一轮异常炸掉整个 gather、几十轮成功全作废。
+    按错误文案匹配（httpx/openai 各版本异常类不稳定，文案稳定），并入降级重试通道。"""
+    s = str(e).lower()
+    return any(k in s for k in (
+        "peer closed connection", "incomplete chunked read", "connection reset",
+        "server disconnected", "connection aborted", "remote protocol error",
+    ))
+
+
 def _grown_chars(agg) -> int:
     """已生成字符数（心跳展示用）：正文走 content；强制 submit 走 tool_call_chunks 的 args 增量。"""
     n = len(getattr(agg, "content", "") or "")
@@ -85,12 +97,15 @@ async def forced_stream_submit(ctx, messages, submit, tool_name: str, label: str
         else:
             try:
                 msg = await astream_collect(chat, messages, ctx, label)
-            except ModelIdleTimeout:
+            except Exception as e:  # noqa: BLE001 只接管挂死/瞬断，其余（4xx 语义错误等）原样抛
+                if not (isinstance(e, ModelIdleTimeout) or _is_transient_stream_error(e)):
+                    raise
+                kind = "超时" if isinstance(e, ModelIdleTimeout) else "网络中断"
                 if i == 0:
-                    await publish_phase(ctx, f"{label or tool_name}·模型超时，切换重试")
+                    await publish_phase(ctx, f"{label or tool_name}·模型{kind}，切换重试")
                     continue
-                await publish_phase(ctx, f"{label or tool_name}·重试仍超时，本轮失败")
-                logger.error("model idle timeout (both tries) tool=%s label=%s", tool_name, label)
+                await publish_phase(ctx, f"{label or tool_name}·重试仍{kind}，本轮失败")
+                logger.error("model %s (both tries) tool=%s label=%s err=%s", kind, tool_name, label, e)
                 raise
         _warn_if_no_usage(msg, it)   # 流式用量依赖服务商回 include_usage；缺失=0 token 静默漏计费，先示警
         record_ctx_usage(ctx, msg, node="agent", provider=it.get("provider"),
