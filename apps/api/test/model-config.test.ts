@@ -7,7 +7,6 @@ import {
   maskApiKey,
   maskModelConfig,
   mergeModelSecrets,
-  UnknownProviderError,
   InvalidParamsError,
   ChainRequiresTestedError,
   type ModelConfig,
@@ -57,13 +56,9 @@ describe("spec319 model-config 纯逻辑", () => {
     expect(() => validateModelConfig(cfg)).toThrow(ChainRequiresTestedError)
   })
 
-  it("validateModelConfig：provider 非白名单 → UnknownProviderError", () => {
-    const cfg: ModelConfig = {
-      models: [{ id: "m1", provider: "openai", model: "gpt-4", params: { temperature: 0.7, maxTokens: 8192, topP: 1 }, enabled: true, test: { status: "passed" } }],
-      chain: [],
-    }
-    expect(() => validateModelConfig(cfg)).toThrow(UnknownProviderError)
-  })
+  // provider 非白名单且无 baseUrl：不再单独走「未知服务商」判定——非内置一律走自建分支，baseUrl 缺失即报
+  // InvalidParamsError（要求 baseUrl，见下方「非内置 provider」用例）。UnknownProviderError 类仍导出/
+  // 供 route 层兜底 instanceof，但 validateModelConfig 自身分支已不再抛出它。
 
   it("validateModelConfig：temperature=5/topP=2/maxTokens=-1 → InvalidParamsError", () => {
     const base = { id: "m1", provider: "deepseek", model: "deepseek-chat", enabled: true, test: { status: "passed" as const } }
@@ -100,9 +95,33 @@ describe("spec319 model-config 纯逻辑", () => {
     const cfg: ModelConfig = { models: [{ ...CUSTOM_BASE, id: "c1", baseUrl: "http://h:8000/v1", apiKey: "sk-x" }], chain: [] }
     expect(() => validateModelConfig(cfg)).not.toThrow()
   })
-  it("validateModelConfig：注册表条目（无 baseUrl）行为不变——provider 非白名单仍拒绝", () => {
+  it("validateModelConfig：非内置 provider（自由标签）且无 baseUrl → InvalidParamsError（走自建分支，要求 baseUrl）", () => {
     const cfg: ModelConfig = { models: [{ ...CUSTOM_BASE, id: "c1", provider: "openai" }], chain: [] }
-    expect(() => validateModelConfig(cfg)).toThrow(UnknownProviderError)
+    expect(() => validateModelConfig(cfg)).toThrow(InvalidParamsError)
+  })
+
+  // —— 内置服务商可选覆盖 baseUrl/apiKey：baseUrl/apiKey 均可留空（回退注册表默认/env），
+  // 带了 baseUrl 才校验协议，不强制 apiKey 非空（区别于自建分支）。——
+  it("validateModelConfig：内置服务商 + 覆盖 baseUrl/apiKey（http，非空 key）→ 不抛", () => {
+    const cfg: ModelConfig = {
+      models: [{ id: "m1", provider: "deepseek", model: "deepseek-chat", params: { temperature: 0.7, maxTokens: 8192, topP: 1 }, enabled: true, test: { status: "passed" }, baseUrl: "https://proxy.example.com/v1", apiKey: "sk-override" }],
+      chain: [],
+    }
+    expect(() => validateModelConfig(cfg)).not.toThrow()
+  })
+  it("validateModelConfig：内置服务商 + 覆盖 baseUrl（无 apiKey）→ 不抛（apiKey 可选，回退服务端 env）", () => {
+    const cfg: ModelConfig = {
+      models: [{ id: "m1", provider: "qwen", model: "qwen-plus", params: { temperature: 0.7, maxTokens: 8192, topP: 1 }, enabled: true, test: { status: "passed" }, baseUrl: "https://proxy.example.com/v1" }],
+      chain: [],
+    }
+    expect(() => validateModelConfig(cfg)).not.toThrow()
+  })
+  it("validateModelConfig：内置服务商 baseUrl 非 http/https → InvalidParamsError", () => {
+    const cfg: ModelConfig = {
+      models: [{ id: "m1", provider: "glm", model: "glm-4-flash", params: { temperature: 0.7, maxTokens: 8192, topP: 1 }, enabled: true, test: { status: "passed" }, baseUrl: "ftp://bad-proxy" }],
+      chain: [],
+    }
+    expect(() => validateModelConfig(cfg)).toThrow(InvalidParamsError)
   })
 
   it("maskApiKey：长 key 首3+****+尾2；短 key 一律 ****", () => {
@@ -166,6 +185,16 @@ describe("spec319 model-config 纯逻辑", () => {
       chain: [],
     }
     expect(mergeModelSecrets(incoming, stored)).toEqual(incoming)
+  })
+
+  it("mergeModelSecrets：内置服务商只覆盖 apiKey（无 baseUrl）→ 按 id 从 stored 取回旧 key（不再要求 baseUrl 才合并）", () => {
+    const stored: ModelConfig = {
+      models: [{ id: "m1", provider: "deepseek", model: "deepseek-chat", params: { temperature: 0.7, maxTokens: 8192, topP: 1 }, enabled: true, test: { status: "passed" }, apiKey: "sk-builtin-old" }],
+      chain: ["m1"],
+    }
+    // 模拟前端 GET→打码→原样 PUT 回去：apiKey 缺省、也没有 baseUrl。
+    const incoming: ModelConfig = { models: [{ ...stored.models[0]!, apiKey: undefined }], chain: ["m1"] }
+    expect(mergeModelSecrets(incoming, stored).models[0]!.apiKey).toBe("sk-builtin-old")
   })
 
   it("deriveRunOverride：chain=[deepseek(passed), glm(passed)] → 派生 snake params + fallbacks 串 + 结构化 chain", () => {

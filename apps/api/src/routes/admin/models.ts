@@ -68,13 +68,15 @@ const TestBody = z.object({
     .optional(),
   base_url: z.string().optional(),
   api_key: z.string().optional(),
-  id: z.string().optional(), // 已保存自建条目：无明文 key 时据此回填库里 key
+  id: z.string().optional(), // 已保存条目：无明文 key 时据此回填库里 key（自建必带、内置服务商可选覆盖）
 })
 modelsRouter.post("/test", requirePermission("config.write"), async (c) => {
   const parsed = TestBody.safeParse(await c.req.json().catch(() => null))
   if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
   const { id, ...body } = parsed.data
-  if (body.base_url && !body.api_key) body.api_key = await resolveStoredKey(id)
+  // 按 api_key 缺省与否判定是否回填库里 key，不再要求 base_url 同时存在——内置服务商现在也能只覆盖
+  // apiKey（不覆盖 base_url），若仍要求 base_url 才回填，重测时这个覆盖 key 会被静默忽略、退回 env 默认。
+  if (!body.api_key) body.api_key = await resolveStoredKey(id)
   return c.json(await testModel(body))
 })
 

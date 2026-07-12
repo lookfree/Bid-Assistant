@@ -36,6 +36,8 @@ import {
   canAddToChain,
   resetTestOnEdit,
   isCustomEntry,
+  providerDefaultBaseUrl,
+  providerDefaultMaxTokens,
   type ModelEntry,
 } from "@/lib/model-config"
 
@@ -66,6 +68,9 @@ type CardProps = {
 export function ModelCard({ model, isNew, inChain, testing, tokens, busy, onTest, onToggleEnable, onSave, onDelete, onAddToChain }: CardProps) {
   const [editing, setEditing] = useState(isNew)
   const [draft, setDraft] = useState<ModelEntry>(model)
+  // 编辑态下对草稿本身的连通性测试（Task 3 的保存门槛）：draft 的每次字段编辑都已经过 resetTestOnEdit
+  // 使 draft.test 归为 untested，所以这里测出的结果始终对应「当前草稿」，commit() 无需再自行判断是否变化。
+  const draftTest = useDraftTest(draft, setDraft)
 
   function startEdit() {
     setDraft(model)
@@ -73,13 +78,7 @@ export function ModelCard({ model, isNew, inChain, testing, tokens, busy, onTest
   }
 
   function commit() {
-    const changed =
-      draft.provider !== model.provider ||
-      draft.model !== model.model ||
-      draft.baseUrl !== model.baseUrl ||
-      draft.apiKey !== model.apiKey ||
-      JSON.stringify(draft.params) !== JSON.stringify(model.params)
-    onSave(changed ? resetTestOnEdit(draft) : draft)
+    onSave(draft)
     setEditing(false)
   }
 
@@ -95,22 +94,25 @@ export function ModelCard({ model, isNew, inChain, testing, tokens, busy, onTest
     <Card className="gap-3 py-4">
       <CardHeader className="flex-row items-start justify-between gap-2 px-4">
         <ProviderIdentity model={model} editing={editing} draft={draft} setDraft={setDraft} />
-        <TestStatusChip model={model} />
+        <TestStatusChip model={editing ? draft : model} />
       </CardHeader>
 
       <CardContent className="flex flex-col gap-3 px-4">
         <ParamsGrid editing={editing} model={model} draft={draft} setDraft={setDraft} />
         {editing && isCustomEntry(draft) && <CustomEndpointFields draft={draft} setDraft={setDraft} />}
-        {editing && !isCustomEntry(draft) && <BuiltinModelFetch draft={draft} setDraft={setDraft} />}
-        <TestLine model={model} inChain={inChain} tokens={tokens} />
+        {editing && !isCustomEntry(draft) && <BuiltinEndpointFields draft={draft} setDraft={setDraft} />}
+        <TestLine model={editing ? draft : model} inChain={inChain} tokens={editing ? draftTest.tokens : tokens} />
 
         <div className="flex items-center justify-between gap-2 border-t border-border pt-3">
           <CardActions
             editing={editing}
             busy={busy}
             testing={testing}
+            draft={draft}
+            draftTesting={draftTest.testing}
             model={model}
             onTest={onTest}
+            onTestDraft={draftTest.run}
             onDelete={onDelete}
             startEdit={startEdit}
             commit={commit}
@@ -123,6 +125,41 @@ export function ModelCard({ model, isNew, inChain, testing, tokens, busy, onTest
       </CardContent>
     </Card>
   )
+}
+
+// 编辑态草稿的连通性测试：直接调 adminApi（同 CustomEndpointFields/BuiltinModelFetch 已有的
+// 「组件内直调 adminApi」惯例），结果只写回本地 draft.test，不经过父组件的 testingIds/onTest
+// （那套只认已保存的 model，草稿字段父组件还看不到）。测试通过后「保存参数」才会解锁（见 CardActions）。
+function useDraftTest(draft: ModelEntry, setDraft: (updater: (d: ModelEntry) => ModelEntry) => void) {
+  const [testing, setTesting] = useState(false)
+  const [tokens, setTokens] = useState<number | undefined>(undefined)
+
+  async function run() {
+    setTesting(true)
+    try {
+      const res = await adminApi.models.test({
+        provider: draft.provider,
+        model: draft.model,
+        params: draft.params,
+        baseUrl: draft.baseUrl,
+        apiKey: draft.apiKey,
+        id: draft.id, // 已保存条目重测：apiKey 打码不回显，带 id 让服务端回填库里 key
+      })
+      if (res.ok) {
+        setDraft((d) => ({ ...d, test: { status: "passed", at: new Date().toISOString(), latencyMs: res.latencyMs } }))
+        setTokens(res.tokens)
+      } else {
+        setDraft((d) => ({ ...d, test: { status: "failed", error: res.error ?? "测试失败" } }))
+        setTokens(undefined)
+      }
+    } catch {
+      setDraft((d) => ({ ...d, test: { status: "failed", error: "请求失败，请重试" } }))
+      setTokens(undefined)
+    } finally {
+      setTesting(false)
+    }
+  }
+  return { testing, tokens, run }
 }
 
 // 卡片头：服务商 logo + 名称/模型名；编辑态下 provider 是 Select、model 名是 Input。
@@ -162,7 +199,7 @@ function ProviderIdentity({
             className="h-7 w-36 text-xs"
             placeholder="模型名，如 deepseek-chat"
             value={draft.model}
-            onChange={(e) => setDraft((d) => ({ ...d, model: e.target.value }))}
+            onChange={(e) => setDraft((d) => resetTestOnEdit({ ...d, model: e.target.value }))}
           />
         </div>
       ) : (
@@ -177,11 +214,13 @@ function ProviderIdentity({
 
 // provider 切到「custom」：清空 model（自建模型名与注册表不通用，避免带着旧值误导）；
 // 切离 custom：清掉自建专属字段（baseUrl/apiKey/apiKeyHint），避免残留 baseUrl 让服务端仍判定为自建条目。
-// 测试状态的失效交给 commit() 里既有的 diff 逻辑（provider 变了即视为 changed），这里不用重复处理。
+// 切换服务商统一重置 maxTokens 为该服务商默认值（同 model 一样重置，brief 指定）。
+// 测试状态一律重置（resetTestOnEdit）——旧的测试结果是针对旧 provider/model 测的，切换后不再有效。
 function switchProvider(d: ModelEntry, nextProvider: string): ModelEntry {
   if (nextProvider === d.provider) return d
-  if (nextProvider === "custom") return { ...d, provider: nextProvider, model: "" }
-  return { ...d, provider: nextProvider, baseUrl: undefined, apiKey: undefined, apiKeyHint: undefined }
+  const params = { ...d.params, maxTokens: providerDefaultMaxTokens(nextProvider) }
+  if (nextProvider === "custom") return resetTestOnEdit({ ...d, provider: nextProvider, model: "", params })
+  return resetTestOnEdit({ ...d, provider: nextProvider, baseUrl: undefined, apiKey: undefined, apiKeyHint: undefined, params })
 }
 
 // 三个参数（temperature/max_tokens/top_p）：只读展示 or 编辑输入框，取决于 editing。
@@ -204,7 +243,8 @@ function ParamsGrid({
         <ParamView paramKey="topP" value={model.params.topP} />
       </div>
     )
-  const setParam = (key: keyof ModelEntry["params"]) => (v: number) => setDraft((d) => ({ ...d, params: { ...d.params, [key]: v } }))
+  const setParam = (key: keyof ModelEntry["params"]) => (v: number) =>
+    setDraft((d) => resetTestOnEdit({ ...d, params: { ...d.params, [key]: v } }))
   return (
     <div className="grid grid-cols-3 gap-2">
       <ParamEdit paramKey="temperature" value={draft.params.temperature} onChange={setParam("temperature")} />
@@ -214,13 +254,18 @@ function ParamsGrid({
   )
 }
 
-// 卡片底部行动按钮：编辑态显示保存/取消，非编辑态显示测试/编辑参数/删除。
+// 卡片底部行动按钮：编辑态显示测试草稿/保存/取消，非编辑态显示测试/编辑参数/删除。
+// Task 3 保存门槛：编辑态的「保存参数」在 draft.test.status !== "passed" 时禁用 + 提示，
+// 逼着用户先点「测试连通」测过草稿本身才能保存（草稿测试见 useDraftTest）。
 function CardActions({
   editing,
   busy,
   testing,
+  draft,
+  draftTesting,
   model,
   onTest,
+  onTestDraft,
   onDelete,
   startEdit,
   commit,
@@ -229,26 +274,45 @@ function CardActions({
   editing: boolean
   busy: boolean
   testing: boolean
+  draft: ModelEntry
+  draftTesting: boolean
   model: ModelEntry
   onTest: () => void
+  onTestDraft: () => void
   onDelete: () => void
   startEdit: () => void
   commit: () => void
   cancel: () => void
 }) {
-  if (editing)
+  if (editing) {
+    const canSave = draft.test.status === "passed"
+    const saveButton = (
+      <Button size="sm" onClick={commit} disabled={busy || !canSave}>
+        <Save data-icon="inline-start" />
+        保存参数
+      </Button>
+    )
     return (
       <div className="flex items-center gap-3">
-        <Button size="sm" onClick={commit} disabled={busy}>
-          <Save data-icon="inline-start" />
-          保存参数
+        <Button size="sm" variant="outline" onClick={onTestDraft} disabled={busy || draftTesting}>
+          {draftTesting ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <PlugZap data-icon="inline-start" />}
+          {draft.test.status === "failed" ? "重新测试" : "测试连通"}
         </Button>
+        {canSave ? (
+          saveButton
+        ) : (
+          <Tooltip>
+            <TooltipTrigger render={saveButton} />
+            <TooltipContent side="top">请先测试连通再保存</TooltipContent>
+          </Tooltip>
+        )}
         <Button size="sm" variant="ghost" onClick={cancel} disabled={busy}>
           <X data-icon="inline-start" />
           取消
         </Button>
       </div>
     )
+  }
   return (
     <div className="flex items-center gap-3">
       <Button size="sm" variant={model.test.status === "passed" ? "outline" : "default"} onClick={onTest} disabled={testing || busy}>
@@ -435,14 +499,14 @@ function CustomEndpointFields({
           label="Base URL"
           placeholder="http://host:port/v1"
           value={draft.baseUrl ?? ""}
-          onChange={(v) => setDraft((d) => ({ ...d, baseUrl: v || undefined }))}
+          onChange={(v) => setDraft((d) => resetTestOnEdit({ ...d, baseUrl: v || undefined }))}
         />
         <LabeledInput
           label="API Key"
           type="password"
           placeholder={draft.apiKeyHint ? `当前 ${draft.apiKeyHint}，留空则不修改` : "sk-..."}
           value={draft.apiKey ?? ""}
-          onChange={(v) => setDraft((d) => ({ ...d, apiKey: v || undefined }))}
+          onChange={(v) => setDraft((d) => resetTestOnEdit({ ...d, apiKey: v || undefined }))}
         />
       </div>
       <div className="flex flex-wrap items-center gap-2">
@@ -460,9 +524,42 @@ function CustomEndpointFields({
           models={models}
           error={error}
           value={draft.model}
-          onSelect={(v) => setDraft((d) => ({ ...d, model: v }))}
+          onSelect={(v) => setDraft((d) => resetTestOnEdit({ ...d, model: v }))}
         />
       </div>
+    </div>
+  )
+}
+
+// 内置服务商（deepseek/qwen/glm）可选覆盖 base_url/api_key（Task 1）：留空分别回退注册表默认地址
+// （providerDefaultBaseUrl 做 placeholder）/ 服务端 env key。样式与 CustomEndpointFields 的
+// LabeledInput 一致；下方保留原有「拉取可用模型」——provider 覆盖了 baseUrl 后拉取入口不变
+// （只带 provider，由 agent 侧解析实际生效的 base_url/key，前端无需关心）。
+function BuiltinEndpointFields({
+  draft,
+  setDraft,
+}: {
+  draft: ModelEntry
+  setDraft: (updater: (d: ModelEntry) => ModelEntry) => void
+}) {
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-dashed border-border p-3">
+      <div className="grid gap-2 sm:grid-cols-2">
+        <LabeledInput
+          label="Base URL"
+          placeholder={providerDefaultBaseUrl(draft.provider) || "留空用默认地址"}
+          value={draft.baseUrl ?? ""}
+          onChange={(v) => setDraft((d) => resetTestOnEdit({ ...d, baseUrl: v || undefined }))}
+        />
+        <LabeledInput
+          label="API Key"
+          type="password"
+          placeholder={draft.apiKeyHint ? `当前 ${draft.apiKeyHint}，留空则不修改` : "留空用服务端默认（env）"}
+          value={draft.apiKey ?? ""}
+          onChange={(v) => setDraft((d) => resetTestOnEdit({ ...d, apiKey: v || undefined }))}
+        />
+      </div>
+      <BuiltinModelFetch draft={draft} setDraft={setDraft} />
     </div>
   )
 }
@@ -491,7 +588,7 @@ function BuiltinModelFetch({
         models={models}
         error={error}
         value={draft.model}
-        onSelect={(v) => setDraft((d) => ({ ...d, model: v }))}
+        onSelect={(v) => setDraft((d) => resetTestOnEdit({ ...d, model: v }))}
       />
     </div>
   )

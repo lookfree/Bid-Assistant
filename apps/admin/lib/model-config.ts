@@ -30,6 +30,30 @@ export type ModelConfig = { models: ModelEntry[]; chain: string[] }
 // 新建模型卡片的默认参数（brief 指定）。
 export const DEFAULT_MODEL_PARAMS: ModelParams = { temperature: 0.7, maxTokens: 8192, topP: 1.0 }
 
+// 各服务商 base_url 注册表默认值（与 agent providers.py 的 PROVIDERS 对齐）：内置服务商的
+// baseUrl 输入框用它做 placeholder（留空 = 用这个默认地址），非强制值。
+export const PROVIDER_DEFAULT_BASE_URL: Record<string, string> = {
+  deepseek: "https://api.deepseek.com/v1",
+  qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  glm: "https://open.bigmodel.cn/api/paas/v4",
+}
+
+export function providerDefaultBaseUrl(provider: string): string {
+  return PROVIDER_DEFAULT_BASE_URL[provider] ?? ""
+}
+
+// 各服务商 max_tokens 默认值（brief 指定）：新建模型 / 切换服务商时用它重置 params.maxTokens。
+const PROVIDER_DEFAULT_MAX_TOKENS: Record<string, number> = {
+  deepseek: 8192,
+  qwen: 8192,
+  glm: 4095,
+  custom: 4096,
+}
+
+export function providerDefaultMaxTokens(provider: string): number {
+  return PROVIDER_DEFAULT_MAX_TOKENS[provider] ?? PROVIDER_DEFAULT_MAX_TOKENS.custom
+}
+
 export const PROVIDER_LABELS: Record<string, string> = {
   deepseek: "DeepSeek",
   qwen: "通义千问",
@@ -49,10 +73,11 @@ export function providerLabel(provider: string): string {
   return PROVIDER_LABELS[provider] ?? "自建"
 }
 
-// 是否自建模式：provider 选了「custom」，或条目已带 baseUrl（编辑已保存的自建条目时 provider 恒为 custom，
-// 但草稿新建时可能只先有其一）。model-card 的自建 UI 判据与 provider 切换逻辑共用。
+// 是否自建模式：只看 provider 是否为「custom」（自由标签）。内置服务商（deepseek/qwen/glm）现在
+// 也可以带 baseUrl/apiKey（可选覆盖，见 PROVIDER_DEFAULT_BASE_URL），baseUrl 存在与否不再是判据，
+// 否则内置服务商一旦填了覆盖地址就会被误判成自建、丢了 provider 选择器与拉取可用模型入口。
 export function isCustomEntry(m: Pick<ModelEntry, "provider" | "baseUrl">): boolean {
-  return m.provider === "custom" || !!m.baseUrl
+  return m.provider === "custom"
 }
 
 // 展示名：自建条目（带 baseUrl）用 `model @ host`；否则回退注册表 `label model`

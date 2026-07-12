@@ -161,16 +161,17 @@ function validateParams(id: string, p: ModelParams): void {
   }
 }
 
-/** 语义校验（假定形状已合法）：自建条目（有 baseUrl）校验 baseUrl 协议 + apiKey 非空、不查 provider 白名单；
- *  注册表条目（无 baseUrl）沿用 provider 白名单校验，逐字节不变。params 数值范围/id 唯一/chain 门槛两支共用。 */
+/** 语义校验（假定形状已合法）：内置服务商（provider 在 PROVIDERS 白名单）baseUrl/apiKey 都是可选覆盖——
+ *  留空则 agent 网关分别回退注册表默认地址 / 服务端 env key，带了 baseUrl 才校验协议，不强制 apiKey。
+ *  非内置（自建/自由标签）条目沿用旧规则：baseUrl + apiKey 均必填。params 数值范围/id 唯一/chain 门槛两支共用。 */
 export function validateModelConfig(cfg: ModelConfig): void {
   const ids = new Set<string>()
   for (const m of cfg.models) {
-    if (m.baseUrl) {
-      if (!/^https?:\/\//.test(m.baseUrl)) throw new InvalidParamsError(`model ${m.id}: baseUrl 须为 http/https`)
+    if ((PROVIDERS as readonly string[]).includes(m.provider)) {
+      if (m.baseUrl && !/^https?:\/\//.test(m.baseUrl)) throw new InvalidParamsError(`model ${m.id}: baseUrl 须为 http/https`)
+    } else {
+      if (!m.baseUrl || !/^https?:\/\//.test(m.baseUrl)) throw new InvalidParamsError(`model ${m.id}: baseUrl 须为 http/https`)
       if (!m.apiKey) throw new InvalidParamsError(`model ${m.id}: 自建端点必须提供 apiKey`)
-    } else if (!(PROVIDERS as readonly string[]).includes(m.provider)) {
-      throw new UnknownProviderError(m.provider)
     }
     if (!m.model) throw new InvalidParamsError(`model ${m.id}: model 不可为空`)
     validateParams(m.id, m.params)
@@ -210,15 +211,18 @@ export function maskModelConfig(cfg: ModelConfig): ModelConfig {
   }
 }
 
-/** PUT 用：自建条目若未带新 apiKey（空/缺省），按 id 从 stored 取回旧值；带了新值则用新值覆盖。
+/** PUT 用：任何条目（内置服务商或自建）若未带新 apiKey（空/缺省），按 id 从 stored 取回旧值；带了新值则
+ *  用新值覆盖。按 apiKey 存在与否判定，不看 baseUrl——内置服务商现在也可能只覆盖了 apiKey（不覆盖 baseUrl），
+ *  若仍按旧的「只有 baseUrl 非空才合并」判据，这种条目的 apiKey 会在每次重新保存时被静默丢失。
  *  合并后仍需 validateModelConfig 把关（新建自建条目无任何旧值可填回 ⇒ 校验时因 apiKey 缺失被拒）。 */
 export function mergeModelSecrets(incoming: ModelConfig, stored: ModelConfig): ModelConfig {
   const storedById = new Map(stored.models.map((m) => [m.id, m]))
   return {
     ...incoming,
     models: incoming.models.map((m) => {
-      if (!m.baseUrl || m.apiKey) return m
-      return { ...m, apiKey: storedById.get(m.id)?.apiKey }
+      if (m.apiKey) return m
+      const prevKey = storedById.get(m.id)?.apiKey
+      return prevKey ? { ...m, apiKey: prevKey } : m
     }),
   }
 }

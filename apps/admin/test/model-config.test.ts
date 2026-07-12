@@ -13,6 +13,8 @@ import {
   providerLabel,
   modelDisplayName,
   isCustomEntry,
+  providerDefaultBaseUrl,
+  providerDefaultMaxTokens,
   type ModelEntry,
   type ModelConfig,
 } from "../lib/model-config"
@@ -154,11 +156,32 @@ describe("spec319.1 model-config: isCustomEntry", () => {
   it("provider 为 custom → 自建", () => {
     expect(isCustomEntry({ provider: "custom", baseUrl: undefined })).toBe(true)
   })
-  it("带 baseUrl → 自建（即使 provider 还是别的值）", () => {
-    expect(isCustomEntry({ provider: "deepseek", baseUrl: "http://h:8000/v1" })).toBe(true)
+  it("内置服务商 + baseUrl 覆盖 → 仍是内置（baseUrl 不再是自建判据，内置也能覆盖端点）", () => {
+    expect(isCustomEntry({ provider: "deepseek", baseUrl: "http://h:8000/v1" })).toBe(false)
   })
   it("注册表条目（无 baseUrl，非 custom）→ 不是自建", () => {
     expect(isCustomEntry({ provider: "qwen", baseUrl: undefined })).toBe(false)
+  })
+})
+
+describe("model-config: providerDefaultBaseUrl / providerDefaultMaxTokens", () => {
+  it("各内置服务商的默认 base_url 与注册表一致", () => {
+    expect(providerDefaultBaseUrl("deepseek")).toBe("https://api.deepseek.com/v1")
+    expect(providerDefaultBaseUrl("qwen")).toBe("https://dashscope.aliyuncs.com/compatible-mode/v1")
+    expect(providerDefaultBaseUrl("glm")).toBe("https://open.bigmodel.cn/api/paas/v4")
+  })
+  it("custom / 未知 provider → 空字符串（无默认地址可提示）", () => {
+    expect(providerDefaultBaseUrl("custom")).toBe("")
+    expect(providerDefaultBaseUrl("unknown")).toBe("")
+  })
+  it("各服务商默认 max_tokens", () => {
+    expect(providerDefaultMaxTokens("deepseek")).toBe(8192)
+    expect(providerDefaultMaxTokens("qwen")).toBe(8192)
+    expect(providerDefaultMaxTokens("glm")).toBe(4095)
+    expect(providerDefaultMaxTokens("custom")).toBe(4096)
+  })
+  it("未知 provider → 兜底 custom 的默认值", () => {
+    expect(providerDefaultMaxTokens("unknown")).toBe(4096)
   })
 })
 

@@ -212,4 +212,42 @@ describe("spec319 /admin-api/models", () => {
       ;(globalThis as any).fetch = orig
     }
   })
+
+  // 内置服务商只覆盖 apiKey、不覆盖 base_url（Task 1 新增）：重测时前端带 id、不带 base_url/api_key，
+  // 服务端仍需按 id 回填库里的覆盖 key——不能因为没有 base_url 就跳过回填，否则重测会静默退回 env key。
+  it("POST /test：内置服务商已保存的 apiKey 覆盖（无 base_url）→ 服务端按 id 回填库里 key", async () => {
+    await clearAgentModel()
+    const { headers } = await makeAdminSession("ops", regA)
+    const builtin = {
+      id: "m-builtin",
+      provider: "deepseek",
+      model: "deepseek-chat",
+      params: { temperature: 0.7, maxTokens: 8192, topP: 1 },
+      enabled: true,
+      test: { status: "passed" as const },
+      apiKey: "sk-builtin-override",
+    }
+    await app.request("http://x/admin-api/models", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ models: [builtin], chain: ["m-builtin"] }),
+    })
+    const orig = (globalThis as any).fetch
+    let testBody: any
+    ;(globalThis as any).fetch = (async (_url: string, init: any) => {
+      testBody = JSON.parse(init.body)
+      return new Response(JSON.stringify({ ok: true, latency_ms: 5, tokens: 1 }), { status: 200 })
+    }) as unknown as typeof fetch
+    try {
+      await app.request("http://x/admin-api/models/test", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ provider: "deepseek", model: "deepseek-chat", id: "m-builtin" }),
+      })
+      expect(testBody.api_key).toBe("sk-builtin-override")
+      expect(testBody.base_url).toBeUndefined()
+    } finally {
+      ;(globalThis as any).fetch = orig
+    }
+  })
 })

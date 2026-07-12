@@ -9,6 +9,7 @@ import {
   isInChain,
   moveInChain,
   persistedChainFor,
+  providerDefaultMaxTokens,
   saveErrorMessage,
   type ModelConfig,
   type ModelEntry,
@@ -127,11 +128,12 @@ export function ModelsClient() {
 
   function handleAdd() {
     if (!cfg) return
+    const provider = "deepseek"
     const draft: ModelEntry = {
       id: `m_${crypto.randomUUID()}`,
-      provider: "deepseek",
+      provider,
       model: "",
-      params: DEFAULT_MODEL_PARAMS,
+      params: { ...DEFAULT_MODEL_PARAMS, maxTokens: providerDefaultMaxTokens(provider) },
       enabled: false,
       test: { status: "untested" },
     }
