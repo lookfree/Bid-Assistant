@@ -98,7 +98,8 @@ export function useStep<T>(step: StepName) {
         // 断点续看：该步在服务端已是 running（导航离开生成页再切回来，或跨设备重新打开）——
         // 没有 done 行但也没失败，说明上次触发的 run 仍在跑。这里没有重新接 SSE 的通道
         // （v1 限制，实时重连留作后续增强），改成收敛轮询：等它跑完再把结果灌回页面。
-        if (!result && i.steps.some((s) => s.step === step && s.status === "running")) {
+        const row = i.steps.find((s) => s.step === step)
+        if (!result && row?.status === "running") {
           setRunning(true)
           pollStepResult<T>(projectId, step)
             .then((r) => {
@@ -112,6 +113,10 @@ export function useStep<T>(step: StepName) {
             .finally(() => {
               if (alive) setRunning(false)
             })
+        } else if (!result && row?.status === "failed") {
+          // 上次生成失败（可能在别的页/刷新前跑挂）——明确报错让用户重试，不要静默回到空态
+          // （否则表现为「进度没了」：既无进度、无结果、也无失败提示）。
+          setError(stepErrorMessage(null))
         }
       })
       .catch((e) => {

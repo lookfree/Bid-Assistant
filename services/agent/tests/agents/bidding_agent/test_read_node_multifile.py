@@ -93,10 +93,13 @@ def test_read_node_single_file_path_unchanged_when_no_files(monkeypatch, submit_
 
 
 def test_large_clause_count_triggers_segmented_read(monkeypatch, submit_gateway):
-    """spec320 e2e 发现：大标书完整 ReadResult 顶穿 8k 输出上限——条款数超阈值时分两轮提交并合并。"""
+    """大标书分段读标:骨架轮 + 技术按条款分块(多包件标 3 包技术需求单轮必超 8k 输出)。
+    条款数 = THRESHOLD+1,以 TECH_CHUNK_CLAUSES 分块 → 1 骨架轮 + ceil((THRESHOLD+1)/CHUNK) 技术块。"""
+    import math
     import agent.agents.bidding_agent.nodes.read as read_mod
 
-    big = [{"id": f"sec-1-c{i}", "text": f"条款{i}"} for i in range(read_mod.SEGMENT_CLAUSE_THRESHOLD + 1)]
+    n = read_mod.SEGMENT_CLAUSE_THRESHOLD + 1
+    big = [{"id": f"sec-1-c{i}", "text": f"条款{i}"} for i in range(n)]
 
     async def fake_parse_multi(files):
         return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}]
@@ -112,11 +115,13 @@ def test_large_clause_count_triggers_segmented_read(monkeypatch, submit_gateway)
     out = asyncio.run(read_mod.make_read_node(ctx)({
         "file_key": "a.docx", "files": [{"key": "a.docx", "name": "采购文件"}]}))
 
-    # 两轮提交 = 两个 chat 实例;第 1 轮 user 带 1/2 轮指令,第 2 轮带 2/2 轮指令
-    assert len(gw.chats) == 2
-    u1 = str(gw.chats[0].last_messages[-1].content)
-    u2 = str(gw.chats[1].last_messages[-1].content)
-    assert "第 1/2 轮" in u1 and "第 2/2 轮" in u2
+    tech_chunks = math.ceil(n / read_mod.TECH_CHUNK_CLAUSES)
+    assert len(gw.chats) == 1 + tech_chunks             # 1 骨架轮 + N 技术块
+    assert "骨架轮" in str(gw.chats[0].last_messages[-1].content)
+    assert "技术第 1/" in str(gw.chats[1].last_messages[-1].content)
+    # 合并后 technical 项 = 每个技术块各贡献 1 项(fake 每轮回同一 args)
+    tech = next(c for c in out["read"]["categories"] if c["key"] == "technical")
+    assert len(tech["items"]) == tech_chunks
     # 合并:pass1 的非 technical + pass2 的 technical
     keys = [c["key"] for c in out["read"]["categories"]]
     assert "technical" in keys and "overview" in keys

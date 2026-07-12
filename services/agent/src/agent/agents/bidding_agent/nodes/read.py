@@ -6,7 +6,7 @@ from agent.framework.create_agent import run_submit_agent
 from agent.parsing.service import read_and_parse
 from agent.parsing.merge import merge_parsed
 from agent.parsing.tool import parse_document_tool
-from agent.agents.bidding_agent.schemas import ReadResult
+from agent.agents.bidding_agent.schemas import ReadResult, ReadCategory
 from agent.agents.bidding_agent.prompts.read import READ_SYSTEM_PROMPT
 from agent.db import get_pool
 from agent.rag import store as rag_store
@@ -15,29 +15,40 @@ from agent.rag import retrieve as rag_retrieve
 logger = logging.getLogger(__name__)
 
 # 分段读标阈值：条款数超过此值时,完整 ReadResult(逐条 technical)必然顶穿模型 8k 输出上限
-# (南瑞 4 文件标实测:两轮压缩重试仍 length 截断)——拆两轮提交,节点内合并。
+# (南瑞 4 文件标实测:两轮压缩重试仍 length 截断)——拆多轮提交,节点内合并。
 SEGMENT_CLAUSE_THRESHOLD = 200
+# 技术项逐块提取:每块覆盖的条款数上限。多包件标(如 3 包网络攻防)技术需求逐条累加会超 8k 输出,
+# 按条款分块、每块只提本块技术项,块数随标书规模线性增长,单块输出恒有界。
+TECH_CHUNK_CLAUSES = 100
 
-_PASS1_HINT = ("\n\n本轮为分段提交第 1/2 轮：只填 overview/qualification/commercial/format 四类、"
+_SPINE_HINT = ("\n\n本轮为分段提交·骨架轮：填 overview/qualification/commercial/format 四类、"
                "project_meta、scoring、risk_summary、required_structure、packages；"
-               "categories 中不要包含 technical(技术需求下一轮单独提交)。")
-_PASS2_HINT = ("\n\n本轮为分段提交第 2/2 轮：categories 只包含 technical 一类(逐条覆盖技术规格,"
-               "带★/▲必须单列)；其余字段(project_meta/scoring/risk_summary/required_structure/packages)"
-               "一律给空值/空列表——它们已在上一轮提交,本轮不要重复。")
+               "categories 中不要包含 technical(技术需求另按条款分块单独提交)。")
 
 
-async def _segmented_read(ctx, user: str) -> ReadResult:
-    """大标书分段读标：两轮 forced-submit(各自带截断压缩重试),合并为一份 ReadResult。
-    第 1 轮交除 technical 外的全部字段,第 2 轮只交 technical 逐条——单轮输出压进 8k 上限。"""
-    pass1 = await run_submit_agent(
-        ctx, READ_SYSTEM_PROMPT, user + _PASS1_HINT,
-        "submit_read_result", ReadResult, "提交读标结构化结果(第1/2轮,不含 technical)")
-    pass2 = await run_submit_agent(
-        ctx, READ_SYSTEM_PROMPT, user + _PASS2_HINT,
-        "submit_read_result", ReadResult, "提交读标结构化结果(第2/2轮,仅 technical)")
-    tech = [c for c in pass2.categories if c.key == "technical"]
-    merged = [c for c in pass1.categories if c.key != "technical"] + tech
-    return pass1.model_copy(update={"categories": merged})
+def _tech_chunk_hint(chunk: list[dict], idx: int, total: int) -> str:
+    """技术分块轮指令:只喂本块条款,只提本块内的技术需求(逐条,★/▲单列),其余字段留空。"""
+    return (f"\n\n本轮为分段提交·技术第 {idx}/{total} 块:categories 只含 technical 一类,"
+            f"且只提取下列这批条款覆盖的技术需求(逐条,带★/▲必须单列);其余字段一律空值/空列表。\n"
+            f"本块条款:\n{json.dumps(chunk, ensure_ascii=False)}")
+
+
+async def _segmented_read(ctx, user: str, clauses: list[dict]) -> ReadResult:
+    """大标书分段读标:骨架轮(除 technical 外全字段) + 技术需求按条款分块逐块提取,节点内合并。
+    每轮 forced-submit 自带截断压缩重试;技术分块保证单轮输出恒有界(与标书/包件规模解耦)。"""
+    spine = await run_submit_agent(
+        ctx, READ_SYSTEM_PROMPT, user + _SPINE_HINT,
+        "submit_read_result", ReadResult, "提交读标结构化结果(骨架轮,不含 technical)")
+    chunks = [clauses[i:i + TECH_CHUNK_CLAUSES] for i in range(0, len(clauses), TECH_CHUNK_CLAUSES)] or [[]]
+    tech_items: list = []
+    for idx, chunk in enumerate(chunks, start=1):
+        part = await run_submit_agent(
+            ctx, READ_SYSTEM_PROMPT, user + _tech_chunk_hint(chunk, idx, len(chunks)),
+            "submit_read_result", ReadResult, f"提交读标结构化结果(技术第{idx}/{len(chunks)}块)")
+        tech_items += [it for c in part.categories if c.key == "technical" for it in c.items]
+    tech_cat = ReadCategory(key="technical", title="技术需求", items=tech_items)
+    merged = [c for c in spine.categories if c.key != "technical"] + [tech_cat]
+    return spine.model_copy(update={"categories": merged})
 
 
 async def _index_tender(ctx, run_input: dict, clauses: list[dict]) -> None:
@@ -116,7 +127,7 @@ def make_read_node(ctx):
         # 它带截断重试（大标书读标输出撞 max_tokens 实测：图路径截断=单轮即失败，无法恢复）。
         # 仅预解析失败（clauses 空）才带工具走图路径，让模型自己调 parse_document 兜底。
         if len(clauses) > SEGMENT_CLAUSE_THRESHOLD:
-            result = await _segmented_read(ctx, user)   # 大标书:两轮分段提交(输出上限硬约束)
+            result = await _segmented_read(ctx, user, clauses)   # 大标书:骨架轮+技术分块(输出上限硬约束)
         else:
             result = await run_submit_agent(
                 ctx, READ_SYSTEM_PROMPT, user,
