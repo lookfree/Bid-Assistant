@@ -178,3 +178,27 @@ def test_run_model_override_preserves_chain():
     assert sel["chain"] == [{"provider": "custom", "model": "m1",
                              "base_url": "http://h/v1", "api_key": "k1"}]
     assert model_override_to_settings(sel)["model_chain"][0]["base_url"] == "http://h/v1"
+
+
+def test_get_chat_builtin_provider_override_key_beats_env():
+    """内置服务商后台配了 api_key ⇒ 用它,而非 env(KEY_FIELD)——后台改 key 不必动 env。"""
+    gw = ModelGateway(_settings(deepseek_api_key="env-key"))
+    chat = gw.get_chat("deepseek", "deepseek-chat", api_key="ui-key")
+    assert chat.openai_api_key.get_secret_value() == "ui-key"
+    assert "api.deepseek.com" in str(chat.openai_api_base)   # base_url 仍取注册表默认
+
+
+def test_get_chat_builtin_provider_override_base_url():
+    """内置服务商后台改了 base_url(如自建代理) ⇒ 用它,key 仍回退 env。"""
+    gw = ModelGateway(_settings(deepseek_api_key="env-key"))
+    chat = gw.get_chat("deepseek", "deepseek-chat", base_url="http://proxy:9000/v1")
+    assert "proxy:9000" in str(chat.openai_api_base)
+    assert chat.openai_api_key.get_secret_value() == "env-key"
+
+
+def test_get_chat_builtin_provider_falls_back_to_env():
+    """内置服务商零配置(无 base_url/api_key) ⇒ 注册表 base_url + env key,行为不变。"""
+    gw = ModelGateway(_settings(deepseek_api_key="env-key"))
+    chat = gw.get_chat("deepseek", "deepseek-chat")
+    assert "api.deepseek.com" in str(chat.openai_api_base)
+    assert chat.openai_api_key.get_secret_value() == "env-key"

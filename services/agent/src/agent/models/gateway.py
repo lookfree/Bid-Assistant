@@ -35,19 +35,22 @@ class ModelGateway:
         self, provider: str | None = None, model: str | None = None, *,
         base_url: str | None = None, api_key: str | None = None, **kw: Any,
     ) -> ChatOpenAI:
-        if base_url:   # 自建 / 任意 OpenAI 兼容端点：绕过 PROVIDERS/KEY_FIELD/env，直连
-            return ChatOpenAI(
-                model=model,
-                base_url=base_url,
-                api_key=api_key or "sk-noauth",
-                **{**self._model_params(), **kw},
-            )
-        provider = provider or self.s.model_default_provider   # 容忍 provider=None，回退默认家
-        p = PROVIDERS[provider]
+        """统一端点解析（内置与自建同一套）：base_url 显式给了用它，否则取内置服务商注册表默认；
+        api_key 显式给了用它（后台可为内置服务商配 key，覆盖 env），否则回退 env（KEY_FIELD）。
+        这样内置服务商既能零配置用 env key，也能在后台改链接/换 key，不必改 env 重新部署。"""
+        p = PROVIDERS.get(provider) if provider else None
+        if not base_url:
+            if p:
+                base_url = p["base_url"]
+            else:   # 未知 provider 且无 base_url：回退默认家（容忍 provider=None/异常装配）
+                provider = self.s.model_default_provider
+                base_url = PROVIDERS[provider]["base_url"]
+                p = PROVIDERS[provider]
+        key = api_key or (self._api_key(provider) if provider in KEY_FIELD else None) or "sk-noauth"
         return ChatOpenAI(
-            model=model or p["default_model"],
-            base_url=p["base_url"],
-            api_key=self._api_key(provider),
+            model=model or (p["default_model"] if p else None),
+            base_url=base_url,
+            api_key=key,
             **{**self._model_params(), **kw},   # 显式 kw 优先级更高，覆盖 settings
         )
 

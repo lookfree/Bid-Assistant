@@ -72,8 +72,10 @@ async def list_models(body: ListModelsBody):
     内置服务商(provider)则由服务端从注册表/env 解析 base_url+key(前端不接触 env 密钥)。
     任何失败都不 500——超时/网络/非 2xx/解析错统一收敛成 {ok: false, error}，供 admin 拉取下拉候选。"""
     base_url, api_key = body.base_url, body.api_key
-    if not base_url and body.provider:
-        base_url, api_key = _resolve_provider_endpoint(body.provider)
+    if body.provider:   # 内置服务商:注册表默认链接 + env key 作回退;传入的 base_url/api_key 优先
+        reg_url, env_key = _resolve_provider_endpoint(body.provider)
+        base_url = base_url or reg_url
+        api_key = api_key or env_key
     if not base_url:
         return JSONResponse({"ok": False, "error": "缺少 base_url 或未知服务商"})
     if not api_key:
