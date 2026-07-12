@@ -21,9 +21,15 @@ SEGMENT_CLAUSE_THRESHOLD = 200
 # 按条款分块、每块只提本块技术项,块数随标书规模线性增长,单块输出恒有界。
 TECH_CHUNK_CLAUSES = 100
 
-_SPINE_HINT = ("\n\n本轮为分段提交·骨架轮：填 overview/qualification/commercial/format 四类、"
-               "project_meta、scoring、risk_summary、required_structure、packages；"
-               "categories 中不要包含 technical(技术需求另按条款分块单独提交)。")
+# 骨架也拆细:多包件标(3包/4包)非技术部分(3份评分表 + 32项构成 + 各类别)单轮同样超 8k 输出。
+# 每轮限定字段范围,配合技术分块,任何规模标书单轮输出都恒有界。
+_SEG_BASE = ("\n\n本轮为分段提交·基础轮:只填 project_meta,以及 categories 中的 "
+             "overview/qualification/commercial 三类;其余字段一律空值/空列表(scoring/format/"
+             "technical/required_structure/packages 都后续轮次单独提交)。")
+_SEG_FMT = ("\n\n本轮为分段提交·格式构成轮:只填 categories 中的 format 一类,以及 "
+            "required_structure、packages、risk_summary;其余字段一律空值/空列表。")
+_SEG_SCORE = ("\n\n本轮为分段提交·评分轮:只填 scoring(评分办法表逐行,多包件则各包评分逐行);"
+              "categories 一律空、其余字段空。若为最低价法/无技术打分,scoring 留空即可。")
 
 
 def _tech_chunk_hint(chunk: list[dict], idx: int, total: int) -> str:
@@ -33,22 +39,35 @@ def _tech_chunk_hint(chunk: list[dict], idx: int, total: int) -> str:
             f"本块条款:\n{json.dumps(chunk, ensure_ascii=False)}")
 
 
+async def _seg_submit(ctx, user: str, hint: str, label: str) -> ReadResult:
+    return await run_submit_agent(
+        ctx, READ_SYSTEM_PROMPT, user + hint, "submit_read_result", ReadResult, label)
+
+
 async def _segmented_read(ctx, user: str, clauses: list[dict]) -> ReadResult:
-    """大标书分段读标:骨架轮(除 technical 外全字段) + 技术需求按条款分块逐块提取,节点内合并。
-    每轮 forced-submit 自带截断压缩重试;技术分块保证单轮输出恒有界(与标书/包件规模解耦)。"""
-    spine = await run_submit_agent(
-        ctx, READ_SYSTEM_PROMPT, user + _SPINE_HINT,
-        "submit_read_result", ReadResult, "提交读标结构化结果(骨架轮,不含 technical)")
+    """大标书分段读标:基础轮 + 格式构成轮 + 评分轮 + 技术需求按条款分块,节点内合并成一份 ReadResult。
+    每轮字段范围受限、技术按条款分块——单轮输出与标书/包件规模解耦,恒不撞 8k 输出上限。"""
+    base = await _seg_submit(ctx, user, _SEG_BASE, "读标·基础轮(meta+概况/资格/商务)")
+    fmt = await _seg_submit(ctx, user, _SEG_FMT, "读标·格式构成轮(format+构成+包件+红线)")
+    score = await _seg_submit(ctx, user, _SEG_SCORE, "读标·评分轮")
     chunks = [clauses[i:i + TECH_CHUNK_CLAUSES] for i in range(0, len(clauses), TECH_CHUNK_CLAUSES)] or [[]]
     tech_items: list = []
     for idx, chunk in enumerate(chunks, start=1):
-        part = await run_submit_agent(
-            ctx, READ_SYSTEM_PROMPT, user + _tech_chunk_hint(chunk, idx, len(chunks)),
-            "submit_read_result", ReadResult, f"提交读标结构化结果(技术第{idx}/{len(chunks)}块)")
+        part = await _seg_submit(ctx, user, _tech_chunk_hint(chunk, idx, len(chunks)),
+                                 f"读标·技术第{idx}/{len(chunks)}块")
         tech_items += [it for c in part.categories if c.key == "technical" for it in c.items]
-    tech_cat = ReadCategory(key="technical", title="技术需求", items=tech_items)
-    merged = [c for c in spine.categories if c.key != "technical"] + [tech_cat]
-    return spine.model_copy(update={"categories": merged})
+    # 合并:各轮只产自己负责的字段,取并集;基础轮做底座(project_meta 在其上)。
+    keep = {"overview", "qualification", "commercial"}
+    cats = [c for c in base.categories if c.key in keep]
+    cats += [c for c in fmt.categories if c.key == "format"]
+    cats.append(ReadCategory(key="technical", title="技术需求", items=tech_items))
+    return base.model_copy(update={
+        "categories": cats,
+        "scoring": score.scoring,
+        "risk_summary": fmt.risk_summary or base.risk_summary,
+        "required_structure": fmt.required_structure,
+        "packages": fmt.packages,
+    })
 
 
 async def _index_tender(ctx, run_input: dict, clauses: list[dict]) -> None:

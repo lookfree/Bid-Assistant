@@ -116,9 +116,11 @@ def test_large_clause_count_triggers_segmented_read(monkeypatch, submit_gateway)
         "file_key": "a.docx", "files": [{"key": "a.docx", "name": "采购文件"}]}))
 
     tech_chunks = math.ceil(n / read_mod.TECH_CHUNK_CLAUSES)
-    assert len(gw.chats) == 1 + tech_chunks             # 1 骨架轮 + N 技术块
-    assert "骨架轮" in str(gw.chats[0].last_messages[-1].content)
-    assert "技术第 1/" in str(gw.chats[1].last_messages[-1].content)
+    assert len(gw.chats) == 3 + tech_chunks             # 基础/格式/评分 3 骨架轮 + N 技术块
+    assert "基础轮" in str(gw.chats[0].last_messages[-1].content)
+    assert "格式构成轮" in str(gw.chats[1].last_messages[-1].content)
+    assert "评分轮" in str(gw.chats[2].last_messages[-1].content)
+    assert "技术第 1/" in str(gw.chats[3].last_messages[-1].content)
     # 合并后 technical 项 = 每个技术块各贡献 1 项(fake 每轮回同一 args)
     tech = next(c for c in out["read"]["categories"] if c["key"] == "technical")
     assert len(tech["items"]) == tech_chunks
