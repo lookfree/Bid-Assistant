@@ -10,7 +10,9 @@ import {
   runStep,
   stepResult,
   STEP_ORDER,
+  openStepEvents,
   type ChapterProgress,
+  type StepPhase,
   type ProjectInfo,
   type StepName,
 } from "./project"
@@ -81,8 +83,11 @@ export function useStep<T>(step: StepName) {
   const [data, setData] = useState<T | null>(() => stepResult<T>(info, step))
   const [running, setRunning] = useState(() => !!info?.steps.some((s) => s.step === step && s.status === "running"))
   const [error, setError] = useState<string | null>(null)
-  // 正文逐章进度（content 步 SSE 实时；其余步为 null）。切页/刷新走轮询无法重连 SSE，故只在本次 start() 期间有值。
+  // 正文逐章进度（content 步实时）。下方订阅 effect 会在该步 running 时（本次生成/切回/刷新都算）
+  // 重连事件流并回放，故切页/刷新回来也能接上进度，不再局限于本次 start()。
   const [progress, setProgress] = useState<ChapterProgress | null>(null)
+  // 运行阶段标签（读标分段/审查等 node/phase 事件 → 人话），content 走 progress 逐章。
+  const [phase, setPhase] = useState<StepPhase | null>(null)
   // 最近一次 start() 失败的 HTTP 状态码（402 积分不足 / 409 步骤顺序…），非 ApiError 为 null
   const [errorStatus, setErrorStatus] = useState<number | null>(null)
   // 防重（同步守卫）：running 是异步 state，双调用（自动触发 effect 重跑/双击）间隙读到的都是 false，
@@ -99,8 +104,8 @@ export function useStep<T>(step: StepName) {
         const result = stepResult<T>(i, step)
         setData(result)
         // 断点续看：该步在服务端已是 running（导航离开生成页再切回来，或跨设备重新打开）——
-        // 没有 done 行但也没失败，说明上次触发的 run 仍在跑。这里没有重新接 SSE 的通道
-        // （v1 限制，实时重连留作后续增强），改成收敛轮询：等它跑完再把结果灌回页面。
+        // 没有 done 行但也没失败，说明上次触发的 run 仍在跑。这里靠收敛轮询等它跑完把结果灌回页面；
+        // 中间进度则由下方订阅 effect（running=true 即重连事件流并回放）实时补上。
         const row = i.steps.find((s) => s.step === step)
         if (!result && row?.status === "running") {
           setRunning(true)
@@ -138,6 +143,17 @@ export function useStep<T>(step: StepName) {
     }
   }, [projectId, step])
 
+  // 实时进度订阅：只要该步在服务端运行(本次生成/断点续看/刷新都算),就订阅进度事件流,
+  // 页面停留、切回、刷新都能实时显示到「跑到哪一步/写完几章」。run 结束或离开即断开。
+  useEffect(() => {
+    if (!projectId || !running) return
+    const cancel = openStepEvents(projectId, step, (e) => {
+      if (e.kind === "chapter") setProgress(e.progress)
+      else if (e.kind === "phase") setPhase(e.phase)
+    })
+    return cancel
+  }, [projectId, step, running])
+
   // body 为该步运行参数（present 步透传 duration/template）；返回该步结果便于调用方即时使用（失败为 null）。
   const start = useCallback(
     async (body?: Record<string, unknown>): Promise<T | null> => {
@@ -146,9 +162,10 @@ export function useStep<T>(step: StepName) {
       setRunning(true)
       setError(null)
       setProgress(null)
+      setPhase(null)
       setErrorStatus(null)
       try {
-        const result = await runStep<T>(projectId, step, undefined, body, (p) => setProgress(p))
+        const result = await runStep<T>(projectId, step, undefined, body)
         setData(result)
         notifyCreditsChanged()
         return result
@@ -189,5 +206,5 @@ export function useStep<T>(step: StepName) {
         ? { href: prereq.href, label: `前往${prereq.label}` }
         : null
 
-  return { projectId, info, data, running, progress, error: displayError, errorStatus, errorAction, start }
+  return { projectId, info, data, running, progress, phase, error: displayError, errorStatus, errorAction, start }
 }

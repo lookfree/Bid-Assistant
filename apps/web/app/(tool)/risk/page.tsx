@@ -85,7 +85,7 @@ export default function ReviewPage() {
 /* ============== 废标风险审查 ============== */
 function RejectReview() {
   // review 步产 RiskReport（计费步）：绝不自动触发，一律用户显式点击「开始废标体检」才跑
-  const { projectId, info, data: real, running, error, errorAction, start } = useStep<RealRisk>("review")
+  const { projectId, info, data: real, running, phase, error, errorAction, start } = useStep<RealRisk>("review")
   const { overview: membershipOverview } = useMembership()
   const reviewCost = creditCostValue(membershipOverview, "review", 60)
 
@@ -96,7 +96,7 @@ function RejectReview() {
     return (
       <div className="rounded-2xl border border-border bg-card px-5 py-6 text-sm">
         {running ? (
-          <span className="font-medium text-primary">AI 正在逐条比对招标要求与标书内容，生成废标体检报告…（约 1–2 分钟）</span>
+          <span className="font-medium text-primary">{phase ? `AI ${phase.label}…（约 1–2 分钟）` : "AI 正在逐条比对招标要求与标书内容，生成废标体检报告…（约 1–2 分钟）"}</span>
         ) : (
           <span className="flex items-center justify-between text-destructive">
             {error}

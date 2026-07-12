@@ -7,6 +7,7 @@ from agent.parsing.service import read_and_parse
 from agent.parsing.merge import merge_parsed
 from agent.parsing.tool import parse_document_tool
 from agent.agents.bidding_agent.schemas import ReadResult, ReadCategory
+from agent.agents.bidding_agent.nodes.common import publish_phase
 from agent.agents.bidding_agent.prompts.read import READ_SYSTEM_PROMPT
 from agent.db import get_pool
 from agent.rag import store as rag_store
@@ -47,12 +48,16 @@ async def _seg_submit(ctx, user: str, hint: str, label: str) -> ReadResult:
 async def _segmented_read(ctx, user: str, clauses: list[dict]) -> ReadResult:
     """大标书分段读标:基础轮 + 格式构成轮 + 评分轮 + 技术需求按条款分块,节点内合并成一份 ReadResult。
     每轮字段范围受限、技术按条款分块——单轮输出与标书/包件规模解耦,恒不撞 8k 输出上限。"""
+    await publish_phase(ctx, "读标·基础信息(概况/资格/商务)")
     base = await _seg_submit(ctx, user, _SEG_BASE, "读标·基础轮(meta+概况/资格/商务)")
+    await publish_phase(ctx, "读标·格式与投标构成")
     fmt = await _seg_submit(ctx, user, _SEG_FMT, "读标·格式构成轮(format+构成+包件+红线)")
+    await publish_phase(ctx, "读标·评分办法")
     score = await _seg_submit(ctx, user, _SEG_SCORE, "读标·评分轮")
     chunks = [clauses[i:i + TECH_CHUNK_CLAUSES] for i in range(0, len(clauses), TECH_CHUNK_CLAUSES)] or [[]]
     tech_items: list = []
     for idx, chunk in enumerate(chunks, start=1):
+        await publish_phase(ctx, f"读标·技术需求 第{idx}/{len(chunks)}块")
         part = await _seg_submit(ctx, user, _tech_chunk_hint(chunk, idx, len(chunks)),
                                  f"读标·技术第{idx}/{len(chunks)}块")
         tech_items += [it for c in part.categories if c.key == "technical" for it in c.items]

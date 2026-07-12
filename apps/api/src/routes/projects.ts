@@ -308,6 +308,33 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     return c.json({ ok: true, selectedPackage: parsed.data })
   })
 
+  // 步骤进度事件流（只读、不计费、不占步位）：任何步骤在跑时前端订阅这条，实时看到中间进度
+  // （正文逐章 chapter.progress / 读标分段 node 事件 / 审查运行…）。中继 agent 的 run stream，
+  // 它从头回放持久事件，所以停留、切回、刷新都能立即接上进度；无 running run → 立即 idle 结束。
+  r.get("/:id/steps/:step/events", async (c) => {
+    const { id, step } = c.req.param()
+    if (!isUuid(id)) return c.json({ error: "not_found" }, 404)
+    const p = await ownedProject(id, c.get("user").id)
+    if (!p) return c.json({ error: "not_found" }, 404)
+    const [row] = await getDb()
+      .select({ runId: projectSteps.runId })
+      .from(projectSteps)
+      .where(and(eq(projectSteps.projectId, p.id), eq(projectSteps.step, step), eq(projectSteps.status, "running")))
+      .orderBy(desc(projectSteps.createdAt))
+      .limit(1)
+    return streamSSE(c, async (stream) => {
+      if (!row?.runId) {
+        try { await stream.writeSSE({ event: "idle", data: "{}" }) } catch { /* client gone */ }
+        return
+      }
+      try {
+        for await (const chunk of relayStream(row.runId)) {
+          try { await stream.write(chunk) } catch { break }  // 客户端断开即停，run 不受影响
+        }
+      } catch { /* agent 结束/掉线：正常收尾 */ }
+    })
+  })
+
   // 克隆项目（spec324）：同一招标文件投另一个包=另建一个项目（不留在同项目内多包并行）。
   // 复制 tenderFileKey(s)/文件名；不复制 selectedPackage/步骤/任何 run 状态——新项目从 read 重新开始。
   r.post("/:id/clone", async (c) => {

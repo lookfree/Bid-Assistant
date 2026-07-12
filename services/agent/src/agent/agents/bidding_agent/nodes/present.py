@@ -2,7 +2,7 @@ from __future__ import annotations
 import json
 import re
 from agent.framework.create_agent import run_submit_agent
-from agent.agents.bidding_agent.nodes.common import slim_read, upload_artifact, fetch_master_bytes
+from agent.agents.bidding_agent.nodes.common import slim_read, upload_artifact, fetch_master_bytes, publish_phase
 from agent.agents.bidding_agent.schemas import DeckDraft, DeckSpec, Slide, SlideNotes
 from agent.agents.bidding_agent.prompts.present import PRESENT_SKELETON_PROMPT, PRESENT_NOTES_PROMPT
 from agent.agents.bidding_agent.render.pptx import render_pptx
@@ -54,12 +54,15 @@ def make_present_node(ctx):
         user = f"标书与评分点：\n{json.dumps(payload, ensure_ascii=False)}\n时长 {duration} 分钟，请产 DeckDraft 骨架。"
         if template:
             user += f"\n客户指定模板：{template}（template 字段必须用它）。"
+        await publish_phase(ctx, "述标·基于标书与评分点搭建 PPT 骨架")
         draft = await run_submit_agent(
             ctx, PRESENT_SKELETON_PROMPT, user,
             "submit_deck_draft", DeckDraft, "提交述标骨架（不含口播稿）")
+        await publish_phase(ctx, f"述标·逐页撰写口播稿（共{len(draft.slides)}页）")
         slide_notes = await run_submit_agent(
             ctx, PRESENT_NOTES_PROMPT, _notes_user_msg(draft, duration),
             "submit_slide_notes", SlideNotes, "提交每页口播稿")
+        await publish_phase(ctx, "述标·渲染 PPT 文件")
         deck = _merge_deck(draft, slide_notes)
         if template:
             deck.template = template   # 客户指定优先：模型没照办也强制生效

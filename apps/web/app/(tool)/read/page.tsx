@@ -75,7 +75,7 @@ import { StepRunCta } from "@/components/tool/step-run-cta"
 
 
 export default function ReadPage() {
-  const { projectId, info, data: real, running, error, errorAction, start } = useStep<RealRead>("read")
+  const { projectId, info, data: real, running, phase, error, errorAction, start } = useStep<RealRead>("read")
   const { overview } = useMembership()
   const readCost = creditCostValue(overview, "read", 20)
   // 唯一允许的自动触发：从上传页「开始智能读标」跳转（URL 带 ?autostart=1，那一下点击即计费授权，
@@ -204,7 +204,7 @@ export default function ReadPage() {
         <StepBanner
           running={running}
           error={error}
-          runningText="AI 正在通读招标文件，提取评分点与废标红线…（约 1–2 分钟）"
+          runningText={phase ? `AI 读标中：${phase.label}…` : "AI 正在通读招标文件，提取评分点与废标红线…（约 1–2 分钟）"}
           onRetry={() => void start()}
           action={errorAction ?? undefined}
         />

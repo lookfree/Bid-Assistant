@@ -13,6 +13,62 @@ export const STEP_ORDER: StepName[] = ["read", "outline", "content", "review", "
 /** 正文生成的逐章进度（agent 每写完一章推一条 chapter.progress SSE 事件，前端实时勾选）。 */
 export type ChapterProgress = { kind?: string; done: number; total: number; doneIds: string[]; title?: string }
 
+/** 步骤运行阶段（node/phase 事件 → 人话标签，如「读标·技术第2/5块」「审查中」）。 */
+export type StepPhase = { label: string }
+export type StepLiveEvent =
+  | { kind: "chapter"; progress: ChapterProgress }
+  | { kind: "phase"; phase: StepPhase }
+  | { kind: "end" }
+
+/** 订阅某步的实时进度事件流（只读、不计费）：任何步骤在跑时打开，从头回放持久事件，
+ *  停留/切回/刷新都能立即接上进度。返回取消函数。无 running run → 立即结束。 */
+export function openStepEvents(
+  projectId: string,
+  step: StepName,
+  onEvent: (e: StepLiveEvent) => void,
+): () => void {
+  const ctrl = new AbortController()
+  ;(async () => {
+    try {
+      const res = await fetch(`${baseUrl}/api/projects/${projectId}/steps/${step}/events`, {
+        headers: { authorization: `Bearer ${tokenStore.get() ?? ""}` },
+        signal: ctrl.signal,
+      })
+      if (!res.ok || !res.body) return
+      const reader = res.body.getReader()
+      const dec = new TextDecoder()
+      let buf = ""
+      for (;;) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buf += dec.decode(value)
+        // 按 SSE 空行切帧，逐帧解析（event: <type>\ndata: <json>）；兼容 \r\n 分隔。
+        const frames = buf.split(/\r?\n\r?\n/)
+        buf = frames.pop() ?? ""
+        for (const f of frames) {
+          const type = /event:\s*(\S+)/.exec(f)?.[1]
+          const dataM = /data:\s*(.+)/.exec(f)
+          if (!type) continue
+          if (type === "run.end") { onEvent({ kind: "end" }); return }
+          if (!dataM) continue
+          let d: unknown
+          try { d = JSON.parse(dataM[1]!) } catch { continue }
+          const data = (d as { data?: unknown }).data
+          if (type === "progress" && (data as ChapterProgress)?.kind === "chapter") {
+            onEvent({ kind: "chapter", progress: data as ChapterProgress })
+          } else if (type === "progress" && (data as { kind?: string })?.kind === "phase") {
+            onEvent({ kind: "phase", phase: { label: (data as { label: string }).label } })
+          } else if (type === "node.start" || type === "step.done") {
+            const node = (data as { node?: string })?.node
+            if (node) onEvent({ kind: "phase", phase: { label: node } })
+          }
+        }
+      }
+    } catch { /* aborted / network：静默，页面降级为无实时进度 */ }
+  })()
+  return () => ctrl.abort()
+}
+
 export type ProjectStep = { step: string; status: string; result: unknown; costPoints: number }
 export type ProjectInfo = {
   // name：项目名（spec314 落库，取上传时原始文件名；老数据可能为 null，展示侧兜底"我的项目"）
@@ -151,7 +207,6 @@ export async function runStep<T>(
   step: StepName,
   onChunk?: (text: string) => void,
   body?: Record<string, unknown>,
-  onProgress?: (p: ChapterProgress) => void,
 ): Promise<T> {
   const res = await fetch(`${baseUrl}/api/projects/${id}/steps/${step}`, {
     method: "POST",
@@ -175,16 +230,8 @@ export async function runStep<T>(
     const text = dec.decode(value)
     buf += text
     onChunk?.(text)
-    // 逐章进度：取缓冲区里最后一条 progress 帧（doneIds 是累计值，最新即最全）实时上报。
-    if (onProgress) {
-      const pm = [...buf.matchAll(/event:\s*progress\s*\ndata:\s*(.+)/g)].at(-1)
-      if (pm) {
-        try {
-          const d = (JSON.parse(pm[1]!) as { data?: ChapterProgress }).data
-          if (d && d.kind === "chapter") onProgress(d)
-        } catch { /* 帧可能被 chunk 截断，下轮再解 */ }
-      }
-    }
+    // 逐章/阶段进度不在这里解析：改由 openStepEvents 订阅 GET /events 事件流统一处理，
+    // 停留、切回、刷新都能实时回放（本 POST 流仅用于拿 step.done 终态结果）。
   }
   // SSE 末尾的 step.done 事件带该步结果；失败（status=failed / 无 step.done）即抛错
   const m = [...buf.matchAll(/event:\s*step\.done\s*\ndata:\s*(.+)/g)].at(-1)

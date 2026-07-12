@@ -90,7 +90,7 @@ export default function PresentPage() {
   /* present 步产 DeckSpec（真实幻灯+口播稿）。计费步：绝不自动触发，
      只由用户点击「生成述标大纲」（CreditEstimate 确认条，明示消耗）才跑，
      生成调用透传当前时长/模板（POST steps/present body {duration, template}）。 */
-  const { projectId, info, data: realDeck, running: stepRunning, error: stepError, errorAction: stepErrorAction, start } = useStep<RealDeck>("present")
+  const { projectId, info, data: realDeck, running: stepRunning, phase, error: stepError, errorAction: stepErrorAction, start } = useStep<RealDeck>("present")
   useEffect(() => {
     if (!realDeck) return
     setSlides(realDeck.slides)
@@ -350,7 +350,7 @@ export default function PresentPage() {
         <StepBanner
           running={stepRunning}
           error={stepError}
-          runningText="AI 正在基于标书与评分点生成述标稿与 PPT…"
+          runningText={phase ? `${phase.label}…` : "AI 正在基于标书与评分点生成述标稿与 PPT…"}
           onRetry={() => void start(presentRunBody())}
           action={stepErrorAction ?? undefined}
         />

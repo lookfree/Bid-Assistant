@@ -404,3 +404,45 @@ describe("present 步：企业 PPT 母版解析（enterpriseTemplateItemId → r
     await getDb().delete(users).where(eq(users.id, other.user.id))
   })
 })
+
+// 步骤进度事件流（只读中继）：无 running run → idle；有 running run → 中继 agent stream（mock 回放）。
+describe("GET /:id/steps/:step/events 进度事件流", () => {
+  let pid = ""
+
+  beforeAll(async () => {
+    const [p] = await getDb()
+      .insert(bidProjects)
+      .values({ userId, threadId: `proj-${crypto.randomUUID()}`, tenderFileKey: "uploads/x/tender.pdf", name: "ev" })
+      .returning()
+    pid = p!.id
+  })
+
+  it("非 uuid → 404", async () => {
+    const res = await app.request(`/api/projects/not-a-uuid/steps/content/events`, { headers: auth() })
+    expect(res.status).toBe(404)
+  })
+
+  it("无 running 步 → 立即 event: idle（不中继）", async () => {
+    const res = await app.request(`/api/projects/${pid}/steps/content/events`, { headers: auth() })
+    expect(res.status).toBe(200)
+    expect(await res.text()).toContain("event: idle")
+  })
+
+  it("有 running 步 → 中继 agent 进度流", async () => {
+    await getDb()
+      .insert(projectSteps)
+      .values({ projectId: pid, step: "content", status: "running", runId: crypto.randomUUID() })
+    const res = await app.request(`/api/projects/${pid}/steps/content/events`, { headers: auth() })
+    expect(res.status).toBe(200)
+    expect(await res.text()).toContain("data: 进度") // mock relayStream 回放帧
+  })
+
+  it("非本人项目 → 404（越权不可订阅）", async () => {
+    const other = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+    const res = await app.request(`/api/projects/${pid}/steps/content/events`, {
+      headers: { Authorization: `Bearer ${other.token}`, "content-type": "application/json" },
+    })
+    expect(res.status).toBe(404)
+    await getDb().delete(users).where(eq(users.id, other.user.id))
+  })
+})

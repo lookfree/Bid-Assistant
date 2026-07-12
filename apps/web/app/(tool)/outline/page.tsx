@@ -67,7 +67,7 @@ const genId = () => `gen-${Date.now()}-${idCounter++}`
 
 export default function OutlinePage() {
   // 计费步绝不自动触发：该步未跑时停在显式生成入口，用户点击才跑
-  const { projectId, info, data: real, running, error, errorAction, start } = useStep<RealOutline>("outline")
+  const { projectId, info, data: real, running, phase, error, errorAction, start } = useStep<RealOutline>("outline")
   const { overview } = useMembership()
   const outlineCost = creditCostValue(overview, "outline", 30)
 
@@ -247,7 +247,7 @@ export default function OutlinePage() {
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
       <FlowNav current="outline" />
-      {<StepBanner running={running} error={error} runningText="AI 正在基于读标结论搭建技术标/商务标提纲…" onRetry={() => void start()} action={errorAction ?? undefined} />}
+      {<StepBanner running={running} error={error} runningText={phase ? `AI 编排提纲：${phase.label}…` : "AI 正在基于读标结论搭建技术标/商务标提纲…"} onRetry={() => void start()} action={errorAction ?? undefined} />}
       <div className="flex flex-col gap-4 rounded-2xl border border-border bg-card px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-start gap-3">
           <div className="flex size-10 shrink-0 items-center justify-center rounded-xl gradient-brand">
