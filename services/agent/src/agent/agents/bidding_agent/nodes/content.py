@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Any
 from deepagents import create_deep_agent          # 全流程唯一 deepagent 节点（§4.5）
 from langchain_core.callbacks import AsyncCallbackHandler
@@ -29,16 +30,19 @@ class ChapterProgressCallback(AsyncCallbackHandler):
         self.done: list[str] = []
 
     async def on_tool_start(self, serialized, input_str, *, inputs=None, **kwargs):
+        # 只认 write_file 工具：deepagent 的 write_todos 等规划工具 input 里也含 "chapters/<id>.html"
+        # （todo 项，带 status），之前误判成"写完一章"→ 计数虚高、标题解析成 todo 的 repr 残片。
         name = (serialized or {}).get("name") if isinstance(serialized, dict) else None
-        path = (inputs or {}).get("file_path") or (inputs or {}).get("path") or ""
-        if not path and "chapters/" in (input_str or ""):
-            path = input_str
-        if name != "write_file" and "chapters/" not in str(path):
+        if name and name != "write_file":
             return
-        if "chapters/" not in str(path):
+        path = (inputs or {}).get("file_path") or (inputs or {}).get("path") or input_str or ""
+        # 从路径里精确抠出章 id：只取 "chapters/" 与 ".html" 之间、不含引号/括号/逗号的一段，
+        # 避免把 dict repr 残片（b5.html', 'status': ...）当成 id。
+        m = re.search(r"chapters/([^\"'/\\\s\]\},]+?)\.html", str(path))
+        if not m:
             return
-        cid = str(path).split("chapters/")[-1].split('"')[0].split("\\")[0].removesuffix(".html")
-        if not cid or cid in self.done:
+        cid = m.group(1)
+        if cid in self.done:
             return
         self.done.append(cid)
         ev = {"type": "progress", "data": {"kind": "chapter", "chapterId": cid,
