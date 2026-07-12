@@ -45,7 +45,7 @@ import { artifactUrl, patchErrorMessage, patchStep, runStep } from "@/lib/projec
 import { AiPanel } from "./ai-panel"
 import { EmptyState, DURATIONS, type Duration } from "./empty-state"
 import { TemplatePicker } from "./template-picker"
-import { LockedBlock, SlidePreview } from "./slide-preview"
+import { SlidePreview } from "./slide-preview"
 
 // agent DeckSpec（camelCase）：slides/qa 与原型 Slide/QA 同构
 type RealDeck = { title: string; duration: number; template: string; slides: Slide[]; qa: { q: string; a: string }[] }
@@ -612,26 +612,22 @@ export default function PresentPage() {
                     ))}
                   </div>
 
-                  {/* 演讲备注 / 口播稿 —— 付费钩子 */}
+                  {/* 演讲备注 / 口播稿：随述标生成（80 积分/次）一并交付，不设会员墙——与读标/提纲/正文一致 */}
                   <div className="mt-5">
                     <label className="flex items-center gap-1.5 text-xs font-medium text-foreground">
                       <MessageSquareText className="size-3.5 text-primary" />
                       演讲备注 / 口播稿
                     </label>
-                    {isMember ? (
-                      <textarea
-                        value={active.notes}
-                        onChange={(e) => updateSlide(active.id, { notes: e.target.value })}
-                        rows={4}
-                        className="mt-1.5 w-full resize-y rounded-lg border border-border bg-background px-3 py-2 text-sm leading-relaxed text-foreground outline-none focus:border-primary"
-                      />
-                    ) : (
-                      <LockedBlock text={active.notes} rows={4} />
-                    )}
+                    <textarea
+                      value={active.notes}
+                      onChange={(e) => updateSlide(active.id, { notes: e.target.value })}
+                      rows={4}
+                      className="mt-1.5 w-full resize-y rounded-lg border border-border bg-background px-3 py-2 text-sm leading-relaxed text-foreground outline-none focus:border-primary"
+                    />
                   </div>
                 </div>
 
-                {/* 预计问答 —— 付费钩子（真实 deck 无 QA 时整卡不渲染） */}
+                {/* 预计问答：同随述标生成交付，不设会员墙（真实 deck 无 QA 时整卡不渲染） */}
                 {qaList.length > 0 && (
                 <div className="mt-5 rounded-2xl border border-border bg-card p-5">
                   <div className="flex items-center gap-2">
@@ -646,13 +642,7 @@ export default function PresentPage() {
                           <span className={`mt-0.5 text-xs font-bold ${style.accent}`}>Q{i + 1}</span>
                           {qa.q}
                         </p>
-                        {isMember ? (
-                          <p className="mt-2 pl-6 text-xs leading-relaxed text-muted-foreground">{qa.a}</p>
-                        ) : (
-                          <div className="mt-2 pl-6">
-                            <LockedBlock text={qa.a} rows={2} />
-                          </div>
-                        )}
+                        <p className="mt-2 pl-6 text-xs leading-relaxed text-muted-foreground">{qa.a}</p>
                       </div>
                     ))}
                   </div>

@@ -1,7 +1,6 @@
 "use client"
 
-import Link from "next/link"
-import { ListChecks, Lock, Presentation } from "lucide-react"
+import { ListChecks, Presentation } from "lucide-react"
 import type { Slide, SlideStyle } from "@/lib/present"
 
 /* ============== 幻灯片预览画布 ============== */
@@ -37,30 +36,6 @@ export function SlidePreview({ slide, style }: { slide: Slide; style: SlideStyle
           </li>
         ))}
       </ul>
-    </div>
-  )
-}
-
-/* ============== 付费模糊块 ============== */
-export function LockedBlock({ text, rows }: { text: string; rows: number }) {
-  return (
-    <div className="relative mt-1.5">
-      <p
-        className="select-none overflow-hidden rounded-lg border border-border bg-background px-3 py-2 text-sm leading-relaxed text-foreground blur-[4px]"
-        style={{ maxHeight: `${rows * 1.6}rem` }}
-        aria-hidden
-      >
-        {text}
-      </p>
-      <div className="absolute inset-0 flex items-center justify-center">
-        <Link
-          href="/membership"
-          className="inline-flex items-center gap-1.5 rounded-lg gradient-brand px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-opacity hover:opacity-90"
-        >
-          <Lock className="size-3.5" />
-          解锁完整演讲稿与问答
-        </Link>
-      </div>
     </div>
   )
 }
