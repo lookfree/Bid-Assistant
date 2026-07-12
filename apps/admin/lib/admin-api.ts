@@ -97,7 +97,7 @@ export const adminApi = {
     // base_url/api_key 只在自建端点探活时携带；未传（注册表模型）则不下发这两个字段。
     // id：已保存自建条目重测时明文 key 不回显，带 id 让服务端从库里回填 key（否则空 key→假失败）。
     test: (m: { provider: string; model?: string; params?: ModelParams; baseUrl?: string; apiKey?: string; id?: string }) =>
-      req<{ ok: boolean; latencyMs?: number; tokens?: number; error?: string }>("/models/test", {
+      req<{ ok: boolean; latencyMs?: number; tokens?: number; maxOutput?: number; error?: string }>("/models/test", {
         method: "POST",
         body: JSON.stringify({
           provider: m.provider,

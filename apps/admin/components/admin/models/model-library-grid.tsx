@@ -10,6 +10,7 @@ export function ModelLibraryGrid({
   savedModelIds,
   testingIds,
   testTokens,
+  testMaxOutput,
   busy,
   onTest,
   onToggleEnable,
@@ -25,6 +26,8 @@ export function ModelLibraryGrid({
   testingIds: Set<string>
   // 探针返回的瞬态 token 数（id → tokens），仅用于展示，不落库。
   testTokens: Record<string, number>
+  // 探针返回的瞬态模型最大输出上限（id → maxOutput），仅用于展示，不落库。
+  testMaxOutput: Record<string, number>
   busy: boolean
   onTest: (id: string) => void
   onToggleEnable: (id: string, v: boolean) => void
@@ -43,6 +46,7 @@ export function ModelLibraryGrid({
           inChain={chain.includes(m.id)}
           testing={testingIds.has(m.id)}
           tokens={testTokens[m.id]}
+          maxOutput={testMaxOutput[m.id]}
           busy={busy}
           onTest={() => onTest(m.id)}
           onToggleEnable={(v) => onToggleEnable(m.id, v)}

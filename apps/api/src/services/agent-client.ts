@@ -65,15 +65,27 @@ export async function testModel(opts: {
   params?: { temperature?: number; max_tokens?: number; top_p?: number }
   base_url?: string
   api_key?: string
-}): Promise<{ ok: boolean; latencyMs?: number; tokens?: number; error?: string }> {
+}): Promise<{ ok: boolean; latencyMs?: number; tokens?: number; maxOutput?: number; error?: string }> {
   const r = await fetch(`${getEnv().AGENT_BASE_URL}/models/test`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(opts),
     signal: AbortSignal.timeout(20_000),
   })
-  const body = (await r.json()) as { ok: boolean; latency_ms?: number; tokens?: number; error?: string }
-  return { ok: body.ok, latencyMs: body.latency_ms, tokens: body.tokens, error: body.error }
+  const body = (await r.json()) as {
+    ok: boolean
+    latency_ms?: number
+    tokens?: number
+    max_output?: number | null
+    error?: string
+  }
+  return {
+    ok: body.ok,
+    latencyMs: body.latency_ms,
+    tokens: body.tokens,
+    maxOutput: body.max_output ?? undefined,
+    error: body.error,
+  }
 }
 
 /** 可用模型列举中转（spec319.1 自建端点 + 内置服务商拉取）：relay 到 agent `/models/list-models`，纯查询、不落库。

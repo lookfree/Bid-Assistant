@@ -139,6 +139,26 @@ test("testModel 带 base_url/api_key → 原样透传给 agent /models/test", as
   } finally { (globalThis as any).fetch = orig }
 })
 
+test("testModel 响应含 max_output → 映射为 maxOutput（camel）", async () => {
+  const orig = (globalThis as any).fetch
+  ;(globalThis as any).fetch = (async () =>
+    new Response(JSON.stringify({ ok: true, latency_ms: 50, tokens: 3, max_output: 8192 }), { status: 200 })) as unknown as typeof fetch
+  try {
+    const out = await testModel({ provider: "deepseek" })
+    expect(out).toEqual({ ok: true, latencyMs: 50, tokens: 3, maxOutput: 8192 })
+  } finally { (globalThis as any).fetch = orig }
+})
+
+test("testModel 响应无 max_output（或为 null）→ maxOutput 为 undefined", async () => {
+  const orig = (globalThis as any).fetch
+  ;(globalThis as any).fetch = (async () =>
+    new Response(JSON.stringify({ ok: true, latency_ms: 50, tokens: 3, max_output: null }), { status: 200 })) as unknown as typeof fetch
+  try {
+    const out = await testModel({ provider: "deepseek" })
+    expect(out.maxOutput).toBeUndefined()
+  } finally { (globalThis as any).fetch = orig }
+})
+
 test("testModel 不带 base_url/api_key → 请求体无该字段（注册表路径不回归）", async () => {
   const cap: { body?: any } = {}
   const orig = (globalThis as any).fetch

@@ -56,6 +56,9 @@ type CardProps = {
   testing: boolean
   // 本次会话内探针返回的 token 数（瞬态，不落库）；有值时测试行显示「· N tokens」。
   tokens?: number
+  // 本次会话内探针返回的模型真实最大输出（瞬态，不落库）；有值时测试行追加「· 最大输出 N」，
+  // 且当前 maxTokens 参数超过它时在参数区给出提醒。
+  maxOutput?: number
   // 是否有其它整份 PUT 正在进行（保存参数/保存运行配置）：期间禁用会产生写冲突的操作，避免并发覆盖。
   busy: boolean
   onTest: () => void
@@ -65,7 +68,7 @@ type CardProps = {
   onAddToChain: () => void
 }
 
-export function ModelCard({ model, isNew, inChain, testing, tokens, busy, onTest, onToggleEnable, onSave, onDelete, onAddToChain }: CardProps) {
+export function ModelCard({ model, isNew, inChain, testing, tokens, maxOutput, busy, onTest, onToggleEnable, onSave, onDelete, onAddToChain }: CardProps) {
   const [editing, setEditing] = useState(isNew)
   const [draft, setDraft] = useState<ModelEntry>(model)
   // 编辑态下对草稿本身的连通性测试（Task 3 的保存门槛）：draft 的每次字段编辑都已经过 resetTestOnEdit
@@ -98,10 +101,21 @@ export function ModelCard({ model, isNew, inChain, testing, tokens, busy, onTest
       </CardHeader>
 
       <CardContent className="flex flex-col gap-3 px-4">
-        <ParamsGrid editing={editing} model={model} draft={draft} setDraft={setDraft} />
+        <ParamsGrid
+          editing={editing}
+          model={model}
+          draft={draft}
+          setDraft={setDraft}
+          maxOutput={editing ? draftTest.maxOutput : maxOutput}
+        />
         {editing && isCustomEntry(draft) && <CustomEndpointFields draft={draft} setDraft={setDraft} />}
         {editing && !isCustomEntry(draft) && <BuiltinEndpointFields draft={draft} setDraft={setDraft} />}
-        <TestLine model={editing ? draft : model} inChain={inChain} tokens={editing ? draftTest.tokens : tokens} />
+        <TestLine
+          model={editing ? draft : model}
+          inChain={inChain}
+          tokens={editing ? draftTest.tokens : tokens}
+          maxOutput={editing ? draftTest.maxOutput : maxOutput}
+        />
 
         <div className="flex items-center justify-between gap-2 border-t border-border pt-3">
           <CardActions
@@ -133,6 +147,7 @@ export function ModelCard({ model, isNew, inChain, testing, tokens, busy, onTest
 function useDraftTest(draft: ModelEntry, setDraft: (updater: (d: ModelEntry) => ModelEntry) => void) {
   const [testing, setTesting] = useState(false)
   const [tokens, setTokens] = useState<number | undefined>(undefined)
+  const [maxOutput, setMaxOutput] = useState<number | undefined>(undefined)
 
   async function run() {
     setTesting(true)
@@ -148,18 +163,21 @@ function useDraftTest(draft: ModelEntry, setDraft: (updater: (d: ModelEntry) => 
       if (res.ok) {
         setDraft((d) => ({ ...d, test: { status: "passed", at: new Date().toISOString(), latencyMs: res.latencyMs } }))
         setTokens(res.tokens)
+        setMaxOutput(res.maxOutput)
       } else {
         setDraft((d) => ({ ...d, test: { status: "failed", error: res.error ?? "测试失败" } }))
         setTokens(undefined)
+        setMaxOutput(undefined)
       }
     } catch {
       setDraft((d) => ({ ...d, test: { status: "failed", error: "请求失败，请重试" } }))
       setTokens(undefined)
+      setMaxOutput(undefined)
     } finally {
       setTesting(false)
     }
   }
-  return { testing, tokens, run }
+  return { testing, tokens, maxOutput, run }
 }
 
 // 卡片头：服务商 logo + 名称/模型名；编辑态下 provider 是 Select、model 名是 Input。
@@ -224,34 +242,50 @@ function switchProvider(d: ModelEntry, nextProvider: string): ModelEntry {
 }
 
 // 三个参数（temperature/max_tokens/top_p）：只读展示 or 编辑输入框，取决于 editing。
+// maxOutput（探针探得的模型真实最大输出，瞬态）：当前 maxTokens 超过它时，在参数区下方给出提醒
+// （只提醒，不自动改值——是否下调由管理员决定）。
 function ParamsGrid({
   editing,
   model,
   draft,
   setDraft,
+  maxOutput,
 }: {
   editing: boolean
   model: ModelEntry
   draft: ModelEntry
   setDraft: (updater: (d: ModelEntry) => ModelEntry) => void
+  maxOutput?: number
 }) {
+  const currentMaxTokens = editing ? draft.params.maxTokens : model.params.maxTokens
+  const exceedsMaxOutput = maxOutput !== undefined && currentMaxTokens > maxOutput
   if (!editing)
     return (
-      <div className="grid grid-cols-3 gap-2">
-        <ParamView paramKey="temperature" value={model.params.temperature} />
-        <ParamView paramKey="maxTokens" value={model.params.maxTokens} />
-        <ParamView paramKey="topP" value={model.params.topP} />
+      <div className="flex flex-col gap-1">
+        <div className="grid grid-cols-3 gap-2">
+          <ParamView paramKey="temperature" value={model.params.temperature} />
+          <ParamView paramKey="maxTokens" value={model.params.maxTokens} />
+          <ParamView paramKey="topP" value={model.params.topP} />
+        </div>
+        {exceedsMaxOutput && <MaxOutputWarning maxOutput={maxOutput!} />}
       </div>
     )
   const setParam = (key: keyof ModelEntry["params"]) => (v: number) =>
     setDraft((d) => resetTestOnEdit({ ...d, params: { ...d.params, [key]: v } }))
   return (
-    <div className="grid grid-cols-3 gap-2">
-      <ParamEdit paramKey="temperature" value={draft.params.temperature} onChange={setParam("temperature")} />
-      <ParamEdit paramKey="maxTokens" value={draft.params.maxTokens} onChange={setParam("maxTokens")} />
-      <ParamEdit paramKey="topP" value={draft.params.topP} onChange={setParam("topP")} />
+    <div className="flex flex-col gap-1">
+      <div className="grid grid-cols-3 gap-2">
+        <ParamEdit paramKey="temperature" value={draft.params.temperature} onChange={setParam("temperature")} />
+        <ParamEdit paramKey="maxTokens" value={draft.params.maxTokens} onChange={setParam("maxTokens")} />
+        <ParamEdit paramKey="topP" value={draft.params.topP} onChange={setParam("topP")} />
+      </div>
+      {exceedsMaxOutput && <MaxOutputWarning maxOutput={maxOutput!} />}
     </div>
   )
+}
+
+function MaxOutputWarning({ maxOutput }: { maxOutput: number }) {
+  return <p className="text-xs text-amber-600">超过模型上限 {maxOutput}，建议下调</p>
 }
 
 // 卡片底部行动按钮：编辑态显示测试草稿/保存/取消，非编辑态显示测试/编辑参数/删除。
@@ -352,8 +386,18 @@ function TestStatusChip({ model }: { model: ModelEntry }) {
 }
 
 // 连通性测试结果行：成功显示延迟/token/时间，失败显示错误，未测显示引导语；
-// 若参数已改（重置为 untested）且模型仍在编排链中，提示需要重测。tokens 为本会话瞬态值（可缺省）。
-function TestLine({ model, inChain, tokens }: { model: ModelEntry; inChain: boolean; tokens?: number }) {
+// 若参数已改（重置为 untested）且模型仍在编排链中，提示需要重测。tokens/maxOutput 为本会话瞬态值（可缺省）。
+function TestLine({
+  model,
+  inChain,
+  tokens,
+  maxOutput,
+}: {
+  model: ModelEntry
+  inChain: boolean
+  tokens?: number
+  maxOutput?: number
+}) {
   if (model.test.status === "passed")
     return (
       <p className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -361,6 +405,7 @@ function TestLine({ model, inChain, tokens }: { model: ModelEntry; inChain: bool
         <span className="tabular-nums">
           {model.test.latencyMs}ms
           {tokens !== undefined ? ` · ${tokens} tokens` : ""}
+          {maxOutput !== undefined ? ` · 最大输出 ${maxOutput}` : ""}
           {model.test.at ? ` · ${new Date(model.test.at).toLocaleString("zh-CN")}` : ""}
         </span>
       </p>

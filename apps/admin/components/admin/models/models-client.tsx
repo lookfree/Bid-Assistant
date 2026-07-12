@@ -30,6 +30,8 @@ export function ModelsClient() {
   const [testingIds, setTestingIds] = useState<Set<string>>(new Set())
   // 探针返回的 token 数：只用于展示「✓ 128ms · N tokens」，不落库、不参与 PUT，刷新即丢弃。
   const [testTokens, setTestTokens] = useState<Record<string, number>>({})
+  // 探针返回的模型真实最大输出（spec /models/test 新增 max_output）：同 testTokens 一样瞬态、仅展示。
+  const [testMaxOutput, setTestMaxOutput] = useState<Record<string, number>>({})
 
   useEffect(() => {
     let alive = true
@@ -85,11 +87,17 @@ export function ModelsClient() {
     const model = cfg.models.find((m) => m.id === id)
     if (!model) return
     setTestingIds((prev) => new Set(prev).add(id))
-    const { test, tokens } = await probeModel(model)
+    const { test, tokens, maxOutput } = await probeModel(model)
     setCfg((c) => (c ? { ...c, models: c.models.map((m) => (m.id === id ? { ...m, test } : m)) } : c))
     setTestTokens((prev) => {
       const next = { ...prev }
       if (test.status === "passed" && tokens !== undefined) next[id] = tokens
+      else delete next[id]
+      return next
+    })
+    setTestMaxOutput((prev) => {
+      const next = { ...prev }
+      if (test.status === "passed" && maxOutput !== undefined) next[id] = maxOutput
       else delete next[id]
       return next
     })
@@ -215,6 +223,7 @@ export function ModelsClient() {
           savedModelIds={new Set(savedCfg?.models.map((m) => m.id) ?? [])}
           testingIds={testingIds}
           testTokens={testTokens}
+          testMaxOutput={testMaxOutput}
           busy={saving}
           onTest={handleTest}
           onToggleEnable={handleToggleEnable}
@@ -230,8 +239,8 @@ export function ModelsClient() {
 
 // 连通性探测：/models/test 认 snake_case 参数（adminApi.models.test 内部已转换）。
 // 自建条目（带 baseUrl）把 baseUrl/apiKey 一并透传，agent 侧才能直连该端点而非查注册表。
-// 返回持久化用的 ModelTest（不含 tokens）+ 展示用的 tokens（瞬态，不落库）。
-async function probeModel(model: ModelEntry): Promise<{ test: ModelTest; tokens?: number }> {
+// 返回持久化用的 ModelTest（不含 tokens/maxOutput）+ 展示用的 tokens/maxOutput（瞬态，不落库）。
+async function probeModel(model: ModelEntry): Promise<{ test: ModelTest; tokens?: number; maxOutput?: number }> {
   try {
     const res = await adminApi.models.test({
       provider: model.provider,
@@ -242,7 +251,11 @@ async function probeModel(model: ModelEntry): Promise<{ test: ModelTest; tokens?
       id: model.id, // 已保存自建条目：apiKey 已打码不回显，带 id 让服务端回填库里 key
     })
     return res.ok
-      ? { test: { status: "passed", at: new Date().toISOString(), latencyMs: res.latencyMs }, tokens: res.tokens }
+      ? {
+          test: { status: "passed", at: new Date().toISOString(), latencyMs: res.latencyMs },
+          tokens: res.tokens,
+          maxOutput: res.maxOutput,
+        }
       : { test: { status: "failed", error: res.error ?? "测试失败" } }
   } catch {
     return { test: { status: "failed", error: "请求失败，请重试" } }
