@@ -295,6 +295,15 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     if (!p) return c.json({ error: "not_found" }, 404)
     const parsed = packageBodySchema.safeParse(await c.req.json().catch(() => undefined))
     if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
+    // 包件锁（spec324 语义补全）：提纲一旦开跑，包件锁死——outline 及之后产物都按所选包生成，
+    // 中途换包会让后续步骤(审查/述标/导出)读到新包，产出「正文是包1、封面标包2」的错乱文件。
+    // 一项目一包；要投另一个包走 POST /:id/clone 另建项目。
+    const [outlineRow] = await getDb()
+      .select({ id: projectSteps.id })
+      .from(projectSteps)
+      .where(and(eq(projectSteps.projectId, p.id), eq(projectSteps.step, "outline")))
+      .limit(1)
+    if (outlineRow) return c.json({ error: "package_locked" }, 409)
     await getDb().update(bidProjects).set({ selectedPackage: parsed.data }).where(eq(bidProjects.id, p.id))
     return c.json({ ok: true, selectedPackage: parsed.data })
   })

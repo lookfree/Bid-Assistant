@@ -1,4 +1,5 @@
 "use client"
+import { ApiError } from "@/lib/api-client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
@@ -120,8 +121,15 @@ export default function ReadPage() {
       setPkgMessage(`已选择包件：${pkg.name}（提纲及后续步骤将只覆盖该包件）`)
       setPkgState("saved")
       setTimeout(() => setPkgState((s) => (s === "saved" ? "idle" : s)), 3000)
-    } catch {
-      setPkgState("error")
+    } catch (e) {
+      // 409 package_locked：提纲已开跑，包件锁死——引导去克隆项目投另一个包，而非泛化重试。
+      if (e instanceof ApiError && e.status === 409) {
+        setPkgMessage("提纲已生成，包件已锁定。要投其它包件，请用下方「再建一个项目」。")
+        setPkgState("error")
+      } else {
+        setPkgMessage("选择包件失败，请重试")
+        setPkgState("error")
+      }
     }
   }
 
@@ -295,7 +303,7 @@ export default function ReadPage() {
           selectedId={selectedPackageId}
           saving={pkgState === "saving"}
           message={pkgState === "saved" ? pkgMessage : null}
-          error={pkgState === "error" ? "选择包件失败，请重试" : null}
+          error={pkgState === "error" ? (pkgMessage || "选择包件失败，请重试") : null}
           onSelect={(pkg) => void selectPackage(pkg)}
           onClone={() => void handleClone()}
           cloning={cloneState === "cloning"}

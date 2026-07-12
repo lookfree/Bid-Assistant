@@ -4,7 +4,7 @@ import { Hono } from "hono"
 import { projectRoutes, type ProjectDeps } from "../src/routes/projects"
 import { loginWithPhone } from "../src/services/auth"
 import { getDb, closeDb } from "../src/db/client"
-import { users, bidProjects, projectFiles } from "../src/db/schema"
+import { users, bidProjects, projectFiles, projectSteps } from "../src/db/schema"
 import { uniquePhone, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB
@@ -106,6 +106,18 @@ describe("PATCH /api/projects/:id/package（spec324）", () => {
     expect(res.status).toBe(404)
     const [row] = await getDb().select().from(bidProjects).where(eq(bidProjects.id, id))
     expect(row?.selectedPackage).toEqual({ id: "p1", name: "包1" })
+  })
+
+  it("包件锁：提纲已开跑（存在 outline 步）→ 换包 409 package_locked，不改原值", async () => {
+    const { id } = await createProject(tokenA, keyA)
+    await patchPackage(id, { id: "p1", name: "包1" }, tokenA)
+    // 模拟提纲已开跑：插一条 outline 步行
+    await getDb().insert(projectSteps).values({ projectId: id, step: "outline", status: "running" } as any)
+    const res = await patchPackage(id, { id: "p2", name: "包2" }, tokenA)
+    expect(res.status).toBe(409)
+    expect((await res.json()) as { error: string }).toEqual({ error: "package_locked" })
+    const [row] = await getDb().select().from(bidProjects).where(eq(bidProjects.id, id))
+    expect(row?.selectedPackage).toEqual({ id: "p1", name: "包1" }) // 原值不变
   })
 
   it("坏形状（缺 name/空字符串/非对象非 null）→ 400 invalid_input", async () => {
