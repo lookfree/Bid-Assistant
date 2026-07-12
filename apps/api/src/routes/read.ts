@@ -56,10 +56,12 @@ export function readRoutes(deps: Partial<ReadDeps> = {}) {
     const userId = c.get("user").id
     const threadId = `proj-${crypto.randomUUID()}`
 
+    // 模型唯一来自运营后台配置：未配置直接报错（预扣前取，不占额度），绝不回退默认模型
+    const model = await getAgentModel()
+    if (!model) return c.json({ error: "model_not_configured" }, 400)
+
     const hold = await preDeduct(userId, "read", threadId) // 真账本预扣（ref=threadId，一次读标一个 thread）
     if (!hold.ok) return c.json({ error: "insufficient" }, 402)
-
-    const model = await getAgentModel() // 运营后台可配的 agent 模型选择（spec311）
     const { run_id } = await createRun({
       agentType: "bidding_agent",
       threadId,

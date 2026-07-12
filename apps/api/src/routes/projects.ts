@@ -120,6 +120,7 @@ export type ProjectDeps = {
   getRun: typeof client.getRun
   rewriteChapter: typeof client.rewriteChapter
   presignGet: typeof presignGet
+  getAgentModel: typeof client.getAgentModel
 }
 
 /** 属主校验取项目行：只见自己的，查不到与越权同语义（undefined → 404）。 */
@@ -250,6 +251,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
   const getRun = deps.getRun ?? client.getRun
   const rewriteChapter = deps.rewriteChapter ?? client.rewriteChapter
   const presign = deps.presignGet ?? presignGet
+  const resolveModel = deps.getAgentModel ?? client.getAgentModel
 
   const r = new Hono<{ Variables: { user: User } }>()
   r.use("*", authMiddleware)
@@ -451,6 +453,11 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       state_overrides: await stateOverrides(p.id, step as Step),
     }
 
+    // 模型唯一来自运营后台配置（主模型 + 降级链）：未配置则不建 run、不计费、不占步位，
+    // 直接报错引导去「模型管理」配置——绝不静默回退某个默认模型（默认模型会掩盖配置缺失）。
+    const model = await resolveModel()
+    if (!model) return c.json({ error: "model_not_configured" }, 400)
+
     // 先落「running 占位行」再计费/建 run：部分唯一索引 (project_id, step) WHERE status='running'
     // 在 DB 层原子挡掉并发双击（第二个请求这里冲突 → 惰性自愈失败才 409，不会双建 run/双计费）。
     const s = await acquireStepSlot(p.id, step)
@@ -466,7 +473,6 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     }
     let run_id: string
     try {
-      const model = await getAgentModel() // 运营后台可配的 agent 模型选择（spec311）
       ;({ run_id } = await createRun({ agentType: "bidding_agent", threadId: p.threadId, input, model, userId }))
       await getDb().update(projectSteps).set({ runId: run_id }).where(eq(projectSteps.id, s.id))
     } catch (e) {
@@ -585,7 +591,9 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     if (!contentRow) return c.json({ error: "content_not_done" }, 409)
     // 改写底稿用 DB 现值（编辑过=编辑后），别让 agent 拿 state 里的旧稿改（编辑会被吃掉）
     const baseHtml = (contentRow.result as Record<string, unknown> | null)?.[chapterId]
-    const model = await getAgentModel() // 运营后台切换的模型对 rewrite 同样生效（spec311）；预扣前取，抛错无残留
+    // 模型唯一来自运营后台配置：未配置直接报错（预扣前取，不占额度），绝不回退默认模型
+    const model = await resolveModel()
+    if (!model) return c.json({ error: "model_not_configured" }, 400)
 
     // 预扣 rewrite 口径（credit_cost.rewrite=25）；ref=本次改写的稳定标识（幂等键 hold:/settle:/release:<ref> 随之稳定）
     const ref = crypto.randomUUID()

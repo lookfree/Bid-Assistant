@@ -191,8 +191,12 @@ export function useStep<T>(step: StepName) {
         }
         // 其余错误码直通：402/409(out_of_order) 给专属文案并暴露状态码，消费端可据此引导充值 / 步骤提示
         const status = e instanceof ApiError ? e.status : null
+        const code = e instanceof ApiError ? e.code : null
         setErrorStatus(status)
-        setError(stepErrorMessage(status))
+        // 模型未配置（运营后台未编排主/降级模型）：C 端用户无法自助解决，明确提示联系管理员
+        setError(code === "model_not_configured"
+          ? "系统尚未配置生成模型，请联系管理员在运营后台完成模型编排"
+          : stepErrorMessage(status))
         return null
       } finally {
         inFlight.current = false

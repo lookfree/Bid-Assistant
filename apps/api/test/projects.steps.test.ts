@@ -35,6 +35,7 @@ const STEP_RESULTS: Record<string, unknown> = {
 }
 let runStep = "" // createRun 时记下本 run 的步，getRun 按步返回对应 result
 let overridesBoom = false // 置 true 让 buildStateOverrides 抛错（模拟 DB 抖动）
+let noModel = false // 置 true 让 getAgentModel 返回 undefined（模拟运营后台未配置模型）
 
 const mockDeps: Partial<ProjectDeps> = {
   buildStateOverrides: async (projectId, step) => {
@@ -64,6 +65,17 @@ const mockDeps: Partial<ProjectDeps> = {
     yield "data: 进度\n\n"
   },
   getRun: async () => ({ status: "succeeded", result: STEP_RESULTS[runStep] }),
+  // 模型必须来自运营后台配置：默认给一份有效选择；置 noModel 模拟未配置（步进应 400）。
+  getAgentModel: async () =>
+    noModel
+      ? undefined
+      : {
+          provider: "deepseek",
+          model: "deepseek-chat",
+          fallbacks: "",
+          params: { temperature: 0.7, max_tokens: 8192, top_p: 1 },
+          chain: [{ provider: "deepseek", model: "deepseek-chat" }],
+        },
 }
 
 const app = new Hono()
@@ -444,5 +456,21 @@ describe("GET /:id/steps/:step/events 进度事件流", () => {
     })
     expect(res.status).toBe(404)
     await getDb().delete(users).where(eq(users.id, other.user.id))
+  })
+
+  it("运营后台未配置模型 → 步进 400 model_not_configured，不预扣不建 run、不占步位", async () => {
+    const [proj] = await getDb()
+      .insert(bidProjects)
+      .values({ userId, threadId: `proj-${crypto.randomUUID()}`, tenderFileKey: "uploads/x/tender.pdf", name: "nomodel" })
+      .returning()
+    const before = captured.preDeductSteps.length
+    noModel = true
+    const res = await app.request(`/api/projects/${proj!.id}/steps/read`, { method: "POST", headers: auth() })
+    noModel = false
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { error: string }).error).toBe("model_not_configured")
+    expect(captured.preDeductSteps.length).toBe(before) // 未预扣
+    const slots = await getDb().select().from(projectSteps).where(eq(projectSteps.projectId, proj!.id))
+    expect(slots.length).toBe(0) // 未占步位
   })
 })
