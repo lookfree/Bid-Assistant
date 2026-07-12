@@ -11,6 +11,7 @@ import {
   stepResult,
   STEP_ORDER,
   openStepEvents,
+  StreamIncompleteError,
   type ChapterProgress,
   type StepPhase,
   type ProjectInfo,
@@ -42,9 +43,10 @@ export function stepPrereq(info: ProjectInfo | null, step: StepName): { href: st
   return STEP_PAGE[cur] ?? null
 }
 
-// 409 step_already_running 后的收敛轮询节奏：每 5s 查一次项目，最多等 10 分钟（正常步 1-10 分钟必出结果）
+// 断连/双发后的收敛轮询节奏：每 5s 查一次项目。上限放到 20 分钟——content 大标书正文可跑十几分钟，
+// 若连接早断则轮询要撑到 run 真正结束（run 仍在跑就一直等；running 行消失且无 done 才判失败）。
 const POLL_INTERVAL_MS = 5_000
-const POLL_TIMEOUT_MS = 10 * 60_000
+const POLL_TIMEOUT_MS = 20 * 60_000
 
 /** 该步已有一次在途 run（双发漏网/断线后重进页面）时的收敛轮询：
  *  轮询 GET /api/projects/:id 等它出结果——出现 done 行即返回 result；
@@ -170,9 +172,13 @@ export function useStep<T>(step: StepName) {
         notifyCreditsChanged()
         return result
       } catch (e) {
-        // 409 step_already_running 不是错误：本步已有一次在途 run（双发/上次连接断但 run 仍在跑），
-        // 转入轮询等它收敛，别把「正在生成」误报成失败。
-        if (e instanceof ApiError && e.status === 409 && e.code === "step_already_running") {
+        // 连接中途断开（长步骤如 content 十多分钟被代理/网络掐断，未收到 step.done）：
+        // run 仍在服务端跑/已跑完，转轮询收敛，绝不误报「生成失败」（用户实测：刷新后其实已成功）。
+        // 与 409 step_already_running（双发/重进页面）同样处理。
+        const shouldPoll =
+          e instanceof StreamIncompleteError ||
+          (e instanceof ApiError && e.status === 409 && e.code === "step_already_running")
+        if (shouldPoll) {
           try {
             const result = await pollStepResult<T>(projectId, step)
             setData(result)

@@ -10,6 +10,15 @@ import { tokenStore } from "./token-store"
 export type StepName = "read" | "outline" | "content" | "review" | "present" | "export"
 export const STEP_ORDER: StepName[] = ["read", "outline", "content", "review", "present", "export"]
 
+/** SSE 直连流在收到 step.done 之前就断了（长步骤如 content 十多分钟，被代理/网络掐连接）。
+ *  这不等于失败——服务端 run 与这条连接解耦，仍在跑/已跑完。调用方应转轮询收敛，别误报"生成失败"。 */
+export class StreamIncompleteError extends Error {
+  constructor(public step: StepName) {
+    super(`step ${step} stream incomplete`)
+    this.name = "StreamIncompleteError"
+  }
+}
+
 /** 正文生成的逐章进度（agent 每写完一章推一条 chapter.progress SSE 事件，前端实时勾选）。 */
 export type ChapterProgress = { kind?: string; done: number; total: number; doneIds: string[]; title?: string }
 
@@ -240,7 +249,8 @@ export async function runStep<T>(
   }
   // SSE 末尾的 step.done 事件带该步结果；失败（status=failed / 无 step.done）即抛错
   const m = [...buf.matchAll(/event:\s*step\.done\s*\ndata:\s*(.+)/g)].at(-1)
-  if (!m) throw new Error(`step ${step} 未完成`)
+  // 没等到 step.done = 连接中途断开（长步骤常见），不是失败：抛可识别错误让上层转轮询收敛。
+  if (!m) throw new StreamIncompleteError(step)
   const payload = JSON.parse(m[1]!) as { status: string; result: T; error?: string }
   if (payload.status !== "done") {
     // step.done 带 agent 侧失败原因（原始串不适合直接展示）：落 console 供排查，用户侧走通用失败文案
