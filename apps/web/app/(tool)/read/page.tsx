@@ -244,7 +244,7 @@ export default function ReadPage() {
               已识别 {foundCount}
             </span>
             <span className="h-3 w-px bg-border" />
-            <span className="inline-flex items-center gap-1 font-medium text-warning-foreground">
+            <span className="inline-flex items-center gap-1 font-medium text-warning">
               <AlertTriangle className="size-3.5" />
               待补充 {missingCount}
             </span>
