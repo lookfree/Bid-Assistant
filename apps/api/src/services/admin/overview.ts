@@ -56,7 +56,9 @@ export async function computeTrend(days = 14): Promise<TrendPoint[]> {
   const TZ = "Asia/Shanghai"
   // TZ 必须内联为 SQL 字面量，不能走绑定参数：${TZ} 会让 SELECT 与 GROUP BY 各得一个不同占位符
   // ($1 vs $2)，Postgres 视为不同表达式 → "must appear in the GROUP BY clause" 报错（趋势接口 500）。
-  const dayExpr = (col: unknown) => sql<string>`to_char(${col} AT TIME ZONE 'Asia/Shanghai', 'MM/DD')`
+  // sql.raw 内联同一个 TZ 常量（本地可信常量，无注入面）：JS 分桶与 SQL 分桶永远同源，改 TZ 不会漂移。
+  const tzLiteral = sql.raw(`'${TZ}'`)
+  const dayExpr = (col: unknown) => sql<string>`to_char(${col} AT TIME ZONE ${tzLiteral}, 'MM/DD')`
   const fmtDay = new Intl.DateTimeFormat("en-US", { timeZone: TZ, month: "2-digit", day: "2-digit" })
   const [rev, cr] = await Promise.all([
     db

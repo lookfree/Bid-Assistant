@@ -17,6 +17,9 @@ from agent.rag import retrieve as rag_retrieve
 
 logger = logging.getLogger(__name__)
 
+# 后台索引任务引用集:create_task 的返回若不持引用会被 GC 回收→任务悄然取消(Python 官方文档警告)。
+_BG_INDEX_TASKS: set = set()
+
 # 分段读标阈值：条款数超过此值时,完整 ReadResult(逐条 technical)必然顶穿模型 8k 输出上限
 # (南瑞 4 文件标实测:两轮压缩重试仍 length 截断)——拆多轮提交,节点内合并。
 SEGMENT_CLAUSE_THRESHOLD = 200
@@ -43,6 +46,8 @@ def _tech_chunk_user(chunk: list[dict], idx: int, total: int) -> str:
     下游过滤只会多保留、不会丢需求(安全方向)。骨架三轮(基础/格式/评分)仍喂全文(真需全局视野)。"""
     return (f"本轮为分段提交·技术第 {idx}/{total} 块:categories 只含 technical 一类,"
             f"且只提取下列这批条款覆盖的技术需求(逐条,带★/▲必须单列);其余字段一律空值/空列表。\n"
+            f"每个技术项的 packages 字段一律留空数组(本轮只见部分条款、看不到全局包件表,"
+            f"禁止猜测包件归属;留空=全包通用,后续选包过滤只会多保留不会丢)。\n"
             f"条款已解析为分句(id 为稳定锚点,clause_ids 直接引用,无需再调 parse_document):\n"
             f"{json.dumps(chunk, ensure_ascii=False)}\n\n请读标。")
 
@@ -62,9 +67,14 @@ SEG_CONCURRENCY = 6
 _SEG_CACHE_TTL_S = 24 * 3600
 
 
+# 提示词版本指纹:系统提示词变更(抽取规则变化)后,旧缓存轮与新规则轮混合会产出任何代码版本
+# 都不会生成的"混血"结果——把提示词哈希折进缓存键,发版改提示词即自动全量失效。
+_PROMPT_VER = hashlib.sha256(READ_SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:8]
+
+
 def _seg_cache_key(ctx, round_id: str, payload: str) -> str:
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
-    return f"{settings.redis_prefix}segread:{ctx.thread_id}:{round_id}:{digest}"
+    return f"{settings.redis_prefix}segread:{ctx.thread_id}:{round_id}:{_PROMPT_VER}:{digest}"
 
 
 async def _seg_cache_get(ctx, key: str) -> ReadResult | None:
@@ -139,6 +149,10 @@ async def _segmented_read(ctx, user: str, clauses: list[dict]) -> ReadResult:
     # gather 保序:tech_parts 与 chunks 顺序一致,技术项合并后条款顺序不变。
     tech_items = [it for part in tech_parts
                   for c in part.categories if c.key == "technical" for it in c.items]
+    # 代码级兜底(与块轮提示词双保险):块轮看不到全局包件表,模型若无视指令猜了包件 id,
+    # 错标会让选包过滤静默丢 ★ 需求——强制清空,空=全包通用,下游只会多保留不会丢。
+    for it in tech_items:
+        it.packages = []
     # 合并:各轮只产自己负责的字段,取并集;基础轮做底座(project_meta 在其上)。
     keep = {"overview", "qualification", "commercial"}
     cats = [c for c in base.categories if c.key in keep]
@@ -235,6 +249,11 @@ def make_read_node(ctx):
                 ctx, READ_SYSTEM_PROMPT, user,
                 "submit_read_result", ReadResult, "提交读标结构化结果",
                 extra_tools=None if clauses else [parse_document_tool])
-        await _index_tender(ctx, state.get("run_input") or {}, clauses)
+        # RAG 索引后台执行,不挡结果交付:9273 条款标书实测索引要几十分钟(CPU 嵌入 ~11s/16条),
+        # 用户花钱买的读标结论 20 分钟前就好了却在等一个 best-effort 的辅助索引。_index_tender 全程
+        # try/except,后台失败只记警告;下游检索本就按"建好多少用多少"降级,索引未完不阻塞任何步骤。
+        task = asyncio.create_task(_index_tender(ctx, state.get("run_input") or {}, clauses))
+        _BG_INDEX_TASKS.add(task)                       # 持引用防 GC 提前取消
+        task.add_done_callback(_BG_INDEX_TASKS.discard)
         return {"read": {**result.model_dump(), "doc_sections": clauses, **extra}}
     return read_node

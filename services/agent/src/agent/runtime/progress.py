@@ -17,7 +17,11 @@ async def publish_event(redis: Any, run_id: str | None, data: dict) -> None:
         if not redis or not run_id:
             return
         ev = {"type": "progress", "data": data}
-        await asyncio.to_thread(redis.xadd, progress_stream(run_id), {"event": json.dumps(ev, ensure_ascii=False)})
+        # maxlen 截断最老事件:92 块并行读标每 4s×6 路心跳可累积数千帧,订阅端从 0 回放会先啃完
+        # 全部陈旧"生成中"帧才见新事件。run.end 由 executor 直发(不走此函数),永不会被截掉。
+        await asyncio.to_thread(redis.xadd, progress_stream(run_id),
+                                {"event": json.dumps(ev, ensure_ascii=False)},
+                                maxlen=1000, approximate=True)
     except Exception:  # noqa: BLE001 进度推送 best-effort
         logger.warning("progress publish failed", exc_info=True)
 

@@ -181,6 +181,73 @@ async def test_stream_cut_on_both_tries_raises(_fast_timeout):
         await ms.forced_stream_submit(_ctx(gw), [], _submit, "submit_x", label="读标·技术块")
 
 
+async def test_sdk_wrapped_connect_error_is_transient(_fast_timeout):
+    """回归：连接期失败被 openai SDK 包成 APIConnectionError，str() 只有 'Connection error.'——
+    必须判为瞬断进降级通道（此前只匹配 httpx 中途掐流文案，这一最常见形态漏网）。"""
+    class _ConnErrChat:
+        def bind_tools(self, tools, **kw):
+            return self
+
+        async def astream(self, messages, **kw):
+            raise RuntimeError("Connection error.")
+            yield  # noqa
+
+    healthy = _CountingChat()
+    gw = _Gateway([_ConnErrChat(), healthy], chain=[{"model": "big"}, {"model": "small"}])
+
+    async def _submit(**kw):
+        ...
+    msg = await ms.forced_stream_submit(_ctx(gw), [], _submit, "submit_x", label="读标")
+    assert msg.tool_calls[0]["name"] == "submit_x" and healthy.astream_calls == 1
+
+
+async def test_custom_thinking_model_400_falls_back_to_ainvoke_inline(_fast_timeout):
+    """自建端点混合思考模型（THINKING_DISABLE 表外，关闭参未下发）流式强制提交撞 thinking/tool_choice
+    400 → 本次调用内联改走 ainvoke（思考模型可接受），不换模型、不缓存、不失败。"""
+    class _HybridChat:
+        def __init__(self):
+            self.ainvoke_calls = 0
+
+        def bind_tools(self, tools, **kw):
+            return self
+
+        async def astream(self, messages, **kw):
+            raise RuntimeError("Error code: 400 - Thinking mode does not support this tool_choice")
+            yield  # noqa
+
+        async def ainvoke(self, messages):
+            from langchain_core.messages import AIMessage
+            self.ainvoke_calls += 1
+            return AIMessage(content="", tool_calls=[{"name": "submit_x", "args": {"x": 1}, "id": "c1"}])
+
+    chat = _HybridChat()
+    gw = _Gateway([chat, chat], chain=[{"provider": "custom", "model": "qwen3-self-host"}])
+
+    async def _submit(**kw):
+        ...
+    msg = await ms.forced_stream_submit(_ctx(gw), [], _submit, "submit_x", label="读标")
+    assert msg.tool_calls[0]["name"] == "submit_x" and chat.ainvoke_calls == 1
+
+
+async def test_thinking_on_ainvoke_transient_downgrades(_fast_timeout):
+    """思考开路径（ainvoke）同样纳入韧性通道：连接被重置 → 换降级模型重试，而非裸抛炸掉节点。"""
+    class _CutInvokeChat:
+        def bind_tools(self, tools, **kw):
+            return self
+
+        async def ainvoke(self, messages):
+            raise RuntimeError("connection reset by peer")
+
+    healthy = _CountingChat()
+    gw = _Gateway([_CutInvokeChat(), healthy],
+                  chain=[{"model": "big", "thinking": True}, {"model": "small", "thinking": True}])
+
+    async def _submit(**kw):
+        ...
+    msg = await ms.forced_stream_submit(_ctx(gw), [], _submit, "submit_x", label="审查")
+    assert msg.tool_calls[0]["name"] == "submit_x" and healthy.ainvoke_calls == 1
+
+
 async def test_semantic_error_not_retried(_fast_timeout):
     """语义错误（4xx 参数问题等）不属于瞬断，不得吞进重试通道——原样抛给上层。"""
     class _BadRequestChat:

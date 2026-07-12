@@ -19,16 +19,45 @@ class ModelIdleTimeout(Exception):
     """流式调用连续超时秒数无新 token —— 判定连接挂死；正常慢生成（token 持续吐）不会触发。"""
 
 
-def _is_transient_stream_error(e: Exception) -> bool:
-    """网络层瞬断（对端掐流/连接重置/服务器断开）——非模型语义错误，重试大概率成功。
-    生产实测两例：92 块并行读标中单路被掐（httpx 'peer closed connection without sending
-    complete message body (incomplete chunked read)'），一轮异常炸掉整个 gather、几十轮成功全作废。
-    按错误文案匹配（httpx/openai 各版本异常类不稳定，文案稳定），并入降级重试通道。"""
+_TRANSIENT_TEXTS = (
+    "peer closed connection", "incomplete chunked read", "connection reset",
+    "server disconnected", "connection aborted", "remote protocol error", "connection error",
+)
+_TRANSIENT_TYPE_NAMES = (
+    "connecterror", "connecttimeout", "readerror", "readtimeout",
+    "remoteprotocolerror", "apiconnectionerror", "apitimeouterror",
+)
+
+
+def _is_transient_stream_error(e: BaseException) -> bool:
+    """网络层瞬断（对端掐流/连接重置/握手失败/服务器断开）——非模型语义错误，重试大概率成功。
+    生产实测两例：92 块并行读标中单路被掐（httpx 'peer closed connection ... incomplete chunked read'），
+    一轮异常炸掉整个 gather、几十轮成功全作废。判定同时看异常类型名与文案，并沿 __cause__/__context__
+    链下钻——连接期失败被 openai SDK 包成 APIConnectionError，str() 只有 'Connection error.'，
+    只看顶层文案会漏掉这一最常见形态。"""
+    cur: BaseException | None = e
+    for _ in range(5):   # 限深防环
+        if cur is None:
+            return False
+        if isinstance(cur, (ConnectionError, TimeoutError)):
+            return True
+        name = type(cur).__name__.lower()
+        if any(k in name for k in _TRANSIENT_TYPE_NAMES):
+            return True
+        s = str(cur).lower()
+        if any(k in s for k in _TRANSIENT_TEXTS):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+def _is_thinking_toolchoice_error(e: BaseException) -> bool:
+    """思考模式与强制 tool_choice 不兼容的 400（如 'Thinking mode does not support this tool_choice'）。
+    内置服务商已由 THINKING_DISABLE 默认关思考,撞不到;这里兜自建端点(spec319.1,表外 provider
+    不下发关闭参)托管的混合思考模型——该调用改走非流式 ainvoke(思考模型可接受),否则每轮必 400 且
+    重试无解。必须同时含 thinking 与 tool_choice,免得把"模型不支持工具调用"这类无关 400 吞进来。"""
     s = str(e).lower()
-    return any(k in s for k in (
-        "peer closed connection", "incomplete chunked read", "connection reset",
-        "server disconnected", "connection aborted", "remote protocol error",
-    ))
+    return "tool_choice" in s and "thinking" in s
 
 
 def _grown_chars(agg) -> int:
@@ -92,21 +121,27 @@ async def forced_stream_submit(ctx, messages, submit, tool_name: str, label: str
         )
         chat = base.bind_tools([submit], tool_choice=tool_name)   # bind 后是 RunnableBinding，无 model_name
         t0 = time.monotonic()
-        if it.get("thinking"):
-            msg = await chat.ainvoke(messages)   # 思考开：非流式提交（思考+流式强制 tool_choice 不兼容）
-        else:
-            try:
-                msg = await astream_collect(chat, messages, ctx, label)
-            except Exception as e:  # noqa: BLE001 只接管挂死/瞬断，其余（4xx 语义错误等）原样抛
-                if not (isinstance(e, ModelIdleTimeout) or _is_transient_stream_error(e)):
-                    raise
-                kind = "超时" if isinstance(e, ModelIdleTimeout) else "网络中断"
-                if i == 0:
-                    await publish_phase(ctx, f"{label or tool_name}·模型{kind}，切换重试")
-                    continue
-                await publish_phase(ctx, f"{label or tool_name}·重试仍{kind}，本轮失败")
-                logger.error("model %s (both tries) tool=%s label=%s err=%s", kind, tool_name, label, e)
+        try:
+            if it.get("thinking"):
+                msg = await chat.ainvoke(messages)   # 思考开：非流式提交（思考+流式强制 tool_choice 不兼容）
+            else:
+                try:
+                    msg = await astream_collect(chat, messages, ctx, label)
+                except Exception as e:  # noqa: BLE001 自建端点思考模型的 tool_choice 400 → 本次改走非流式
+                    if not _is_thinking_toolchoice_error(e):
+                        raise
+                    logger.info("思考模型不支持流式强制 tool_choice → 本次改走 ainvoke（model=%s）", it.get("model"))
+                    msg = await chat.ainvoke(messages)
+        except Exception as e:  # noqa: BLE001 只接管挂死/瞬断（ainvoke 与流式同待遇），其余（4xx 语义错误等）原样抛
+            if not (isinstance(e, ModelIdleTimeout) or _is_transient_stream_error(e)):
                 raise
+            kind = "超时" if isinstance(e, ModelIdleTimeout) else "网络中断"
+            if i == 0:
+                await publish_phase(ctx, f"{label or tool_name}·模型{kind}，切换重试")
+                continue
+            await publish_phase(ctx, f"{label or tool_name}·重试仍{kind}，本轮失败")
+            logger.error("model %s (both tries) tool=%s label=%s err=%s", kind, tool_name, label, e)
+            raise
         _warn_if_no_usage(msg, it)   # 流式用量依赖服务商回 include_usage；缺失=0 token 静默漏计费，先示警
         record_ctx_usage(ctx, msg, node="agent", provider=it.get("provider"),
                          model=getattr(base, "model_name", None) or it.get("model"),

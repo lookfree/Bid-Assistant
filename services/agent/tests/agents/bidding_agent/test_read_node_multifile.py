@@ -216,6 +216,31 @@ def test_segmented_read_resumes_from_cache_on_retry(monkeypatch, submit_gateway)
     assert "categories" in out["read"]
 
 
+def test_segmented_tech_items_packages_forced_empty(monkeypatch, submit_gateway):
+    """包件误标回归:块轮看不到全局包件表,模型猜出的包件 id(如 p1)若保留,选包过滤会静默丢
+    该包 ★ 需求——合并时必须强制清空(空=全包通用,只多不丢);块轮提示词也已声明留空。"""
+    import agent.agents.bidding_agent.nodes.read as read_mod
+
+    n = read_mod.SEGMENT_CLAUSE_THRESHOLD + 1
+    big = [{"id": f"sec-1-c{i}", "text": f"条款{i}"} for i in range(n)]
+
+    async def fake_parse_multi(files):
+        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}]
+    monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
+
+    # fake 模型每轮都交一个"猜了包件"的技术项(packages=[p1])
+    args = {"submit_read_result": {"categories": [
+        {"key": "technical", "title": "技术", "items": [{"title": "t", "value": "v", "packages": ["p1"]}]},
+    ]}}
+    ctx = RunContext(run_id="r-pkg", agent_type="bidding_agent", thread_id="t-pkg", gateway=submit_gateway(args))
+    out = asyncio.run(read_mod.make_read_node(ctx)({
+        "file_key": "a.docx", "files": [{"key": "a.docx", "name": "采购文件"}]}))
+
+    tech = next(c for c in out["read"]["categories"] if c["key"] == "technical")
+    assert tech["items"] and all(it["packages"] == [] for it in tech["items"])   # 猜的标签被强制清空
+    assert "packages 字段一律留空" in read_mod._tech_chunk_user([], 1, 1)         # 提示词声明在位
+
+
 def test_tech_chunk_rounds_carry_only_own_chunk(monkeypatch, submit_gateway):
     """瘦身回归(1MB 标书实测:每块都带全文 → 单轮 prefill ~4 分钟、输入重复计费 92 次):
     技术块轮消息只含本块条款;骨架轮(基础/格式/评分)仍带全文。"""

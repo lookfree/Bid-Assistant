@@ -31,7 +31,12 @@ async def get_checkpointer() -> AsyncPostgresSaver:
             try:
                 await _pool.close()  # best-effort 释放旧池，别每次切 loop 都漏
             except BaseException:  # noqa: BLE001 旧 loop 已关闭：close 内部 gather 旧 loop 上的任务会抛
-                pass               # CancelledError（BaseException，非 Exception）——一律吞，交给 GC/OS 回收
+                # CancelledError（BaseException，非 Exception）——吞掉交给 GC/OS 回收。
+                # 但若是**本任务**正被取消（worker 关停恰好撞上换池窗口），必须继续抛出取消，
+                # 否则任务吞掉取消后继续建新池跑成僵尸（Python 取消语义要求清理后 re-raise）。
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    raise
         _pool = AsyncConnectionPool(
             _CONNINFO, min_size=1, max_size=8, open=False, kwargs=_CONN_KW,
             check=AsyncConnectionPool.check_connection, max_lifetime=1800, reconnect_timeout=10,

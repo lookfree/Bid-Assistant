@@ -115,7 +115,8 @@ class ModelGateway:
             prov, mdl = it["provider"], it["model"]
             try:
                 t0 = time.monotonic()
-                chat = self.get_chat(prov, mdl, base_url=it["base_url"], api_key=it["api_key"])
+                chat = self.get_chat(prov, mdl, base_url=it["base_url"], api_key=it["api_key"],
+                                     thinking=it.get("thinking"))   # 每模型思考开关随链条项生效
                 resp = chat.invoke(messages)
             except Exception as e:  # noqa: BLE001 provider/调用失败 → 故障转移到下一家
                 last_err = e
