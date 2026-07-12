@@ -245,3 +245,26 @@ def test_content_node_with_package_injects_scope_constraint(monkeypatch):
     assert "本项目仅投包件《实网攻防》(p1)" in captured["user"]
     assert "涉及分包件评分表/偏离表仅取该包件" in captured["user"]
     assert captured["user"].endswith("该包件。")
+
+
+def test_recursion_limit_scales_with_chapter_count(monkeypatch):
+    """recursion_limit 随章数动态放大(章多的多包件标固定 100 步会撞 GraphRecursionError):
+    2 章 → 下限 100;20 章 → 20*15+60=360;超大 → 封顶 600。"""
+    captured = {}
+
+    class _CapDeep(_FakeDeep):
+        async def ainvoke(self, _input, config=None):
+            captured["limit"] = (config or {}).get("recursion_limit")
+            return await super().ainvoke(_input, config)
+
+    def run(n_chapters):
+        files = {f"/chapters/c{i}.html": {"content": "<h3>x</h3>"} for i in range(n_chapters)}
+        monkeypatch.setattr(content_mod, "create_deep_agent", lambda **kw: _CapDeep(files))
+        chapters = [{"id": f"c{i}", "title": f"章{i}"} for i in range(n_chapters)]
+        node = content_mod.make_content_node(_ctx())
+        asyncio.run(node({"outline": {"chapters": chapters}, "read": {}}))
+        return captured["limit"]
+
+    assert run(2) == 100          # 下限
+    assert run(20) == 360         # 20*15+60
+    assert run(50) == 600         # 封顶

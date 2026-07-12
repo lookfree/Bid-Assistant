@@ -168,11 +168,14 @@ def make_content_node(ctx):
         # 逐章进度:从 outline 取章 id→标题,写完一章推一条 chapter.progress(前端实时勾选)。
         chapters_meta = {c.get("id"): c.get("title", c.get("id"))
                          for c in outline.get("chapters", []) if c.get("id")}
-        # recursion_limit 放宽：10 章 ×（task 派发 + write_file）远超默认 25 步；
+        # recursion_limit 随章数动态放大:每章约需「规划+派子写手+写文件+收稿」多步,加上下文压缩中间件;
+        # 固定 100 步在 17 章的多包件标必撞 GraphRecursionError(实测跑 23 分钟后中止)。按 15 步/章 + 60 基础,
+        # 封顶 600 防失控。选包过滤(spec324)缩了章数时这里也随之更省。
+        recursion_limit = min(600, max(100, len(chapters_meta) * 15 + 60))
         # UsageCallback 补记 token（deepagent 直驱模型，不经 make_agent_node 埋点）。
         res = await deep.ainvoke(
             {"messages": [HumanMessage(content=user)]},
-            config={"recursion_limit": 100, "callbacks": [
+            config={"recursion_limit": recursion_limit, "callbacks": [
                 UsageCallback(ctx, "content"),
                 ChapterProgressCallback(ctx, len(chapters_meta), chapters_meta)]})
         chapters = _collect_chapters(res.get("files"))
