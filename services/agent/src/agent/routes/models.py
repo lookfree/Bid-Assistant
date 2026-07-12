@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import time
 
 import httpx
@@ -60,8 +59,9 @@ async def test_model(body: TestBody):
         resp = await asyncio.wait_for(chat.ainvoke([HumanMessage(content="请回复：OK")]), timeout=15)
         latency = int((time.monotonic() - t0) * 1000)
         tokens = (getattr(resp, "usage_metadata", None) or {}).get("total_tokens", 0)
-        # 先查已知上限表(供应商文档,可靠);查不到再探测(对会报错的家有效,对静默截断的家—如 deepseek—回 None)
-        max_output = _known_max_output(body.model) or await _probe_max_output(gw, body)
+        # 查已知上限表(供应商文档);查不到 → None,前端用默认值/让用户手填。不再探测——
+        # 探测既慢(多发一次大请求)又对静默截断的家(如 deepseek)无效。
+        max_output = _known_max_output(body.model)
         return JSONResponse({"ok": True, "latency_ms": latency, "tokens": tokens, "max_output": max_output})
     except asyncio.TimeoutError:
         return JSONResponse({"ok": False, "error": "调用超时（15s）"})
@@ -70,7 +70,7 @@ async def test_model(body: TestBody):
 
 
 # 已知模型的最大输出 token(供应商文档,best-effort;按模型名子串匹配,长键在前先命中)。
-# 探测法对「静默截断不报错」的家(如 deepseek)无效,故查表优先。表外模型 → 探测/手填。
+# 表外模型 → None,前端用默认值/让用户按模型文档手填(不探测:慢且对静默截断的家无效)。
 _KNOWN_MAX_OUTPUT: list[tuple[str, int]] = [
     ("deepseek-reasoner", 8192),
     ("deepseek-chat", 8192),
@@ -90,33 +90,6 @@ _KNOWN_MAX_OUTPUT: list[tuple[str, int]] = [
 def _known_max_output(model: str | None) -> int | None:
     m = (model or "").lower()
     return next((v for k, v in _KNOWN_MAX_OUTPUT if k in m), None)
-
-
-_MAXTOK_KW = re.compile(r"max_?tokens", re.IGNORECASE)
-_NUM_RE = re.compile(r"\d{3,7}")
-
-
-def _parse_max_output(text: str) -> int | None:
-    """从「max_tokens 超限」报错里抠真实上限:定位关键词后取其后一窗口内最大的 3~7 位数字
-    (形如 "range of max_tokens is [1, 8192]" —— 取 8192 而非区间下限的 1;探测发的 200000 也在
-    关键词之前,不会被误取)。找不到关键词或窗口无合适数字 → None。"""
-    kw = _MAXTOK_KW.search(text)
-    if not kw:
-        return None
-    nums = [int(n) for n in _NUM_RE.findall(text[kw.end():kw.end() + 60]) if int(n) != 200000]
-    return max(nums) if nums else None
-
-
-async def _probe_max_output(gw: ModelGateway, body: "TestBody") -> int | None:
-    """探测模型真实最大输出:故意发一个超大 max_tokens,供应商拒绝时从错误信息里解析出上限数字。
-    /v1/models 不返回该值,这是最可靠的探法。探不到(调用竟成功/错误不含数字)→ None,不影响测通结论。"""
-    try:
-        chat = gw.get_chat(body.provider, body.model, base_url=body.base_url,
-                           api_key=body.api_key, max_tokens=200000)
-        await asyncio.wait_for(chat.ainvoke([HumanMessage(content="hi")]), timeout=15)
-        return None   # 20万 token 竟被接受:无法据此判定上限,交给用户按模型文档填
-    except Exception as e:  # noqa: BLE001 正是要从这个「超限」错误里抠数字
-        return _parse_max_output(str(e))
 
 
 @router.post("/models/list-models")

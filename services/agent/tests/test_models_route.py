@@ -214,20 +214,6 @@ def test_models_list_models_builtin_provider_missing_key_returns_ok_false(monkey
     assert res.json()["ok"] is False
 
 
-def test_parse_max_output_extracts_limit():
-    """从各家「超限」错误文案里抠出真实 max_tokens 上限(取关键词后窗口内最大数字)。"""
-    import agent.routes.models as m
-    cases = {
-        "max_tokens must be less than or equal to 8192": 8192,
-        "Range of max_tokens is [1, 8192]": 8192,      # 取上限 8192 而非区间下限 1
-        "invalid max_tokens: 4095 is the maximum": 4095,
-        "max_tokens 超过上限 32768": 32768,
-        "max_tokens 200000 exceeds limit 8192": 8192,   # 探测发的 200000 被剔除
-        "some unrelated error": None,
-    }
-    for text, expect in cases.items():
-        assert m._parse_max_output(text) == expect, text
-
 
 def test_known_max_output_table():
     """已知模型上限表:按模型名子串匹配,长键先命中;表外 → None。"""
