@@ -129,6 +129,40 @@ def test_large_clause_count_triggers_segmented_read(monkeypatch, submit_gateway)
     assert "technical" in keys and "overview" in keys
 
 
+def test_segmented_read_runs_rounds_concurrently(monkeypatch, submit_gateway):
+    """并行提取回归:分段各轮必须并发跑(墙钟≈最慢一批,非累加)。
+    fake 每轮 sleep 一拍并记录在途数,峰值在途 >1 即证明未被串行化;同时不超 SEG_CONCURRENCY。"""
+    import agent.agents.bidding_agent.nodes.read as read_mod
+
+    n = read_mod.SEGMENT_CLAUSE_THRESHOLD + 1
+    big = [{"id": f"sec-1-c{i}", "text": f"条款{i}"} for i in range(n)]
+
+    async def fake_parse_multi(files):
+        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}]
+    monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
+
+    inflight = {"now": 0, "peak": 0}
+    real_seg_submit = read_mod._seg_submit
+
+    async def slow_seg_submit(ctx, user, hint, label):
+        inflight["now"] += 1
+        inflight["peak"] = max(inflight["peak"], inflight["now"])
+        await asyncio.sleep(0.05)   # 给并发重叠留出窗口
+        try:
+            return await real_seg_submit(ctx, user, hint, label)
+        finally:
+            inflight["now"] -= 1
+    monkeypatch.setattr(read_mod, "_seg_submit", slow_seg_submit)
+
+    args = {"submit_read_result": {"categories": [{"key": "overview", "title": "概况", "items": []}]}}
+    ctx = RunContext(run_id="r-par", agent_type="bidding_agent", thread_id="t-par", gateway=submit_gateway(args))
+    asyncio.run(read_mod.make_read_node(ctx)({
+        "file_key": "a.docx", "files": [{"key": "a.docx", "name": "采购文件"}]}))
+
+    assert inflight["peak"] > 1                                  # 真并发,没有被串行化
+    assert inflight["peak"] <= read_mod.SEG_CONCURRENCY          # 且被信号量限住
+
+
 def test_small_clause_count_single_submission(monkeypatch, submit_gateway):
     """阈值以内仍单轮提交(现状行为不回归)。"""
     import agent.agents.bidding_agent.nodes.read as read_mod

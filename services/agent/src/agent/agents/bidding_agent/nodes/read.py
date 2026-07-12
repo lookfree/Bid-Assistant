@@ -45,22 +45,40 @@ async def _seg_submit(ctx, user: str, hint: str, label: str) -> ReadResult:
         ctx, READ_SYSTEM_PROMPT, user + hint, "submit_read_result", ReadResult, label)
 
 
+# 分段读标并发上限:各轮彼此独立(不同字段/不同条款块),并发跑墙钟≈最慢一批而非累加
+# (三包 2100 条款标实测:24 轮串行 ~16 分钟 → 并发后 ~2-3 分钟)。上限防服务商限流。
+SEG_CONCURRENCY = 6
+
+
 async def _segmented_read(ctx, user: str, clauses: list[dict]) -> ReadResult:
     """大标书分段读标:基础轮 + 格式构成轮 + 评分轮 + 技术需求按条款分块,节点内合并成一份 ReadResult。
-    每轮字段范围受限、技术按条款分块——单轮输出与标书/包件规模解耦,恒不撞 8k 输出上限。"""
-    await publish_phase(ctx, "读标·基础信息(概况/资格/商务)")
-    base = await _seg_submit(ctx, user, _SEG_BASE, "读标·基础轮(meta+概况/资格/商务)")
-    await publish_phase(ctx, "读标·格式与投标构成")
-    fmt = await _seg_submit(ctx, user, _SEG_FMT, "读标·格式构成轮(format+构成+包件+红线)")
-    await publish_phase(ctx, "读标·评分办法")
-    score = await _seg_submit(ctx, user, _SEG_SCORE, "读标·评分轮")
+    每轮字段范围受限、技术按条款分块——单轮输出与标书/包件规模解耦,恒不撞 8k 输出上限。
+    所有轮**并发**执行(SEG_CONCURRENCY 信号量限流):总 token 不变,墙钟大幅缩短;
+    每轮完成即推一条进度事件(已完成 X/N)。任一轮失败整个读标失败(与串行语义一致,run 可重试)。"""
     chunks = [clauses[i:i + TECH_CHUNK_CLAUSES] for i in range(0, len(clauses), TECH_CHUNK_CLAUSES)] or [[]]
-    tech_items: list = []
-    for idx, chunk in enumerate(chunks, start=1):
-        await publish_phase(ctx, f"读标·技术需求 第{idx}/{len(chunks)}块")
-        part = await _seg_submit(ctx, user, _tech_chunk_hint(chunk, idx, len(chunks)),
-                                 f"读标·技术第{idx}/{len(chunks)}块")
-        tech_items += [it for c in part.categories if c.key == "technical" for it in c.items]
+    total = 3 + len(chunks)
+    done = 0
+    sem = asyncio.Semaphore(SEG_CONCURRENCY)
+    await publish_phase(ctx, f"读标·并行提取中(共 {total} 轮:基础/格式/评分 + 技术 {len(chunks)} 块)")
+
+    async def _run(hint: str, label: str) -> ReadResult:
+        nonlocal done
+        async with sem:
+            part = await _seg_submit(ctx, user, hint, label)
+        done += 1   # asyncio 单线程,计数无竞态
+        await publish_phase(ctx, f"读标·并行提取中 已完成 {done}/{total} 轮")
+        return part
+
+    base, fmt, score, *tech_parts = await asyncio.gather(
+        _run(_SEG_BASE, "读标·基础轮(meta+概况/资格/商务)"),
+        _run(_SEG_FMT, "读标·格式构成轮(format+构成+包件+红线)"),
+        _run(_SEG_SCORE, "读标·评分轮"),
+        *[_run(_tech_chunk_hint(chunk, idx, len(chunks)), f"读标·技术第{idx}/{len(chunks)}块")
+          for idx, chunk in enumerate(chunks, start=1)],
+    )
+    # gather 保序:tech_parts 与 chunks 顺序一致,技术项合并后条款顺序不变。
+    tech_items = [it for part in tech_parts
+                  for c in part.categories if c.key == "technical" for it in c.items]
     # 合并:各轮只产自己负责的字段,取并集;基础轮做底座(project_meta 在其上)。
     keep = {"overview", "qualification", "commercial"}
     cats = [c for c in base.categories if c.key in keep]
