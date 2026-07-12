@@ -80,15 +80,22 @@ modelsRouter.post("/test", requirePermission("config.write"), async (c) => {
 
 // 自建端点探连通 + 拉可用模型列表——纯中转 agent /models/list-models，不落库。
 // apiKey 可缺省：已保存条目走 id 回填库里 key（前端拿不到明文）。
-const ListModelsBody = z.object({
-  baseUrl: z.string().url(),
-  apiKey: z.string().optional(),
-  id: z.string().optional(),
-})
+// provider（内置 deepseek/qwen/glm）：agent 侧按注册表解析 base_url + 服务端 env 取 key，无需前端带 baseUrl/apiKey。
+// 二者二选一——带 provider 且不带 baseUrl 时走内置路径；否则沿用自建端点路径。
+const ListModelsBody = z
+  .object({
+    provider: z.string().min(1).optional(),
+    baseUrl: z.string().url().optional(),
+    apiKey: z.string().optional(),
+    id: z.string().optional(),
+  })
+  .refine((v) => !!v.provider || !!v.baseUrl, { message: "provider or baseUrl required" })
 modelsRouter.post("/list-models", requirePermission("config.write"), async (c) => {
   const parsed = ListModelsBody.safeParse(await c.req.json().catch(() => null))
   if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
-  const apiKey = parsed.data.apiKey || (await resolveStoredKey(parsed.data.id))
+  const { provider, baseUrl, id } = parsed.data
+  if (provider && !baseUrl) return c.json(await listModels({ provider }))
+  const apiKey = parsed.data.apiKey || (await resolveStoredKey(id))
   if (!apiKey) return c.json({ ok: false, error: "缺少 API Key" })
-  return c.json(await listModels({ baseUrl: parsed.data.baseUrl, apiKey }))
+  return c.json(await listModels({ baseUrl, apiKey }))
 })

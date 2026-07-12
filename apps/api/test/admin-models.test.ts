@@ -99,6 +99,29 @@ describe("spec319 /admin-api/models", () => {
     }
   })
 
+  // 内置服务商拉取（本次新增）：带 provider、不带 baseUrl ⇒ 中转 {provider} 给 agent，不走自建端点 key 解析。
+  it("POST /list-models 带 {provider} 中转 agent（mock fetch），原样返回 {ok, models}", async () => {
+    const { headers } = await makeAdminSession("ops", regA)
+    const orig = (globalThis as any).fetch
+    let capturedBody: any
+    ;(globalThis as any).fetch = (async (_url: string, init: any) => {
+      capturedBody = JSON.parse(init.body)
+      return new Response(JSON.stringify({ ok: true, models: ["deepseek-chat", "deepseek-reasoner"] }), { status: 200 })
+    }) as unknown as typeof fetch
+    try {
+      const res = await app.request("http://x/admin-api/models/list-models", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ provider: "deepseek" }),
+      })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true, models: ["deepseek-chat", "deepseek-reasoner"] })
+      expect(capturedBody).toEqual({ provider: "deepseek" })
+    } finally {
+      ;(globalThis as any).fetch = orig
+    }
+  })
+
   // 密钥策略核心回归（REQUIRED）：GET 从不回显明文 key；PUT 携带空 apiKey 时保留库里旧 key（按 id 合并）。
   it("自建条目密钥往返：PUT 建自建带 key → GET 打码不回显明文 → PUT 回去 key 留空 → 库里 key 不变", async () => {
     await clearAgentModel()

@@ -76,13 +76,19 @@ export async function testModel(opts: {
   return { ok: body.ok, latencyMs: body.latency_ms, tokens: body.tokens, error: body.error }
 }
 
-/** 自建端点可用模型列举中转（spec319.1）：relay 到 agent `/models/list-models`，纯查询、不落库。
- *  agent 恒回 JSON（httpx 超时/连接拒绝/解析错都收敛成 {ok:false,error}，永不 500）；超时放宽 15s。 */
-export async function listModels(opts: { baseUrl: string; apiKey: string }): Promise<{ ok: boolean; models?: string[]; error?: string }> {
+/** 可用模型列举中转（spec319.1 自建端点 + 内置服务商拉取）：relay 到 agent `/models/list-models`，纯查询、不落库。
+ *  agent 恒回 JSON（httpx 超时/连接拒绝/解析错都收敛成 {ok:false,error}，永不 500）；超时放宽 15s。
+ *  provider 非空 ⇒ 内置服务商路径（agent 从注册表解析 base_url + 服务端 env 取 key）；否则走自建端点
+ *  base_url/api_key。两者互斥，由调用方决定传哪一组。 */
+export async function listModels(opts: { baseUrl?: string; apiKey?: string; provider?: string }): Promise<{ ok: boolean; models?: string[]; error?: string }> {
+  const body: Record<string, unknown> = {}
+  if (opts.provider) body.provider = opts.provider
+  if (opts.baseUrl) body.base_url = opts.baseUrl
+  if (opts.apiKey) body.api_key = opts.apiKey
   const r = await fetch(`${getEnv().AGENT_BASE_URL}/models/list-models`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ base_url: opts.baseUrl, api_key: opts.apiKey }),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(15_000),
   })
   return (await r.json()) as { ok: boolean; models?: string[]; error?: string }

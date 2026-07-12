@@ -101,6 +101,7 @@ export function ModelCard({ model, isNew, inChain, testing, tokens, busy, onTest
       <CardContent className="flex flex-col gap-3 px-4">
         <ParamsGrid editing={editing} model={model} draft={draft} setDraft={setDraft} />
         {editing && isCustomEntry(draft) && <CustomEndpointFields draft={draft} setDraft={setDraft} />}
+        {editing && !isCustomEntry(draft) && <BuiltinModelFetch draft={draft} setDraft={setDraft} />}
         <TestLine model={model} inChain={inChain} tokens={tokens} />
 
         <div className="flex items-center justify-between gap-2 border-t border-border pt-3">
@@ -350,6 +351,62 @@ function AddToChainRow({ model, inChain, onAddToChain }: { model: ModelEntry; in
   )
 }
 
+// 拉取可用模型的共享状态机（loading/结果列表/错误）：自建端点与内置服务商共用同一套状态，
+// 差异只在传给 adminApi.models.listModels 的参数（自建带 baseUrl/apiKey，内置只带 provider）。
+function useModelListFetch(fetchFn: () => Promise<{ ok: boolean; models?: string[]; error?: string }>, fallbackError: string) {
+  const [models, setModels] = useState<string[]>([])
+  const [fetching, setFetching] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function run() {
+    setFetching(true)
+    setError(null)
+    try {
+      const res = await fetchFn()
+      if (res.ok && res.models) setModels(res.models)
+      else setError(res.error ?? fallbackError)
+    } catch {
+      setError("请求失败，请重试")
+    } finally {
+      setFetching(false)
+    }
+  }
+  return { models, fetching, error, run }
+}
+
+// 拉取结果下拉 + 错误提示，自建端点与内置服务商共用的展示片段。
+function FetchedModelsPicker({
+  models,
+  error,
+  value,
+  onSelect,
+}: {
+  models: string[]
+  error: string | null
+  value: string
+  onSelect: (v: string) => void
+}) {
+  return (
+    <>
+      {models.length > 0 && (
+        <Select value={value || undefined} onValueChange={(v) => v && onSelect(v)}>
+          <SelectTrigger className="h-8 w-56">
+            <SelectValue placeholder="从拉取结果中选择" />
+          </SelectTrigger>
+          <SelectContent>
+            {models.map((id) => (
+              <SelectItem key={id} value={id}>
+                {id}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+      {error && <p className="text-xs text-destructive">{error}</p>}
+    </>
+  )
+}
+
 // 自建端点专属字段（仅编辑态 + 自建模式渲染）：base_url + api_key 输入、拉取可用模型下拉。
 // 下拉选中项与卡片头手填的 model 输入写同一个 draft.model 字段——二者并存，谁后写生效。
 function CustomEndpointFields({
@@ -359,26 +416,16 @@ function CustomEndpointFields({
   draft: ModelEntry
   setDraft: (updater: (d: ModelEntry) => ModelEntry) => void
 }) {
-  const [models, setModels] = useState<string[]>([])
-  const [fetching, setFetching] = useState(false)
-  const [fetchError, setFetchError] = useState<string | null>(null)
-
   // 已保存条目 apiKey 打码不回显：本地无明文时带 id，让服务端从库回填 key（apiKeyHint 存在即证明库里有 key）。
   const hasUsableKey = !!draft.apiKey || !!draft.apiKeyHint
+  const { models, fetching, error, run } = useModelListFetch(
+    () => adminApi.models.listModels({ baseUrl: draft.baseUrl, apiKey: draft.apiKey, id: draft.id }),
+    "拉取失败，请检查 URL / Key",
+  )
 
   async function fetchModels() {
     if (!draft.baseUrl || !hasUsableKey) return
-    setFetching(true)
-    setFetchError(null)
-    try {
-      const res = await adminApi.models.listModels({ baseUrl: draft.baseUrl, apiKey: draft.apiKey, id: draft.id })
-      if (res.ok && res.models) setModels(res.models)
-      else setFetchError(res.error ?? "拉取失败，请检查 URL / Key")
-    } catch {
-      setFetchError("请求失败，请重试")
-    } finally {
-      setFetching(false)
-    }
+    await run()
   }
 
   return (
@@ -409,22 +456,43 @@ function CustomEndpointFields({
           {fetching ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <Download data-icon="inline-start" />}
           拉取可用模型
         </Button>
-        {models.length > 0 && (
-          <Select value={draft.model || undefined} onValueChange={(v) => v && setDraft((d) => ({ ...d, model: v }))}>
-            <SelectTrigger className="h-8 w-56">
-              <SelectValue placeholder="从拉取结果中选择" />
-            </SelectTrigger>
-            <SelectContent>
-              {models.map((id) => (
-                <SelectItem key={id} value={id}>
-                  {id}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
+        <FetchedModelsPicker
+          models={models}
+          error={error}
+          value={draft.model}
+          onSelect={(v) => setDraft((d) => ({ ...d, model: v }))}
+        />
       </div>
-      {fetchError && <p className="text-xs text-destructive">{fetchError}</p>}
+    </div>
+  )
+}
+
+// 内置服务商（deepseek/qwen/glm）拉取可用模型：agent 侧按注册表解析 base_url + 服务端 env 取 key，
+// 前端只需带 provider，无需 base_url/api_key。与手填的 model 输入（在卡片头）并存，谁后写生效。
+function BuiltinModelFetch({
+  draft,
+  setDraft,
+}: {
+  draft: ModelEntry
+  setDraft: (updater: (d: ModelEntry) => ModelEntry) => void
+}) {
+  const { models, fetching, error, run } = useModelListFetch(
+    () => adminApi.models.listModels({ provider: draft.provider }),
+    "该服务商暂不支持自动拉取，请手填模型名",
+  )
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button size="sm" variant="outline" type="button" disabled={fetching} onClick={run}>
+        {fetching ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <Download data-icon="inline-start" />}
+        拉取可用模型
+      </Button>
+      <FetchedModelsPicker
+        models={models}
+        error={error}
+        value={draft.model}
+        onSelect={(v) => setDraft((d) => ({ ...d, model: v }))}
+      />
     </div>
   )
 }

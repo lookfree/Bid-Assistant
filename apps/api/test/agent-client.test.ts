@@ -169,6 +169,23 @@ test("listModels POST 到 /models/list-models，body snake {base_url,api_key}", 
   } finally { (globalThis as any).fetch = orig }
 })
 
+// 内置服务商拉取（本次新增）：带 provider 时请求体只含 provider，不下发 base_url/api_key。
+test("listModels 带 provider → 请求体只含 {provider}", async () => {
+  const cap: { url?: string; body?: any } = {}
+  const orig = (globalThis as any).fetch
+  ;(globalThis as any).fetch = (async (url: string, init: any) => {
+    cap.url = url
+    cap.body = JSON.parse(init.body)
+    return new Response(JSON.stringify({ ok: true, models: ["deepseek-chat"] }), { status: 200 })
+  }) as unknown as typeof fetch
+  try {
+    const out = await listModels({ provider: "deepseek" })
+    expect(cap.url).toContain("/models/list-models")
+    expect(cap.body).toEqual({ provider: "deepseek" })
+    expect(out).toEqual({ ok: true, models: ["deepseek-chat"] })
+  } finally { (globalThis as any).fetch = orig }
+})
+
 test("listModels 失败探针 → agent 恒回 {ok:false,error}，原样透传（永不抛）", async () => {
   const orig = (globalThis as any).fetch
   ;(globalThis as any).fetch = (async () => new Response(JSON.stringify({ ok: false, error: "连接超时" }), { status: 200 })) as unknown as typeof fetch

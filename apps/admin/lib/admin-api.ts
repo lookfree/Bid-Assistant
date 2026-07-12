@@ -108,9 +108,10 @@ export const adminApi = {
           id: m.id,
         }),
       }),
-    // 自建端点连通性探针 + 拉可用模型列表：POST /list-models {baseUrl,apiKey?,id?}（camelCase，中转层不转换）。
-    // apiKey 缺省时服务端按 id 从库回填 key（已保存条目明文不回显）。
-    listModels: (m: { baseUrl: string; apiKey?: string; id?: string }) =>
+    // 自建端点 / 内置服务商 连通性探针 + 拉可用模型列表：POST /list-models（camelCase，中转层不转换）。
+    // 自建端点带 {baseUrl,apiKey?,id?}——apiKey 缺省时服务端按 id 从库回填 key（已保存条目明文不回显）。
+    // 内置服务商（deepseek/qwen/glm）只带 {provider}——服务端从注册表解析 base_url + env 取 key。
+    listModels: (m: { baseUrl?: string; apiKey?: string; id?: string; provider?: string }) =>
       req<{ ok: boolean; models?: string[]; error?: string }>("/models/list-models", {
         method: "POST",
         body: JSON.stringify(m),
