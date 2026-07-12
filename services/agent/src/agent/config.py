@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     # 流式空闲超时（大标书读标实测：单块生成慢而健康达数分钟，"总超时"会误杀——只在"连续无 token"时判挂死）。
     model_idle_timeout_s: int = 30              # 流式中连续 N 秒无新 token = 连接挂死 → 降级重试
     model_first_token_timeout_s: int = 120      # 首 token（含连接+大 prompt 预填）宽限，避免误杀慢启动
+    # 单轮总时长兜底：服务商限流时 token 细流(每 20s 一个)骗过空闲检测、单轮磨 30+ 分钟(生产实测
+    # tech18)。健康单轮 1-4 分钟,10 分钟顶格仍未完成=事实不可用 → 判超时进降级重试通道。
+    model_round_timeout_s: int = 600
     # 结构化模型链（spec319.1）：每项 {provider, model, base_url, api_key}；仅由 App run override
     # 经 model_copy(update=...) 注入，不从 env 解析（pydantic-settings 对 list[dict] 复杂字段不读 env）。
     model_chain: list[dict] | None = None

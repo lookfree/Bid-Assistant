@@ -75,14 +75,21 @@ async def astream_collect(chat, messages, ctx, label: str | None):
     - token 持续吐时每 _HEARTBEAT_S 秒推一条「<label> 生成中…」心跳（含已生成字数）。
     返回聚合后的 AIMessage（含 tool_calls / usage_metadata，与 ainvoke 结果同形）。"""
     idle_s, first_s = settings.model_idle_timeout_s, settings.model_first_token_timeout_s
+    # 单轮总时长兜底:限流下的 token 细流(每 20s 一个)骗过空闲检测、单轮磨 30+ 分钟(生产实测)。
+    # 空闲检测杀"挂死",总时长杀"慢而不死"——两者都进降级重试通道。
+    deadline = time.monotonic() + settings.model_round_timeout_s
     agg = None
     last_beat = time.monotonic()
     stream = chat.astream(messages)
     it = stream.__aiter__()
     try:
         while True:
+            budget = deadline - time.monotonic()
+            if budget <= 0:
+                raise ModelIdleTimeout()   # 总时长顶格:事实不可用,交给降级重试
             try:
-                chunk = await wait_for(it.__anext__(), timeout=first_s if agg is None else idle_s)
+                chunk = await wait_for(it.__anext__(),
+                                       timeout=min(first_s if agg is None else idle_s, budget))
             except StopAsyncIteration:
                 break
             except AsyncTimeoutError as e:

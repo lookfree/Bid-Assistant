@@ -54,9 +54,34 @@ def _ctx(gateway=None):
 
 @pytest.fixture
 def _fast_timeout(monkeypatch):
-    """把空闲/首token超时压到 0.3s，测试无需真等 30s。"""
+    """把空闲/首token/单轮总时长超时压小，测试无需真等 30s。"""
     monkeypatch.setattr(ms.settings, "model_idle_timeout_s", 0.3)
     monkeypatch.setattr(ms.settings, "model_first_token_timeout_s", 0.3)
+    monkeypatch.setattr(ms.settings, "model_round_timeout_s", 30)
+
+
+async def test_trickle_stream_hits_round_cap_and_downgrades(_fast_timeout, monkeypatch):
+    """总时长兜底回归(生产实测 tech18):限流下 token 细流——每次间隔小于空闲阈值,永不触发空闲
+    超时,单轮磨 30+ 分钟。总时长顶格必须判超时并进降级通道,由健康的降级模型接手。"""
+    monkeypatch.setattr(ms.settings, "model_round_timeout_s", 0.5)   # 压到 0.5s 便于测试
+
+    class _TrickleChat:
+        def bind_tools(self, tools, **kw):
+            return self
+
+        async def astream(self, messages, **kw):
+            while True:                       # 永远慢慢吐,骗过空闲检测
+                await asyncio.sleep(0.1)      # 0.1s < 0.3s 空闲阈值
+                yield AIMessageChunk(content="字")
+
+    healthy = _CountingChat()
+    gw = _Gateway([_TrickleChat(), healthy], chain=[{"model": "big"}, {"model": "small"}])
+
+    async def _submit(**kw):
+        ...
+    msg = await ms.forced_stream_submit(_ctx(gw), [], _submit, "submit_x", label="读标·技术块")
+    assert msg.tool_calls[0]["name"] == "submit_x"
+    assert healthy.astream_calls == 1         # 细流被总时长掐掉,降级模型接手成功
 
 
 async def test_healthy_slow_stream_not_killed(_fast_timeout):
