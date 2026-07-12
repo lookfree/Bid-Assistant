@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +40,13 @@ def _file_url(path):
 
 
 def main():
-    in_path, out_path, profile_dir, port = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+    # 用命名管道而非固定 TCP 端口：并发导出（worker 并发 5）多个 soffice 抢同一端口会串扰/失败,
+    # 管道名每次转换唯一(调用方传 uuid),彻底无冲突。
+    in_path, out_path, profile_dir, pipe = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
     listener = subprocess.Popen([
         "soffice", "--headless", "--invisible", "--norestore",
         f"-env:UserInstallation=file://{profile_dir}",
-        f"--accept=socket,host=127.0.0.1,port={port};urp;",
+        f"--accept=pipe,name={pipe};urp;",
     ])
     try:
         local_ctx = uno.getComponentContext()
@@ -53,7 +56,7 @@ def main():
         for _ in range(60):
             try:
                 ctx = resolver.resolve(
-                    f"uno:socket,host=127.0.0.1,port={port};urp;StarOffice.ComponentContext")
+                    f"uno:pipe,name={pipe};urp;StarOffice.ComponentContext")
                 break
             except Exception:
                 time.sleep(0.5)
@@ -91,9 +94,10 @@ def _convert_via_uno(src: str, out_pdf: str, tmp: str) -> bytes | None:
     with open(script_path, "w", encoding="utf-8") as f:
         f.write(_UNO_SCRIPT)
     profile = os.path.join(tmp, "lo-profile-uno")
+    pipe_name = f"unoconv_{uuid.uuid4().hex}"   # 每次转换唯一管道名,避免并发导出撞端口
     try:
         subprocess.run(
-            [_UNO_PYTHON, script_path, src, out_pdf, profile, "2002"],
+            [_UNO_PYTHON, script_path, src, out_pdf, profile, pipe_name],
             timeout=120, check=True, capture_output=True,
         )
     except (subprocess.SubprocessError, OSError) as e:

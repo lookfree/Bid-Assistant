@@ -317,9 +317,12 @@ class _FakeRedisForSweep:
       每个 pending run_id 分配一个假 message_id，xrange 按 id 查回 {run_id: ...} fields。
     """
 
-    def __init__(self, *, heartbeats: set[str] | None = None, pending_ids: set[str] | None = None):
+    def __init__(self, *, heartbeats: set[str] | None = None, pending_ids: set[str] | None = None,
+                 last_delivered: str = "9999999999-0", entry_ids: dict[str, str] | None = None):
         self._heartbeats = set(heartbeats or ())
         self._pending = {f"p-{i}": rid for i, rid in enumerate(pending_ids or ())}
+        self._last_delivered = last_delivered            # 组游标（默认很大 → entry 都视为已投递）
+        self._entry_ids = entry_ids or {}                 # run_id → runmeta 里的 entry_id
         self.events: list[dict] = []
 
     def exists(self, key: str) -> int:
@@ -332,6 +335,15 @@ class _FakeRedisForSweep:
     def xrange(self, name, min, max):
         rid = self._pending.get(min)
         return [(min, {"run_id": rid})] if rid else []
+
+    def xinfo_groups(self, name):
+        from agent.runtime.channels import GROUP
+        return [{"name": GROUP, "last-delivered-id": self._last_delivered}]
+
+    def get(self, key):
+        rid = key.rsplit(":", 1)[-1]
+        eid = self._entry_ids.get(rid)
+        return json.dumps({"entry_id": eid}) if eid else None
 
     def pipeline(self):
         return _CapturingPipeline(self.events)
@@ -382,12 +394,13 @@ async def test_sweep_stale_runs_queued_fresh_untouched(monkeypatch):
     assert rec.finish_calls == []
 
 
-async def test_sweep_stale_runs_queued_stale_and_not_pending_is_reaped(monkeypatch):
-    """queued 超过 QUEUED_STALE_S 且 stream 侧找不到对应 pending 条目 = 消息丢失。"""
+async def test_sweep_stale_runs_queued_stale_delivered_but_stuck_is_reaped(monkeypatch):
+    """queued 超时、非 pending、且 entry_id ≤ 组游标（已投递却卡住，ack 与 start_run 间崩溃）= 丢单。"""
     stale_s = executor_mod.settings.queued_stale_s
     created = datetime.now(timezone.utc) - timedelta(seconds=stale_s + 1)
     rec = _FakeRecorderForSweep([("run-lost", "queued", created)])
-    fake_r = _FakeRedisForSweep()
+    # entry_id "5-0" ≤ 游标 "10-0" → 已投递
+    fake_r = _FakeRedisForSweep(last_delivered="10-0", entry_ids={"run-lost": "5-0"})
     monkeypatch.setattr(executor_mod, "_rec", lambda: rec)
     monkeypatch.setattr(executor_mod, "get_redis", lambda: fake_r)
 
@@ -395,6 +408,23 @@ async def test_sweep_stale_runs_queued_stale_and_not_pending_is_reaped(monkeypat
 
     assert result == {"running_reaped": 0, "queued_reaped": 1}
     assert rec.finish_calls == [("run-lost", "failed", "排队丢失，已回收", "QueuedStale")]
+
+
+async def test_sweep_stale_runs_queued_stale_but_undelivered_backlog_untouched(monkeypatch):
+    """评审 Important 回归：饱和积压下 queued 超时但 entry_id > 组游标（尚未投递，只是排队）——
+    绝不能杀，否则消息迟早被消费却已被误标失败（幽灵失败 + App 侧误退款）。"""
+    stale_s = executor_mod.settings.queued_stale_s
+    created = datetime.now(timezone.utc) - timedelta(seconds=stale_s + 1)
+    rec = _FakeRecorderForSweep([("run-backlog", "queued", created)])
+    # entry_id "20-0" > 游标 "10-0" → 尚未投递
+    fake_r = _FakeRedisForSweep(last_delivered="10-0", entry_ids={"run-backlog": "20-0"})
+    monkeypatch.setattr(executor_mod, "_rec", lambda: rec)
+    monkeypatch.setattr(executor_mod, "get_redis", lambda: fake_r)
+
+    result = await executor_mod.sweep_stale_runs()
+
+    assert result == {"running_reaped": 0, "queued_reaped": 0}
+    assert rec.finish_calls == []
 
 
 async def test_sweep_stale_runs_queued_stale_but_still_pending_untouched(monkeypatch):

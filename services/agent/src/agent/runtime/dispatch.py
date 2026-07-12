@@ -19,8 +19,11 @@ def create_run(agent_type: str, input: dict, thread_id: str | None = None,
         )
         conn.commit()
     r = get_redis()
+    entry_id = r.xadd(stream_key(), {"run_id": run_id})
+    # entry_id 存进 runmeta：queued 清道夫据此和消费组 last-delivered 游标比对——
+    # 只回收「已投递却卡住」的(entry_id ≤ 游标),不误杀「尚未投递、只是排队等消费」的(entry_id > 游标)。
+    eid = entry_id.decode() if isinstance(entry_id, bytes) else str(entry_id)
     r.set(runmeta_key(run_id), json.dumps(
         {"agent_type": agent_type, "thread_id": tid, "input": input, "model": model,
-         "user_id": user_id}), ex=86400)
-    r.xadd(stream_key(), {"run_id": run_id})
+         "user_id": user_id, "entry_id": eid}), ex=86400)
     return run_id

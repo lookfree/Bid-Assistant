@@ -160,6 +160,35 @@ def _pending_run_ids(r) -> set[str]:
     return run_ids
 
 
+def _sid_le(a: str, b: str) -> bool:
+    """stream id 比较 a ≤ b：id 形如 "ms-seq"，按 (ms, seq) 数值序比。解析异常 → False（保守不回收）。"""
+    try:
+        am, asq = (int(x) for x in a.split("-", 1))
+        bm, bsq = (int(x) for x in b.split("-", 1))
+        return (am, asq) <= (bm, bsq)
+    except (ValueError, AttributeError):
+        return False
+
+
+def _group_last_delivered(r) -> str | None:
+    """消费组 last-delivered-id 游标：queued 清道夫据此区分「已投递卡住」和「未投递排队」。"""
+    for g in r.xinfo_groups(stream_key()):
+        name = g.get("name")
+        name = name.decode() if isinstance(name, bytes) else name
+        if name == GROUP:
+            lid = g.get("last-delivered-id")
+            return lid.decode() if isinstance(lid, bytes) else lid
+    return None
+
+
+def _run_entry_id(r, run_id: str) -> str | None:
+    """从 runmeta 取该 run 的 stream entry_id（dispatch 时 xadd 返回并存入）。"""
+    raw = r.get(runmeta_key(run_id))
+    if not raw:
+        return None
+    return json.loads(raw).get("entry_id")
+
+
 async def sweep_stale_runs() -> dict[str, int]:
     """心跳清道夫（spec318）：补 XAUTOCLAIM 认领路径够不到的两个死角——
     ① running 但 stream 条目已 ack（心跳是唯一存活证明，无心跳 = worker 中断，孤儿回收）；
@@ -178,6 +207,7 @@ async def sweep_stale_runs() -> dict[str, int]:
             return {"running_reaped": 0, "queued_reaped": 0}
         r = get_redis()
         pending_run_ids = await asyncio.to_thread(_pending_run_ids, r)
+        last_delivered = await asyncio.to_thread(_group_last_delivered, r)
     except Exception as e:  # noqa: BLE001 列举本身失败：本周期跳过，下个周期重试
         print(f"[worker] sweep_stale_runs 列举失败，跳过本轮: {e}", flush=True)
         return {"running_reaped": 0, "queued_reaped": 0}
@@ -192,7 +222,14 @@ async def sweep_stale_runs() -> dict[str, int]:
                     running_reaped += 1
             elif status == "queued":
                 age_s = (now - created_at).total_seconds()
-                if age_s >= settings.queued_stale_s and run_id not in pending_run_ids:
+                if age_s < settings.queued_stale_s or run_id in pending_run_ids:
+                    continue
+                # 只回收「已投递却卡住」的：entry_id ≤ 消费组游标 = 消息已被读走却没进 running（投递后
+                # worker 在 ack 与 start_run 之间崩溃等）。entry_id > 游标 = 尚未投递,只是积压排队,
+                # 迟早会被消费——绝不能杀（评审 Important：饱和积压下会误杀正常排队 run）。
+                entry_id = await asyncio.to_thread(_run_entry_id, r, run_id)
+                delivered = bool(entry_id and last_delivered and _sid_le(entry_id, last_delivered))
+                if delivered:
                     await _terminate_run(rec, r, run_id, "排队丢失，已回收", "QueuedStale")
                     queued_reaped += 1
         except Exception as e:  # noqa: BLE001 单条失败不拖垮整轮扫描，下个周期重试
