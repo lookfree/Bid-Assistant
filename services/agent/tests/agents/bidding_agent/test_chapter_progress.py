@@ -53,6 +53,16 @@ def test_write_todos_tool_not_counted_as_chapter():
     assert r.events == []       # 规划工具不计数
 
 
+def test_write_todos_without_name_not_counted():
+    """回归（name 门失败放行）：serialized 无 name（None）时名字门会放行，必须靠"只信结构化 file_path"
+    兜住——write_todos 的 repr 里含 chapters/b5.html（todo 项），不能落到 input_str 正则误计成写章。"""
+    r = _FakeRedis()
+    cb = ChapterProgressCallback(_ctx(r), total=20, titles={"b5": "投标报价"})
+    todo_input = "{'todos': [{'content': 'write chapters/b5.html', 'status': 'pending'}]}"
+    asyncio.run(cb.on_tool_start(None, todo_input, inputs={"todos": [{"file_path": "chapters/b5.html"}]}))
+    assert r.events == []       # serialized=None 也不能误计
+
+
 def test_chapter_id_and_title_clean_from_messy_input_str():
     """回归：即便只拿到 write_file 的 input_str（dict repr），也要精确抠出 id=b5、标题查得到，
     而不是把 "b5.html', 'status': ...}" 当成 id（用户实测到的乱码标题）。"""

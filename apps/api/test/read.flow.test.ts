@@ -42,6 +42,11 @@ const mockDeps: Partial<ReadDeps> = {
     status: "succeeded",
     result: { categories: [{ key: "qualification", title: "资格要求", items: [] }], risk_summary: ["ISO27001 缺失即废标"] },
   }),
+  getAgentModel: async () => ({
+    provider: "deepseek", model: "deepseek-chat", fallbacks: "",
+    params: { temperature: 0.7, max_tokens: 8192, top_p: 1 },
+    chain: [{ provider: "deepseek", model: "deepseek-chat" }],
+  }),
 }
 
 const app = new Hono()

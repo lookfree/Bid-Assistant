@@ -43,6 +43,11 @@ const mockDeps: Partial<ProjectDeps> = {
     yield "data: 进度\n\n"
   },
   getRun: async () => ({ status: "succeeded", result: STEP_RESULTS[runStep] }),
+  getAgentModel: async () => ({
+    provider: "deepseek", model: "deepseek-chat", fallbacks: "",
+    params: { temperature: 0.7, max_tokens: 8192, top_p: 1 },
+    chain: [{ provider: "deepseek", model: "deepseek-chat" }],
+  }),
 }
 
 const app = new Hono()

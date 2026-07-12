@@ -35,9 +35,13 @@ class ChapterProgressCallback(AsyncCallbackHandler):
         name = (serialized or {}).get("name") if isinstance(serialized, dict) else None
         if name and name != "write_file":
             return
-        path = (inputs or {}).get("file_path") or (inputs or {}).get("path") or input_str or ""
-        # 从路径里精确抠出章 id：只取 "chapters/" 与 ".html" 之间、不含引号/括号/逗号的一段，
-        # 避免把 dict repr 残片（b5.html', 'status': ...）当成 id。
+        # 结构化 file_path 才是可信来源（write_file 的 inputs.file_path 是干净的 chapters/x.html；
+        # write_todos 的 file_path 嵌在 todos 列表里，inputs.get 取不到）。input_str（工具入参 dict repr）
+        # 只在"确认是 write_file"时才兜底——否则 write_todos 若 serialized 无 name（绕过上面名字门），
+        # 其 repr 里的 todo 项 chapters/<id>.html 会被正则误抠成"写完一章"（虚高计数）。
+        path = (inputs or {}).get("file_path") or (inputs or {}).get("path") or ""
+        if not path and name == "write_file":
+            path = input_str or ""
         m = re.search(r"chapters/([^\"'/\\\s\]\},]+?)\.html", str(path))
         if not m:
             return

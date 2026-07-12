@@ -8,7 +8,6 @@ import type { User } from "../db/schema"
 import { authMiddleware } from "../middleware/auth"
 import * as billing from "../services/billing-stub"
 import * as client from "../services/agent-client"
-import { getAgentModel } from "../services/agent-client"
 import { ragRunInput } from "../services/rag-config"
 
 // 编排依赖可注入（mock 测编排次序），默认用真实 billing-stub / agent-client。
@@ -19,6 +18,7 @@ export type ReadDeps = {
   createRun: typeof client.createRun
   relayStream: typeof client.relayStream
   getRun: typeof client.getRun
+  getAgentModel: typeof client.getAgentModel
 }
 
 // spec320：接受多文件 fileKeys 或旧单文件 fileKey（至少一个）；本端点不做属主校验（历史行为，未收窄）。
@@ -43,6 +43,7 @@ export function readRoutes(deps: Partial<ReadDeps> = {}) {
   const createRun = deps.createRun ?? client.createRun
   const relayStream = deps.relayStream ?? client.relayStream
   const getRun = deps.getRun ?? client.getRun
+  const resolveModel = deps.getAgentModel ?? client.getAgentModel
 
   const r = new Hono<{ Variables: { user: User } }>()
   r.use("*", authMiddleware) // 读标属本人，需登录
@@ -57,7 +58,7 @@ export function readRoutes(deps: Partial<ReadDeps> = {}) {
     const threadId = `proj-${crypto.randomUUID()}`
 
     // 模型唯一来自运营后台配置：未配置直接报错（预扣前取，不占额度），绝不回退默认模型
-    const model = await getAgentModel()
+    const model = await resolveModel()
     if (!model) return c.json({ error: "model_not_configured" }, 400)
 
     const hold = await preDeduct(userId, "read", threadId) // 真账本预扣（ref=threadId，一次读标一个 thread）
