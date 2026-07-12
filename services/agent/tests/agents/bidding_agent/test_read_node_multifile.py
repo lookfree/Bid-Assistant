@@ -163,6 +163,33 @@ def test_segmented_read_runs_rounds_concurrently(monkeypatch, submit_gateway):
     assert inflight["peak"] <= read_mod.SEG_CONCURRENCY          # 且被信号量限住
 
 
+def test_tech_chunk_rounds_carry_only_own_chunk(monkeypatch, submit_gateway):
+    """瘦身回归(1MB 标书实测:每块都带全文 → 单轮 prefill ~4 分钟、输入重复计费 92 次):
+    技术块轮消息只含本块条款;骨架轮(基础/格式/评分)仍带全文。"""
+    import agent.agents.bidding_agent.nodes.read as read_mod
+
+    n = read_mod.SEGMENT_CLAUSE_THRESHOLD + 1     # 201 条 → 3 块(块大小 100)
+    big = [{"id": f"sec-1-c{i}", "text": f"条款{i}"} for i in range(n)]
+
+    async def fake_parse_multi(files):
+        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}]
+    monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
+
+    args = {"submit_read_result": {"categories": [{"key": "overview", "title": "概况", "items": []}]}}
+    gw = submit_gateway(args)
+    ctx = RunContext(run_id="r-slim", agent_type="bidding_agent", thread_id="t-slim", gateway=gw)
+    asyncio.run(read_mod.make_read_node(ctx)({
+        "file_key": "a.docx", "files": [{"key": "a.docx", "name": "采购文件"}]}))
+
+    msgs = [str(c.last_messages[-1].content) for c in gw.chats]
+    base_msg = next(m for m in msgs if "基础轮" in m)
+    tech1 = next(m for m in msgs if "技术第 1/" in m)
+    assert "条款0" in base_msg and f"条款{n - 1}" in base_msg   # 骨架轮带全文
+    assert "条款0" in tech1 and "条款150" not in tech1          # 技术第1块只含自己那 100 条
+    tech2 = next(m for m in msgs if "技术第 2/" in m)
+    assert "条款150" in tech2 and '"条款0"' not in tech2        # 第2块含 150、不含第1块的条款
+
+
 def test_small_clause_count_single_submission(monkeypatch, submit_gateway):
     """阈值以内仍单轮提交(现状行为不回归)。"""
     import agent.agents.bidding_agent.nodes.read as read_mod
