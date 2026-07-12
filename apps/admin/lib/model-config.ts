@@ -17,6 +17,8 @@ export type ModelEntry = {
   model: string
   params: ModelParams
   enabled: boolean
+  // 思考模式（可选，默认关）：关=更快更省且可流式强制提交；开=该模型走思考模式（走非流式提交）。
+  thinking?: boolean
   test: ModelTest
   // 自建端点专属（spec319.1）：baseUrl 非空 ⇒ 自建条目。apiKey 仅当用户新填时携带（save 用）；
   // apiKeyHint 是 GET 回来的打码提示（如 sk-****yA），从不是明文，仅用于展示 placeholder。

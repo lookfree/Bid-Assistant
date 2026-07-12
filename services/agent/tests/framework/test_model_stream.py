@@ -114,8 +114,8 @@ async def test_empty_stream_returns_empty_not_timeout(_fast_timeout):
     assert not (msg.tool_calls or msg.content)   # 空消息：无工具调用、无内容
 
 
-class _ThinkingChat:
-    """思考型模型：astream 抛"Thinking mode does not support this tool_choice"(400)；ainvoke 正常提交。"""
+class _CountingChat:
+    """记录 astream / ainvoke 调用次数：验证思考开关驱动的"流式 vs 非流式"路由。"""
 
     def __init__(self):
         self.astream_calls = 0
@@ -126,8 +126,8 @@ class _ThinkingChat:
 
     async def astream(self, messages, **kw):
         self.astream_calls += 1
-        raise RuntimeError("Error code: 400 - Thinking mode does not support this tool_choice")
-        yield   # noqa: 使之成为异步生成器（永不到达）
+        yield AIMessageChunk(content="", tool_call_chunks=[
+            {"name": "submit_x", "args": '{"x":1}', "id": "c1", "index": 0}])
 
     async def ainvoke(self, messages):
         from langchain_core.messages import AIMessage
@@ -135,20 +135,25 @@ class _ThinkingChat:
         return AIMessage(content="", tool_calls=[{"name": "submit_x", "args": {"x": 1}, "id": "c1"}])
 
 
-async def test_thinking_model_falls_back_to_ainvoke_and_caches(_fast_timeout):
-    """核心：思考型模型（deepseek-v4-flash）流式强制 tool_choice 报 400 → 回退 ainvoke 正常提交；
-    并缓存该模型，二次调用直接 ainvoke、不再撞流式 400。"""
-    ms._NO_STREAM_SUBMIT.clear()
-    chat = _ThinkingChat()
-    gw = _Gateway([chat, chat], chain=[{"model": "deepseek-v4-flash"}])
+async def test_thinking_on_uses_ainvoke_not_stream(_fast_timeout):
+    """思考开的模型：走非流式 ainvoke（思考模式 + 流式强制 tool_choice 不兼容），绝不调 astream。"""
+    chat = _CountingChat()
+    gw = _Gateway([chat, chat], chain=[{"model": "deepseek-v4-flash", "thinking": True}])
 
     async def _submit(**kw):
         ...
     msg = await ms.forced_stream_submit(_ctx(gw), [], _submit, "submit_x", label="审查")
     assert msg.tool_calls[0]["name"] == "submit_x"
-    assert chat.astream_calls == 1 and chat.ainvoke_calls == 1
+    assert chat.astream_calls == 0 and chat.ainvoke_calls == 1
 
-    msg2 = await ms.forced_stream_submit(_ctx(gw), [], _submit, "submit_x", label="审查")
-    assert msg2.tool_calls[0]["name"] == "submit_x"
-    assert chat.astream_calls == 1 and chat.ainvoke_calls == 2   # 缓存命中，未再流式
-    ms._NO_STREAM_SUBMIT.clear()
+
+async def test_thinking_off_uses_stream(_fast_timeout):
+    """思考关（默认）的模型：走流式（get_chat 下发关闭思考参），不走 ainvoke。"""
+    chat = _CountingChat()
+    gw = _Gateway([chat, chat], chain=[{"model": "deepseek-chat", "thinking": False}])
+
+    async def _submit(**kw):
+        ...
+    msg = await ms.forced_stream_submit(_ctx(gw), [], _submit, "submit_x", label="审查")
+    assert msg.tool_calls[0]["name"] == "submit_x"
+    assert chat.astream_calls == 1 and chat.ainvoke_calls == 0

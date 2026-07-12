@@ -6,7 +6,7 @@ import { getModelConfig, type ModelConfig } from "./model-config"
 
 // chain 条目 snake（spec319.1）：自建端点带 base_url/api_key；注册表条目二者皆无——agent
 // model_override_to_settings 按此形状清洗写入 Settings.model_chain。
-export type AgentChainEntry = { provider: string; model: string; base_url?: string; api_key?: string }
+export type AgentChainEntry = { provider: string; model: string; base_url?: string; api_key?: string; thinking?: boolean }
 export type AgentModelSelection = {
   provider?: string
   model?: string | null
@@ -35,6 +35,7 @@ export function deriveRunOverride(cfg: ModelConfig): AgentModelSelection | undef
   const chain: AgentChainEntry[] = chainEntries.map((m) => ({
     provider: m.provider,
     model: m.model,
+    thinking: m.thinking === true, // 每模型思考开关（默认关）；agent 据此决定是否下发关闭思考的 extra_body
     ...(m.baseUrl ? { base_url: m.baseUrl } : {}),
     ...(m.apiKey ? { api_key: m.apiKey } : {}),
   }))

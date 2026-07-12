@@ -15,6 +15,9 @@ export type ModelEntry = {
   model: string
   params: ModelParams
   enabled: boolean
+  // 思考模式（可选，默认关）：投标结构化提取无需思考(更慢更贵)；开启则该模型走思考模式。
+  // 缺省/false=关：agent 侧映射为服务商专属"关闭思考"extra_body（DeepSeek {thinking:{type:disabled}} 等）。
+  thinking?: boolean
   test: ModelTest
   baseUrl?: string
   apiKey?: string
@@ -72,6 +75,7 @@ const ModelEntrySchema = z.object({
   model: z.string().min(1),
   params: ModelParamsSchema,
   enabled: z.boolean(),
+  thinking: z.boolean().optional().default(false),
   test: ModelTestSchema,
   baseUrl: z.string().url().optional(),
   apiKey: z.string().optional(),
@@ -98,6 +102,7 @@ function migrateLegacy(raw: LegacyModelSelection): ModelConfig {
     model: raw.model ?? providerDefaultModel(provider),
     params: { ...DEFAULT_PARAMS },
     enabled: true,
+    thinking: false,
     test: { status: "untested" },
   }
   const fallbackEntries: ModelEntry[] = []
@@ -112,6 +117,7 @@ function migrateLegacy(raw: LegacyModelSelection): ModelConfig {
       model: mdl || providerDefaultModel(prov),
       params: { ...DEFAULT_PARAMS },
       enabled: true,
+      thinking: false,
       test: { status: "untested" },
     })
   }
@@ -127,6 +133,7 @@ function normalizeEntry(m: Record<string, unknown>): ModelEntry {
     model: String(m.model),
     params: { ...DEFAULT_PARAMS, ...params },
     enabled: m.enabled !== false,
+    thinking: m.thinking === true,
     test: (m.test as ModelTest) ?? { status: "untested" },
     ...(typeof m.baseUrl === "string" && m.baseUrl ? { baseUrl: m.baseUrl } : {}),
     ...(typeof m.apiKey === "string" && m.apiKey ? { apiKey: m.apiKey } : {}),

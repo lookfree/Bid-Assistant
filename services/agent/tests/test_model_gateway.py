@@ -31,6 +31,24 @@ def test_get_chat_uses_provider_base_url():
     assert "deepseek.com" in str(chat.openai_api_base)
 
 
+def test_get_chat_disables_thinking_by_default_for_deepseek():
+    """思考默认关：deepseek 端点下发 extra_body={thinking:{type:disabled}}（让混合思考模型可流式强制提交）。"""
+    chat = ModelGateway(_settings()).get_chat("deepseek", "deepseek-v4-flash")
+    assert chat.extra_body == {"thinking": {"type": "disabled"}}
+
+
+def test_get_chat_thinking_on_sends_no_disable():
+    """思考开：不下发关闭参（该模型走思考模式）。"""
+    chat = ModelGateway(_settings()).get_chat("deepseek", "deepseek-v4-flash", thinking=True)
+    assert not getattr(chat, "extra_body", None)
+
+
+def test_get_chat_unknown_provider_no_thinking_param():
+    """表外 provider（自建/未知）不下发关闭参（不知其格式，避免注入未知字段被端点拒）。"""
+    chat = ModelGateway(_settings()).get_chat("custom", "m", base_url="http://h/v1", api_key="k", thinking=False)
+    assert not getattr(chat, "extra_body", None)
+
+
 def test_invoke_failover_to_second_provider(monkeypatch):
     gw = ModelGateway(_settings())
 
@@ -157,9 +175,12 @@ def test_override_maps_chain():
         {"provider": "custom", "model": "", "base_url": "http://h/v1", "api_key": "k1"},   # model 空 → 丢
         {"provider": "custom", "model": "m2", "base_url": "not-a-url", "api_key": "k2"},   # base_url 非法 → 丢
     ]})
-    assert out == {"model_chain": [
-        {"provider": "custom", "model": "m1", "base_url": "http://h/v1", "api_key": "k1"},
-    ]}
+    assert out == {
+        "model_chain": [
+            {"provider": "custom", "model": "m1", "base_url": "http://h/v1", "api_key": "k1", "thinking": False},
+        ],
+        "model_thinking": False,   # 全局默认取主模型思考开关（此处主模型未开 → 关）
+    }
 
 
 def test_override_chain_empty_list_not_set():

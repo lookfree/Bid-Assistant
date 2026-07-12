@@ -6,7 +6,7 @@ from typing import Any
 from langchain_openai import ChatOpenAI
 
 from agent.config import Settings
-from agent.models.providers import PROVIDERS, KEY_FIELD
+from agent.models.providers import PROVIDERS, KEY_FIELD, THINKING_DISABLE
 from agent.models.usage import record_llm_usage
 
 
@@ -31,15 +31,16 @@ class ModelGateway:
             out["top_p"] = self.s.model_top_p
         return out
 
-    def _thinking_kw(self, base_url: str, kw: dict, thinking: bool | None) -> dict:
-        """默认关闭思考模式（投标结构化提取无需思考；DeepSeek 思考模式 + 强制 tool_choice 不兼容，
-        且思考更慢更贵）。仅对 DeepSeek 端点下发 extra_body={thinking:{type:disabled}}（其 API 校验此参数，
-        v4 实测支持；非 DeepSeek 端点不下发以免报错）。thinking=True 显式开启则不关；调用方自带 extra_body 时不覆盖。"""
-        if thinking is True or kw.get("extra_body") is not None:
+    def _thinking_kw(self, provider: str | None, kw: dict, thinking: bool | None) -> dict:
+        """按每模型思考开关下发"关闭思考"的 extra_body（默认关：thinking 缺省时取全局 settings.model_thinking）。
+        思考开启（thinking=True）或调用方自带 extra_body 时不注入；provider 不在 THINKING_DISABLE 表内
+        （自建/未知）也不注入（不知其关闭参格式）。关闭思考让混合思考模型可流式强制提交、且更快更省。"""
+        if thinking is None:
+            thinking = self.s.model_thinking
+        if thinking or kw.get("extra_body") is not None:
             return {}
-        if base_url and "deepseek" in base_url:
-            return {"extra_body": {"thinking": {"type": "disabled"}}}
-        return {}
+        disable = THINKING_DISABLE.get(provider or "")
+        return {"extra_body": disable} if disable else {}
 
     def get_chat(
         self, provider: str | None = None, model: str | None = None, *,
@@ -49,7 +50,7 @@ class ModelGateway:
         """统一端点解析（内置与自建同一套）：base_url 显式给了用它，否则取内置服务商注册表默认；
         api_key 显式给了用它（后台可为内置服务商配 key，覆盖 env），否则回退 env（KEY_FIELD）。
         这样内置服务商既能零配置用 env key，也能在后台改链接/换 key，不必改 env 重新部署。
-        thinking：默认 None=按端点关闭思考模式（见 _thinking_kw）；True 显式开启。"""
+        thinking：每模型思考开关；None=取全局默认（settings.model_thinking，缺省关），True 显式开启。"""
         p = PROVIDERS.get(provider) if provider else None
         if not base_url:
             if p:
@@ -64,7 +65,7 @@ class ModelGateway:
             base_url=base_url,
             api_key=key,
             # 优先级：settings 采样参 < 思考关闭(extra_body) < 显式 kw（kw 自带 extra_body 时上面已让路）
-            **{**self._model_params(), **self._thinking_kw(base_url, kw, thinking), **kw},
+            **{**self._model_params(), **self._thinking_kw(provider, kw, thinking), **kw},
         )
 
     def chain(self) -> list[dict]:
@@ -169,6 +170,7 @@ def _clean_chain_item(item: Any) -> dict | None:
         "model": model,
         "base_url": base_url or None,
         "api_key": item.get("api_key") or None,
+        "thinking": item.get("thinking") is True,   # 每模型思考开关（默认关）
     }
 
 
@@ -195,6 +197,9 @@ def model_override_to_settings(sel: dict | None) -> dict:
             cleaned = _chain_override(v)
             if cleaned:
                 out["model_chain"] = cleaned
+                # 全局思考默认取主模型（链首）开关：覆盖 content(deepagent)/make_agent_node 等
+                # 不走链条项、只调 get_chat(provider=None) 的路径。
+                out["model_thinking"] = bool(cleaned[0].get("thinking"))
             continue
         if k not in _OVERRIDE_MAP or not v:
             continue

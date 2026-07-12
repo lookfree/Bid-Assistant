@@ -211,8 +211,8 @@ describe("spec319 model-config 纯逻辑", () => {
       fallbacks: "glm:glm-4-flash",
       params: { temperature: 0.5, max_tokens: 4096, top_p: 0.9 },
       chain: [
-        { provider: "deepseek", model: "deepseek-chat" },
-        { provider: "glm", model: "glm-4-flash" },
+        { provider: "deepseek", model: "deepseek-chat", thinking: false },
+        { provider: "glm", model: "glm-4-flash", thinking: false },
       ],
     })
   })
@@ -237,8 +237,8 @@ describe("spec319 model-config 纯逻辑", () => {
     const out = deriveRunOverride(cfg)
     expect(out?.fallbacks).toBe("") // 自建条目被跳过，注册表降级串里没有可写的东西
     expect(out?.chain).toEqual([
-      { provider: "deepseek", model: "deepseek-chat" },
-      { provider: "custom", model: "qwen-x", base_url: "http://h:8000/v1", api_key: "sk-secret" },
+      { provider: "deepseek", model: "deepseek-chat", thinking: false },
+      { provider: "custom", model: "qwen-x", base_url: "http://h:8000/v1", api_key: "sk-secret", thinking: false },
     ])
   })
 
@@ -280,7 +280,7 @@ describe("spec319 model-config 服务（连库，mbp 跑）", () => {
 
   it("saveModelConfig：全合法 → 写入成功，getModelConfig 读回一致", async () => {
     const cfg: ModelConfig = {
-      models: [{ id: "m1", provider: "deepseek", model: "deepseek-chat", params: { temperature: 0.7, maxTokens: 8192, topP: 1 }, enabled: true, test: { status: "passed" } }],
+      models: [{ id: "m1", provider: "deepseek", model: "deepseek-chat", params: { temperature: 0.7, maxTokens: 8192, topP: 1 }, enabled: true, thinking: false, test: { status: "passed" } }],
       chain: ["m1"],
     }
     await saveModelConfig(cfg)

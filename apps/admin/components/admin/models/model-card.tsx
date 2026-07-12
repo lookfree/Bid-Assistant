@@ -267,18 +267,30 @@ function ParamsGrid({
           <ParamView paramKey="maxTokens" value={model.params.maxTokens} />
           <ParamView paramKey="topP" value={model.params.topP} />
         </div>
+        {model.thinking && <span className="text-xs text-muted-foreground">思考模式：开</span>}
         {exceedsMaxOutput && <MaxOutputWarning maxOutput={maxOutput!} />}
       </div>
     )
   const setParam = (key: keyof ModelEntry["params"]) => (v: number) =>
     setDraft((d) => resetTestOnEdit({ ...d, params: { ...d.params, [key]: v } }))
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex flex-col gap-2">
       <div className="grid grid-cols-3 gap-2">
         <ParamEdit paramKey="temperature" value={draft.params.temperature} onChange={setParam("temperature")} />
         <ParamEdit paramKey="maxTokens" value={draft.params.maxTokens} onChange={setParam("maxTokens")} />
         <ParamEdit paramKey="topP" value={draft.params.topP} onChange={setParam("topP")} />
       </div>
+      {/* 思考模式开关：默认关（更快更省、可流式强制提交）；改动后需重新测通才能保存/编排。 */}
+      <label className="flex items-center justify-between gap-2 rounded-md border border-border px-2.5 py-1.5">
+        <span className="flex flex-col">
+          <span className="text-xs font-medium">思考模式</span>
+          <span className="text-[11px] text-muted-foreground">默认关：更快更省、可流式；开启走思考模式（非流式提交）</span>
+        </span>
+        <Switch
+          checked={draft.thinking === true}
+          onCheckedChange={(v) => setDraft((d) => resetTestOnEdit({ ...d, thinking: v }))}
+        />
+      </label>
       {exceedsMaxOutput && <MaxOutputWarning maxOutput={maxOutput!} />}
     </div>
   )

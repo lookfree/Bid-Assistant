@@ -10,3 +10,13 @@ KEY_FIELD: dict[str, str] = {
     "qwen": "dashscope_api_key",
     "glm": "zhipu_api_key",
 }
+
+# provider -> "关闭思考模式"的 extra_body（OpenAI 兼容接口各家参数不同）。思考默认关：
+# 混合思考模型（DeepSeek v4 / Qwen3 / GLM-4.6）流式下默认开思考，与强制 tool_choice 不兼容且更慢更贵。
+# deepseek 实测确认；qwen(enable_thinking)/glm(thinking.type) 按各家文档，后台"测试连通"会实际探到。
+# 表里没有的 provider（自建/未知）不下发关闭参（不知其格式，交给该模型自身默认 + 后台自测）。
+THINKING_DISABLE: dict[str, dict] = {
+    "deepseek": {"thinking": {"type": "disabled"}},
+    "glm": {"thinking": {"type": "disabled"}},
+    "qwen": {"enable_thinking": False},
+}
