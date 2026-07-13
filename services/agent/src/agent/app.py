@@ -1,8 +1,11 @@
+import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
 from agent import db, redis_client
+from agent.rag.sweep import sweep_loop
 from agent.routes.health import router as health_router
 from agent.routes.runs import router as runs_router
 from agent.routes.chapters import router as chapters_router
@@ -16,7 +19,12 @@ from agent.routes.rag import router as rag_router
 async def lifespan(app: FastAPI):
     # 启动预热连接池；关闭时优雅释放（对齐 apps/api 的 closeDb/closeRedis 接 SIGINT）。
     db.get_pool()
+    # tender chunks 每日清扫只在 API 进程跑（worker 有独立入口，不会重复起）
+    sweeper = asyncio.create_task(sweep_loop())
     yield
+    sweeper.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await sweeper
     db.close_pool()
     redis_client.close_redis()
 
