@@ -58,8 +58,9 @@ class Settings(BaseSettings):
     model_idle_timeout_s: int = 30              # 流式中连续 N 秒无新 token = 连接挂死 → 降级重试
     model_first_token_timeout_s: int = 120      # 首 token（含连接+大 prompt 预填）宽限，避免误杀慢启动
     # 单轮总时长兜底：服务商限流时 token 细流(每 20s 一个)骗过空闲检测、单轮磨 30+ 分钟(生产实测
-    # tech18)。健康单轮 1-4 分钟,10 分钟顶格仍未完成=事实不可用 → 判超时进降级重试通道。
-    model_round_timeout_s: int = 600
+    # tech18)。⚠️ 别改小：600s 曾把晚高峰慢而健康的全文骨架轮(实测需 ~11 分钟)连同降级一起
+    # 冤杀成永久失败——20 分钟顶格仍未完成=事实不可用 → 判超时进降级重试通道。
+    model_round_timeout_s: int = 1200
     # 结构化模型链（spec319.1）：每项 {provider, model, base_url, api_key}；仅由 App run override
     # 经 model_copy(update=...) 注入，不从 env 解析（pydantic-settings 对 list[dict] 复杂字段不读 env）。
     model_chain: list[dict] | None = None
@@ -75,6 +76,8 @@ class Settings(BaseSettings):
 
     # 资料库 RAG（spec316）：自建 bge-embed，OpenAI 兼容 /v1/embeddings，dense 1024 维
     rag_embed_endpoint: str = "http://host.docker.internal:18080/v1/embeddings"
+    # tender chunks 保留天数：项目向量只在生成正文期间有用，超期由每日清扫删除（表规模治理）
+    rag_tender_ttl_days: int = 30
 
 
 settings = Settings()  # 实例化即校验
