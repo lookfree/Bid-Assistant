@@ -11,11 +11,13 @@ import httpx
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 16
-EMBED_TIMEOUT_S = 10
+EMBED_TIMEOUT_S = 60   # 并发下单请求排队等待≈队深×服务时间(CPU 嵌入实测 ~11s/批),10s 必然误杀
 HEALTH_TIMEOUT_S = 3
-# 批间并发上限:9273 条款的大标书 = 580 批,串行打 HK 端点(WireGuard RTT ~1s+)实测拖满 ~10 分钟,
-# 读标结果因此迟迟不交付。8 路并发把墙钟压到 ~1.5 分钟;上限防打爆嵌入服务。
+# 批间并发上限:9273 条款的大标书 = 580 批,串行打 HK 端点(WireGuard RTT ~1s+)实测拖满 ~10 分钟。
+# 信号量为**模块级全局**:多个后台索引任务/资料库索引/检索并发时共享同一预算,
+# 否则每个调用各开 8 路会叠加打爆单实例 CPU 嵌入服务(评审确认项)。
 EMBED_CONCURRENCY = 8
+_GLOBAL_SEM = asyncio.Semaphore(EMBED_CONCURRENCY)
 
 
 class Embedder:
@@ -39,7 +41,7 @@ class Embedder:
         if not texts:
             return []
         batches = [texts[i:i + BATCH_SIZE] for i in range(0, len(texts), BATCH_SIZE)]
-        sem = asyncio.Semaphore(EMBED_CONCURRENCY)
+        sem = _GLOBAL_SEM
         async with httpx.AsyncClient(timeout=EMBED_TIMEOUT_S) as client:
             async def _one(batch: list[str]) -> list[list[float]]:
                 async with sem:

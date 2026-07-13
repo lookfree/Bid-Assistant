@@ -345,7 +345,7 @@ export default function PresentPage() {
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
         <FlowNav current="present" />
-        <StepPlaceholder text={dataLoading ? "正在加载述标数据…" : "正在加载项目…"} />
+        <StepPlaceholder text={dataLoading ? "正在加载述标数据…" : "正在加载项目…"} delayMs={250} />
       </div>
     )
 

@@ -70,7 +70,7 @@ export default function ContentPage() {
     : "AI 写手团队正在逐章撰写正文…章节多、招标文件大时约需 5–15 分钟，可离开本页，回来会自动接着显示进度。"
   // outline 结果按需拉取（slim 首屏不携带跨步结果）：到位后先建树（正文缺失章显示"待生成"占位），
   // content 结果到位后填充各章 HTML
-  const { data: outlineResult, loading: outlineLoading } = useOtherStepResult<RealOutline>(projectId, info, "outline")
+  const { data: outlineResult, loading: outlineLoading, error: outlineError } = useOtherStepResult<RealOutline>(projectId, info, "outline")
   useEffect(() => {
     const ol = outlineResult
     if (!ol) return
@@ -404,7 +404,7 @@ export default function ContentPage() {
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
         <FlowNav current="content" />
-        <StepPlaceholder text="正在加载项目…" />
+        <StepPlaceholder text="正在加载项目…" delayMs={250} />
       </div>
     )
 
@@ -421,7 +421,9 @@ export default function ContentPage() {
           action={errorAction ?? undefined}
         />
         {outlineLoading || dataLoading ? (
-          <StepPlaceholder text={dataLoading ? "正在加载正文数据…" : "正在加载提纲章节…"} />
+          <StepPlaceholder text={dataLoading ? "正在加载正文数据…" : "正在加载提纲章节…"} delayMs={250} />
+        ) : outlineError ? (
+          <StepPlaceholder text="提纲数据加载失败，请刷新重试" />
         ) : stepPrereq(info, "content") ? (
           <StepPrereqGuide
             prereq={stepPrereq(info, "content")!}
@@ -430,6 +432,16 @@ export default function ContentPage() {
         ) : (
           <StepPlaceholder text="先完成提纲步骤，生成章节结构后再撰写正文" action={{ href: "/outline", label: "前往提纲页" }} />
         )}
+      </div>
+    )
+
+  // 正文结果仍在途(提纲小结果先到、正文大结果后到):必须拦在编辑器渲染前——
+  // 否则整棵章节树显示"待生成"空章(用户以为文档丢了),且此窗口内的编辑会被结果落地时重建覆盖。
+  if (dataLoading)
+    return (
+      <div className="mx-auto flex h-[calc(100vh-4rem)] max-w-[1600px] flex-col px-4 py-5 sm:px-6 lg:px-8">
+        <FlowNav current="content" />
+        <StepPlaceholder text="正在加载正文数据…" delayMs={250} />
       </div>
     )
 

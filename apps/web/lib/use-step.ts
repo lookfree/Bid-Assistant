@@ -53,14 +53,23 @@ const POLL_TIMEOUT_MS = 20 * 60_000
  *  running 行消失仍无 done（在途那次失败）或超时则抛错，由调用方转失败文案。 */
 async function pollStepResult<T>(projectId: string, step: StepName): Promise<T> {
   const deadline = Date.now() + POLL_TIMEOUT_MS
+  let doneButEmpty = 0   // done 行却拉不到结果:连续多次即终止(别空转满 20 分钟)
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
     // 轮询专门等状态变化，必须绕过短时缓存，否则可能连续几次读到同一份陈旧快照
     const info = await getProject(projectId, { fresh: true })
     const row = info.steps.find((s) => s.step === step)
     if (row?.status === "done") {
-      const result = await fetchStepResult<T>(projectId, step)
-      if (result !== null) return result
+      // 结果拉取容错:瞬时失败(网络抖动/发版窗口 5xx)继续轮询重取——此处抛出会把
+      // 已成功且已扣费的 run 误报成「生成失败」,诱导用户重跑再扣一次(评审确认项)。
+      try {
+        const result = await fetchStepResult<T>(projectId, step)
+        if (result !== null) return result
+        if (++doneButEmpty >= 3) throw new Error(`step ${step} 结果缺失`)
+      } catch (e) {
+        if (doneButEmpty >= 3) throw e
+        /* 瞬时失败:下一轮再试 */
+      }
     }
     // 无 done 行且该步不再有 running 行 → 在途那次已失败（占位行被标 failed）
     if (row?.status !== "done" && row?.status !== "running") throw new Error(`step ${step} 失败`)
@@ -113,6 +122,7 @@ export function useStep<T>(step: StepName) {
         // slim 首屏只有状态：该步已 done 才按需拉结果（其间 dataLoading=true，页面显示精确加载文案）；
         // 没有 done 行的页面不进入任何加载态——秒开直达引导/生成入口。
         if (row?.status === "done") {
+          setRunning(false)   // peek 缓存可能带来陈旧 running=true 初值:已 done 必须复位,否则横幅永挂
           setDataLoading(true)
           fetchStepResult<T>(projectId, step)
             .then((r) => {
@@ -146,6 +156,7 @@ export function useStep<T>(step: StepName) {
         } else if (row?.status === "failed") {
           // 上次生成失败（可能在别的页/刷新前跑挂）——明确报错让用户重试，不要静默回到空态
           // （否则表现为「进度没了」：既无进度、无结果、也无失败提示）。
+          setRunning(false)   // 同上:复位可能来自 peek 缓存的陈旧 running
           setError(stepErrorMessage(null))
         }
       })
@@ -245,16 +256,21 @@ export function useStep<T>(step: StepName) {
 export function useOtherStepResult<T>(projectId: string | null, info: ProjectInfo | null, step: StepName) {
   const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState(false)
+  // 拉取失败 ≠ 数据不存在:调用方须区分展示（否则「提纲已完成但拉取瞬断」会被误说成"先完成提纲"）
+  const [error, setError] = useState(false)
   const done = !!info?.steps.some((s) => s.step === step && s.status === "done")
   useEffect(() => {
     if (!projectId || !done) return
     let alive = true
     setLoading(true)
+    setError(false)
     fetchStepResult<T>(projectId, step)
       .then((r) => {
         if (alive) setData(r)
       })
-      .catch(() => {})   // best-effort：引用数据缺失时页面按"无该数据"降级展示
+      .catch(() => {
+        if (alive) setError(true)
+      })
       .finally(() => {
         if (alive) setLoading(false)
       })
@@ -262,5 +278,5 @@ export function useOtherStepResult<T>(projectId: string | null, info: ProjectInf
       alive = false
     }
   }, [projectId, step, done])
-  return { data, loading }
+  return { data, loading, error }
 }

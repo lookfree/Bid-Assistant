@@ -205,7 +205,7 @@ export default function ReadPage() {
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
         <FlowNav current="read" />
-        <StepPlaceholder text={dataLoading ? "正在加载读标数据…" : "正在加载项目…"} />
+        <StepPlaceholder text={dataLoading ? "正在加载读标数据…" : "正在加载项目…"} delayMs={250} />
       </div>
     )
 
@@ -221,8 +221,8 @@ export default function ReadPage() {
           onRetry={() => void start()}
           action={errorAction ?? undefined}
         />
-        {running ? (
-          <StepPlaceholder text="读标完成后显示招标原文与分类解读" />
+        {running || error ? (
+          <StepPlaceholder text={error ? "结果加载异常，请按上方提示重试或刷新" : "读标完成后显示招标原文与分类解读"} />
         ) : (
           <StepRunCta
             title="开始智能读标"

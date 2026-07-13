@@ -251,7 +251,7 @@ export default function OutlinePage() {
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
         <FlowNav current="outline" />
-        <StepPlaceholder text="正在加载项目…" />
+        <StepPlaceholder text="正在加载项目…" delayMs={250} />
       </div>
     )
 
@@ -359,8 +359,8 @@ export default function OutlinePage() {
           <div className="flex flex-1 flex-col overflow-y-auto px-4 py-4">
             {/* 提纲未生成：读标未完成先引导回读标；已就绪则给显式生成按钮（明示消耗），绝不自动跑 */}
             {!real &&
-              (running ? (
-                <StepPlaceholder text="提纲生成中…完成后在此展示，可自由增删改" />
+              (running || error ? (
+                <StepPlaceholder text={error ? "结果加载异常，请按上方提示重试或刷新" : "提纲生成中…完成后在此展示，可自由增删改"} />
               ) : info?.project.currentStep === "read" ? (
                 <StepPlaceholder text="先完成读标步骤，再生成提纲" action={{ href: "/read", label: "前往读标" }} />
               ) : (

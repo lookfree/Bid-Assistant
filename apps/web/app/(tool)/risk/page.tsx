@@ -15,6 +15,7 @@ import { FlowNav } from "@/components/tool/flow-nav"
 import { NoProjectGuide } from "@/components/tool/no-project-guide"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { StepRunCta } from "@/components/tool/step-run-cta"
+import { StepPrereqGuide } from "@/components/tool/step-prereq-guide"
 import { deriveRisk, type RealRisk } from "@/lib/risk-derive"
 import { stepPrereq, useStep } from "@/lib/use-step"
 import { useMembership } from "@/lib/use-membership"
@@ -93,7 +94,7 @@ function RejectReview() {
   if (!projectId) return <NoProjectGuide />
 
   // 项目状态/审查报告加载中：数据未就绪绝不裸露「开始废标体检」计费按钮
-  if (!info || dataLoading) return <StepPlaceholder text={dataLoading ? "正在加载审查报告…" : "正在加载项目…"} />
+  if (!info || dataLoading) return <StepPlaceholder text={dataLoading ? "正在加载审查报告…" : "正在加载项目…"} delayMs={250} />
 
   if (running || error) {
     return (
@@ -122,10 +123,7 @@ function RejectReview() {
     return (
       <div className="rounded-2xl border border-border bg-card">
         {prereq ? (
-          <StepPlaceholder
-            text={`请先完成前序步骤：${prereq.label}，再进行废标体检`}
-            action={{ href: prereq.href, label: `前往${prereq.label}` }}
-          />
+          <StepPrereqGuide prereq={prereq} currentDesc="废标体检需要逐条比对招标要求与已生成的标书内容" />
         ) : (
           <StepRunCta
             title="废标风险审查"

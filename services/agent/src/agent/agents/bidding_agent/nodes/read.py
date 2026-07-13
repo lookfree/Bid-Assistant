@@ -252,6 +252,8 @@ def make_read_node(ctx):
         # RAG 索引后台执行,不挡结果交付:9273 条款标书实测索引要几十分钟(CPU 嵌入 ~11s/16条),
         # 用户花钱买的读标结论 20 分钟前就好了却在等一个 best-effort 的辅助索引。_index_tender 全程
         # try/except,后台失败只记警告;下游检索本就按"建好多少用多少"降级,索引未完不阻塞任何步骤。
+        # TODO(可观测性): 后台索引失败/中断(如部署重启)目前只有 worker 日志,索引残缺时下游检索
+        # 静默降级且无重触发入口——后续应把索引状态落到 read result 或提供手动重建索引的运维入口。
         task = asyncio.create_task(_index_tender(ctx, state.get("run_input") or {}, clauses))
         _BG_INDEX_TASKS.add(task)                       # 持引用防 GC 提前取消
         task.add_done_callback(_BG_INDEX_TASKS.discard)

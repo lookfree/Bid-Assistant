@@ -14,7 +14,9 @@ export function useHealthCheck(contentReady: boolean) {
 
   // 体检结果：review 步结果（未跑过为 null）
   const findings: RealRisk | null = review.data
-  const canCheck = contentReady
+  // review 结果按需拉取在途时不可点:此窗口 data 仍是 null,点击会误发 POST 撞 409
+  // "步骤顺序不符"(其实报告已存在,一秒后就到)——slim 首屏引入的新窗口,评审确认项。
+  const canCheck = contentReady && !review.dataLoading
 
   /** 执行体检：已有结果直接进 done；否则真跑 review 步。返回体检结果（失败 null）。 */
   async function runCheck(): Promise<RealRisk | null> {

@@ -149,7 +149,9 @@ export async function createProject(fileKeys: string[]): Promise<string> {
 // 正确性：仅缓存「无步骤在跑」的整份项目；一旦命中时发现有 running 行，视为未命中（断点续看轮询
 // 需要看到最新状态）。任何 mutation（保存/选包/推进步骤）后显式失效，避免读到过期结果。
 type ProjectCacheEntry = { info: ProjectInfo; ts: number }
-const PROJECT_CACHE_TTL_MS = 3_000
+// 30s:slim 项目状态只在用户操作(跑步骤/编辑/选包)时变化,各写路径均已主动失效缓存;
+// 有步骤 running 时下方 getProject 恒视为未命中。长 TTL 让菜单来回切换零请求、无加载闪烁。
+const PROJECT_CACHE_TTL_MS = 30_000
 const projectCache = new Map<string, ProjectCacheEntry>()
 
 /** 使某项目的缓存失效：mutation（PATCH 步结果 / 选包 / runStep）后调用，防止读到旧值。 */
@@ -222,11 +224,6 @@ export async function cloneProject(projectId: string): Promise<string> {
 }
 
 // 已完成步的结果（camelCase，App 层已转）
-export function stepResult<T>(info: ProjectInfo | null, step: StepName): T | null {
-  const s = info?.steps.find((x) => x.step === step && x.status === "done")
-  return (s?.result as T) ?? null
-}
-
 // 推进一步：POST SSE 流，进度分片回调 onChunk，结束解析 step.done 返回该步结果（camelCase）。
 // body 为该步运行参数（present 步：{duration: 10|15|20, template: "blue"|"tech"|"gov"}），无参数步不传。
 export async function runStep<T>(
