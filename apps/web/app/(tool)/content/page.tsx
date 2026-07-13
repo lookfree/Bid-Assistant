@@ -396,6 +396,16 @@ export default function ContentPage() {
       </div>
     )
 
+  // 项目数据加载中（含大标书 1MB 级读标结果，拉取要数秒）：先显示加载态——
+  // 数据未就绪时绝不裸露计费按钮（用户会当成"还没生成"误触发重跑）。
+  if (!info)
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
+        <FlowNav current="content" />
+        <StepPlaceholder text="正在加载项目数据…" />
+      </div>
+    )
+
   // 项目加载中 / 提纲缺失（章节树依赖 outline 结果）→ 占位引导
   if (!active)
     return (

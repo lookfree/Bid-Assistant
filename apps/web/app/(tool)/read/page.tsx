@@ -199,6 +199,16 @@ export default function ReadPage() {
       </div>
     )
 
+  // 项目数据加载中（大标书读标结果可达 1MB，拉取要数秒）：先显示加载态——
+  // 绝不能在数据未就绪时把「开始智能读标」计费按钮裸露出来（用户会当成"还没读过"误触发重跑）。
+  if (!info)
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
+        <FlowNav current="read" />
+        <StepPlaceholder text="正在加载读标数据…" />
+      </div>
+    )
+
   // 该步未跑：停在显式生成入口（消耗数标注在按钮上），运行中/失败由横幅呈现
   if (!real)
     return (

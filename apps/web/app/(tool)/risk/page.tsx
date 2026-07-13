@@ -92,6 +92,9 @@ function RejectReview() {
   // 无进行中项目：只引导上传，不渲染任何示例内容
   if (!projectId) return <NoProjectGuide />
 
+  // 项目数据加载中（含大标书 1MB 级结果，拉取要数秒）：数据未就绪绝不裸露「开始废标体检」计费按钮
+  if (!info) return <StepPlaceholder text="正在加载项目数据…" />
+
   if (running || error) {
     return (
       <div className="rounded-2xl border border-border bg-card px-5 py-6 text-sm">

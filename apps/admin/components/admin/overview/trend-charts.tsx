@@ -29,6 +29,7 @@ const creditsConfig = {
 
 export function TrendCharts() {
   const [data, setData] = useState<ApiTrendPoint[]>([])
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     let alive = true
@@ -38,6 +39,8 @@ export function TrendCharts() {
         if (alive) setData(res)
       } catch {
         if (alive) toast.error("加载趋势数据失败")
+      } finally {
+        if (alive) setLoading(false)
       }
     }
     void load()
@@ -54,6 +57,9 @@ export function TrendCharts() {
           <CardDescription>近 14 天每日营收（元）</CardDescription>
         </CardHeader>
         <CardContent>
+          {loading ? (
+            <p className="flex h-[240px] items-center justify-center text-sm text-muted-foreground">加载中…</p>
+          ) : (
           <ChartContainer config={revenueConfig} className="h-[240px] w-full">
             <AreaChart data={data} margin={{ left: 4, right: 8, top: 8 }}>
               <defs>
@@ -86,6 +92,7 @@ export function TrendCharts() {
               />
             </AreaChart>
           </ChartContainer>
+          )}
         </CardContent>
       </Card>
 
@@ -95,6 +102,9 @@ export function TrendCharts() {
           <CardDescription>近 14 天每日积分流水</CardDescription>
         </CardHeader>
         <CardContent>
+          {loading ? (
+            <p className="flex h-[240px] items-center justify-center text-sm text-muted-foreground">加载中…</p>
+          ) : (
           <ChartContainer config={creditsConfig} className="h-[240px] w-full">
             <AreaChart data={data} margin={{ left: 4, right: 8, top: 8 }}>
               <defs>
@@ -122,6 +132,7 @@ export function TrendCharts() {
               />
             </AreaChart>
           </ChartContainer>
+          )}
         </CardContent>
       </Card>
     </div>
