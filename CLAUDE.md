@@ -63,6 +63,15 @@ Specs are written for `superpowers:subagent-driven-development` (or `executing-p
 - **Secrets** live only in `.env.bidsaas.local` (gitignored); `.env.bidsaas.example` is the committed template (var names only). `AccessKey*.csv` is gitignored. Never commit real credentials — the GitHub repo (`lookfree/Bid-Assistant`) may be public.
 - **Money boundary rule (铁律):** all credit/payment mutations happen in the App API only; the agent service only reports usage; every deduction/callback carries an idempotency key; balance = Σ of the append-only `credit_transactions`; multi-source credits expire FIFO by `expire_at`.
 
+## 生产铁律（2026-07 大标书实测沉淀,违反=复现过的生产事故）
+
+- **模型调用韧性**（`framework/model_stream.py`）：流式 + 30s 空闲超时 + 1200s 单轮总时长盖 + 降级链重试,三层缺一不可。总时长盖别改小——600s 曾冤杀晚高峰慢而健康的全文骨架轮（实测需 ~11 分钟）。瞬断判定必须沿 `__cause__` 链下钻（openai SDK 包装后 str() 只有 "Connection error."）。
+- **思考模式**：DeepSeek v4 思考 + 流式强制 tool_choice = 400。解法是配置驱动（每模型思考开关默认关,`THINKING_DISABLE` 按 provider 下发关闭参）,禁止按错误文案猜测回退。
+- **分段读标**（`nodes/read.py`）：并行 6 路;技术块只喂自身条款（带全文 = 1MB×92 次重复计费）;技术块 packages 必须强制清空（猜错标签 → 选包静默丢★需求）;每轮结果存 Redis 断点续跑（key 含提示词版本哈希,改 READ_SYSTEM_PROMPT 自动失效）;RAG 索引后台 fire-and-forget,绝不挡结果交付。
+- **模型唯一来自运营后台配置**：未配置 → 400 model_not_configured（不占步位不预扣）,严禁静默回退默认模型。
+- **前端计费 CTA 只在确认态渲染**：项目状态走 `?slim=1`（SQL 层不选 result 列,实测 28ms vs 2788ms）,单步结果按需拉;info 未到/加载中/拉取失败期间绝不亮计费按钮;`?autostart=1` 消费后立即从 URL 摘除（残留会被重挂载重放成重复扣费）。
+- **发版前查在途任务**：`project_steps status='running'` 非空时部署会打断用户长任务;卡 running 的步用 `stuck-steps.ts` 的 `failStepAndRefund` 自愈（标失败+退积分,幂等）。
+
 ## Docs / git workflow
 
 Plans are edited locally, mirrored to the **mbp** server via `scp` (path `…/02-Work/anjikeji/Bid Assistant/docs/...`), then committed and pushed to GitHub `main`. GitHub `main` is the authoritative copy; the mbp mirror is a convenience copy that can lag. (`mbp` is a passwordless SSH alias defined in the global `~/.claude/CLAUDE.md`.)
