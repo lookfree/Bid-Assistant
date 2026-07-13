@@ -8,7 +8,7 @@ import {
   getProject,
   peekProjectCache,
   runStep,
-  stepResult,
+  fetchStepResult,
   STEP_ORDER,
   openStepEvents,
   StreamIncompleteError,
@@ -49,7 +49,7 @@ const POLL_INTERVAL_MS = 5_000
 const POLL_TIMEOUT_MS = 20 * 60_000
 
 /** 该步已有一次在途 run（双发漏网/断线后重进页面）时的收敛轮询：
- *  轮询 GET /api/projects/:id 等它出结果——出现 done 行即返回 result；
+ *  轮询 slim 项目信息等状态变化——出现 done 行即按需拉取该步结果返回；
  *  running 行消失仍无 done（在途那次失败）或超时则抛错，由调用方转失败文案。 */
 async function pollStepResult<T>(projectId: string, step: StepName): Promise<T> {
   const deadline = Date.now() + POLL_TIMEOUT_MS
@@ -57,10 +57,13 @@ async function pollStepResult<T>(projectId: string, step: StepName): Promise<T> 
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
     // 轮询专门等状态变化，必须绕过短时缓存，否则可能连续几次读到同一份陈旧快照
     const info = await getProject(projectId, { fresh: true })
-    const done = stepResult<T>(info, step)
-    if (done) return done
+    const row = info.steps.find((s) => s.step === step)
+    if (row?.status === "done") {
+      const result = await fetchStepResult<T>(projectId, step)
+      if (result !== null) return result
+    }
     // 无 done 行且该步不再有 running 行 → 在途那次已失败（占位行被标 failed）
-    if (!info.steps.some((s) => s.step === step && s.status === "running")) throw new Error(`step ${step} 失败`)
+    if (row?.status !== "done" && row?.status !== "running") throw new Error(`step ${step} 失败`)
   }
   throw new Error(`step ${step} 轮询超时`)
 }
@@ -82,7 +85,10 @@ export function useStep<T>(step: StepName) {
     const id = currentProjectId()
     return id ? peekProjectCache(id) : null
   })
-  const [data, setData] = useState<T | null>(() => stepResult<T>(info, step))
+  const [data, setData] = useState<T | null>(null)
+  // 本步结果按需拉取中（slim 首屏后、且服务端确认有 done 结果才为 true）——
+  // 页面据此只在"真有数据在路上"时显示「正在加载XX数据…」,没数据的页面秒开不显示加载。
+  const [dataLoading, setDataLoading] = useState(false)
   const [running, setRunning] = useState(() => !!info?.steps.some((s) => s.step === step && s.status === "running"))
   const [error, setError] = useState<string | null>(null)
   // 正文逐章进度（content 步实时）。下方订阅 effect 会在该步 running 时（本次生成/切回/刷新都算）
@@ -103,13 +109,27 @@ export function useStep<T>(step: StepName) {
       .then((i) => {
         if (!alive) return
         setInfo(i)
-        const result = stepResult<T>(i, step)
-        setData(result)
+        const row = i.steps.find((s) => s.step === step)
+        // slim 首屏只有状态：该步已 done 才按需拉结果（其间 dataLoading=true，页面显示精确加载文案）；
+        // 没有 done 行的页面不进入任何加载态——秒开直达引导/生成入口。
+        if (row?.status === "done") {
+          setDataLoading(true)
+          fetchStepResult<T>(projectId, step)
+            .then((r) => {
+              if (alive) setData(r)
+            })
+            .catch(() => {
+              if (alive) setError("加载结果失败，请刷新重试")
+            })
+            .finally(() => {
+              if (alive) setDataLoading(false)
+            })
+          return
+        }
         // 断点续看：该步在服务端已是 running（导航离开生成页再切回来，或跨设备重新打开）——
         // 没有 done 行但也没失败，说明上次触发的 run 仍在跑。这里靠收敛轮询等它跑完把结果灌回页面；
         // 中间进度则由下方订阅 effect（running=true 即重连事件流并回放）实时补上。
-        const row = i.steps.find((s) => s.step === step)
-        if (!result && row?.status === "running") {
+        if (row?.status === "running") {
           setRunning(true)
           pollStepResult<T>(projectId, step)
             .then((r) => {
@@ -123,7 +143,7 @@ export function useStep<T>(step: StepName) {
             .finally(() => {
               if (alive) setRunning(false)
             })
-        } else if (!result && row?.status === "failed") {
+        } else if (row?.status === "failed") {
           // 上次生成失败（可能在别的页/刷新前跑挂）——明确报错让用户重试，不要静默回到空态
           // （否则表现为「进度没了」：既无进度、无结果、也无失败提示）。
           setError(stepErrorMessage(null))
@@ -216,5 +236,31 @@ export function useStep<T>(step: StepName) {
         ? { href: prereq.href, label: `前往${prereq.label}` }
         : null
 
-  return { projectId, info, data, running, progress, phase, error: displayError, errorStatus, errorAction, start }
+  return { projectId, info, data, dataLoading, running, progress, phase, error: displayError, errorStatus, errorAction, start }
+}
+
+/** 跨步结果按需拉取（slim 首屏配套）：本页需要引用**其他步骤**的结果时用
+ *  （提纲页的原文栏引用 read 结果、正文页的章节树引用 outline 结果）。
+ *  该步无 done 行 → 不发请求、loading 恒 false（没数据的页面绝不显示加载）。 */
+export function useOtherStepResult<T>(projectId: string | null, info: ProjectInfo | null, step: StepName) {
+  const [data, setData] = useState<T | null>(null)
+  const [loading, setLoading] = useState(false)
+  const done = !!info?.steps.some((s) => s.step === step && s.status === "done")
+  useEffect(() => {
+    if (!projectId || !done) return
+    let alive = true
+    setLoading(true)
+    fetchStepResult<T>(projectId, step)
+      .then((r) => {
+        if (alive) setData(r)
+      })
+      .catch(() => {})   // best-effort：引用数据缺失时页面按"无该数据"降级展示
+      .finally(() => {
+        if (alive) setLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [projectId, step, done])
+  return { data, loading }
 }

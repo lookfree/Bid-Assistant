@@ -458,6 +458,33 @@ describe("GET /:id/steps/:step/events 进度事件流", () => {
     await getDb().delete(users).where(eq(users.id, other.user.id))
   })
 
+  it("GET /:id?slim=1 → 步骤只带状态不带 result（首屏免 1MB 传输税）；单步结果走 result 端点", async () => {
+    const [proj] = await getDb()
+      .insert(bidProjects)
+      .values({ userId, threadId: `proj-${crypto.randomUUID()}`, tenderFileKey: "uploads/x/tender.pdf", name: "slim" })
+      .returning()
+    await getDb().insert(projectSteps).values({
+      projectId: proj!.id, step: "read", status: "done",
+      result: { categories: [{ key: "overview", title: "概况", items: [] }], doc_sections: [{ id: "sec-1-c1", text: "条款" }] },
+    })
+    // slim：result 一律 null
+    const slim = await app.request(`/api/projects/${proj!.id}?slim=1`, { headers: auth() })
+    expect(slim.status).toBe(200)
+    const sbody = (await slim.json()) as { steps: Array<{ step: string; status: string; result: unknown }> }
+    expect(sbody.steps[0]!.status).toBe("done")
+    expect(sbody.steps[0]!.result).toBeNull()
+    // 全量（缺省）不受影响：result 照常返回（camelCase）
+    const full = await app.request(`/api/projects/${proj!.id}`, { headers: auth() })
+    const fbody = (await full.json()) as { steps: Array<{ result: { docSections?: unknown[] } }> }
+    expect(fbody.steps[0]!.result.docSections?.length).toBe(1)
+    // 单步结果端点：camelCase；无 done 行的步 404
+    const res = await app.request(`/api/projects/${proj!.id}/steps/read/result`, { headers: auth() })
+    expect(res.status).toBe(200)
+    expect((((await res.json()) as { result: { docSections?: unknown[] } }).result.docSections ?? []).length).toBe(1)
+    const missing = await app.request(`/api/projects/${proj!.id}/steps/outline/result`, { headers: auth() })
+    expect(missing.status).toBe(404)
+  })
+
   it("运营后台未配置模型 → 步进 400 model_not_configured，不预扣不建 run、不占步位", async () => {
     const [proj] = await getDb()
       .insert(bidProjects)

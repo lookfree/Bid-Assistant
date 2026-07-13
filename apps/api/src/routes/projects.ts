@@ -657,7 +657,24 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const latest = new Map<string, (typeof rows)[number]>()
     for (const s of rows) latest.set(s.step, s) // 后写覆盖 ⇒ 每步保留 createdAt 最新的一行
     const steps = [...latest.values()]
+    // slim=1（工具页首屏用）：不带各步 result 载荷——大标书 read result 可达 1MB，全量返回让
+    // 每个页面首屏都背 5s+ 传输税；瘦身版毫秒级返回步骤状态，页面立刻知道该渲染什么，
+    // 真有结果的步再按需走 GET /:id/steps/:step/result 拉取。
+    if (c.req.query("slim") === "1") {
+      return c.json({ project: p, steps: steps.map(({ result: _r, ...rest }) => ({ ...rest, result: null })) })
+    }
     return c.json({ project: p, steps: steps.map((s) => ({ ...s, result: resultToClient(s.step, s.result) })) })
+  })
+
+  // 单步结果按需拉取（配合 slim 首屏）：只回该步最新 done 行的 result（camelCase）；无 done 行 404。
+  r.get("/:id/steps/:step/result", async (c) => {
+    const { id, step } = c.req.param()
+    if (!isUuid(id)) return c.json({ error: "not_found" }, 404)
+    const p = await ownedProject(id, c.get("user").id)
+    if (!p) return c.json({ error: "not_found" }, 404)
+    const row = await latestDoneStep(p.id, step)
+    if (!row) return c.json({ error: "not_found" }, 404)
+    return c.json({ result: resultToClient(step, row.result) })
   })
 
   // 产物下载：present/export 步的 result.artifacts[kind]（spec201 step.done 带 artifacts 合并快照），

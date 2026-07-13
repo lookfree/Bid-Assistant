@@ -179,9 +179,22 @@ export async function getProject(id: string, opts?: { fresh?: boolean }): Promis
       return hit.info
     }
   }
-  const info = await api.request<ProjectInfo>(`/api/projects/${id}`)
+  // slim=1：不带各步 result 载荷（大标书 read result 可达 1MB，全量拉让每页首屏背 5s 传输税）。
+  // 步骤状态毫秒级到手，页面立刻渲染正确状态；真有结果的步再走 fetchStepResult 按需拉取。
+  const info = await api.request<ProjectInfo>(`/api/projects/${id}?slim=1`)
   projectCache.set(id, { info, ts: Date.now() })
   return info
+}
+
+/** 按需拉取单步结果（配合 slim 首屏）：该步无 done 结果时返回 null（404 语义）。 */
+export async function fetchStepResult<T>(projectId: string, step: StepName): Promise<T | null> {
+  try {
+    const { result } = await api.request<{ result: T }>(`/api/projects/${projectId}/steps/${step}/result`)
+    return result
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return null
+    throw e
+  }
 }
 
 // 选包（spec324）：body 裸 {id,name} 设置该包，传 null 清除。只影响 outline 及之后步骤的 run_input

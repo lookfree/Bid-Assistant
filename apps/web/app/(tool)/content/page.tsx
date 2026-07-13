@@ -22,6 +22,7 @@ import { FlowNav } from "@/components/tool/flow-nav"
 import { StepBanner } from "@/components/tool/step-banner"
 import { NoProjectGuide } from "@/components/tool/no-project-guide"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
+import { StepPrereqGuide } from "@/components/tool/step-prereq-guide"
 import { LibraryPicker } from "@/components/tool/library-picker"
 import { useEscapeClose } from "@/hooks/use-escape-close"
 import { ApiError } from "@/lib/api-client"
@@ -31,8 +32,8 @@ import { creditCostValue } from "@/lib/membership-view"
 import { useLibrary } from "@/lib/use-library"
 import { type LibraryItem } from "@/lib/library"
 import { deriveHealthReport } from "@/lib/risk-derive"
-import { useStep } from "@/lib/use-step"
-import { artifactUrl, patchErrorMessage, patchStep, runStep, stepResult } from "@/lib/project"
+import { stepPrereq, useOtherStepResult, useStep } from "@/lib/use-step"
+import { artifactUrl, fetchStepResult, patchErrorMessage, patchStep, runStep } from "@/lib/project"
 import { ChatPanel } from "./chat-panel"
 import { EditorToolbar } from "./editor-toolbar"
 import { ChapterNav, type Chapter } from "./chapter-nav"
@@ -62,15 +63,16 @@ export default function ContentPage() {
   const [data, setData] = useState<Record<Group, Chapter[]>>({ tech: [], business: [] })
 
   // outline 树 + content 各章 HTML → 构建章节树；计费步绝不自动触发，生成一律走显式按钮
-  const { projectId, info, data: realBodies, running, progress, error, errorAction, start } = useStep<RealChapters>("content")
+  const { projectId, info, data: realBodies, dataLoading, running, progress, error, errorAction, start } = useStep<RealChapters>("content")
   // 正文运行态文案：有逐章进度就实时显示「X/N 章」，否则给不吓人的耗时预期(大标书本就慢)。
   const contentRunningText = progress
     ? `AI 正在逐章撰写：已完成 ${progress.done}/${progress.total} 章${progress.title ? `（刚写完「${progress.title}」）` : ""}，请稍候…`
     : "AI 写手团队正在逐章撰写正文…章节多、招标文件大时约需 5–15 分钟，可离开本页，回来会自动接着显示进度。"
-  // outline 结果一到位就先建树（正文缺失章显示"待生成"占位），content 结果到位后填充各章 HTML
+  // outline 结果按需拉取（slim 首屏不携带跨步结果）：到位后先建树（正文缺失章显示"待生成"占位），
+  // content 结果到位后填充各章 HTML
+  const { data: outlineResult, loading: outlineLoading } = useOtherStepResult<RealOutline>(projectId, info, "outline")
   useEffect(() => {
-    if (!info) return
-    const ol = stepResult<RealOutline>(info, "outline")
+    const ol = outlineResult
     if (!ol) return
     const build = (g: Group) =>
       ol.chapters
@@ -78,7 +80,7 @@ export default function ContentPage() {
         .map((c) => ({ id: c.id, no: c.no, title: c.title, sourced: c.sourced, html: realBodies?.[c.id] ?? "" }))
     setData({ tech: build("tech"), business: build("business") })
     setActiveId((prev) => (ol.chapters.some((c) => c.id === prev) ? prev : (ol.chapters[0]?.id ?? "")))
-  }, [realBodies, info])
+  }, [realBodies, outlineResult])
   const [activeId, setActiveId] = useState<string>("t1")
   const [chatOpen, setChatOpen] = useState(true)
   const [exportOpen, setExportOpen] = useState(false)
@@ -89,7 +91,7 @@ export default function ContentPage() {
   const [exportGate, setExportGate] = useState<{ text: string; href: string; label: string } | null>(null)
   const [hasExported, setHasExported] = useState(false)
   // spec323：已跑过 export 步且结果无 pdf key ⇒ 该次 docx→pdf 转换失败（agent best-effort），PDF 选项置灰
-  const exportedResult = stepResult<{ pdf?: string }>(info, "export")
+  const { data: exportedResult } = useOtherStepResult<{ pdf?: string }>(projectId, info, "export")
   const pdfUnavailable = !!exportedResult && !exportedResult.pdf
   // 已知不可用时把停留在 pdf 的选择拨回 word，避免「已禁用但仍被选中」的怪状态
   useEffect(() => {
@@ -360,7 +362,7 @@ export default function ContentPage() {
     setExportStatus(format === "pdf" ? "正在渲染完整标书（PDF）…" : "正在渲染完整标书…")
     void (async () => {
       try {
-        if (!stepResult(info, "export")) await runStep(projectId, "export")
+        if (!(await fetchStepResult(projectId, "export"))) await runStep(projectId, "export")
         window.open(await artifactUrl(projectId, kind), "_blank")
         setExportStatus("已导出，浏览器开始下载")
         setHasExported(true)
@@ -418,10 +420,16 @@ export default function ContentPage() {
           onRetry={() => void start()}
           action={errorAction ?? undefined}
         />
-        <StepPlaceholder
-          text={!info ? "正在加载项目…" : "先完成提纲步骤，生成章节结构后再撰写正文"}
-          action={info ? { href: "/outline", label: "前往提纲页" } : undefined}
-        />
+        {outlineLoading || dataLoading ? (
+          <StepPlaceholder text={dataLoading ? "正在加载正文数据…" : "正在加载提纲章节…"} />
+        ) : stepPrereq(info, "content") ? (
+          <StepPrereqGuide
+            prereq={stepPrereq(info, "content")!}
+            currentDesc="投标正文由 AI 按提纲章节逐章撰写——需要先生成提纲，确定技术标/商务标的章节结构"
+          />
+        ) : (
+          <StepPlaceholder text="先完成提纲步骤，生成章节结构后再撰写正文" action={{ href: "/outline", label: "前往提纲页" }} />
+        )}
       </div>
     )
 

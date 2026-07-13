@@ -75,7 +75,7 @@ import { StepRunCta } from "@/components/tool/step-run-cta"
 
 
 export default function ReadPage() {
-  const { projectId, info, data: real, running, phase, error, errorAction, start } = useStep<RealRead>("read")
+  const { projectId, info, data: real, dataLoading, running, phase, error, errorAction, start } = useStep<RealRead>("read")
   const { overview } = useMembership()
   const readCost = creditCostValue(overview, "read", 20)
   // 唯一允许的自动触发：从上传页「开始智能读标」跳转（URL 带 ?autostart=1，那一下点击即计费授权，
@@ -201,11 +201,11 @@ export default function ReadPage() {
 
   // 项目数据加载中（大标书读标结果可达 1MB，拉取要数秒）：先显示加载态——
   // 绝不能在数据未就绪时把「开始智能读标」计费按钮裸露出来（用户会当成"还没读过"误触发重跑）。
-  if (!info)
+  if (!info || dataLoading)
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
         <FlowNav current="read" />
-        <StepPlaceholder text="正在加载读标数据…" />
+        <StepPlaceholder text={dataLoading ? "正在加载读标数据…" : "正在加载项目…"} />
       </div>
     )
 

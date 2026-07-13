@@ -90,7 +90,7 @@ export default function PresentPage() {
   /* present 步产 DeckSpec（真实幻灯+口播稿）。计费步：绝不自动触发，
      只由用户点击「生成述标大纲」（CreditEstimate 确认条，明示消耗）才跑，
      生成调用透传当前时长/模板（POST steps/present body {duration, template}）。 */
-  const { projectId, info, data: realDeck, running: stepRunning, phase, error: stepError, errorAction: stepErrorAction, start } = useStep<RealDeck>("present")
+  const { projectId, info, data: realDeck, dataLoading, running: stepRunning, phase, error: stepError, errorAction: stepErrorAction, start } = useStep<RealDeck>("present")
   useEffect(() => {
     if (!realDeck) return
     setSlides(realDeck.slides)
@@ -341,11 +341,11 @@ export default function PresentPage() {
 
   // 项目数据加载中（含大标书 1MB 级读标结果，拉取要数秒）：先显示加载态——
   // 数据未就绪时绝不裸露计费按钮（用户会当成"还没生成"误触发重跑）。
-  if (!info)
+  if (!info || dataLoading)
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
         <FlowNav current="present" />
-        <StepPlaceholder text="正在加载项目数据…" />
+        <StepPlaceholder text={dataLoading ? "正在加载述标数据…" : "正在加载项目…"} />
       </div>
     )
 

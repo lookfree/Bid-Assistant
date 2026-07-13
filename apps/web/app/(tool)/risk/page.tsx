@@ -85,15 +85,15 @@ export default function ReviewPage() {
 /* ============== 废标风险审查 ============== */
 function RejectReview() {
   // review 步产 RiskReport（计费步）：绝不自动触发，一律用户显式点击「开始废标体检」才跑
-  const { projectId, info, data: real, running, phase, error, errorAction, start } = useStep<RealRisk>("review")
+  const { projectId, info, data: real, dataLoading, running, phase, error, errorAction, start } = useStep<RealRisk>("review")
   const { overview: membershipOverview } = useMembership()
   const reviewCost = creditCostValue(membershipOverview, "review", 60)
 
   // 无进行中项目：只引导上传，不渲染任何示例内容
   if (!projectId) return <NoProjectGuide />
 
-  // 项目数据加载中（含大标书 1MB 级结果，拉取要数秒）：数据未就绪绝不裸露「开始废标体检」计费按钮
-  if (!info) return <StepPlaceholder text="正在加载项目数据…" />
+  // 项目状态/审查报告加载中：数据未就绪绝不裸露「开始废标体检」计费按钮
+  if (!info || dataLoading) return <StepPlaceholder text={dataLoading ? "正在加载审查报告…" : "正在加载项目…"} />
 
   if (running || error) {
     return (

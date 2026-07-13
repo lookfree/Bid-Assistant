@@ -26,10 +26,10 @@ import { TenderDocPanel } from "@/components/tool/tender-doc-panel"
 import { NoProjectGuide } from "@/components/tool/no-project-guide"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { StepRunCta } from "@/components/tool/step-run-cta"
-import { useStep } from "@/lib/use-step"
+import { useStep, useOtherStepResult } from "@/lib/use-step"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
-import { patchErrorMessage, patchStep, stepResult } from "@/lib/project"
+import { patchErrorMessage, patchStep } from "@/lib/project"
 import { clauseLocationIn, groupDocSections, type DocSentence } from "@/lib/doc-sections"
 
 // agent Outline（camelCase）：chapters[{id,no,title,group,sourced,items[{id,label,clauseIds,isNew}]}]
@@ -67,12 +67,13 @@ const genId = () => `gen-${Date.now()}-${idCounter++}`
 
 export default function OutlinePage() {
   // 计费步绝不自动触发：该步未跑时停在显式生成入口，用户点击才跑
-  const { projectId, info, data: real, running, phase, error, errorAction, start } = useStep<RealOutline>("outline")
+  const { projectId, info, data: real, dataLoading, running, phase, error, errorAction, start } = useStep<RealOutline>("outline")
   const { overview } = useMembership()
   const outlineCost = creditCostValue(overview, "outline", 30)
 
   // 左栏原文：取 read 步结果的分句（按 id 前缀分组），未就绪为空（占位）
-  const readResult = stepResult<{ docSections?: DocSentence[] }>(info, "read")
+  // read 结果按需拉取（slim 首屏不携带跨步结果）：原文栏 doc_sections 来自这里
+  const { data: readResult } = useOtherStepResult<{ docSections?: DocSentence[] }>(projectId, info, "read")
   const docSections = useMemo(
     () => (readResult?.docSections?.length ? groupDocSections(readResult.docSections) : []),
     [readResult],
@@ -246,11 +247,11 @@ export default function OutlinePage() {
 
   // 项目数据加载中（含大标书 1MB 级读标结果，拉取要数秒）：先显示加载态——
   // 数据未就绪时绝不裸露计费按钮（用户会当成"还没生成"误触发重跑）。
-  if (!info)
+  if (!info || dataLoading)
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
         <FlowNav current="outline" />
-        <StepPlaceholder text="正在加载项目数据…" />
+        <StepPlaceholder text="正在加载项目…" />
       </div>
     )
 
