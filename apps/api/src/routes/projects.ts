@@ -647,6 +647,21 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     if (!isUuid(id)) return c.json({ error: "not_found" }, 404) // 非 uuid 直接 404，避免 PG 22P02 → 500
     const p = await ownedProject(id, c.get("user").id)
     if (!p) return c.json({ error: "not_found" }, 404)
+    // slim=1（工具页首屏用）：连 result 列都不查——大标书 read result 可达 1MB，SELECT 它意味着
+    // 这 1MB 要先从远程 PG 经隧道拖到 API（正是首屏 5s 的真正大头），在内存里丢弃也无济于事。
+    // 瘦身版只查状态列，毫秒级返回；真有结果的步再按需走 GET /:id/steps/:step/result 拉取。
+    if (c.req.query("slim") === "1") {
+      const rows = await getDb()
+        .select({ id: projectSteps.id, projectId: projectSteps.projectId, step: projectSteps.step,
+                  runId: projectSteps.runId, costPoints: projectSteps.costPoints,
+                  status: projectSteps.status, createdAt: projectSteps.createdAt })
+        .from(projectSteps)
+        .where(eq(projectSteps.projectId, p.id))
+        .orderBy(projectSteps.createdAt)
+      const latestSlim = new Map<string, (typeof rows)[number]>()
+      for (const s of rows) latestSlim.set(s.step, s)
+      return c.json({ project: p, steps: [...latestSlim.values()].map((s) => ({ ...s, result: null })) })
+    }
     // 失败重试会给同一步留下多行历史（自愈槽位只约束 running 唯一）——每步只回最新一行，
     // 否则前端可能取到旧 failed 行，把已成功的读标渲染成空。
     const rows = await getDb()
@@ -657,12 +672,6 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const latest = new Map<string, (typeof rows)[number]>()
     for (const s of rows) latest.set(s.step, s) // 后写覆盖 ⇒ 每步保留 createdAt 最新的一行
     const steps = [...latest.values()]
-    // slim=1（工具页首屏用）：不带各步 result 载荷——大标书 read result 可达 1MB，全量返回让
-    // 每个页面首屏都背 5s+ 传输税；瘦身版毫秒级返回步骤状态，页面立刻知道该渲染什么，
-    // 真有结果的步再按需走 GET /:id/steps/:step/result 拉取。
-    if (c.req.query("slim") === "1") {
-      return c.json({ project: p, steps: steps.map(({ result: _r, ...rest }) => ({ ...rest, result: null })) })
-    }
     return c.json({ project: p, steps: steps.map((s) => ({ ...s, result: resultToClient(s.step, s.result) })) })
   })
 

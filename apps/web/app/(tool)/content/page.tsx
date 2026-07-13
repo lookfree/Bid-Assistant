@@ -404,7 +404,7 @@ export default function ContentPage() {
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
         <FlowNav current="content" />
-        <StepPlaceholder text="正在加载项目数据…" />
+        <StepPlaceholder text="正在加载项目…" />
       </div>
     )
 
