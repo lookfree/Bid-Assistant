@@ -2,10 +2,12 @@ import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import {
   type AccountStatus,
+  type FeedbackStatus,
   type LedgerType,
   type MemberTier,
   type OrderStatus,
   type ReconcileStatus,
+  feedbackStatusLabel,
   ledgerTypeLabel,
   orderStatusLabel,
   tierLabel,
@@ -78,6 +80,19 @@ export function LedgerTypeBadge({ type }: { type: LedgerType }) {
   return (
     <Badge variant="secondary" className={cn("font-mono", styles[type])}>
       {ledgerTypeLabel[type]}
+    </Badge>
+  )
+}
+
+export function FeedbackStatusBadge({ status }: { status: FeedbackStatus }) {
+  const styles: Record<FeedbackStatus, string> = {
+    pending: "bg-amber-100 text-amber-700",
+    processing: "bg-sky-100 text-sky-700",
+    resolved: "bg-emerald-100 text-emerald-700",
+  }
+  return (
+    <Badge variant="secondary" className={styles[status]}>
+      {feedbackStatusLabel[status]}
     </Badge>
   )
 }

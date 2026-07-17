@@ -117,6 +117,14 @@ export const adminApi = {
         body: JSON.stringify(m),
       }),
   },
+  // 反馈工单（spec326 备案合规）：列表按 status 筛选 + 分页（feedback.read）；
+  // handle 标记处理中/已解决 + 可选回复（feedback.write，support/ops/superadmin 可用，finance 403）。
+  feedback: {
+    list: (p: { status?: string; page?: number; pageSize?: number }) =>
+      req<Paged<ApiFeedback>>(`/feedback${qs(p)}`),
+    handle: (id: string, patch: { status: "processing" | "resolved"; reply?: string }) =>
+      req<ApiFeedback>(`/feedback/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  },
 }
 
 export type Paged<T> = { items: T[]; total: number; page: number; pageSize: number; hasMore: boolean }
@@ -129,6 +137,7 @@ export type ApiTrendPoint = { date: string; revenue: number; credits: number }
 export type ApiAdmin = { id: string; username: string; role: string; status: string; createdAt?: string }
 export type ApiAuditLog = { id: string; operator: string; action: string; target: string | null; before: unknown; after: unknown; createdAt: string }
 export type ApiPlan = { id: string; name: string; code: string | null; priceCents: number; billingCycle: string; grantCreditsPerCycle: number; status: string; features: Record<string, unknown>; limits: Record<string, unknown> }
+export type ApiFeedback = { id: string; userId: string; type: "content_error" | "complaint" | "billing" | "suggestion" | "other"; projectId: string | null; content: string; contact: string | null; status: "pending" | "processing" | "resolved"; reply: string | null; handledBy: string | null; handledAt: string | null; createdAt: string; nickname: string | null }
 
 // 查询串：跳过 undefined/空，encodeURIComponent。
 function qs(p: Record<string, unknown>): string {

@@ -448,3 +448,21 @@ function genTrend() {
 }
 
 export const trendData = genTrend()
+
+// ---------------- 反馈工单（spec326 备案合规） ----------------
+export type FeedbackType = "content_error" | "complaint" | "billing" | "suggestion" | "other"
+export type FeedbackStatus = "pending" | "processing" | "resolved"
+
+export const feedbackTypeLabel: Record<FeedbackType, string> = {
+  content_error: "内容问题",
+  complaint: "投诉",
+  billing: "计费问题",
+  suggestion: "建议",
+  other: "其他",
+}
+
+export const feedbackStatusLabel: Record<FeedbackStatus, string> = {
+  pending: "待处理",
+  processing: "处理中",
+  resolved: "已解决",
+}
