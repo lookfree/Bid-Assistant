@@ -14,6 +14,8 @@ export const PERMISSIONS = [
   "referral.write", // 手动发邀请奖励
   "audit.read", // 审计查看
   "admin.manage", // 系统/账号管理（仅 superadmin；spec310 账号管理页）
+  "feedback.read",
+  "feedback.write", // 反馈/投诉处理（spec326：算法备案要求处理可追溯）
 ] as const
 export type Permission = (typeof PERMISSIONS)[number]
 
@@ -21,8 +23,8 @@ export type Permission = (typeof PERMISSIONS)[number]
 export const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
   superadmin: [...PERMISSIONS],
   finance: ["order.read", "refund.write", "ledger.read", "audit.read"],
-  ops: ["user.read", "user.write", "plan.write", "config.write", "ledger.read", "audit.read"], // ops 管用户/套餐/配置（spec310 角色模型）
-  support: ["user.read", "order.read", "ledger.read"], // 只读 + 客服
+  ops: ["user.read", "user.write", "plan.write", "config.write", "ledger.read", "audit.read", "feedback.read", "feedback.write"], // ops 管用户/套餐/配置（spec310 角色模型）
+  support: ["user.read", "order.read", "ledger.read", "feedback.read", "feedback.write"], // 只读 + 客服；处理反馈工单是 support 唯一的写权限（有意例外，spec326）
 }
 
 export function hasPermission(role: AdminRole, perm: Permission): boolean {

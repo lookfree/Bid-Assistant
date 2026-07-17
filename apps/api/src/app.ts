@@ -14,6 +14,7 @@ import { ordersRoutes } from "./routes/orders"
 import { libraryRoutes } from "./routes/library"
 import { checklistRoutes } from "./routes/checklist"
 import { dedupeRoutes } from "./routes/dedupe"
+import { feedbackRoutes } from "./routes/feedback"
 import { adminRoutes } from "./routes/admin"
 import type { SmsCodeService } from "./services/sms-code"
 import type { makeWechatAuth } from "./services/wechat-auth"
@@ -77,6 +78,7 @@ export function createApp(deps: AppDeps) {
   app.route("/api/library", libraryRoutes()) // 个人资料库 CRUD；自带 authMiddleware
   app.route("/api/checklist", checklistRoutes()) // 终极审核表持久化+导出（spec315b）；自带 authMiddleware
   app.route("/api/dedupe", dedupeRoutes()) // 标书查重计费编排（spec315b）；自带 authMiddleware
+  app.route("/api/feedback", feedbackRoutes()) // 反馈/投诉（spec326）；money-blind，自带 authMiddleware
   app.route("/admin-api", adminRoutes()) // 运营后台（spec309）；独立 admin 身份/RBAC，与 C 端完全隔离
   return app
 }

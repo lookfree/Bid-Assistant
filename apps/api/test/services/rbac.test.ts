@@ -21,12 +21,14 @@ describe("spec309 RBAC 角色→权限", () => {
     expect(hasPermission("ops", "refund.write")).toBe(false)
   })
 
-  it("support 只读，无任何 write", () => {
+  it("support 只读，唯一例外是 feedback.write（客服处理工单，spec326）", () => {
     expect(hasPermission("support", "user.read")).toBe(true)
     expect(hasPermission("support", "order.read")).toBe(true)
     expect(hasPermission("support", "user.write")).toBe(false)
     expect(hasPermission("support", "refund.write")).toBe(false)
     expect(hasPermission("support", "credit.adjust")).toBe(false)
+    expect(hasPermission("support", "feedback.write")).toBe(true)
+    expect(hasPermission("finance", "feedback.write")).toBe(false) // finance 不加（brief 明示）
   })
 
   it("admin.manage 仅 superadmin", () => {
