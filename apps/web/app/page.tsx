@@ -240,7 +240,18 @@ export default function HomePage() {
             <span className="font-medium text-foreground">智启元 · 投标助手</span>
           </div>
           <p>让每一次投标都更高效、更稳健</p>
-          <p>© 2026 智启元 · 投标助手</p>
+          <div className="flex items-center gap-3">
+            <p>© 2026 智启元 · 投标助手</p>
+            <Link href="/terms" className="hover:text-foreground">
+              用户协议
+            </Link>
+            <Link href="/privacy" className="hover:text-foreground">
+              隐私政策
+            </Link>
+            <Link href="/algorithm" className="hover:text-foreground">
+              算法公示
+            </Link>
+          </div>
         </div>
       </footer>
     </div>

@@ -385,7 +385,7 @@ export default function MembershipPage() {
             <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
               我们的顾问可帮你根据投标频率挑选最划算的方案。
             </p>
-            <Link href="/" className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline">
+            <Link href="/feedback" className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline">
               联系客服
               <ArrowRight className="size-4" />
             </Link>

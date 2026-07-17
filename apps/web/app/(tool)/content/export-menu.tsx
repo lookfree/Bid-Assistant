@@ -88,6 +88,7 @@ export function ExportMenu({
         </div>
         {/* TOC 用 Word 域实现，需 Word/WPS 打开后手动刷新一次页码 */}
         <p className="px-1 pt-1.5 text-[10px] text-muted-foreground">Word 打开后按 F9 可更新目录页码</p>
+        <p className="px-1 pt-1.5 text-[10px] text-muted-foreground">本内容由 AI 辅助生成，仅供参考，请人工复核后使用</p>
 
         {/* 积分预估 */}
         <div className="mt-3">

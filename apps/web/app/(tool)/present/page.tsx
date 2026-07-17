@@ -38,6 +38,7 @@ import {
   type SlideStyle,
 } from "@/lib/present"
 import { LibraryPicker } from "@/components/tool/library-picker"
+import { AiNotice } from "@/components/tool/ai-notice"
 import { type LibraryItem } from "@/lib/library"
 import { ApiError } from "@/lib/api-client"
 import { stepPrereq, useStep } from "@/lib/use-step"
@@ -447,6 +448,7 @@ export default function PresentPage() {
             </div>
           )}
         </header>
+        {deckReady && <AiNotice />}
 
         {/* 导出菜单 */}
         {exportOpen && canAfford && (

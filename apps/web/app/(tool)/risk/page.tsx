@@ -16,6 +16,7 @@ import { NoProjectGuide } from "@/components/tool/no-project-guide"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { StepRunCta } from "@/components/tool/step-run-cta"
 import { StepPrereqGuide } from "@/components/tool/step-prereq-guide"
+import { AiNotice } from "@/components/tool/ai-notice"
 import { deriveRisk, type RealRisk } from "@/lib/risk-derive"
 import { stepPrereq, useStep } from "@/lib/use-step"
 import { useMembership } from "@/lib/use-membership"
@@ -140,6 +141,7 @@ function RejectReview() {
   const { score, overview, riskItems, passed } = deriveRisk(real)
   return (
     <div className="flex flex-col gap-6">
+        <AiNotice />
         {/* 健康分 */}
         <div className="flex flex-col items-center gap-5 rounded-3xl border border-border bg-card p-8 sm:flex-row sm:gap-8">
           <div className="flex size-28 shrink-0 flex-col items-center justify-center rounded-full gradient-brand-soft">

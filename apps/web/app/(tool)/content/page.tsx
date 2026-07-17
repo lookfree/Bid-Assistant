@@ -33,6 +33,7 @@ import { useLibrary } from "@/lib/use-library"
 import { type LibraryItem } from "@/lib/library"
 import { deriveHealthReport } from "@/lib/risk-derive"
 import { stepPrereq, useOtherStepResult, useStep } from "@/lib/use-step"
+import { AiNotice } from "@/components/tool/ai-notice"
 import { artifactUrl, fetchStepResult, patchErrorMessage, patchStep, runStep } from "@/lib/project"
 import { ChatPanel } from "./chat-panel"
 import { EditorToolbar } from "./editor-toolbar"
@@ -517,6 +518,7 @@ export default function ContentPage() {
           </button>
         </div>
       </header>
+      <AiNotice className="shrink-0" />
 
       {/* 三栏工作区 */}
       <div

@@ -16,6 +16,7 @@ import {
   Crown,
   Coins,
   ArrowRight,
+  MessageSquareText,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useMembership } from "@/lib/use-membership"
@@ -46,6 +47,7 @@ const groups: { title: string; items: NavItem[] }[] = [
       { href: "/projects", label: "我的标书", icon: FolderClosed },
       { href: "/library", label: "我的资料库", icon: Library },
       { href: "/membership", label: "会员中心", icon: Crown },
+      { href: "/feedback", label: "帮助与反馈", icon: MessageSquareText },
     ],
   },
 ]

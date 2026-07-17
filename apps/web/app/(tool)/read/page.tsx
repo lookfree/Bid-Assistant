@@ -72,6 +72,7 @@ import { TenderDocPanel } from "@/components/tool/tender-doc-panel"
 import { NoProjectGuide } from "@/components/tool/no-project-guide"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { StepRunCta } from "@/components/tool/step-run-cta"
+import { AiNotice } from "@/components/tool/ai-notice"
 
 
 export default function ReadPage() {
@@ -281,6 +282,7 @@ export default function ReadPage() {
           </button>
         </div>
       </div>
+      <AiNotice />
 
       {reportState === "ready" && (
         <div className="mt-5 flex flex-col gap-3 rounded-2xl border border-success/30 bg-success/10 p-4 sm:flex-row sm:items-center sm:justify-between">

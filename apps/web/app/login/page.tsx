@@ -300,11 +300,11 @@ function LoginContent() {
               />
               <span>
                 我已阅读并同意
-                <a href="#" className="text-primary hover:underline">
+                <a href="/terms" target="_blank" className="text-primary hover:underline">
                   《用户协议》
                 </a>
                 与
-                <a href="#" className="text-primary hover:underline">
+                <a href="/privacy" target="_blank" className="text-primary hover:underline">
                   《隐私政策》
                 </a>
               </span>

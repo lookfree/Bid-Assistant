@@ -26,6 +26,7 @@ import { TenderDocPanel } from "@/components/tool/tender-doc-panel"
 import { NoProjectGuide } from "@/components/tool/no-project-guide"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { StepRunCta } from "@/components/tool/step-run-cta"
+import { AiNotice } from "@/components/tool/ai-notice"
 import { useStep, useOtherStepResult } from "@/lib/use-step"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
@@ -313,6 +314,7 @@ export default function OutlinePage() {
           )}
         </div>
       </div>
+      <AiNotice />
 
       <div className="mt-5 grid gap-5 lg:grid-cols-2">
         {/* 左侧：原始文档（真实分句 / 示例回落） */}
