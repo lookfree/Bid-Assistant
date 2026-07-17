@@ -82,11 +82,11 @@ export const FEEDBACK_STATUSES = ["pending", "processing", "resolved"] as const
 
 ## Tasks
 
-- [ ] **Task A（App API）**：feedback schema + 手写迁移 0028 + journal + rbac 权限 + C 端路由 + admin 路由 + 审计 + `./test-on-mbp.sh test/feedback.test.ts` 绿（提交 `feat(api): feedback table, user routes and admin handling with RBAC`）。
-- [ ] **Task B（web）**：AiNotice 组件 ×5 页 + 导出弹窗提示 + /terms /privacy /algorithm 三页 + 登录死链/首页 footer/membership 链接 + /feedback 页 + feedback-api 封装与单测 + typecheck 绿（提交 `feat(web): AI-generated notices, legal/disclosure pages and feedback entry`）。
-- [ ] **Task C（admin）**：反馈工单页 + 侧栏项 + admin-api client + typecheck 绿（提交 `feat(admin): feedback ticket management page`）。
-- [ ] **Task D（agent）**：docx 说明段 + pptx 结束页提示（双路径）+ content_safety 模块与词库 + export_node 挂点 + Settings 字段 + pytest 绿（提交 `feat(agent): AI notice in exports and sensitive-word scan on delivery`）。
-- [ ] **Task E（验证收尾）**：四端门禁全绿 → `/code-review` 全修 → 合并 main 推送 → docs 同步 mbp。**不部署生产**（需先查 `project_steps status='running'` 在途任务并经用户确认）。
+- [x] **Task A（App API）**：feedback schema + 手写迁移 0028 + journal + rbac 权限 + C 端路由 + admin 路由 + 审计 + `./test-on-mbp.sh test/feedback.test.ts` 绿（提交 `feat(api): feedback table, user routes and admin handling with RBAC`）。
+- [x] **Task B（web）**：AiNotice 组件 ×5 页 + 导出弹窗提示 + /terms /privacy /algorithm 三页 + 登录死链/首页 footer/membership 链接 + /feedback 页 + feedback-api 封装与单测 + typecheck 绿（提交 `feat(web): AI-generated notices, legal/disclosure pages and feedback entry`；终审补 `fix(web): add contact and appeal channel to terms page`）。
+- [x] **Task C（admin）**：反馈工单页 + 侧栏项 + admin-api client + typecheck 绿（提交 `feat(admin): feedback ticket management page`）。
+- [x] **Task D（agent）**：docx 说明段 + pptx 结束页提示（双路径）+ content_safety 模块与词库 + export_node 挂点 + Settings 字段 + pytest 绿（提交 `feat(agent): AI notice in exports and sensitive-word scan on delivery`）。
+- [x] **Task E（验证收尾）**：四端门禁全绿（api 498/498、agent 164 离线、web 37/37、admin 36/36、typecheck 三包绿）→ 全分支终审 READY TO MERGE → 合并 main 推送 → docs 同步 mbp → **部署 mbp 开发环境**（用户 2026-07-17 明确要求；部署前查 `project_steps status='running'` 在途任务）。
 
 ## 决策记录
 
