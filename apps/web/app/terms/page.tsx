@@ -1,12 +1,30 @@
 import Link from "next/link"
+import { SUPPORT_EMAIL } from "@/lib/site"
 
 // 用户协议（备案合规静态页）：纯 server component，无交互，文案为运营/法务口径。
+// 分节拆两个子组件渲染（一~五 / 六~九），保持单函数 ≤80 行。
 export default function TermsPage() {
   return (
     <main className="mx-auto max-w-3xl px-4 py-10">
       <h1 className="text-2xl font-bold tracking-tight text-foreground">用户协议</h1>
       <p className="mt-1.5 text-xs text-muted-foreground">更新日期：2026-07-17</p>
 
+      <TermsSectionsOne />
+      <TermsSectionsTwo />
+
+      <div className="mt-10 border-t border-border pt-6">
+        <Link href="/" className="text-sm font-medium text-primary hover:underline">
+          返回首页
+        </Link>
+      </div>
+    </main>
+  )
+}
+
+/** 一~五：服务性质 / 账号与登录 / 上传内容合法性 / AI 生成内容性质与人工复核 / 积分与计费。 */
+function TermsSectionsOne() {
+  return (
+    <>
       <section className="mt-8">
         <h2 className="text-base font-semibold text-foreground">一、服务性质</h2>
         <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
@@ -41,7 +59,14 @@ export default function TermsPage() {
           本产品按步骤消耗积分，且积分消耗均在用户显式点击触发对应生成步骤时才发生，触发前会明确标注本次消耗数量；若该次生成失败，已预扣积分将自动全额退还，无需用户另行申请。
         </p>
       </section>
+    </>
+  )
+}
 
+/** 六~九：禁止行为 / 知识产权与商业秘密 / 责任限制 / 协议变更与联系方式（含申诉渠道 + 选填客服邮箱）。 */
+function TermsSectionsTwo() {
+  return (
+    <>
       <section className="mt-6">
         <h2 className="text-base font-semibold text-foreground">六、禁止行为</h2>
         <ul className="mt-2 list-disc space-y-1.5 pl-5 text-sm leading-relaxed text-muted-foreground">
@@ -67,17 +92,14 @@ export default function TermsPage() {
       </section>
 
       <section className="mt-6">
-        <h2 className="text-base font-semibold text-foreground">九、协议变更与生效</h2>
+        <h2 className="text-base font-semibold text-foreground">九、协议变更与联系方式</h2>
         <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-          本协议可能随产品迭代或监管要求更新，更新后的协议将在本页面公示并注明更新日期；用户继续使用本产品即视为接受更新后的协议内容。
+          本协议可能随产品迭代或监管要求更新，更新后的协议将在本页面公示并注明更新日期；用户继续使用本产品即视为接受更新后的协议内容。用户对本协议、生成内容、计费或个人信息处理有异议的，可登录后进入「帮助与反馈」页在线提交。
         </p>
+        {SUPPORT_EMAIL && (
+          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">客服邮箱：{SUPPORT_EMAIL}</p>
+        )}
       </section>
-
-      <div className="mt-10 border-t border-border pt-6">
-        <Link href="/" className="text-sm font-medium text-primary hover:underline">
-          返回首页
-        </Link>
-      </div>
-    </main>
+    </>
   )
 }
