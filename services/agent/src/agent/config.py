@@ -79,5 +79,9 @@ class Settings(BaseSettings):
     # tender chunks 保留天数：项目向量只在生成正文期间有用，超期由每日清扫删除（表规模治理）
     rag_tender_ttl_days: int = 30
 
+    # 输出敏感词库路径（spec326 算法备案）：None 则用包内默认词库 framework/sensitive_words.txt；
+    # 运营需按监管要求扩充维护时可指向外部文件，无需改代码。
+    sensitive_words_path: str | None = None
+
 
 settings = Settings()  # 实例化即校验

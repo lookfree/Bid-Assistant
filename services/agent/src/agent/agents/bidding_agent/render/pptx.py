@@ -152,8 +152,17 @@ def _render_content(slide, s: Slide, tokens: dict, n: int, total: int) -> None:
     _page_number(slide, n, total, tokens)
 
 
+_AI_NOTICE = "本内容由 AI 辅助生成，仅供参考，请人工复核后使用"
+
+
+def _ai_notice(slide, tokens: dict) -> None:
+    """结束页底部小字（spec326 算法备案）：强调条上方一行，10pt 弱化灰、居中，两条渲染路径共用。"""
+    _textbox(slide, Inches(1.0), _SLIDE_H - Inches(0.4), _SLIDE_W - Inches(2.0), Inches(0.3),
+              [_AI_NOTICE], size=10, color=tokens["muted"], align=PP_ALIGN.CENTER)
+
+
 def _render_end(slide, s: Slide, deck: DeckSpec, tokens: dict, n: int, total: int) -> None:
-    """结束页：居中致谢标题（34pt 加粗主色）+ 项目名副标题（弱化灰）+ 底部强调条 + 页码。"""
+    """结束页：居中致谢标题（34pt 加粗主色）+ 项目名副标题（弱化灰）+ 底部强调条 + 页码 + AI 生成提示。"""
     title = s.title or "感谢聆听"
     _textbox(slide, Inches(1.5), Inches(3.1), _SLIDE_W - Inches(3.0), Inches(1.0),
               [title], size=34, color=tokens["primary"], bold=True, align=PP_ALIGN.CENTER)
@@ -162,6 +171,7 @@ def _render_end(slide, s: Slide, deck: DeckSpec, tokens: dict, n: int, total: in
                   [deck.title], size=14, color=tokens["muted"], align=PP_ALIGN.CENTER)
     _accent_bar(slide, tokens["accent"])
     _page_number(slide, n, total, tokens)
+    _ai_notice(slide, tokens)
 
 
 def render_pptx(deck: DeckSpec, *, template: str | None = None,
@@ -299,7 +309,8 @@ def _render_content_on_master(slide, s: Slide, tokens: dict, n: int, total: int)
 
 
 def _render_end_on_master(slide, s: Slide, tokens: dict, n: int, total: int) -> None:
-    """结束页（母版路径）：标题占位符写致谢语；缺失则退回空白设计的居中致谢绘制。页码恒定自绘。"""
+    """结束页（母版路径）：标题占位符写致谢语；缺失则退回空白设计的居中致谢绘制。
+    页码恒定自绘；AI 生成提示恒定自绘（母版版式不会自带，两路径视觉一致）。"""
     title = s.title or "感谢聆听"
     title_ph = _title_placeholder(slide)
     if title_ph is not None:
@@ -308,6 +319,7 @@ def _render_end_on_master(slide, s: Slide, tokens: dict, n: int, total: int) -> 
         _textbox(slide, Inches(1.5), Inches(3.1), _SLIDE_W - Inches(3.0), Inches(1.0),
                   [title], size=34, color=tokens["primary"], bold=True, align=PP_ALIGN.CENTER)
     _page_number(slide, n, total, tokens)
+    _ai_notice(slide, tokens)
 
 
 def _render_on_master(deck: DeckSpec, template: str | None, master_bytes: bytes) -> bytes:

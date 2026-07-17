@@ -172,11 +172,22 @@ def _append_credentials(doc: Document, credentials: list[dict]) -> None:
                 doc.add_paragraph(f"（图片加载失败：{name}）")
 
 
+def _add_ai_notice(doc: Document) -> None:
+    """文档末尾生成说明：备案要求的显式标识，导出环节自动写入（用户定稿时可自行删除）。"""
+    doc.add_paragraph()
+    p = doc.add_paragraph("本内容由智启元投标助手生成合成类算法辅助生成，仅供投标文件编制参考，请结合招标文件原文和企业实际情况复核确认后使用。")
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    for run in p.runs:
+        run.font.size = Pt(9)
+        run.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+
+
 def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
                  package: dict | None = None,
                  credentials: list[dict] | None = None) -> bytes:
     """完整标书 .docx：封面 + 真目录域页 + 按 outline 顺序各章正文 + 资格证明文件附录（可选）
-    + 签章页。确定性，无 LLM。package（选包，spec324）存在时封面项目名下加一行包件名。
+    + 签章页 + AI 生成提示（spec326 算法备案，恒定追加，见 _add_ai_notice）。确定性，无 LLM。
+    package（选包，spec324）存在时封面项目名下加一行包件名。
     credentials（资质证照，spec325）非空时在签章页之前追加附录；缺省 None 时输出与今天一致。"""
     meta = _norm_meta(meta or {})
     doc = Document()
@@ -200,6 +211,7 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
     doc.add_page_break()
     doc.add_heading("投标人承诺与签章", level=1)
     doc.add_paragraph("法定代表人/授权代表（签字）：____________   日期：__________")
+    _add_ai_notice(doc)
     out = io.BytesIO()
     doc.save(out)
     return out.getvalue()

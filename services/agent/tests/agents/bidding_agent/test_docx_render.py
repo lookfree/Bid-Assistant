@@ -149,6 +149,16 @@ def test_render_docx_applies_bid_convention_styles():
     assert h1.font.size.pt == 16
 
 
+def test_render_docx_appends_ai_generated_notice():
+    """spec326 算法备案：导出文件末尾自动写入 AI 生成提示（长版文案，逐字不可改）。"""
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]}
+    data = render_docx(outline, {"t1": "<p>正文</p>"})
+    doc = Document(io.BytesIO(data))
+    texts = "\n".join(p.text for p in doc.paragraphs)
+    assert ("本内容由智启元投标助手生成合成类算法辅助生成，"
+            "仅供投标文件编制参考，请结合招标文件原文和企业实际情况复核确认后使用。") in texts
+
+
 def test_render_docx_credential_corrupt_image_placeholder():
     """spec325：图片字节损坏（add_picture 抛错）→ 占位一行，不崩，不影响导出。"""
     outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]}

@@ -1,11 +1,16 @@
 from __future__ import annotations
 import asyncio
+import json
+import logging
 from agent.agents.bidding_agent.render.docx import render_docx
 from agent.agents.bidding_agent.render.pdf import docx_to_pdf
 from agent.agents.bidding_agent.render.pptx import render_pptx
 from agent.agents.bidding_agent.schemas import DeckSpec
 from agent.agents.bidding_agent.nodes.common import upload_artifact, fetch_master_bytes
+from agent.framework.content_safety import scan_text
 from agent.parsing import storage_read
+
+logger = logging.getLogger(__name__)
 
 
 async def _fetch_credential_image(key: str) -> dict:
@@ -29,6 +34,26 @@ async def _fetch_credentials(credentials: list[dict]) -> list[dict]:
     return result
 
 
+async def _scan_and_flag(ctx, state: dict) -> None:
+    """交付前敏感词扫描（spec326 备案「违法不良信息识别与发现机制」的机器侧）：只记录命中，
+    绝不拦截、绝不改动生成内容。整体 try/except：词库缺失/recorder 或落库异常/任何意外状态，
+    一律 logger.warning 后放行，绝不让扫描挡住导出交付（生产铁律）。无命中不写事件。"""
+    try:
+        chapters_text = "\n".join((state.get("chapters") or {}).values())
+        deck = state.get("deck")
+        text = chapters_text + (json.dumps(deck, ensure_ascii=False) if deck else "")
+        hits = scan_text(text)
+        if not hits:
+            return
+        await asyncio.to_thread(
+            ctx.recorder.log_event, ctx.run_id, ctx.agent_type, "content_flag",
+            node="export", level="warn", data={"words": sorted(hits), "counts": hits},
+            thread_id=ctx.thread_id,
+        )
+    except Exception:  # noqa: BLE001 敏感词扫描/落库失败绝不阻断导出交付
+        logger.warning("敏感词扫描失败，跳过", exc_info=True)
+
+
 def make_export_node(ctx):
     """graph 节点：读 outline+chapters → 渲染完整标书 .docx → 落 MinIO → 写 artifacts['docx']。
     普通服务节点：确定性、无 LLM、不碰钱。与 present 的 pptx 由 state.artifacts 合并 reducer 并存。
@@ -39,7 +64,8 @@ def make_export_node(ctx):
     缺省不带 credentials 键时渲染调用与今天一致。
     企业母版：deck.enterprise_template_id 若给出（present 阶段已落库的 MinIO key），重渲时
     重新预取母版字节传给 render_pptx，保持编辑后重导出仍套用同一份企业母版；取不到静默回退
-    空白设计，不影响 pptx 重渲。"""
+    空白设计，不影响 pptx 重渲。
+    spec326：渲染前先跑一次敏感词扫描（_scan_and_flag，record-only，见其文档串）。"""
     async def export_node(state):
         meta = (state.get("read") or {}).get("project_meta", {})
         run_input = state.get("run_input") or {}
@@ -47,6 +73,7 @@ def make_export_node(ctx):
         credentials_input = run_input.get("credentials")
         credentials = (await _fetch_credentials(credentials_input)
                        if credentials_input else None)
+        await _scan_and_flag(ctx, state)
         data = render_docx(state.get("outline") or {}, state.get("chapters") or {},
                             meta=meta, package=package, credentials=credentials)
         key = await upload_artifact(

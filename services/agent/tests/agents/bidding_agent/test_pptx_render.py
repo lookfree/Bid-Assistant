@@ -101,6 +101,24 @@ def test_render_on_master_populates_titles_notes_and_chip():
     assert chip.text_frame.text == "评分点｜技术方案 50 分"
 
 
+def _all_texts(prs: Presentation) -> list[str]:
+    return [sh.text_frame.text for sl in prs.slides for sh in sl.shapes if sh.has_text_frame]
+
+
+def test_end_slide_has_ai_notice_blank_path():
+    """spec326 算法备案：结束页（空白设计路径）底部含 AI 生成提示短版文案（逐字不可改）。"""
+    data = render_pptx(_deck())
+    prs = Presentation(io.BytesIO(data))
+    assert "本内容由 AI 辅助生成，仅供参考，请人工复核后使用" in _all_texts(prs)
+
+
+def test_end_slide_has_ai_notice_master_path():
+    """spec326：结束页（企业母版路径）同样含 AI 生成提示短版文案，两路径视觉一致。"""
+    data = render_pptx(_deck(), master_bytes=_tiny_master())
+    prs = Presentation(io.BytesIO(data))
+    assert "本内容由 AI 辅助生成，仅供参考，请人工复核后使用" in _all_texts(prs)
+
+
 def test_render_on_master_malformed_bytes_falls_back_to_blank():
     data = render_pptx(_deck(), master_bytes=b"not a pptx")
     assert data[:2] == b"PK"

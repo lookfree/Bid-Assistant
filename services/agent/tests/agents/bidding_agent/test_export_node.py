@@ -259,6 +259,78 @@ def test_export_node_rerender_fetches_master_from_deck_enterprise_template_id(mo
     assert out["artifacts"]["pptx"] == "artifacts/proj-15/present.pptx"
 
 
+class _FakeRecorder:
+    """spec326 敏感词扫描测试用 fake recorder：raise_on_log 模拟落库失败。"""
+
+    def __init__(self, raise_on_log: bool = False):
+        self.calls: list[dict] = []
+        self.raise_on_log = raise_on_log
+
+    def log_event(self, run_id, agent_type, event_type, **kwargs):
+        if self.raise_on_log:
+            raise RuntimeError("db down")
+        self.calls.append({"run_id": run_id, "agent_type": agent_type,
+                            "event_type": event_type, **kwargs})
+
+
+def test_export_node_scans_and_logs_sensitive_word_hit(monkeypatch):
+    """spec326：chapters 命中词库违禁词 → recorder.log_event 被调用，event_type=='content_flag'。"""
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+    monkeypatch.setattr(export_mod, "docx_to_pdf", lambda data: None)
+    recorder = _FakeRecorder()
+    node = make_export_node(RunContext(run_id="r1", agent_type="bidding_agent",
+                                        thread_id="proj-20", recorder=recorder))
+    out = asyncio.run(node({
+        "outline": {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]},
+        "chapters": {"t1": "<p>这是赌博网站的广告内容</p>"},
+        "read": {"project_meta": {"name": "投标文件"}},
+    }))
+    assert out["artifacts"]["docx"] == "artifacts/proj-20/bid.docx"
+    assert len(recorder.calls) == 1
+    call = recorder.calls[0]
+    assert call["event_type"] == "content_flag"
+    assert "赌博" in call["data"]["words"]
+
+
+def test_export_node_clean_chapters_no_flag_event(monkeypatch):
+    """spec326：干净 chapters（无命中）→ recorder.log_event 不被调用。"""
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+    monkeypatch.setattr(export_mod, "docx_to_pdf", lambda data: None)
+    recorder = _FakeRecorder()
+    node = make_export_node(RunContext(run_id="r2", agent_type="bidding_agent",
+                                        thread_id="proj-21", recorder=recorder))
+    asyncio.run(node({
+        "outline": {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]},
+        "chapters": {"t1": "<p>技术方案与商务报价正常内容</p>"},
+        "read": {"project_meta": {"name": "投标文件"}},
+    }))
+    assert recorder.calls == []
+
+
+def test_export_node_scan_failure_does_not_block_export(monkeypatch):
+    """spec326 生产铁律：recorder.log_event 抛异常 → 扫描只 warning，export 仍成功返回 artifacts。"""
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+    monkeypatch.setattr(export_mod, "docx_to_pdf", lambda data: None)
+    recorder = _FakeRecorder(raise_on_log=True)
+    node = make_export_node(RunContext(run_id="r3", agent_type="bidding_agent",
+                                        thread_id="proj-22", recorder=recorder))
+    out = asyncio.run(node({
+        "outline": {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]},
+        "chapters": {"t1": "<p>这是赌博网站的广告内容</p>"},
+        "read": {"project_meta": {"name": "投标文件"}},
+    }))
+    assert out["artifacts"]["docx"] == "artifacts/proj-22/bid.docx"
+
+
 def test_artifacts_reducer_keeps_pptx_and_docx():
     """spec201 state.artifacts 合并 reducer：present(pptx) 与 export(docx) 并存不互相覆盖。"""
     from agent.agents.bidding_agent.state import _merge_dict
