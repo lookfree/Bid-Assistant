@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto"
 import type { Redis } from "ioredis"
 import { findUserByIdentity, createOrGetOnConflict } from "../repos/users"
-import { mintSession, TermsRequiredError } from "./auth"
+import { mintSession, TermsRequiredError, applySignupBonus } from "./auth"
 import type { WechatOAuthClient } from "./wechat-oauth"
 import type { User } from "../db/schema"
 
@@ -50,6 +50,8 @@ export function makeWechatAuth(redis: Redis, oauth: WechatOAuthClient, ttlDays: 
         isNew = created.isNew
       }
       const token = await mintSession(user.id, meta, ttlDays)
+      // 微信首次登录=首次注册，同手机号一样赠送积分（best-effort，不阻断登录）。
+      if (isNew) await applySignupBonus(user.id)
       return { token, user, isNew }
     },
   }

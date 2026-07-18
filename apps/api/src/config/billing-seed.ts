@@ -17,6 +17,7 @@ export const BILLING_SEED: Record<string, unknown> = {
   credit_rate: { credits_per_cny_cent: 1 }, // 正向汇率：credits = floor(amountCents × credits_per_cny_cent)（占位 1 分=1 积分）
   grant_expire_days: 30, // 赠送积分有效期
   reward_expire_days: 30, // 奖励积分有效期
+  signup_grant_credits: 200, // 首次注册一次性赠送积分（运营后台可改；0 = 不赠送）
   referral_rules: {
     inviterReward: 50,
     inviteeReward: 50,
