@@ -334,7 +334,7 @@ export default function PresentPage() {
     return (
       <div className="flex h-[calc(100vh-4rem)] flex-col">
         <div className="shrink-0 px-4 pt-4 sm:px-6">
-          <FlowNav current="present" />
+          <FlowNav current="present" info={info} />
         </div>
         <NoProjectGuide />
       </div>
@@ -345,7 +345,7 @@ export default function PresentPage() {
   if (!info || dataLoading)
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
-        <FlowNav current="present" />
+        <FlowNav current="present" info={info} />
         <StepPlaceholder text={dataLoading ? "正在加载述标数据…" : "正在加载项目…"} delayMs={250} />
       </div>
     )
@@ -357,7 +357,7 @@ export default function PresentPage() {
     <div className="flex h-[calc(100vh-4rem)] flex-col">
       {/* 流程返回区：上一步 + 面包屑 + 与其他工具页统一的卡片式标题栏 */}
       <div className="shrink-0 px-4 pt-4 pb-4 sm:px-6">
-        <FlowNav current="present" />
+        <FlowNav current="present" info={info} />
         <StepBanner
           running={stepRunning}
           error={stepError}

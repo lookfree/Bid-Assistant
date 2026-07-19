@@ -1,7 +1,8 @@
 "use client"
 
 import Link from "next/link"
-import { ChevronLeft, ChevronRight } from "lucide-react"
+import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react"
+import { currentProjectId, peekProjectCache, type ProjectInfo } from "@/lib/project"
 
 /** 线性编标流程顺序 */
 const FLOW = [
@@ -15,14 +16,28 @@ const FLOW = [
 
 export type FlowStep = (typeof FLOW)[number]["key"]
 
+// 服务端步骤名 → 流程页 key（review 步的页面是 /risk；export 在 content 页内,归到 content）
+const STEP_TO_FLOW: Record<string, FlowStep> = {
+  read: "read", outline: "outline", content: "content",
+  review: "risk", present: "present", export: "content",
+}
+
 /**
  * 线性流程返回区：左侧「上一步」按钮 + 当前步骤面包屑。
  * 面包屑展示从起点到当前步骤的路径，历史步骤可点击跳转，移动端可横向滚动。
+ * 传入 info 时,若有步骤正在服务端运行,右侧常驻「XX进行中」指示（含跳转）——
+ * 用户切到任何流程页都能看到在途任务,不会因离开生成页而「感觉流程断了」。
  */
-export function FlowNav({ current }: { current: FlowStep }) {
+export function FlowNav({ current, info }: { current: FlowStep; info?: ProjectInfo | null }) {
   const index = FLOW.findIndex((s) => s.key === current)
   const prev = index > 0 ? FLOW[index - 1] : null
   const trail = FLOW.slice(0, index + 1)
+  // 页面没传 info（如 risk 页顶层无 useStep）时退化为读项目缓存快照——指示器精度要求不高,
+  // 缓存过期/未命中就不显示,不为它多发请求。
+  const pid = typeof window !== "undefined" ? currentProjectId() : null
+  const effective = info ?? (pid ? peekProjectCache(pid) : null)
+  const runningRow = effective?.steps.find((s) => s.status === "running")
+  const runningFlow = runningRow ? FLOW.find((f) => f.key === STEP_TO_FLOW[runningRow.step]) : null
 
   return (
     <nav
@@ -57,6 +72,15 @@ export function FlowNav({ current }: { current: FlowStep }) {
           )
         })}
       </ol>
+      {runningFlow && (
+        <Link
+          href={runningFlow.href}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/15"
+        >
+          <Loader2 className="size-3.5 animate-spin" />
+          {runningFlow.label}进行中
+        </Link>
+      )}
     </nav>
   )
 }

@@ -25,7 +25,6 @@ import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { StepPrereqGuide } from "@/components/tool/step-prereq-guide"
 import { LibraryPicker } from "@/components/tool/library-picker"
 import { useEscapeClose } from "@/hooks/use-escape-close"
-import { ApiError } from "@/lib/api-client"
 import { creditCosts } from "@/lib/plans"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
@@ -33,8 +32,9 @@ import { useLibrary } from "@/lib/use-library"
 import { type LibraryItem } from "@/lib/library"
 import { deriveHealthReport } from "@/lib/risk-derive"
 import { stepPrereq, useOtherStepResult, useStep } from "@/lib/use-step"
+import { useExport } from "./use-export"
 import { AiNotice } from "@/components/tool/ai-notice"
-import { artifactUrl, fetchStepResult, patchErrorMessage, patchStep, runStep } from "@/lib/project"
+import { patchErrorMessage, patchStep } from "@/lib/project"
 import { ChatPanel } from "./chat-panel"
 import { EditorToolbar } from "./editor-toolbar"
 import { ChapterNav, type Chapter } from "./chapter-nav"
@@ -84,20 +84,7 @@ export default function ContentPage() {
   }, [realBodies, outlineResult])
   const [activeId, setActiveId] = useState<string>("t1")
   const [chatOpen, setChatOpen] = useState(true)
-  const [exportOpen, setExportOpen] = useState(false)
   const [exportScope, setExportScope] = useState<BidType>("full")
-  const [exportFormat, setExportFormat] = useState<"word" | "pdf">("word")
-  const [exportStatus, setExportStatus] = useState<string>("")
-  /* 步序闸 / 402 引导提示：文案 + 引导链接（区别于 3 秒即逝的 exportStatus） */
-  const [exportGate, setExportGate] = useState<{ text: string; href: string; label: string } | null>(null)
-  const [hasExported, setHasExported] = useState(false)
-  // spec323：已跑过 export 步且结果无 pdf key ⇒ 该次 docx→pdf 转换失败（agent best-effort），PDF 选项置灰
-  const { data: exportedResult } = useOtherStepResult<{ pdf?: string }>(projectId, info, "export")
-  const pdfUnavailable = !!exportedResult && !exportedResult.pdf
-  // 已知不可用时把停留在 pdf 的选择拨回 word，避免「已禁用但仍被选中」的怪状态
-  useEffect(() => {
-    if (pdfUnavailable) setExportFormat((f) => (f === "pdf" ? "word" : f))
-  }, [pdfUnavailable])
   const editorRef = useRef<HTMLDivElement>(null)
   const { openPaywall } = usePaywall()
 
@@ -132,6 +119,19 @@ export default function ContentPage() {
   const [exportConfirm, setExportConfirm] = useState(false)
   /* 用户已软放行（确认仍要导出后不再重复拦截） */
   const [softPassed, setSoftPassed] = useState(false)
+
+  /* 导出全流程（入口/步序闸/断流收敛/断点续看）拆到 use-export.ts；确认弹层仍在本页,回调发信号 */
+  const {
+    exportOpen, setExportOpen, exportFormat, setExportFormat, exportStatus, flashExportStatus,
+    exportGate, exportGateHint, hasExported, pdfUnavailable, onExportEntry, attemptExport, doExport,
+  } = useExport({
+    projectId, info, membershipLoading, canAfford,
+    openPaywall: () => openPaywall("export"),
+    canCheck, isReal, findings, checkState, runCheck, softPassed,
+    presentCost, reviewCost,
+    requestCheckConfirm: () => setCheckConfirm("export"),
+    onHighRisk: () => setExportConfirm(true),
+  })
 
   // 当前 tab 对应的章节列表（全文为技术标 + 商务标合并）
   const list: Chapter[] = bidType === "full" ? [...data.tech, ...data.business] : data[bidType]
@@ -286,105 +286,6 @@ export default function ContentPage() {
     }, 900)
   }
 
-  /* 点击「导出文件」入口 */
-  function onExportEntry() {
-    // 余额加载中不做付费墙判定（按钮已禁用，双保险防按 balance=0 误弹）
-    if (membershipLoading) return
-    setExportGate(null)
-    // 积分不足：弹「开通会员」付费墙；积分充足：打开导出弹窗（消耗积分）
-    if (!canAfford) {
-      openPaywall("export")
-      return
-    }
-    setExportOpen((v) => !v)
-  }
-
-  function flashExportStatus(text: string) {
-    setExportStatus(text)
-    setTimeout(() => setExportStatus(""), 3000)
-  }
-
-  /** 步序闸：agent 图线性（…→review→present→export），export 只能在 present 完成后跑。
-      currentStep 非 export/done 时不调 runStep("export")（后端必 409），改给完成路径提示。 */
-  function exportGateHint(): { text: string; href: string; label: string } | null {
-    const cur = info?.project.currentStep
-    if (!cur || cur === "export" || cur === "done") return null
-    const reviewDone = checkState === "done" || !!findings
-    if (cur === "present" || reviewDone)
-      return { text: `导出前需完成：述标生成（${presentCost} 积分）`, href: "/present", label: "前往述标页" }
-    return {
-      text: `导出前需完成：废标审查（${reviewCost} 积分）→ 述标生成（${presentCost} 积分）`,
-      href: "/risk",
-      label: "前往审查页",
-    }
-  }
-
-  /* 付费用户在导出菜单点「确认导出」：体检未跑不再静默触发，先显式确认计费；再按风险弱拦截 */
-  async function attemptExport() {
-    setExportOpen(false)
-    if (!canCheck) {
-      flashExportStatus("完成正文生成后可体检并导出")
-      return
-    }
-    // 体检未跑（review 步无结果）：弹计费确认，用户显式确认或跳过（跳过仅步序闸允许时可选）
-    if (isReal && !findings) {
-      setCheckConfirm("export")
-      return
-    }
-    const f = checkState === "done" ? findings : await runCheck()
-    if (!f) {
-      flashExportStatus("体检失败，请重试")
-      return
-    }
-    if (f.high > 0 && !softPassed) {
-      setExportConfirm(true)
-    } else {
-      doExport(exportFormat)
-    }
-  }
-
-  function doExport(format: "word" | "pdf") {
-    setExportConfirm(false)
-    setExportOpen(false)
-    setExportGate(null)
-    // 只有真实项目才可导出（导出按钮无项目时已禁用；报告弹层等入口在此兜底提示）
-    if (!projectId || !info) {
-      flashExportStatus("请先从项目进入，再导出标书文件")
-      return
-    }
-    // 步序闸：还没走到 export 步就不发请求，给出完成路径与入口链接
-    const gate = exportGateHint()
-    if (gate) {
-      setExportGate(gate)
-      return
-    }
-    // 真实导出：export 步（渲染完整 .docx，best-effort 转 .pdf，落 MinIO）→ 预签名 URL 直下
-    const kind = format === "pdf" ? "pdf" : "docx"
-    setExportStatus(format === "pdf" ? "正在渲染完整标书（PDF）…" : "正在渲染完整标书…")
-    void (async () => {
-      try {
-        if (!(await fetchStepResult(projectId, "export"))) await runStep(projectId, "export")
-        window.open(await artifactUrl(projectId, kind), "_blank")
-        setExportStatus("已导出，浏览器开始下载")
-        setHasExported(true)
-      } catch (e) {
-        // 错误码直通：402 引导充值（持久提示），409 步骤顺序，pdf 404=该次转换失败仅有 docx，其余通用重试
-        if (e instanceof ApiError && e.status === 402) {
-          setExportGate({ text: "积分不足，无法导出", href: "/membership", label: "去充值" })
-          setExportStatus("")
-        } else if (e instanceof ApiError && e.status === 409) {
-          setExportStatus("步骤顺序不符，请先完成前序步骤")
-        } else if (kind === "pdf" && e instanceof ApiError && e.status === 404) {
-          setExportStatus("PDF 生成失败，仅提供 Word")
-        } else {
-          setExportStatus("导出失败，请重试")
-        }
-      } finally {
-        setTimeout(() => setExportStatus(""), 3000)
-      }
-    })()
-  }
-
   /* 弹窗统一 Escape 关闭 */
   useEscapeClose(() => setExportConfirm(false), exportConfirm)
   useEscapeClose(() => setReportOpen(false), reportOpen)
@@ -394,7 +295,7 @@ export default function ContentPage() {
   if (!projectId)
     return (
       <div className="mx-auto flex h-[calc(100vh-4rem)] max-w-[1600px] flex-col px-4 py-5 sm:px-6 lg:px-8">
-        <FlowNav current="content" />
+        <FlowNav current="content" info={info} />
         <NoProjectGuide />
       </div>
     )
@@ -404,7 +305,7 @@ export default function ContentPage() {
   if (!info)
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
-        <FlowNav current="content" />
+        <FlowNav current="content" info={info} />
         <StepPlaceholder text="正在加载项目…" delayMs={250} />
       </div>
     )
@@ -413,7 +314,7 @@ export default function ContentPage() {
   if (!active)
     return (
       <div className="mx-auto flex h-[calc(100vh-4rem)] max-w-[1600px] flex-col px-4 py-5 sm:px-6 lg:px-8">
-        <FlowNav current="content" />
+        <FlowNav current="content" info={info} />
         <StepBanner
           running={running}
           error={error}
@@ -441,7 +342,7 @@ export default function ContentPage() {
   if (dataLoading)
     return (
       <div className="mx-auto flex h-[calc(100vh-4rem)] max-w-[1600px] flex-col px-4 py-5 sm:px-6 lg:px-8">
-        <FlowNav current="content" />
+        <FlowNav current="content" info={info} />
         <StepPlaceholder text="正在加载正文数据…" delayMs={250} />
       </div>
     )
@@ -451,7 +352,7 @@ export default function ContentPage() {
 
   return (
     <div className="mx-auto flex h-[calc(100vh-4rem)] max-w-[1600px] flex-col px-4 py-5 sm:px-6 lg:px-8">
-      <FlowNav current="content" />
+      <FlowNav current="content" info={info} />
       <StepBanner
         running={running}
         error={error}

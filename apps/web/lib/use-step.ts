@@ -6,6 +6,7 @@ import {
   clearCurrentProjectId,
   currentProjectId,
   getProject,
+  invalidateProjectCache,
   peekProjectCache,
   runStep,
   fetchStepResult,
@@ -43,15 +44,16 @@ export function stepPrereq(info: ProjectInfo | null, step: StepName): { href: st
   return STEP_PAGE[cur] ?? null
 }
 
-// 断连/双发后的收敛轮询节奏：每 5s 查一次项目。上限放到 20 分钟——content 大标书正文可跑十几分钟，
-// 若连接早断则轮询要撑到 run 真正结束（run 仍在跑就一直等；running 行消失且无 done 才判失败）。
+// 断连/双发后的收敛轮询节奏：每 5s 查一次项目。上限 30 分钟——content 大标书正文实测 11+ 分钟,
+// 叠加降级重试可能更久;若连接早断则轮询要撑到 run 真正结束（run 仍在跑就一直等；
+// running 行消失且无 done 才判失败）。服务端另有对账 Cron 兜底,超时只是放弃「本页等待」。
 const POLL_INTERVAL_MS = 5_000
-const POLL_TIMEOUT_MS = 20 * 60_000
+const POLL_TIMEOUT_MS = 30 * 60_000
 
 /** 该步已有一次在途 run（双发漏网/断线后重进页面）时的收敛轮询：
  *  轮询 slim 项目信息等状态变化——出现 done 行即按需拉取该步结果返回；
  *  running 行消失仍无 done（在途那次失败）或超时则抛错，由调用方转失败文案。 */
-async function pollStepResult<T>(projectId: string, step: StepName): Promise<T> {
+export async function pollStepResult<T>(projectId: string, step: StepName): Promise<T> {
   const deadline = Date.now() + POLL_TIMEOUT_MS
   let doneButEmpty = 0   // done 行却拉不到结果:连续多次即终止(别空转满 20 分钟)
   while (Date.now() < deadline) {
@@ -79,7 +81,7 @@ async function pollStepResult<T>(projectId: string, step: StepName): Promise<T> 
 
 /** 步骤完成（无论正常 start() 还是收敛轮询）都可能扣了积分：广播一个全局事件，
  *  侧边栏积分卡监听后静默刷新（v1 用 window 事件，够用且不引入额外的跨组件状态管理）。 */
-function notifyCreditsChanged() {
+export function notifyCreditsChanged() {
   if (typeof window !== "undefined") window.dispatchEvent(new Event("credits:refresh"))
 }
 
@@ -87,7 +89,7 @@ function notifyCreditsChanged() {
 // data=null 且 projectId 在 → 该步还没跑：页面调 start() 触发（SSE 期间 running=true）。
 export function useStep<T>(step: StepName) {
   const [projectId, setProjectId] = useState<string | null>(() => currentProjectId())
-  // 挂载即刻乐观取值：同一项目若刚被别的工具页缓存过（3s 内），直接从缓存派生初值，
+  // 挂载即刻乐观取值：同一项目若刚被别的工具页缓存过（30s TTL 内），直接从缓存派生初值，
   // 这样该步已在服务端 running 时首帧就是「生成中」，不会先闪一下空态再切换——
   // 命中与否不影响正确性，下面的 effect 仍会发起一次 getProject 校准真实状态。
   const [info, setInfo] = useState<ProjectInfo | null>(() => {
@@ -197,6 +199,9 @@ export function useStep<T>(step: StepName) {
       setProgress(null)
       setPhase(null)
       setErrorStatus(null)
+      // 立刻失效项目缓存：缓存快照是「点击前」抓的（无 running 行）,30s TTL 内切走再切回
+      // 会命中它并渲染成「尚未生成」的空闲态 + 计费按钮——运行状态凭空消失（切页断流感）。
+      invalidateProjectCache(projectId)
       try {
         const result = await runStep<T>(projectId, step, undefined, body)
         setData(result)
@@ -206,9 +211,11 @@ export function useStep<T>(step: StepName) {
         // 连接中途断开（长步骤如 content 十多分钟被代理/网络掐断，未收到 step.done）：
         // run 仍在服务端跑/已跑完，转轮询收敛，绝不误报「生成失败」（用户实测：刷新后其实已成功）。
         // 与 409 step_already_running（双发/重进页面）同样处理。
+        // step_already_done：撞上服务端对账刚把上一次成功 run 收尾交付——结果已在,收敛轮询立即取回
         const shouldPoll =
           e instanceof StreamIncompleteError ||
-          (e instanceof ApiError && e.status === 409 && e.code === "step_already_running")
+          (e instanceof ApiError && e.status === 409 &&
+            (e.code === "step_already_running" || e.code === "step_already_done"))
         if (shouldPoll) {
           try {
             const result = await pollStepResult<T>(projectId, step)

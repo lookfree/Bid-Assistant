@@ -241,7 +241,7 @@ export default function OutlinePage() {
   if (!projectId)
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
-        <FlowNav current="outline" />
+        <FlowNav current="outline" info={info} />
         <NoProjectGuide />
       </div>
     )
@@ -251,14 +251,14 @@ export default function OutlinePage() {
   if (!info || dataLoading)
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
-        <FlowNav current="outline" />
+        <FlowNav current="outline" info={info} />
         <StepPlaceholder text="正在加载项目…" delayMs={250} />
       </div>
     )
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
-      <FlowNav current="outline" />
+      <FlowNav current="outline" info={info} />
       {<StepBanner running={running} error={error} runningText={phase ? `AI 编排提纲：${phase.label}…` : "AI 正在基于读标结论搭建技术标/商务标提纲…"} onRetry={() => void start()} action={errorAction ?? undefined} />}
       <div className="flex flex-col gap-4 rounded-2xl border border-border bg-card px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-start gap-3">

@@ -80,6 +80,26 @@ export default function ProjectsPage() {
     void load()
   }, [load])
 
+  // 状态徽章保鲜：页面重获焦点时静默重拉首页（不置 loading,不闪骨架）——
+  // 「正文生成中」这类徽章是快照,用户切去生成页再切回来要看到推进后的状态。
+  useEffect(() => {
+    const refresh = () => {
+      void (async () => {
+        try {
+          const res = await listProjects(1, PAGE_SIZE)
+          setProjects(res.items)
+          setTotal(res.total)
+          setPage(1)
+          setHasMore(res.hasMore)
+        } catch {
+          /* 静默：保留已展示数据 */
+        }
+      })()
+    }
+    window.addEventListener("focus", refresh)
+    return () => window.removeEventListener("focus", refresh)
+  }, [])
+
   // 搜索：本地按名称过滤（仅已加载部分）
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()

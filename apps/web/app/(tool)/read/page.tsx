@@ -195,7 +195,7 @@ export default function ReadPage() {
   if (!projectId)
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
-        <FlowNav current="read" />
+        <FlowNav current="read" info={info} />
         <NoProjectGuide />
       </div>
     )
@@ -205,7 +205,7 @@ export default function ReadPage() {
   if (!info || dataLoading)
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
-        <FlowNav current="read" />
+        <FlowNav current="read" info={info} />
         <StepPlaceholder text={dataLoading ? "正在加载读标数据…" : "正在加载项目…"} delayMs={250} />
       </div>
     )
@@ -214,7 +214,7 @@ export default function ReadPage() {
   if (!real)
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
-        <FlowNav current="read" />
+        <FlowNav current="read" info={info} />
         <StepBanner
           running={running}
           error={error}
@@ -238,7 +238,7 @@ export default function ReadPage() {
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
-      <FlowNav current="read" />
+      <FlowNav current="read" info={info} />
       <div className="flex flex-col gap-4 rounded-2xl border border-border bg-card px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-start gap-3">
           <div className="flex size-10 shrink-0 items-center justify-center rounded-xl gradient-brand">
