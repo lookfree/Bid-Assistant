@@ -8,6 +8,12 @@ import { listEntries, type LibraryEntry } from "./library-api"
 // 选择器共用,曾经每次挂载都全量重拉 + 必闪 loading。
 let cachedItems: LibraryEntry[] | null = null
 
+/** 登录态切换时清缓存（auth-provider login/logout 调）：资料库含企业资质等敏感内容,
+ *  模块缓存跨用户存活会把上个账号的资料闪现给下个账号。 */
+export function clearLibraryCache(): void {
+  cachedItems = null
+}
+
 // 资料库数据源 hook：挂载时拉 GET /api/library，供资料库页与「从资料库插入」选择器共用。
 export function useLibrary() {
   const [items, setItems] = useState<LibraryEntry[]>(cachedItems ?? [])

@@ -12,8 +12,10 @@ const EVERY_MS = 5 * 60_000
 /** job 体（可直调测试）。 */
 export async function stuckStepsJob(): Promise<void> {
   const counts = await sweepStuckSteps(getRun)
-  if (counts.recovered || counts.failed) {
-    console.info(`[cron:stuck-steps] recovered=${counts.recovered} failed=${counts.failed} alive=${counts.alive}`)
+  if (counts.recovered || counts.failed || counts.repaired) {
+    console.info(
+      `[cron:stuck-steps] recovered=${counts.recovered} failed=${counts.failed} repaired=${counts.repaired} alive=${counts.alive}`,
+    )
   }
 }
 

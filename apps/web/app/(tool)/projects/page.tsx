@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Plus,
   FileSearch,
@@ -56,6 +56,9 @@ export default function ProjectsPage() {
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState("")
+  // 焦点刷新读当前页码用（effect 只挂一次,直读 state 会闭包旧值）
+  const pageRef = useRef(page)
+  pageRef.current = page
 
   // 拉取某页：append=false 为首屏/重试全量替换，append=true 为「加载更多」追加（失败保留已加载数据）
   const fetchPage = useCallback(async (pageNum: number, append: boolean) => {
@@ -80,19 +83,25 @@ export default function ProjectsPage() {
     void load()
   }, [load])
 
-  // 状态徽章保鲜：页面重获焦点时静默重拉首页（不置 loading,不闪骨架）——
+  // 状态徽章保鲜：页面重获焦点时静默重拉（不置 loading,不闪骨架）——
   // 「正文生成中」这类徽章是快照,用户切去生成页再切回来要看到推进后的状态。
+  // 已点过「加载更多」（page>1）时跳过:整体重拉会把列表截回首页、滚动位置与搜索命中一起丢。
   useEffect(() => {
+    let busy = false
     const refresh = () => {
+      if (busy || pageRef.current > 1) return
+      busy = true
       void (async () => {
         try {
           const res = await listProjects(1, PAGE_SIZE)
           setProjects(res.items)
           setTotal(res.total)
-          setPage(1)
           setHasMore(res.hasMore)
+          setError(null) // 首屏失败后焦点刷新成功:清掉残留的错误横幅
         } catch {
           /* 静默：保留已展示数据 */
+        } finally {
+          busy = false
         }
       })()
     }

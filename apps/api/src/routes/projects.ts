@@ -11,6 +11,7 @@ import { isUuid } from "../lib/uuid"
 import * as billing from "../services/billing-stub"
 import * as client from "../services/agent-client"
 import { healStuckStep, finalizeStepSuccess, STEP_ORDER, type Step } from "../services/step-finalize"
+import { failStepAndRefund } from "../services/stuck-steps"
 import { ragRunInput } from "../services/rag-config"
 import { credentialsRunInput, type CredentialInput } from "../services/credentials"
 import { toCamel, toSnake } from "../lib/case"
@@ -489,9 +490,11 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         for await (const chunk of relayStream(run_id)) await safe.write(chunk) // 透传 agent SSE
         await finishStep(safe, { project: p, stepRow: s, step: step as Step, runId: run_id, hold })
       } catch (e) {
-        // 中继/收尾真炸（agent 掉线等，非客户端断连）：退还预扣（已结算则被了结唯一索引吞掉）+ 占位行标 failed
-        await settleFailed(s.id, hold.holdId!).catch(() => {})
-        await getDb().update(projectSteps).set({ status: "failed" }).where(eq(projectSteps.id, s.id))
+        // 中继/收尾真炸（agent 掉线等，非客户端断连）：走条件翻转的判死收尾（failStepAndRefund:
+        // WHERE status='running' 才置 failed+退款）。绝不能无条件覆写——收尾可能在翻转 done 并
+        // 结算**之后**才炸（如结算口径缺失）,无条件置 failed 会把已交付已计费的结果打回失败,
+        // 诱导重跑重扣（评审确认项）;翻转失败=行已 done/failed,不动行不退款,交对账 Cron 补齐。
+        await failStepAndRefund(s.id).catch(() => {})
         await safe.writeSSE({
           event: "step.done",
           data: JSON.stringify({ step, cost: 0, status: "failed", error: String(e) }),
@@ -519,11 +522,28 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     // 失败全额退还（净 0）+ 置 failed。
     let cost = 0
     if (failed) {
-      await settleFailed(stepRow.id, hold.holdId!)
-      await getDb()
+      // 失败分支同样条件翻转（WHERE status='running'）：对账 Cron 可能在 getRun 读到旧状态后、
+      // 本 UPDATE 前抢先把行收尾成 done——无条件覆写会摧毁已交付结果+错误退款（评审确认项）。
+      const flipped = await getDb()
         .update(projectSteps)
         .set({ result: run.result ?? null, status: "failed", costPoints: 0 })
-        .where(eq(projectSteps.id, stepRow.id))
+        .where(and(eq(projectSteps.id, stepRow.id), eq(projectSteps.status, "running")))
+        .returning({ id: projectSteps.id })
+      if (flipped.length > 0) {
+        await settleFailed(stepRow.id, hold.holdId!)
+      } else {
+        // 翻转失败=对账已抢先收尾:按行的真实终态发事件（可能是成功交付,别再报失败误导前端）
+        const [fresh] = await getDb().select().from(projectSteps).where(eq(projectSteps.id, stepRow.id))
+        if (fresh?.status === "done") {
+          await stream.writeSSE({
+            event: "step.done",
+            data: JSON.stringify({
+              step, cost: fresh.costPoints ?? 0, status: "done", result: resultToClient(step, fresh.result),
+            }),
+          })
+          return
+        }
+      }
     } else {
       const settled = await finalizeStepSuccess({
         stepId: stepRow.id, projectId: project.id, step, result: run.result ?? null,

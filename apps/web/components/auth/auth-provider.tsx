@@ -3,6 +3,8 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import { api, setAuthExpiredHandler } from "@/lib/api"
 import { ApiError } from "@/lib/api-client"
 import { tokenStore } from "@/lib/token-store"
+import { clearMembershipCache } from "@/lib/use-membership"
+import { clearLibraryCache } from "@/lib/use-library"
 
 type User = { id: string; nickname: string | null; status?: string }
 type AuthCtx = {
@@ -83,6 +85,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const login = (token: string, u: User) => {
+    // 先清跨用户模块缓存（会员总览/资料库）：同一浏览器换号登录时,上个账号的余额/资料
+    // 不能闪现给新账号（评审确认的数据泄漏面）
+    clearMembershipCache()
+    clearLibraryCache()
     tokenStore.set(token)
     setUser(u)
   }
@@ -91,6 +97,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await api.authApi.logout()
     } finally {
       tokenStore.clear()
+      clearMembershipCache()
+      clearLibraryCache()
       setUser(null)
     }
   }

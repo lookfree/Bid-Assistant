@@ -141,8 +141,13 @@ export function useExport(opts: {
             setExportStatus("已导出，浏览器开始下载")
             setHasExported(true)
             return
-          } catch {
-            setExportStatus("导出失败，请重试")
+          } catch (e2) {
+            // 收敛成功但 pdf 产物缺失（该次 docx→pdf 转换失败）:导出步其实成功了,给准确文案
+            setExportStatus(
+              kind === "pdf" && e2 instanceof ApiError && e2.status === 404
+                ? "PDF 生成失败，仅提供 Word"
+                : "导出失败，请重试",
+            )
             return
           }
         }

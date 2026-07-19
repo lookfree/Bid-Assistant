@@ -262,8 +262,15 @@ export async function renderChecklist(payload: {
   return postSync("/render/checklist", body)
 }
 
-export async function getRun(runId: string) {
-  const r = await fetch(`${getEnv().AGENT_BASE_URL}/runs/${runId}`)
+/** 查 run 终态。对账/自愈的判死依据——错误语义必须分明：
+ *  404 = run 确实不存在（返回 status:null，调用方可判死退款）;
+ *  其余非 2xx / 超时 = agent 不可达（抛错，调用方按「活」处理绝不误杀）——
+ *  代理返回的 JSON 错误页若被当正常体解析成 {status:undefined}，会把活 run 判死退款。
+ *  10s 超时：单个黑洞连接不能拖死整轮对账扫描。 */
+export async function getRun(runId: string): Promise<{ status: string | null; result?: unknown }> {
+  const r = await fetch(`${getEnv().AGENT_BASE_URL}/runs/${runId}`, { signal: AbortSignal.timeout(10_000) })
+  if (r.status === 404) return { status: null }
+  if (!r.ok) throw new Error(`agent getRun ${r.status}`)
   return (await r.json()) as { status: string; result?: unknown }
 }
 

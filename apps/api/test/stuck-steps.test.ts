@@ -233,4 +233,29 @@ describe("卡死步对账 Cron（sweepStuckSteps 直调）", () => {
     // 净变化 = 只结算了成功那步（失败步退还、活步冻结中）
     expect(await getBalance(userId)).toBe(balance0 - holdOk.amount * 2) // ok 结算 + live 仍冻结
   })
+
+  it("⑨ 半收尾修复:done 行挂着未了结 hold（翻转后结算前崩溃）被补齐——结算+推进,重放不重复扣", async () => {
+    const balance0 = await getBalance(userId)
+    const { projectId, stepId } = await makeStuckProject(1 * MIN)
+    const { amount } = await holdForStep(stepId)
+    // 模拟 finalize 翻转 done(带 result)后立刻崩溃:未结算、未写 costPoints、未推进
+    await getDb()
+      .update(projectSteps)
+      .set({ status: "done", result: { categories: [] } })
+      .where(eq(projectSteps.id, stepId))
+
+    const { sweepStuckSteps } = await import("../src/services/step-finalize")
+    const probe = async () => ({ status: "running" }) // 修复路径不依赖 agent
+    const c1 = await sweepStuckSteps(probe)
+    expect(c1.repaired).toBeGreaterThanOrEqual(1)
+
+    const row = await stepRow(stepId)
+    expect(row.costPoints).toBe(amount) // 已结算并落计费
+    expect(await getBalance(userId)).toBe(balance0 - amount)
+    const [p] = await getDb().select().from(bidProjects).where(eq(bidProjects.id, projectId))
+    expect(p!.currentStep).toBe("outline") // 流程解卡:currentStep 补推进
+
+    await sweepStuckSteps(probe) // 重放:行已带 costPoints,不再选中,余额不变
+    expect(await getBalance(userId)).toBe(balance0 - amount)
+  })
 })

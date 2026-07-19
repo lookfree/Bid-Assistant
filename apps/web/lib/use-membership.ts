@@ -19,6 +19,12 @@ export function primeMembershipCache(ov: MembershipOverview): void {
   cachedOverview = ov
 }
 
+/** 登录态切换时清缓存（auth-provider login/logout 调）：模块缓存跨用户存活,
+ *  不清会把上个账号的余额/套餐闪现给下个账号。 */
+export function clearMembershipCache(): void {
+  cachedOverview = null
+}
+
 /**
  * 工具页共用：真实积分余额与会员身份（GET /api/membership）。
  * - loading 仅在无缓存的首次拉取期间为 true（有缓存时后台静默刷新）；
