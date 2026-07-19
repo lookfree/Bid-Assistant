@@ -96,7 +96,12 @@ modelsRouter.post("/list-models", requirePermission("config.write"), async (c) =
   const parsed = ListModelsBody.safeParse(await c.req.json().catch(() => null))
   if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
   const { provider, baseUrl, id } = parsed.data
-  if (provider && !baseUrl) return c.json(await listModels({ provider }))
+  // 内置服务商拉取：优先用表单/库里存的 key（与「测试连通」一致），agent 侧再回退 env——
+  // 后台已配 key 的内置模型也能拉取，不必强依赖服务端 env（呼应「key 从后台配」）。
+  if (provider && !baseUrl) {
+    const key = parsed.data.apiKey || (id ? await resolveStoredKey(id) : undefined)
+    return c.json(await listModels({ provider, apiKey: key }))
+  }
   const apiKey = parsed.data.apiKey || (await resolveStoredKey(id))
   if (!apiKey) return c.json({ ok: false, error: "缺少 API Key" })
   return c.json(await listModels({ baseUrl, apiKey }))
