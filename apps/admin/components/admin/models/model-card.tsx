@@ -626,8 +626,9 @@ function BuiltinEndpointFields({
   )
 }
 
-// 内置服务商（deepseek/qwen/glm）拉取可用模型：agent 侧按注册表解析 base_url + 服务端 env 取 key，
-// 前端只需带 provider，无需 base_url/api_key。与手填的 model 输入（在卡片头）并存，谁后写生效。
+// 内置服务商（deepseek/qwen/glm）拉取可用模型：agent 侧按注册表解析 base_url，key 优先用后台配置——
+// 带上 id（回填库里已存 key）与当前输入的 apiKey，后端拿不到才回退服务端 env。否则纯 HTTP 后台里
+// 已在库中配好 key 的内置模型会因空 key 拉取报「服务端未配置该服务商的 API Key」。
 function BuiltinModelFetch({
   draft,
   setDraft,
@@ -636,7 +637,7 @@ function BuiltinModelFetch({
   setDraft: (updater: (d: ModelEntry) => ModelEntry) => void
 }) {
   const { models, fetching, error, run } = useModelListFetch(
-    () => adminApi.models.listModels({ provider: draft.provider }),
+    () => adminApi.models.listModels({ provider: draft.provider, apiKey: draft.apiKey, id: draft.id }),
     "该服务商暂不支持自动拉取，请手填模型名",
   )
 
