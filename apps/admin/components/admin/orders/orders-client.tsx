@@ -1,4 +1,5 @@
 "use client"
+import { safeUUID } from "@/lib/uuid"
 
 import { useEffect, useMemo, useState } from "react"
 import { Search, RotateCcw } from "lucide-react"
@@ -327,7 +328,7 @@ function RefundDialog({
   const [open, setOpen] = useState(false)
   const [amount, setAmount] = useState(String(order.amount))
   const [reason, setReason] = useState("")
-  const [idemKey, setIdemKey] = useState(() => crypto.randomUUID()) // 稳定幂等键：同一退款对话框会话复用，防重复提交双退
+  const [idemKey, setIdemKey] = useState(() => safeUUID()) // 稳定幂等键：同一退款对话框会话复用，防重复提交双退
 
   function submit() {
     const amt = Number(amount)
@@ -348,7 +349,7 @@ function RefundDialog({
       open={open}
       onOpenChange={(o) => {
         setOpen(o)
-        if (o) setIdemKey(crypto.randomUUID()) // 每次打开=新退款意图，换新键
+        if (o) setIdemKey(safeUUID()) // 每次打开=新退款意图，换新键
       }}
     >
       <DialogTrigger

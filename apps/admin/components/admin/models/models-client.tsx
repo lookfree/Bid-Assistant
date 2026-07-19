@@ -1,4 +1,5 @@
 "use client"
+import { safeUUID } from "@/lib/uuid"
 
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
@@ -138,7 +139,7 @@ export function ModelsClient() {
     if (!cfg) return
     const provider = "deepseek"
     const draft: ModelEntry = {
-      id: `m_${crypto.randomUUID()}`,
+      id: `m_${safeUUID()}`,
       provider,
       model: "",
       params: { ...DEFAULT_MODEL_PARAMS, maxTokens: providerDefaultMaxTokens(provider) },

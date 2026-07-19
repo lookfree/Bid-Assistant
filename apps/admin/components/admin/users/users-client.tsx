@@ -1,4 +1,5 @@
 "use client"
+import { safeUUID } from "@/lib/uuid"
 
 import { useEffect, useMemo, useState } from "react"
 import { Search } from "lucide-react"
@@ -109,7 +110,7 @@ export function UsersClient() {
 
   async function adjustPoints(userId: string, delta: number) {
     try {
-      await adminApi.users.grantCredits(userId, { amount: delta, reason: "运营手动调整", idempotencyKey: crypto.randomUUID() })
+      await adminApi.users.grantCredits(userId, { amount: delta, reason: "运营手动调整", idempotencyKey: safeUUID() })
       toast.success(`已调整 ${delta > 0 ? "+" : ""}${delta} 积分`)
       setSelected((prev) => (prev && prev.id === userId ? { ...prev, points: prev.points + delta } : prev))
       await load()
