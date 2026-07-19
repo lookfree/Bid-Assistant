@@ -1,5 +1,6 @@
 import Link from "next/link"
 import { HeroMock } from "@/components/hero-mock"
+import { HomeAuthNav } from "@/components/home-auth-nav"
 import {
   Sparkles,
   ArrowRight,
@@ -64,27 +65,15 @@ export default function HomePage() {
     <div className="flex min-h-screen flex-col bg-background">
       {/* 顶部轻导航 */}
       <header className="sticky top-0 z-40 border-b border-border/70 bg-background/85 backdrop-blur-md">
-        <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6">
+        {/* h-16 与工具页顶栏一致;右侧登录态感知（已登录直达工作台,不再永远显示「免费试用」） */}
+        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
           <div className="flex items-center gap-2">
             <span className="flex size-8 items-center justify-center rounded-xl gradient-brand">
               <Sparkles className="size-4 text-white" />
             </span>
             <span className="text-[15px] font-bold tracking-tight text-foreground">智启元 · 投标助手</span>
           </div>
-          <div className="flex items-center gap-2">
-            <Link
-              href="/login"
-              className="rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
-            >
-              登录
-            </Link>
-            <Link
-              href="/login"
-              className="rounded-lg gradient-brand px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90"
-            >
-              免费试用
-            </Link>
-          </div>
+          <HomeAuthNav />
         </div>
       </header>
 

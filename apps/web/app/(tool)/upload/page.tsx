@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation"
 import { api } from "@/lib/api"
 import { ApiError } from "@/lib/api-client"
 import { createProject } from "@/lib/project"
+import { FlowNav } from "@/components/tool/flow-nav"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import {
@@ -216,6 +217,8 @@ export default function UploadPage() {
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-6 sm:px-6 lg:px-8">
+      {/* 流程导航:上传是流程第 1 步,与其余流程页一致（含在途任务指示） */}
+      <FlowNav current="upload" />
       {/* 页头 */}
       <div className="text-center">
         <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">新建标书</h1>

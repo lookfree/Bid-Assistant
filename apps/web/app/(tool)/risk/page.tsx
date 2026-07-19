@@ -12,6 +12,7 @@ import {
   ListChecks,
 } from "lucide-react"
 import { FlowNav } from "@/components/tool/flow-nav"
+import { StepPageHeader } from "@/components/tool/step-page-header"
 import { NoProjectGuide } from "@/components/tool/no-project-guide"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { StepRunCta } from "@/components/tool/step-run-cta"
@@ -34,17 +35,7 @@ export default function ReviewPage() {
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
       <FlowNav current="risk" />
       {/* 标题栏 */}
-      <div className="flex flex-col gap-4 rounded-2xl border border-border bg-card px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-start gap-3">
-          <div className="flex size-10 shrink-0 items-center justify-center rounded-xl gradient-brand">
-            <ShieldCheck className="size-5 text-white" />
-          </div>
-          <div>
-            <h1 className="text-lg font-bold tracking-tight text-foreground sm:text-xl">标书审查</h1>
-            <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">废标风险审查 + 标书查重，交付前帮你拦住风险</p>
-          </div>
-        </div>
-      </div>
+      <StepPageHeader icon={ShieldCheck} title="标书审查" desc="废标风险审查 + 标书查重，交付前帮你拦住风险" />
 
       {/* Tab 切换 */}
       <div className="mt-5 flex gap-2">

@@ -9,6 +9,16 @@ import type { MembershipOverview } from "./membership-types"
 // 模块级缓存：跨页面共享上次拉到的 overview，挂载先用缓存立即渲染，再后台刷新。
 let cachedOverview: MembershipOverview | null = null
 
+/** 只读窥视缓存（会员中心页秒开用：先渲染缓存,后台刷新校准;未拉过返回 null）。 */
+export function peekMembershipCache(): MembershipOverview | null {
+  return cachedOverview
+}
+
+/** 页面自拉到新 overview 后回写共享缓存（会员中心页 load() 用,保持各页一致）。 */
+export function primeMembershipCache(ov: MembershipOverview): void {
+  cachedOverview = ov
+}
+
 /**
  * 工具页共用：真实积分余额与会员身份（GET /api/membership）。
  * - loading 仅在无缓存的首次拉取期间为 true（有缓存时后台静默刷新）；

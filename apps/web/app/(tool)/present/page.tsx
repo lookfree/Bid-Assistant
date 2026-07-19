@@ -20,6 +20,7 @@ import {
 import { usePaywall } from "@/components/paywall"
 import { CreditEstimate } from "@/components/credit-estimate"
 import { FlowNav } from "@/components/tool/flow-nav"
+import { StepPageHeader } from "@/components/tool/step-page-header"
 import { StepBanner } from "@/components/tool/step-banner"
 import { NoProjectGuide } from "@/components/tool/no-project-guide"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
@@ -365,19 +366,7 @@ export default function PresentPage() {
           onRetry={() => void start(presentRunBody())}
           action={stepErrorAction ?? undefined}
         />
-        <header className="flex flex-col gap-4 rounded-2xl border border-border bg-card px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-start gap-3">
-            <span className="flex size-10 shrink-0 items-center justify-center rounded-xl gradient-brand">
-              <Presentation className="size-5 text-white" />
-            </span>
-            <div>
-              <h1 className="text-lg font-bold tracking-tight text-foreground sm:text-xl">述标演示</h1>
-              <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">
-                一键把标书提炼成述标/答辩 PPT，含演讲备注与预计问答
-              </p>
-            </div>
-          </div>
-
+        <StepPageHeader icon={Presentation} title="述标演示" desc="一键把标书提炼成述标/答辩 PPT，含演讲备注与预计问答">
           {deckReady && (
             <div className="flex flex-wrap items-center gap-2">
               {/* 时长适配 */}
@@ -447,7 +436,7 @@ export default function PresentPage() {
               </button>
             </div>
           )}
-        </header>
+        </StepPageHeader>
         {deckReady && <AiNotice />}
 
         {/* 导出菜单 */}

@@ -19,6 +19,7 @@ import {
 } from "lucide-react"
 import { usePaywall } from "@/components/paywall"
 import { FlowNav } from "@/components/tool/flow-nav"
+import { StepPageHeader } from "@/components/tool/step-page-header"
 import { StepBanner } from "@/components/tool/step-banner"
 import { NoProjectGuide } from "@/components/tool/no-project-guide"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
@@ -377,19 +378,8 @@ export default function ContentPage() {
           </button>
         </div>
       )}
-      {/* 头部：与其他工具页统一的卡片式标题栏 */}
-      <header className="flex flex-col gap-4 rounded-2xl border border-border bg-card px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-start gap-3">
-          <div className="flex size-10 shrink-0 items-center justify-center rounded-xl gradient-brand">
-            <FileText className="size-5 text-white" />
-          </div>
-          <div>
-            <h1 className="text-lg font-bold tracking-tight text-foreground sm:text-xl">标书生成</h1>
-            <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">
-              AI 逐章生成标书正文，支持在线编辑与对话润色，完成后一键导出
-            </p>
-          </div>
-        </div>
+      {/* 头部：统一卡片式标题栏（StepPageHeader） */}
+      <StepPageHeader icon={FileText} title="标书生成" desc="AI 逐章生成标书正文，支持在线编辑与对话润色，完成后一键导出">
         <div className="flex items-center gap-3">
           {/* 技术标 / 商务标 / 标书全文 切换 */}
           <div className="inline-flex rounded-xl border border-border bg-card p-1">
@@ -418,7 +408,7 @@ export default function ContentPage() {
             AI 助手
           </button>
         </div>
-      </header>
+      </StepPageHeader>
       <AiNotice className="shrink-0" />
 
       {/* 三栏工作区 */}

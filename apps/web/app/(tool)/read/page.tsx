@@ -67,6 +67,7 @@ type RealRead = {
   packages?: PackageInfo[]
 }
 import { FlowNav } from "@/components/tool/flow-nav"
+import { StepPageHeader } from "@/components/tool/step-page-header"
 import { StepBanner } from "@/components/tool/step-banner"
 import { TenderDocPanel } from "@/components/tool/tender-doc-panel"
 import { NoProjectGuide } from "@/components/tool/no-project-guide"
@@ -239,18 +240,7 @@ export default function ReadPage() {
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
       <FlowNav current="read" info={info} />
-      <div className="flex flex-col gap-4 rounded-2xl border border-border bg-card px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-start gap-3">
-          <div className="flex size-10 shrink-0 items-center justify-center rounded-xl gradient-brand">
-            <FileText className="size-5 text-white" />
-          </div>
-          <div>
-            <h1 className="text-lg font-bold tracking-tight text-foreground sm:text-xl">招标解读</h1>
-            <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">
-              AI 通读招标文件，自动提取评分点、资格要求与废标红线，点击逐条定位原文
-            </p>
-          </div>
-        </div>
+      <StepPageHeader icon={FileText} title="招标解读" desc="AI 通读招标文件，自动提取评分点、资格要求与废标红线，点击逐条定位原文">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2.5 rounded-xl bg-muted/60 px-3 py-1.5 text-xs">
             <span className="inline-flex items-center gap-1 font-medium text-success">
@@ -281,7 +271,8 @@ export default function ReadPage() {
             )}
           </button>
         </div>
-      </div>
+      
+      </StepPageHeader>
       <AiNotice />
 
       {reportState === "ready" && (

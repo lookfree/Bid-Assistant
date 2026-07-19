@@ -21,6 +21,7 @@ import {
 } from "lucide-react"
 import type { OutlineItem, BidChapter } from "@/lib/bid-types"
 import { FlowNav } from "@/components/tool/flow-nav"
+import { StepPageHeader } from "@/components/tool/step-page-header"
 import { StepBanner } from "@/components/tool/step-banner"
 import { TenderDocPanel } from "@/components/tool/tender-doc-panel"
 import { NoProjectGuide } from "@/components/tool/no-project-guide"
@@ -260,18 +261,7 @@ export default function OutlinePage() {
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
       <FlowNav current="outline" info={info} />
       {<StepBanner running={running} error={error} runningText={phase ? `AI 编排提纲：${phase.label}…` : "AI 正在基于读标结论搭建技术标/商务标提纲…"} onRetry={() => void start()} action={errorAction ?? undefined} />}
-      <div className="flex flex-col gap-4 rounded-2xl border border-border bg-card px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-start gap-3">
-          <div className="flex size-10 shrink-0 items-center justify-center rounded-xl gradient-brand">
-            <ListTree className="size-5 text-white" />
-          </div>
-          <div>
-            <h1 className="text-lg font-bold tracking-tight text-foreground sm:text-xl">标书提纲</h1>
-            <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">
-              对齐评分点自动生成投标大纲，可自由增删改，每条均可溯源到招标原文
-            </p>
-          </div>
-        </div>
+      <StepPageHeader icon={ListTree} title="标书提纲" desc="对齐评分点自动生成投标大纲，可自由增删改，每条均可溯源到招标原文">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2.5 rounded-xl bg-muted/60 px-3 py-1.5 text-xs">
             <span className="inline-flex items-center gap-1 font-medium text-success">
@@ -313,7 +303,8 @@ export default function OutlinePage() {
             </div>
           )}
         </div>
-      </div>
+      
+      </StepPageHeader>
       <AiNotice />
 
       <div className="mt-5 grid gap-5 lg:grid-cols-2">

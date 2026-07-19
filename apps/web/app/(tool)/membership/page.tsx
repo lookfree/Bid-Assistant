@@ -7,6 +7,7 @@ import { fetchMembership, fetchOrders, startRecharge, renewMembership } from "@/
 import { api } from "@/lib/api"
 import type { MembershipOverview, OrderView, LaunchResponse, Payway } from "@/lib/membership-types"
 import { formatPeriodEnd, statusLabel, tierCardState, planPriceYuan, plansByTier } from "@/lib/membership-view"
+import { peekMembershipCache, primeMembershipCache } from "@/lib/use-membership"
 import { Check, X, Coins, Receipt, ArrowRight, Sparkles, Info, Infinity as InfinityIcon, TrendingUp } from "lucide-react"
 
 const REFERRAL_ENABLED = process.env.NEXT_PUBLIC_REFERRAL_ENABLED === "true"
@@ -23,9 +24,11 @@ const ORDER_TYPE: Record<OrderView["type"], string> = { recharge: "积分充值"
 type PendingPay = { kind: "recharge" | "renew"; id: string; label: string }
 
 export default function MembershipPage() {
-  const [overview, setOverview] = useState<MembershipOverview | null>(null)
+  // 秒开：先用跨页共享缓存立即渲染余额/套餐（工具页大多已拉过）,load() 后台刷新校准;
+  // 无缓存（直链进入）才走整页加载态。
+  const [overview, setOverview] = useState<MembershipOverview | null>(() => peekMembershipCache())
   const [orders, setOrders] = useState<OrderView[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(() => peekMembershipCache() === null)
   const [error, setError] = useState<string | null>(null)
   const [billing, setBilling] = useState<"month" | "year">("month")
   const [pending, setPending] = useState<PendingPay | null>(null)
@@ -33,10 +36,13 @@ export default function MembershipPage() {
   const [paying, setPaying] = useState(false)
 
   const load = useCallback(async () => {
-    setLoading(true)
+    // 已有可展示数据（缓存/上次加载）时后台静默刷新,不再整页转加载态（关扫码弹层后的刷新同理）
+    if (peekMembershipCache() === null) setLoading(true)
     setError(null)
     try {
-      setOverview(await fetchMembership()) // 会员总览是页面主体，失败才整页报错
+      const ov = await fetchMembership() // 会员总览是页面主体，失败才整页报错
+      setOverview(ov)
+      primeMembershipCache(ov) // 回写共享缓存:侧边栏积分卡/其它页下次秒开拿到最新值
     } catch (e) {
       setError(e instanceof Error ? e.message : "加载失败")
     } finally {
