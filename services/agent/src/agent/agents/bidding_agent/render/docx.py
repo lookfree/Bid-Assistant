@@ -35,11 +35,13 @@ def _apply_bid_styles(doc: Document) -> None:
 
 
 def _emit_el(doc: Document, el) -> None:
-    """单个 HTML 元素 → docx：h1–h4→Heading2、p→段落、ul/li→项目符号、table→表格；
-    容器标签（div 等）递归展开，防止整块被 get_text 压扁成一段。"""
+    """单个 HTML 元素 → docx：h1/h2→Heading2、h3/h4→Heading3、p→段落、ul/li→项目符号、
+    table→表格；容器标签（div 等）递归展开，防止整块被 get_text 压扁成一段。"""
     name = getattr(el, "name", None)
     if name in ("h1", "h2", "h3", "h4"):
-        doc.add_heading(el.get_text(strip=True), level=2)
+        # 章内小节分级：章标题占 Heading 1（目录一级），内层 h1/h2→二级、h3/h4→三级——
+        # TOC 域是 \o "1-3"，此前全压成二级导致目录里章内层级不可辨。
+        doc.add_heading(el.get_text(strip=True), level=2 if name in ("h1", "h2") else 3)
     elif name == "p":
         doc.add_paragraph(el.get_text(strip=True))
     elif name == "ul":
