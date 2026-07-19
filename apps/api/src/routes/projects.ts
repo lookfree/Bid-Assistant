@@ -10,16 +10,15 @@ import { getUserId } from "../lib/auth-user"
 import { isUuid } from "../lib/uuid"
 import * as billing from "../services/billing-stub"
 import * as client from "../services/agent-client"
-import { healStuckStep } from "../services/stuck-steps"
+import { healStuckStep, finalizeStepSuccess, STEP_ORDER, type Step } from "../services/step-finalize"
 import { ragRunInput } from "../services/rag-config"
 import { credentialsRunInput, type CredentialInput } from "../services/credentials"
 import { toCamel, toSnake } from "../lib/case"
 import { parsePagination, pagedBody, pagedResult } from "../lib/pagination"
 import { presignGet } from "../storage/s3"
 
-// 与 agent 节点序一致（spec201 NODE_ORDER）
-export const STEP_ORDER = ["read", "outline", "content", "review", "present", "export"] as const
-type Step = (typeof STEP_ORDER)[number]
+// 与 agent 节点序一致（spec201 NODE_ORDER）；定义随收尾核心迁至 step-finalize.ts，这里 re-export 保兼容
+export { STEP_ORDER } from "../services/step-finalize"
 
 // 按步指令：契约统一 { text, file_key, step }
 const STEP_TEXT: Record<Step, string> = {
@@ -225,20 +224,6 @@ function resultToClient(step: string, result: unknown): unknown {
   return step === "content" ? result : toCamel(result)
 }
 
-// content 步产出各章正文的最大字数（剥 HTML 标签后）——决定 content_short/long 分档。
-// agent 的 _RESULT_KEY['content']='chapters'，故 run.result 即 { <章id>: html }。
-function maxChapterChars(result: unknown): number {
-  if (!result || typeof result !== "object") return 0
-  let max = 0
-  for (const v of Object.values(result as Record<string, unknown>)) {
-    if (typeof v === "string") {
-      const len = v.replace(/<[^>]+>/g, "").length
-      if (len > max) max = len
-    }
-  }
-  return max
-}
-
 export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
   const preDeduct = deps.preDeduct ?? billing.preDeduct
   const settle = deps.settle ?? billing.settle
@@ -387,10 +372,14 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     )
   })
 
-  /** 占位行获取：插 running 占位行；撞唯一索引先惰性自愈——既有行已死（超 10 分钟 /
-   *  其 run 已失败：DB 断连等导致收尾没执行，行永远卡 running、该步恒 409）则当场
-   *  置 failed + 退还其预扣（stuck-steps 服务），重试一次插入；活行/重试仍冲突返回 null → 409。 */
-  async function acquireStepSlot(projectId: string, step: string): Promise<typeof projectSteps.$inferSelect | null> {
+  /** 占位行获取：插 running 占位行；撞唯一索引先惰性自愈（step-finalize.healStuckStep）——
+   *  cleared（死行已置 failed + 退款）→ 重试一次插入；recovered（该步的成功 run 刚被对账
+   *  收尾交付）→ 返回 "recovered"，调用方 409 提示已完成——绝不能重插重跑（重复计费）；
+   *  alive / 重试仍冲突 → null → 409 step_already_running。 */
+  async function acquireStepSlot(
+    projectId: string,
+    step: string,
+  ): Promise<typeof projectSteps.$inferSelect | "recovered" | null> {
     const insert = async () => {
       const [row] = await getDb().insert(projectSteps).values({ projectId, step, status: "running" }).returning()
       return row ?? null
@@ -399,7 +388,8 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       return await insert()
     } catch {
       const healed = await healStuckStep(projectId, step, getRun)
-      if (!healed) return null
+      if (healed === "recovered") return "recovered"
+      if (healed === "alive") return null
       try {
         return await insert()
       } catch {
@@ -460,6 +450,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     // 先落「running 占位行」再计费/建 run：部分唯一索引 (project_id, step) WHERE status='running'
     // 在 DB 层原子挡掉并发双击（第二个请求这里冲突 → 惰性自愈失败才 409，不会双建 run/双计费）。
     const s = await acquireStepSlot(p.id, step)
+    if (s === "recovered") return c.json({ error: "step_already_done" }, 409) // 刚被对账收尾:刷新即见结果
     if (!s) return c.json({ error: "step_already_running" }, 409)
 
     // 真账本预扣（spec302）：ref=占位行 id（该次步进的稳定标识，幂等键随之稳定）。
@@ -523,27 +514,29 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const { project, stepRow, step, runId, hold } = ctx
     const run = await getRun(runId) // 该步结构化结果（snake_case）
     const failed = run.status !== "succeeded"
-    // 成功按口径全额结算；失败全额退还（净 0）——多退少补待用量换算口径定义
+    // 成功走共享收尾核心（step-finalize：条件翻转+结算+推进,与 409 自愈/对账 Cron 同一条路,
+    // 天然幂等——对账 Cron 并发收尾同一行时只有一方翻转成功,绝不双结算）；
+    // 失败全额退还（净 0）+ 置 failed。
     let cost = 0
     if (failed) {
       await settleFailed(stepRow.id, hold.holdId!)
-    } else if (step === "content") {
-      // 按篇幅落档：任一章 > 阈值 → 长篇（足额 content_long）；否则短篇 content_short（退差额）。
-      cost = await settleContent(stepRow.id, hold.holdId!, hold.hold, maxChapterChars(run.result))
-    } else {
-      cost = await settle(stepRow.id, hold.holdId!, hold.hold)
-    }
-    await getDb()
-      .update(projectSteps)
-      .set({ result: run.result ?? null, status: failed ? "failed" : "done", costPoints: cost })
-      .where(eq(projectSteps.id, stepRow.id))
-    if (!failed) {
-      // 推进 currentStep；最后一步完成即整本 done
-      const next = STEP_ORDER[STEP_ORDER.indexOf(step) + 1]
       await getDb()
-        .update(bidProjects)
-        .set({ currentStep: next ?? "done", status: next ? "running" : "done" })
-        .where(eq(bidProjects.id, project.id))
+        .update(projectSteps)
+        .set({ result: run.result ?? null, status: "failed", costPoints: 0 })
+        .where(eq(projectSteps.id, stepRow.id))
+    } else {
+      const settled = await finalizeStepSuccess({
+        stepId: stepRow.id, projectId: project.id, step, result: run.result ?? null,
+        holdId: hold.holdId ?? null, heldAmount: hold.hold,
+        billing: { settle, settleContent },
+      })
+      if (settled != null) {
+        cost = settled
+      } else {
+        // 对账 Cron 抢先收尾:费用以其落库值为准（重新查行,stepRow 是插入时的旧快照）
+        const [fresh] = await getDb().select().from(projectSteps).where(eq(projectSteps.id, stepRow.id))
+        cost = fresh?.costPoints ?? 0
+      }
     }
     // DB 存 snake_case 原样；给前端的经 toCamel 转 camelCase（对齐原型 TS 类型）。
     // content 步例外：result 键是章 id，不做大小写转换（见 resultToClient）。

@@ -26,6 +26,9 @@ CREATE TABLE IF NOT EXISTS agent.agent_request (
 );
 CREATE INDEX IF NOT EXISTS agent_request_type_idx   ON agent.agent_request (agent_type, created_at DESC);
 CREATE INDEX IF NOT EXISTS agent_request_thread_idx ON agent.agent_request (thread_id);
+-- run 结果持久副本（对账恢复用）：Redis result 键只留 24h，App 收尾被打断后超窗即无从恢复；
+-- PG 副本让成功 run 的结果永远可取（幂等迁移，存量库就地加列）。
+ALTER TABLE agent.agent_request ADD COLUMN IF NOT EXISTS result jsonb;
 
 CREATE TABLE IF NOT EXISTS agent.agent_event_log (
   id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

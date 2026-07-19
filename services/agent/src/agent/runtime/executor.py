@@ -118,8 +118,10 @@ async def process_run(run_id: str) -> None:
                 result = ev["data"]["result"]
             await _apublish(r, run_id, ev)  # 全部事件推 SSE
 
-        # finish 先行：finish_run 成功后再落 result，避免 finish 抛错时留下"结果在、状态却不是 succeeded"。
-        await asyncio.to_thread(rec.finish_run, run_id, status="succeeded", node_count=len(nodes))
+        # finish 先行：finish_run 成功后再落 Redis result，避免 finish 抛错时留下"结果在、状态却不是
+        # succeeded"。result 的 PG 持久副本在 finish_run 内与状态同条 UPDATE 原子落库（对账恢复用），
+        # Redis 仍是 24h 快路径缓存。
+        await asyncio.to_thread(rec.finish_run, run_id, status="succeeded", node_count=len(nodes), result=result)
         await asyncio.to_thread(r.set, result_key(run_id), json.dumps(result), ex=86400)
         await _apublish(r, run_id, {"type": "run.end", "data": {"status": "succeeded"}})
         await _callback(run_id, agent_type, "succeeded")

@@ -15,6 +15,7 @@ import { paymentOrderSweepJob } from "./services/payment-orders"
 import { renewalCronJobs } from "./crons/renewal"
 import { creditExpireCronJob, ledgerAuditCronJob, reconcileCronJob } from "./crons/billing"
 import { referralUnlockSweepCronJob } from "./crons/referral"
+import { stuckStepsCronJob } from "./crons/steps"
 
 const env = getEnv()
 
@@ -61,6 +62,7 @@ const cron = startCronRunner([
   creditExpireCronJob(), // 积分过期：不依赖支付凭据，始终注册（spec306）
   ledgerAuditCronJob(), // 账本审计+孤儿 hold 清扫+卡死退款扫描：同样不依赖支付凭据（spec306）
   referralUnlockSweepCronJob(), // 推荐奖励重扫：兜底 markPaid 钩子瞬时失败丢失的 pending 解锁（R3）
+  stuckStepsCronJob(), // 卡死步对账（spec327）：成功 run 收尾交付,死 run 退款——发版打断的步不再永卡
 ])
 
 // 优雅关闭：先停 Cron 并等在途 tick 收尾，再归还 DB/Redis/S3 连接（顺序错了在途 tick 会打在已断连接上）。

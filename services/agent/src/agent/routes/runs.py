@@ -51,15 +51,18 @@ async def create(agent_type: str, body: CreateRunBody):
 async def get_run(run_id: str):
     with get_pool().connection() as conn:
         row = conn.execute(
-            """select status, agent_type, input_tokens, output_tokens, cached_tokens, total_tokens, duration_ms
+            """select status, agent_type, input_tokens, output_tokens, cached_tokens, total_tokens,
+                      duration_ms, result
                from agent.agent_request where run_id=%s""", (run_id,)).fetchone()
     if not row:
         return JSONResponse({"error": "not_found"}, status_code=404)
-    result = get_redis().get(result_key(run_id))
+    # result：Redis 快路径（24h 缓存）→ 过期后回退 PG 持久副本（App 收尾被打断的对账恢复靠它）。
+    cached = get_redis().get(result_key(run_id))
+    result = json.loads(cached) if cached else row[7]
     return {
         "run_id": run_id, "status": row[0], "agent_type": row[1],
         "tokens": {"input": row[2], "output": row[3], "cached": row[4], "total": row[5]},
-        "duration_ms": row[6], "result": json.loads(result) if result else None,
+        "duration_ms": row[6], "result": result,
     }
 
 

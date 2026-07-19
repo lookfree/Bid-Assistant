@@ -91,12 +91,16 @@ class Recorder:
     def finish_run(
         self, run_id: str, status: str, error: str | None = None,
         error_type: str | None = None, node_count: int | None = None,
+        result: object | None = None,
     ) -> None:
         # 完成时回填用量汇总到 agent_request（聚合缓存，列表页免 join）；单次聚合扫描 token_usage。
+        # result 随状态同条 UPDATE 原子落库（持久副本）：Redis result 键只留 24h，App 收尾
+        # 被打断后靠这份 PG 副本对账恢复——不会出现「状态 succeeded 而结果已不可取」。
         self._exec(
             """update agent.agent_request a
                  set status=%s, error=%s, error_type=%s,
                      node_count=coalesce(%s, node_count),
+                     result=coalesce(%s, a.result),
                      finished_at=now(),
                      duration_ms=cast(extract(epoch from (now()-coalesce(started_at, created_at)))*1000 as int),
                      input_tokens=u.i, output_tokens=u.o, cached_tokens=u.c, total_tokens=u.t
@@ -104,7 +108,8 @@ class Recorder:
                               coalesce(sum(cached_tokens),0) c, coalesce(sum(total_tokens),0) t
                        from agent.agent_token_usage where run_id=%s) u
                where a.run_id=%s""",
-            (status, error, error_type, node_count, run_id, run_id),
+            (status, error, error_type, node_count,
+             Jsonb(result) if result is not None else None, run_id, run_id),
         )
 
     def run_status(self, run_id: str) -> str | None:
