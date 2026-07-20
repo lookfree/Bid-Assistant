@@ -13,6 +13,10 @@ class Toy(BaseModel):
     x: int
 
 
+class ToyS(BaseModel):
+    s: str
+
+
 def _as_chunk(msg: AIMessage) -> AIMessageChunk:
     """把脚本里的 AIMessage 转成等价的流式 chunk（_forced_submit 已改走 astream）：
     合法 tool_calls→args 序列化为 JSON（可解析→tool_calls）；invalid→原样 bad JSON 串（解析失败→invalid_tool_calls）；
@@ -119,6 +123,27 @@ async def test_submit_logs_rejection_with_reason_and_content():
     assert len(rej) == 3
     assert rej[0]["role"] == "ai" and "reason" in rej[0]["event_meta"]
     assert rej[0]["level"] == "warning" and "abc" in rej[0]["data"]
+
+
+def _unescaped_quote_call(call_id: str = "cq") -> AIMessage:
+    """真实读标格式/红线轮失效形态：中文串值内嵌未转义英文双引号 → langchain 落 invalid_tool_calls。"""
+    q = chr(34)
+    bad = '{"s": "未注明' + q + '开标时间以前不得开封' + q + '后果自负"}'
+    return AIMessage(content="", tool_calls=[],
+                     invalid_tool_calls=[{"name": "submit_s", "args": bad, "error": None, "id": call_id}])
+
+
+async def test_invalid_json_unescaped_quotes_repaired_and_accepted():
+    """回归（真实读标格式/红线轮实测：模型照抄招标原文短语用英文双引号，未转义→非法 JSON、连挂 3 轮）：
+    json_repair 容错修复(重新转义)后校验通过——首轮即成、不进重试、内容不丢，并记 outcome=repaired 供排查。"""
+    chat = _ScriptedChat([_unescaped_quote_call()])
+    ctx, rec = _ctx_rec(_ScriptedGateway(chat))
+    result = await run_submit_agent(ctx, "sys", "user", "submit_s", ToyS, "读标·格式构成轮")
+    assert isinstance(result, ToyS) and "开标时间以前不得开封" in result.s   # 内容保留
+    assert chat.n == 1                                                    # 首轮修复即过，无重试
+    ai_outcomes = [e["event_meta"].get("outcome") for e in rec.events
+                   if e["event_type"] == "submit" and e["role"] == "ai"]
+    assert ai_outcomes == ["repaired"]
 
 
 async def test_invalid_tool_call_retries_and_succeeds():

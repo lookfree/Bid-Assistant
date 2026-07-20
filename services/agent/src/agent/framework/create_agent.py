@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from json_repair import repair_json
 from typing import Annotated, Any, TypedDict
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import StateGraph, START, END
@@ -22,6 +23,19 @@ def _clip(v: Any) -> str:
     """把任意提交内容/输入规整成有界字符串（超限截断加省略号），防单行 jsonb 失控膨胀。"""
     text = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
     return text if len(text) <= _SUBMIT_LOG_MAX else text[:_SUBMIT_LOG_MAX] + f"…[截断，共{len(text)}字]"
+
+
+def _repair_submit_args(raw: Any) -> dict | None:
+    """容错修复模型产出的非法 JSON args（读标格式/红线轮高频失效：中文串值内嵌未转义的英文双引号，
+    模型照抄招标原文短语如 "开标时间以前不得开封"，首个引号提前闭合字符串→整段 args 解析失败）。
+    json_repair 重新转义/补全后返回 dict；修不动或结果非对象则 None（退回常规重试）。best-effort。"""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        obj = repair_json(raw, return_objects=True)
+        return obj if isinstance(obj, dict) else None
+    except Exception:  # noqa: BLE001 修复失败不能拖垮提交主流程
+        return None
 
 
 async def _log_submit(ctx: Any, tool_name: str, label: str | None, outcome: str,
@@ -162,9 +176,24 @@ async def _forced_submit(ctx, prompt: str, user_msg: str, submit, tool_name: str
         invalid = next((ic for ic in (getattr(msg, "invalid_tool_calls", None) or [])
                         if ic.get("name") == tool_name), None)
         if invalid is not None:
+            raw = invalid.get("args")
+            # 先容错修复再判失败：中文串值内未转义英文双引号是高频失效形态（读标格式/红线轮照抄原文短语），
+            # 修得动就直接过——省一次昂贵重试，且通用"请输出合法 JSON"提示实测纠正不了这种错（连挂 3 轮）。
+            repaired = _repair_submit_args(raw)
+            if repaired is not None:
+                try:
+                    await submit.ainvoke(repaired)
+                    await _log_submit(ctx, tool_name, label, "repaired", role="ai", content=repaired)
+                    return                # 修复后校验通过，结果已被 make_submit_tool 捕获
+                except Exception as e:  # noqa: BLE001 修复后仍不过 schema：退回常规重试喂回错误
+                    await _log_submit(ctx, tool_name, label, "rejected", role="ai",
+                                      content=repaired, reason=e)
+                    messages = [*messages, *_reject_msg(msg, invalid.get("id") or "invalid",
+                                f"提交被拒绝：{e}。请修正字段后重新提交。")]
+                    continue
             await _log_submit(ctx, tool_name, label, "invalid_json", role="ai",
-                              content=invalid.get("args"), reason=invalid.get("error"))
-            reason = (f"submit 参数不是合法 JSON（{invalid.get('error')}）。"
+                              content=raw, reason=invalid.get("error"))
+            reason = ('submit 参数不是合法 JSON（引用招标原文时，值内的英文双引号必须转义为 \\" 或改用中文引号「」）。'
                       "只输出一个合法 JSON 对象，一次性提交，不要多余包装键或注释。")
             messages = [*messages, *_reject_msg(msg, invalid.get("id") or "invalid", reason)]
             continue
