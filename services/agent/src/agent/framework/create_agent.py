@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import time
-from typing import Annotated, TypedDict
+from typing import Annotated, Any, TypedDict
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import tools_condition
@@ -11,6 +13,40 @@ from agent.framework.model_stream import forced_stream_submit
 from agent.framework.resilient import resilient_tool_node
 from agent.framework.structured import make_submit_tool
 from agent.models.usage import record_ctx_usage
+
+# 单条 submit 事件里存的提交内容上限（字符）：足够看清结构/定位坏字段，又不让单行 jsonb 失控膨胀。
+_SUBMIT_LOG_MAX = 40_000
+
+
+def _clip(v: Any) -> str:
+    """把任意提交内容/输入规整成有界字符串（超限截断加省略号），防单行 jsonb 失控膨胀。"""
+    text = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
+    return text if len(text) <= _SUBMIT_LOG_MAX else text[:_SUBMIT_LOG_MAX] + f"…[截断，共{len(text)}字]"
+
+
+async def _log_submit(ctx: Any, tool_name: str, label: str | None, outcome: str,
+                      *, submitted: Any = None, model_input: Any = None, reason: Any = None) -> None:
+    """把每次 submit（轮开始/成功/校验被拒/JSON 非法/未提交）落 agent.agent_event_log，data 带模型输入 +
+    实际提交内容 + 结果 + 原因——供事后排查（此前提交内容与校验错误只活在内存里，任何表都查不到）。
+    框架公共提交路径统一处理，所有结构化提交节点（读标/提纲/正文/审查/述标）自动生效。best-effort，绝不挡主流程。"""
+    rec = getattr(ctx, "recorder", None)
+    if rec is None:
+        return
+    data: dict = {"tool": tool_name, "outcome": outcome}
+    if model_input is not None:
+        data["input"] = _clip(model_input)
+    if submitted is not None:
+        data["submitted"] = _clip(submitted)
+    if reason is not None:
+        data["reason"] = str(reason)[:1000]
+    try:
+        await asyncio.to_thread(
+            rec.log_event, ctx.run_id, ctx.agent_type, "submit",
+            node=label, level=("info" if outcome in ("ok", "start") else "warning"),
+            data=data, thread_id=getattr(ctx, "thread_id", None),
+        )
+    except Exception:  # noqa: BLE001 观测写入 best-effort，PG 断连等不影响提交主流程
+        pass
 
 
 class GraphState(TypedDict):
@@ -91,6 +127,8 @@ async def _forced_submit(ctx, prompt: str, user_msg: str, submit, tool_name: str
     if ctx.gateway is None:
         return                           # 无 gateway（异常装配）：交给上层抛"未提交"
     messages: list = [SystemMessage(content=prompt), HumanMessage(content=user_msg)]
+    # 轮开始即记输入（system prompt + user_msg）——无论本轮成败，输入都留痕，供排查/复现。
+    await _log_submit(ctx, tool_name, label, "start", model_input=f"{prompt}\n\n=== user ===\n{user_msg}")
     for _ in range(attempts):
         msg = await forced_stream_submit(ctx, messages, submit, tool_name, label)
         # 截断必须先于 tool_calls 判定：流式下 langchain 用 parse_partial_json 把被截断的 args
@@ -98,6 +136,7 @@ async def _forced_submit(ctx, prompt: str, user_msg: str, submit, tool_name: str
         # 要么静默把残缺结果当成功交付（大标书读标漏条款）。故 finish_reason=length 一律走压缩重试。
         finish = (getattr(msg, "response_metadata", None) or {}).get("finish_reason")
         if finish == "length":
+            await _log_submit(ctx, tool_name, label, "truncated", reason="finish_reason=length，输出超长被截断")
             messages = [*messages, HumanMessage(content=(
                 "你上一次的提交因输出超过长度上限被截断，未能送达。请大幅压缩后重新提交同一结构："
                 "value 逐条精炼（≤50字）；source_quote 只保留★/▲/废标风险条目的关键句（≤40字），"
@@ -107,16 +146,21 @@ async def _forced_submit(ctx, prompt: str, user_msg: str, submit, tool_name: str
         if call is not None:
             try:
                 await submit.ainvoke(call["args"])
+                await _log_submit(ctx, tool_name, label, "ok", submitted=call["args"])
                 return                   # 校验通过，结果已被 make_submit_tool 捕获
             except Exception as e:  # noqa: BLE001 校验错误喂回模型修正
+                await _log_submit(ctx, tool_name, label, "rejected", submitted=call["args"], reason=e)
                 reason = f"提交被拒绝：{e}。请修正字段后重新提交。"
                 messages = [*messages, *_reject_msg(msg, call["id"], reason)]
                 continue
         invalid = next((ic for ic in (getattr(msg, "invalid_tool_calls", None) or [])
                         if ic.get("name") == tool_name), None)
         if invalid is not None:
+            await _log_submit(ctx, tool_name, label, "invalid_json",
+                              submitted=invalid.get("args"), reason=invalid.get("error"))
             reason = (f"submit 参数不是合法 JSON（{invalid.get('error')}）。"
                       "只输出一个合法 JSON 对象，一次性提交，不要多余包装键或注释。")
             messages = [*messages, *_reject_msg(msg, invalid.get("id") or "invalid", reason)]
             continue
+        await _log_submit(ctx, tool_name, label, "no_submit")
         return                           # 模型完全没产出提交调用（如 fake 模型）：交给上层抛"未提交"
