@@ -65,6 +65,21 @@ class ReadResult(BaseModel):
     required_structure: list[StructureItem] = Field(default_factory=list)  # 投标文件构成清单（spec321）
     packages: list[PackageInfo] = Field(default_factory=list)  # 包件划分（spec324），单包标书留空
 
+    @model_validator(mode="after")
+    def _dedup_categories(self) -> "ReadResult":
+        """按 key 合并同类 categories（items 顺序拼接，保留首见 title）。key 是 Literal 但 list 不约束唯一，
+        单轮读标直接用模型原始输出，模型可能把同一类拆成多个同 key 块。前端按 key 过滤渲染，重复 key 会让
+        一次点击展示多类内容（对不上号）；下游提纲/正文/导出也按类迭代会重复处理。在数据模型层收敛
+        「categories 按 key 唯一」这一不变量，所有消费方统一受益。"""
+        merged: dict[str, ReadCategory] = {}
+        for c in self.categories:
+            if c.key in merged:
+                merged[c.key].items.extend(c.items)
+            else:
+                merged[c.key] = c
+        self.categories = list(merged.values())
+        return self
+
 
 class OutlineItem(BaseModel):
     id: str

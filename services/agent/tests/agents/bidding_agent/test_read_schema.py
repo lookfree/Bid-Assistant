@@ -65,3 +65,32 @@ def test_submit_read_tool_captures():
     tool, get = make_submit_tool("submit_read_result", ReadResult, "提交读标结果")
     asyncio.run(tool.ainvoke(_SAMPLE))
     assert isinstance(get(), ReadResult) and get().scoring[0].score == 20
+
+
+def test_duplicate_category_keys_merged():
+    """单轮读标模型把同一类拆成多个同 key 块 → 数据模型层按 key 合并，items 顺序拼接、保留首见 title。
+    前端右栏按 key 过滤渲染，重复 key 会一次点击展示多类内容（用户实测「点几次就对不上号/展示全部」）。"""
+    sample = {**_SAMPLE, "categories": [
+        {"key": "overview", "title": "项目概况", "items": [{"title": "预算", "value": "1680 万"}]},
+        {"key": "qualification", "title": "资格要求（一）", "items": [{"title": "A", "value": "a"}]},
+        {"key": "qualification", "title": "资格要求（二）", "items": [{"title": "B", "value": "b"}]},
+    ]}
+    r = ReadResult(**sample)
+    keys = [c.key for c in r.categories]
+    assert keys == ["overview", "qualification"]                  # 每个 key 唯一
+    qual = next(c for c in r.categories if c.key == "qualification")
+    assert qual.title == "资格要求（一）"                          # 保留首见 title
+    assert [it.title for it in qual.items] == ["A", "B"]          # items 顺序拼接、不丢
+
+
+def test_submit_read_tool_dedups_categories():
+    """经 submit 工具（单轮读标的实际提交路径）提交的重复 key 同样在校验时合并。"""
+    tool, get = make_submit_tool("submit_read_result", ReadResult, "提交读标结果")
+    sample = {**_SAMPLE, "categories": [
+        {"key": "technical", "title": "技术需求", "items": [{"title": "T1", "value": "t1"}]},
+        {"key": "technical", "title": "技术需求（续）", "items": [{"title": "T2", "value": "t2"}]},
+    ]}
+    asyncio.run(tool.ainvoke(sample))
+    cats = get().categories
+    assert [c.key for c in cats] == ["technical"]
+    assert [it.title for it in cats[0].items] == ["T1", "T2"]

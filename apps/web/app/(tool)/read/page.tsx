@@ -94,18 +94,21 @@ export default function ReadPage() {
     window.history.replaceState(null, "", window.location.pathname)
     void start()
   }, [projectId, info, real, running, start])
-  // 数据一律来自真实 read 步结果；该步未跑时页面停在显式生成入口，绝不渲染示例
-  const categories = useMemo(
-    () =>
-      real
-        ? real.categories.map((c) => ({
-            ...c,
-            icon: CATEGORY_ICONS[c.key] ?? FileText,
-            items: c.items.map((i) => ({ ...i, clauseIds: i.clauseIds ?? [] })),
-          }))
-        : [],
-    [real],
-  )
+  // 数据一律来自真实 read 步结果；该步未跑时页面停在显式生成入口，绝不渲染示例。
+  // 单轮读标（小标书）直接用模型原始 categories，模型可能对同一 key 产出多个块（如把资格拆成两段）；
+  // 右栏按 key 过滤渲染，重复 key 会让一次点击把多类内容全堆出来（实测「点几次就对不上号/展示全部」）。
+  // 此处按 key 合并去重：items 顺序拼接、保留首个 title/icon，保证每类唯一（tab 也不再重复）。
+  const categories = useMemo(() => {
+    if (!real) return []
+    const byKey = new Map<string, { key: string; title: string; icon: LucideIcon; items: AnalysisItem[] }>()
+    for (const c of real.categories) {
+      const items = c.items.map((i) => ({ ...i, clauseIds: i.clauseIds ?? [] }))
+      const prev = byKey.get(c.key)
+      if (prev) prev.items.push(...items)
+      else byKey.set(c.key, { key: c.key, title: c.title, icon: CATEGORY_ICONS[c.key] ?? FileText, items })
+    }
+    return [...byKey.values()]
+  }, [real])
   const scoringTable = real?.scoring ?? []
   const requiredStructure = real?.requiredStructure ?? []
   const packages = real?.packages ?? []
