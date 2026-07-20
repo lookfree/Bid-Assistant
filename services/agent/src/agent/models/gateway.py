@@ -69,9 +69,9 @@ class ModelGateway:
         max_tokens = kw.pop("max_tokens", None)
         if max_tokens is None:
             max_tokens = self.s.model_max_tokens
-        extra = kw.pop("extra_body", None)
-        if extra is None:
-            extra = self._extra_body(provider, thinking, max_tokens)
+        # 注入(思考关闭参 + max_tokens)在前、调用方自带 extra_body 覆盖在后——二者合并而非二选一，
+        # 否则调用方传了别的 extra_body 就会把 max_tokens 一起丢掉，回退 deepseek 默认 8192 输出、重现截断。
+        extra = {**self._extra_body(provider, thinking, max_tokens), **(kw.pop("extra_body", None) or {})}
         return ChatOpenAI(
             model=model or (p["default_model"] if p else None),
             base_url=base_url,

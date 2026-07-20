@@ -31,8 +31,10 @@ async def _log_submit(ctx: Any, tool_name: str, label: str | None, outcome: str,
     - role       = human（模型输入）/ ai（模型提交输出）——agent_event_log 专用列；
     - data       = 纯文本内容（人输入或 AI 提交内容本身；SELECT data #>> '{}' 直读，无需剥字段）；
     - event_meta = {tool, outcome: 结果, reason: 校验原因} 等元数据。
-    框架公共提交路径统一处理，所有结构化提交节点（读标/提纲/正文/审查/述标）自动生效——提交内容此前只
-    活在内存、任何表都查不到，现按 role(列)/data(内容)/event_meta(元数据) 落库供排查。best-effort，绝不挡主流程。"""
+    仅覆盖 _forced_submit 的强制提交路径（读标各轮 / 提纲 / 审查 / 述标等走 run_submit_agent 无 extra_tools
+    分支的提交）；run_submit_agent 带 extra_tools 的分支与 content(正文, deepagent) 节点不经此路径，暂不记录。
+    提交内容此前只活在内存、任何表都查不到，现按 role(列)/data(内容)/event_meta(元数据) 落库供排查。
+    best-effort，绝不挡主流程。"""
     rec = getattr(ctx, "recorder", None)
     if rec is None:
         return

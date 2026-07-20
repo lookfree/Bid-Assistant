@@ -45,18 +45,25 @@ class Recorder:
         data: Any = None, event_meta: dict[str, Any] | None = None,  # data 也可存纯字符串（如 submit 内容）
         thread_id: str | None = None, role: str | None = None,       # role：submit 事件的 human/ai 角色
     ) -> None:
-        # seq：run 内单调递增（同一 run 由单 worker 串行写，子查询取 max+1 原子安全）
-        self._exec(
-            """insert into agent.agent_event_log
-                 (run_id, thread_id, agent_type, seq, event_type, node, level, role, data, event_meta)
-               values (%s,%s,%s,
-                       (select coalesce(max(seq),0)+1 from agent.agent_event_log where run_id=%s),
-                       %s,%s,%s,%s,%s,%s)""",
-            (run_id, thread_id, agent_type, run_id,
-             event_type, node, level, role,
-             Jsonb(data) if data is not None else None,
-             Jsonb(event_meta) if event_meta is not None else None),
-        )
+        # seq：run 内单调递增。分段读标会从多个并发轮对同一 run_id 写事件（每轮 to_thread 各自连接/事务），
+        # READ COMMITTED 下裸 max+1 子查询会两写读到同一 max 而撞号（(run_id,seq) 非唯一，静默重号、乱序）。
+        # 修法：先在**独立语句**取 per-run 事务级 advisory lock（同一 run 串行、不同 run 不互斥），锁到手后
+        # INSERT 是**另一条语句**——READ COMMITTED 下它取新快照、能看见前一持锁事务已提交的行，max(seq) 才准。
+        # （把锁与 max 塞进同一条 CTE/语句无效：整句共用开头那一个快照，被锁挡住醒来仍读旧 max。）
+        with self._pool.connection() as conn:
+            conn.execute("select pg_advisory_xact_lock(hashtextextended(%s, 0))", (run_id,))
+            conn.execute(
+                """insert into agent.agent_event_log
+                     (run_id, thread_id, agent_type, seq, event_type, node, level, role, data, event_meta)
+                   values (%s,%s,%s,
+                           (select coalesce(max(seq),0)+1 from agent.agent_event_log where run_id=%s),
+                           %s,%s,%s,%s,%s,%s)""",
+                (run_id, thread_id, agent_type, run_id,
+                 event_type, node, level, role,
+                 Jsonb(data) if data is not None else None,
+                 Jsonb(event_meta) if event_meta is not None else None),
+            )
+            conn.commit()
 
     def record_usage(
         self, run_id: str, agent_type: str, provider: str, model: str,

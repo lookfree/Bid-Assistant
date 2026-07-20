@@ -151,6 +151,19 @@ def test_get_chat_explicit_kw_overrides_settings(monkeypatch):
     assert calls[-1]["extra_body"]["max_tokens"] == 4096   # max_tokens 走 extra_body，显式 kw 覆盖 settings
 
 
+def test_get_chat_caller_extra_body_merges_with_injected(monkeypatch):
+    """回归：调用方自带 extra_body 时，注入的 max_tokens + 思考关闭参仍并入（合并而非二选一）；
+    否则 max_tokens 被丢 → deepseek 回退默认 8192 输出、重现截断 bug。调用方字段与注入字段并存。"""
+    calls = _patch_fake_chat_openai(monkeypatch)
+    gw = ModelGateway(_settings(model_max_tokens=16384))
+    gw.get_chat("deepseek", "deepseek-v4-flash", extra_body={"foo": "bar"})
+    eb = calls[-1]["extra_body"]
+    assert eb["max_tokens"] == 16384                  # 注入的 max_tokens 未被调用方 extra_body 挤掉
+    assert eb["thinking"] == {"type": "disabled"}     # 注入的思考关闭参保留
+    assert eb["foo"] == "bar"                         # 调用方自带字段保留
+    assert "max_tokens" not in calls[-1]              # 仍不作构造参（不会被 langchain 改名）
+
+
 def test_get_chat_custom_endpoint_uses_base_url():
     """自建端点（base_url 非空）直连，绕过 PROVIDERS/KEY_FIELD/env——不要求任何注册表 key。"""
     gw = ModelGateway(_settings())
