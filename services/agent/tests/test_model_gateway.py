@@ -114,8 +114,23 @@ def test_get_chat_passes_sampling_params_from_settings(monkeypatch):
     gw = ModelGateway(_settings(model_temperature=0.3, model_max_tokens=8192, model_top_p=0.9))
     gw.get_chat("deepseek")
     assert calls[-1]["temperature"] == 0.3
-    assert calls[-1]["max_tokens"] == 8192
     assert calls[-1]["top_p"] == 0.9
+    # max_tokens 走 extra_body（不作构造参，否则被 langchain 改名 max_completion_tokens，deepseek 不认）
+    assert "max_tokens" not in calls[-1]
+    assert calls[-1]["extra_body"]["max_tokens"] == 8192
+
+
+def test_get_chat_max_tokens_via_extra_body_not_constructor(monkeypatch):
+    """回归（2026-07-20 实测）：langchain-openai 1.x 把构造参 max_tokens 改名成 max_completion_tokens，
+    deepseek/qwen/glm 只认 max_tokens → 忽略 max_completion_tokens、回退默认 8192 输出（配多大都无效）。
+    故 max_tokens 必须走 extra_body 原样透传；构造参里绝不能出现 max_tokens。"""
+    calls = _patch_fake_chat_openai(monkeypatch)
+    gw = ModelGateway(_settings(model_max_tokens=16384))
+    gw.get_chat("deepseek", "deepseek-v4-flash")
+    assert "max_tokens" not in calls[-1] and "max_completion_tokens" not in calls[-1]
+    assert calls[-1]["extra_body"]["max_tokens"] == 16384
+    # 思考关闭参与 max_tokens 并存于同一 extra_body
+    assert calls[-1]["extra_body"]["thinking"] == {"type": "disabled"}
 
 
 def test_get_chat_omits_sampling_params_when_none(monkeypatch):
@@ -131,9 +146,9 @@ def test_get_chat_explicit_kw_overrides_settings(monkeypatch):
     calls = _patch_fake_chat_openai(monkeypatch)
     gw = ModelGateway(_settings(model_temperature=0.3, model_max_tokens=8192, model_top_p=0.9))
     gw.get_chat("deepseek", temperature=0.1, max_tokens=4096, top_p=0.5)
-    assert calls[-1]["temperature"] == 0.1   # 三参数对称覆盖
-    assert calls[-1]["max_tokens"] == 4096
+    assert calls[-1]["temperature"] == 0.1   # temperature/top_p 走构造参，显式 kw 覆盖 settings
     assert calls[-1]["top_p"] == 0.5
+    assert calls[-1]["extra_body"]["max_tokens"] == 4096   # max_tokens 走 extra_body，显式 kw 覆盖 settings
 
 
 def test_get_chat_custom_endpoint_uses_base_url():
