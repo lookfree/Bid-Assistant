@@ -301,3 +301,43 @@ async def test_thinking_off_uses_stream(_fast_timeout):
     msg = await ms.forced_stream_submit(_ctx(gw), [], _submit, "submit_x", label="审查")
     assert msg.tool_calls[0]["name"] == "submit_x"
     assert chat.astream_calls == 1 and chat.ainvoke_calls == 0
+
+
+class _ManyToolChunks:
+    """astream 把一大坨工具 JSON 拆成很多片吐出——模拟读标骨架轮的大结构化输出。"""
+
+    def __init__(self, n_args_chunks: int):
+        self.n = n_args_chunks
+
+    def bind_tools(self, tools, **kw):
+        return self
+
+    async def astream(self, messages, **kw):
+        yield AIMessageChunk(content="", tool_call_chunks=[
+            {"name": "submit_x", "args": '{"items":[', "id": "c1", "index": 0}])
+        for i in range(self.n):
+            sep = "" if i == 0 else ","
+            yield AIMessageChunk(content="", tool_call_chunks=[{"args": f'{sep}{i}', "index": 0}])
+        yield AIMessageChunk(content="", tool_call_chunks=[{"args": "]}", "index": 0}])
+
+
+async def test_stream_collect_merges_once_not_per_chunk(_fast_timeout, monkeypatch):
+    """回归（2026-07-20 py-spy 实证）：astream_collect 曾逐片 `agg = agg + chunk`，langchain 每来一片就把
+    已累积的全量工具 JSON 重解析一遍 → O(n²) 烧满单核事件循环、把并发各轮一起饿死、大标书读标 40 分钟超时。
+    收完应一次性合并，逐片合并次数必须是常数级（不随 chunk 数线性增长）。"""
+    calls = {"add": 0}
+    orig_add = AIMessageChunk.__add__
+
+    def _counting_add(self, other):
+        calls["add"] += 1
+        return orig_add(self, other)
+
+    monkeypatch.setattr(AIMessageChunk, "__add__", _counting_add)
+
+    n = 200
+    msg = await ms.astream_collect(_ManyToolChunks(n), [], _ctx(), label=None)
+    # 正确性：大 JSON 仍被完整聚合、可解析
+    assert msg.tool_calls and msg.tool_calls[0]["name"] == "submit_x"
+    assert len(msg.tool_calls[0]["args"]["items"]) == n
+    # 性能不回归：逐片 __add__ 合并次数是常数级，而不是 ~n 次（O(n²) 逐片重解析的病根）
+    assert calls["add"] <= 2, f"逐片合并 {calls['add']} 次（应收完一次性合并，避免每片重解析全量 JSON）"

@@ -5,6 +5,7 @@ import time
 from asyncio import TimeoutError as AsyncTimeoutError, wait_for
 
 from langchain_core.messages import AIMessageChunk
+from langchain_core.messages.ai import add_ai_message_chunks
 
 from agent.config import settings
 from agent.models.usage import extract_usage, record_ctx_usage
@@ -60,10 +61,12 @@ def _is_thinking_toolchoice_error(e: BaseException) -> bool:
     return "tool_choice" in s and "thinking" in s
 
 
-def _grown_chars(agg) -> int:
-    """已生成字符数（心跳展示用）：正文走 content；强制 submit 走 tool_call_chunks 的 args 增量。"""
-    n = len(getattr(agg, "content", "") or "")
-    for tc in (getattr(agg, "tool_call_chunks", None) or []):
+def _chunk_chars(chunk) -> int:
+    """单个流式 chunk 贡献的字符数（心跳增量用）：content + 强制 submit 的 tool_call args 片段。
+    逐片增量累加，避免为算字数而每片重建/重解析已累积的全量消息。"""
+    c = getattr(chunk, "content", "") or ""
+    n = len(c) if isinstance(c, str) else 0
+    for tc in (getattr(chunk, "tool_call_chunks", None) or []):
         n += len(tc.get("args") or "")
     return n
 
@@ -78,7 +81,11 @@ async def astream_collect(chat, messages, ctx, label: str | None):
     # 单轮总时长兜底:限流下的 token 细流(每 20s 一个)骗过空闲检测、单轮磨 30+ 分钟(生产实测)。
     # 空闲检测杀"挂死",总时长杀"慢而不死"——两者都进降级重试通道。
     deadline = time.monotonic() + settings.model_round_timeout_s
-    agg = None
+    # 只把 chunk 攒进列表、收完一次性合并；不逐片 `agg + chunk`——后者会让 langchain 每来一片就把
+    # 已累积的全量工具 JSON 重解析一遍（O(n²)），大输出轮（读标骨架轮达 8k）烧满单核事件循环、
+    # 把并发各轮一起饿死（2026-07-20 py-spy 实证）。字数心跳改增量累计，不依赖重建 agg。
+    chunks: list[AIMessageChunk] = []
+    grown = 0
     last_beat = time.monotonic()
     stream = chat.astream(messages)
     it = stream.__aiter__()
@@ -89,17 +96,18 @@ async def astream_collect(chat, messages, ctx, label: str | None):
                 raise ModelIdleTimeout()   # 总时长顶格:事实不可用,交给降级重试
             try:
                 chunk = await wait_for(it.__anext__(),
-                                       timeout=min(first_s if agg is None else idle_s, budget))
+                                       timeout=min(first_s if not chunks else idle_s, budget))
             except StopAsyncIteration:
                 break
             except AsyncTimeoutError as e:
                 raise ModelIdleTimeout() from e
-            agg = chunk if agg is None else agg + chunk
+            chunks.append(chunk)
+            grown += _chunk_chars(chunk)
             now = time.monotonic()
             if label and now - last_beat >= _HEARTBEAT_S:
                 last_beat = now
                 await publish_event(getattr(ctx, "redis", None), getattr(ctx, "run_id", None),
-                                    {"kind": "heartbeat", "label": f"{label} 生成中…", "chars": _grown_chars(agg)})
+                                    {"kind": "heartbeat", "label": f"{label} 生成中…", "chars": grown})
     finally:
         aclose = getattr(stream, "aclose", None)   # 超时/异常即刻关流，尽快释放挂死连接（不等 GC）
         if aclose is not None:
@@ -109,7 +117,9 @@ async def astream_collect(chat, messages, ctx, label: str | None):
                 pass
     # 正常结束但零 token（软拒答/内容过滤）不是挂死——回空消息，让上层按"未提交"优雅放弃，
     # 不误判成 ModelIdleTimeout（那会触发无谓降级、且异常类型与旧 ainvoke 路径不一致）。
-    return agg if agg is not None else AIMessageChunk(content="")
+    if not chunks:
+        return AIMessageChunk(content="")
+    return add_ai_message_chunks(chunks[0], *chunks[1:])   # 一次性合并，工具 JSON 只解析一次（O(n)）
 
 
 async def forced_stream_submit(ctx, messages, submit, tool_name: str, label: str | None):
