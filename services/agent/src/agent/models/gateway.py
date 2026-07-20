@@ -21,26 +21,30 @@ class ModelGateway:
         return key
 
     def _model_params(self) -> dict:
-        """把 Settings 里的采样参数组装成 ChatOpenAI kwargs（None 的不传，用 provider 默认）。"""
+        """把 Settings 里的采样参数组装成 ChatOpenAI 构造 kwargs（None 的不传，用 provider 默认）。
+        注意：max_tokens 不在此——它必须走 extra_body（见 _extra_body），否则被 langchain 改名后失效。"""
         out: dict = {}
         if self.s.model_temperature is not None:
             out["temperature"] = self.s.model_temperature
-        if self.s.model_max_tokens is not None:
-            out["max_tokens"] = self.s.model_max_tokens
         if self.s.model_top_p is not None:
             out["top_p"] = self.s.model_top_p
         return out
 
-    def _thinking_kw(self, provider: str | None, kw: dict, thinking: bool | None) -> dict:
-        """按每模型思考开关下发"关闭思考"的 extra_body（默认关：thinking 缺省时取全局 settings.model_thinking）。
-        思考开启（thinking=True）或调用方自带 extra_body 时不注入；provider 不在 THINKING_DISABLE 表内
-        （自建/未知）也不注入（不知其关闭参格式）。关闭思考让混合思考模型可流式强制提交、且更快更省。"""
+    def _extra_body(self, provider: str | None, thinking: bool | None, max_tokens: int | None) -> dict:
+        """组 extra_body（原样透传给端点）：关闭思考参 + max_tokens。
+        - 思考默认关（thinking 缺省取全局 settings.model_thinking）：让混合思考模型可流式强制提交、更快更省；
+          provider 不在 THINKING_DISABLE 表内（自建/未知）不注入（不知其关闭参格式）。
+        - max_tokens 走 extra_body 而非构造参：langchain-openai(1.x) 会把构造参 max_tokens 改名成
+          max_completion_tokens，而 deepseek/qwen/glm 的 OpenAI 兼容端点只认 max_tokens（实测 2026-07-20：
+          max_completion_tokens 被忽略 → 回退默认 8192 输出，配多大都不生效）。extra_body 原样进请求体。"""
         if thinking is None:
             thinking = self.s.model_thinking
-        if thinking or kw.get("extra_body") is not None:
-            return {}
-        disable = THINKING_DISABLE.get(provider or "")
-        return {"extra_body": disable} if disable else {}
+        body: dict = {}
+        if not thinking:
+            body.update(THINKING_DISABLE.get(provider or "", {}))
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
+        return body
 
     def get_chat(
         self, provider: str | None = None, model: str | None = None, *,
@@ -60,12 +64,19 @@ class ModelGateway:
                 base_url = PROVIDERS[provider]["base_url"]
                 p = PROVIDERS[provider]
         key = api_key or (self._api_key(provider) if provider in KEY_FIELD else None) or "sk-noauth"
+        # max_tokens 与思考关闭参统一走 extra_body（原样透传）。显式 kw > settings；
+        # 调用方自带 extra_body 时整体让路（不注入思考/上限，避免覆盖其自定义字段）。
+        max_tokens = kw.pop("max_tokens", None)
+        if max_tokens is None:
+            max_tokens = self.s.model_max_tokens
+        extra = kw.pop("extra_body", None)
+        if extra is None:
+            extra = self._extra_body(provider, thinking, max_tokens)
         return ChatOpenAI(
             model=model or (p["default_model"] if p else None),
             base_url=base_url,
             api_key=key,
-            # 优先级：settings 采样参 < 思考关闭(extra_body) < 显式 kw（kw 自带 extra_body 时上面已让路）
-            **{**self._model_params(), **self._thinking_kw(provider, kw, thinking), **kw},
+            **{**self._model_params(), **({"extra_body": extra} if extra else {}), **kw},
         )
 
     def chain(self) -> list[dict]:
