@@ -42,7 +42,7 @@ class Recorder:
     def log_event(
         self, run_id: str, agent_type: str, event_type: str,
         node: str | None = None, level: str = "info",
-        data: dict[str, Any] | None = None, event_meta: dict[str, Any] | None = None,
+        data: Any = None, event_meta: dict[str, Any] | None = None,  # data 也可存纯字符串（如 submit 内容）
         thread_id: str | None = None,
     ) -> None:
         # seq：run 内单调递增（同一 run 由单 worker 串行写，子查询取 max+1 原子安全）
