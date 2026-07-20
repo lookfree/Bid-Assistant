@@ -70,6 +70,56 @@ def _invalid_call(call_id: str = "c1") -> AIMessage:
                                            "error": "Extra data", "id": call_id}])
 
 
+def _bad_type_call(call_id: str = "c3") -> AIMessage:
+    """合法 JSON 但 Pydantic 校验失败（x 须 int，给字符串）→ 触发 submit.ainvoke 抛错的 rejected 路径。"""
+    return AIMessage(content="", tool_calls=[{"name": "submit_x", "args": {"x": "abc"}, "id": call_id}])
+
+
+class _RecSpy:
+    """捕获 log_event 调用（无 DB）：验证提交内容/输入是否落 agent_event_log。"""
+
+    def __init__(self):
+        self.events: list[dict] = []
+
+    def log_event(self, run_id, agent_type, event_type, node=None, level="info",
+                  data=None, event_meta=None, thread_id=None):
+        self.events.append({"event_type": event_type, "node": node, "level": level, "data": data or {}})
+
+
+def _ctx_rec(gateway):
+    rec = _RecSpy()
+    ctx = RunContext(run_id=str(uuid.uuid4()), agent_type="t", thread_id=str(uuid.uuid4()),
+                     gateway=gateway, recorder=rec)
+    return ctx, rec
+
+
+async def test_submit_logs_input_and_output_on_success():
+    """成功提交：agent_event_log 记 start(带模型输入) + ok(带提交内容)，node=轮标签，供排查。"""
+    chat = _ScriptedChat([_valid_call(x=7)])
+    ctx, rec = _ctx_rec(_ScriptedGateway(chat))
+    await run_submit_agent(ctx, "SYS-PROMPT", "USER-MSG", "submit_x", Toy, "读标·基础轮")
+    submits = [e for e in rec.events if e["event_type"] == "submit"]
+    outcomes = {e["data"]["outcome"] for e in submits}
+    assert {"start", "ok"} <= outcomes
+    start = next(e for e in submits if e["data"]["outcome"] == "start")
+    assert start["node"] == "读标·基础轮"
+    assert "SYS-PROMPT" in start["data"]["input"] and "USER-MSG" in start["data"]["input"]
+    ok = next(e for e in submits if e["data"]["outcome"] == "ok")
+    assert "7" in ok["data"]["submitted"]
+
+
+async def test_submit_logs_rejection_with_reason_and_content():
+    """校验失败 3 次：每次记 rejected(带提交内容 + 校验原因，level=warning)；最终抛未提交。"""
+    chat = _ScriptedChat([_bad_type_call(), _bad_type_call(), _bad_type_call()])
+    ctx, rec = _ctx_rec(_ScriptedGateway(chat))
+    with pytest.raises(RuntimeError):
+        await run_submit_agent(ctx, "SYS", "USR", "submit_x", Toy, "读标·基础轮")
+    rej = [e for e in rec.events if e["event_type"] == "submit" and e["data"]["outcome"] == "rejected"]
+    assert len(rej) == 3
+    assert "submitted" in rej[0]["data"] and "reason" in rej[0]["data"]
+    assert rej[0]["level"] == "warning" and "abc" in rej[0]["data"]["submitted"]
+
+
 async def test_invalid_tool_call_retries_and_succeeds():
     """第 1 轮 invalid_tool_calls，第 2 轮合法调用 → 应成功，且 ainvoke 被调 2 次（证明重试而非放弃）。"""
     chat = _ScriptedChat([_invalid_call(), _valid_call(x=1)])
