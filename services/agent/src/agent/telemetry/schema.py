@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS agent.agent_event_log (
 CREATE INDEX IF NOT EXISTS agent_event_run_idx    ON agent.agent_event_log (run_id, seq);
 CREATE INDEX IF NOT EXISTS agent_event_thread_idx ON agent.agent_event_log (thread_id);
 CREATE INDEX IF NOT EXISTS agent_event_type_idx   ON agent.agent_event_log (agent_type, ts DESC);
+-- 事件角色（submit 事件用）：human=模型输入 / ai=模型提交输出（幂等迁移，存量库就地加列）。
+ALTER TABLE agent.agent_event_log ADD COLUMN IF NOT EXISTS role text;
 
 CREATE TABLE IF NOT EXISTS agent.agent_token_usage (
   id               bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

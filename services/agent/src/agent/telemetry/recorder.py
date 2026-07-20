@@ -43,17 +43,17 @@ class Recorder:
         self, run_id: str, agent_type: str, event_type: str,
         node: str | None = None, level: str = "info",
         data: Any = None, event_meta: dict[str, Any] | None = None,  # data 也可存纯字符串（如 submit 内容）
-        thread_id: str | None = None,
+        thread_id: str | None = None, role: str | None = None,       # role：submit 事件的 human/ai 角色
     ) -> None:
         # seq：run 内单调递增（同一 run 由单 worker 串行写，子查询取 max+1 原子安全）
         self._exec(
             """insert into agent.agent_event_log
-                 (run_id, thread_id, agent_type, seq, event_type, node, level, data, event_meta)
+                 (run_id, thread_id, agent_type, seq, event_type, node, level, role, data, event_meta)
                values (%s,%s,%s,
                        (select coalesce(max(seq),0)+1 from agent.agent_event_log where run_id=%s),
-                       %s,%s,%s,%s,%s)""",
+                       %s,%s,%s,%s,%s,%s)""",
             (run_id, thread_id, agent_type, run_id,
-             event_type, node, level,
+             event_type, node, level, role,
              Jsonb(data) if data is not None else None,
              Jsonb(event_meta) if event_meta is not None else None),
         )
