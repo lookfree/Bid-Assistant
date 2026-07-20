@@ -95,30 +95,28 @@ def _ctx_rec(gateway):
 
 
 async def test_submit_logs_input_and_output_on_success():
-    """成功提交：agent_event_log 记 input(role=human，data=模型输入串) + ok(role=ai，data=提交内容串)，
-    node=轮标签；元数据(role/outcome)在 event_meta，内容在 data，供排查直读。"""
+    """成功提交：agent_event_log 记 event_type=human(data=模型输入串) + event_type=ai(data=提交内容串)，
+    node=轮标签；元数据(outcome/tool)在 event_meta，内容在 data，供排查直读（对齐参考 human/ai 记法）。"""
     chat = _ScriptedChat([_valid_call(x=7)])
     ctx, rec = _ctx_rec(_ScriptedGateway(chat))
     await run_submit_agent(ctx, "SYS-PROMPT", "USER-MSG", "submit_x", Toy, "读标·基础轮")
-    submits = [e for e in rec.events if e["event_type"] == "submit"]
-    outcomes = {e["event_meta"]["outcome"] for e in submits}
-    assert {"input", "ok"} <= outcomes
-    inp = next(e for e in submits if e["event_meta"]["outcome"] == "input")
-    assert inp["node"] == "读标·基础轮" and inp["event_meta"]["role"] == "human"
+    inp = next(e for e in rec.events if e["event_type"] == "human")
+    assert inp["node"] == "读标·基础轮" and inp["event_meta"]["outcome"] == "input"
     assert "SYS-PROMPT" in inp["data"] and "USER-MSG" in inp["data"]   # data 即输入纯字符串
-    ok = next(e for e in submits if e["event_meta"]["outcome"] == "ok")
-    assert ok["event_meta"]["role"] == "ai" and "7" in ok["data"]      # data 即提交内容纯字符串
+    ok = next(e for e in rec.events if e["event_type"] == "ai" and e["event_meta"]["outcome"] == "ok")
+    assert "7" in ok["data"]                                            # data 即提交内容纯字符串
 
 
 async def test_submit_logs_rejection_with_reason_and_content():
-    """校验失败 3 次：每次记 rejected(data=提交内容串, event_meta.reason=校验原因, level=warning)；最终抛未提交。"""
+    """校验失败 3 次：每次记 event_type=ai(outcome=rejected, data=提交内容串, event_meta.reason=校验原因,
+    level=warning)；最终抛未提交。"""
     chat = _ScriptedChat([_bad_type_call(), _bad_type_call(), _bad_type_call()])
     ctx, rec = _ctx_rec(_ScriptedGateway(chat))
     with pytest.raises(RuntimeError):
         await run_submit_agent(ctx, "SYS", "USR", "submit_x", Toy, "读标·基础轮")
-    rej = [e for e in rec.events if e["event_type"] == "submit" and e["event_meta"]["outcome"] == "rejected"]
+    rej = [e for e in rec.events if e["event_type"] == "ai" and e["event_meta"]["outcome"] == "rejected"]
     assert len(rej) == 3
-    assert rej[0]["event_meta"]["role"] == "ai" and "reason" in rej[0]["event_meta"]
+    assert "reason" in rej[0]["event_meta"]
     assert rej[0]["level"] == "warning" and "abc" in rej[0]["data"]
 
 

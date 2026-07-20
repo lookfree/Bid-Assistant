@@ -26,20 +26,23 @@ def _clip(v: Any) -> str:
 
 async def _log_submit(ctx: Any, tool_name: str, label: str | None, outcome: str,
                       *, role: str, content: Any = None, reason: Any = None) -> None:
-    """把每次 submit 的输入/输出记入 agent.agent_event_log（不加列，复用 data + event_meta）：
-    - data   = 纯文本内容（人输入或 AI 提交内容本身；SELECT data #>> '{}' 直读，无需剥字段）；
-    - event_meta = {role: human/ai 分输入/输出, outcome: 结果, tool, reason: 校验原因} 等元数据。
+    """把每次 submit 的输入/输出记入 agent.agent_event_log（不加列，复用现有列，对齐参考记法）：
+    - event_type = role（human=模型输入 / ai=模型提交输出）；
+    - data       = 纯文本内容（人输入或 AI 提交内容本身；SELECT data #>> '{}' 直读，无需剥字段）；
+    - event_meta = {tool, outcome: 结果, reason: 校验原因} 等元数据。
     框架公共提交路径统一处理，所有结构化提交节点（读标/提纲/正文/审查/述标）自动生效——提交内容此前只
-    活在内存、任何表都查不到，现按 data(内容)/event_meta(元数据) 落库供排查。best-effort，绝不挡主流程。"""
+    活在内存、任何表都查不到，现按 event_type(角色)/data(内容)/event_meta(元数据) 落库供排查。
+    best-effort，绝不挡主流程。"""
     rec = getattr(ctx, "recorder", None)
     if rec is None:
         return
-    meta: dict = {"tool": tool_name, "role": role, "outcome": outcome}
+    meta: dict = {"tool": tool_name, "outcome": outcome}
     if reason is not None:
         meta["reason"] = str(reason)[:1000]
     try:
+        # event_type 直接用 role（human=模型输入 / ai=模型提交输出），对齐参考 agent_event_log 记法。
         await asyncio.to_thread(
-            rec.log_event, ctx.run_id, ctx.agent_type, "submit",
+            rec.log_event, ctx.run_id, ctx.agent_type, role,
             node=label, level=("warning" if role == "ai" and outcome != "ok" else "info"),
             data=(_clip(content) if content is not None else None),
             event_meta=meta, thread_id=getattr(ctx, "thread_id", None),
