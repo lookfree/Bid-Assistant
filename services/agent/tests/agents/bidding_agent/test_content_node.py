@@ -268,3 +268,77 @@ def test_recursion_limit_scales_with_chapter_count(monkeypatch):
     assert run(2) == 100          # 下限
     assert run(20) == 360         # 20*15+60
     assert run(50) == 600         # 封顶
+
+
+def test_content_node_form_chapter_injects_tender_template(monkeypatch):
+    """招标自带格式章节（structure_ref → kind=form 构成项）：规划轮注入【招标格式模板】+
+    该章对应节的原文全文（doc_sections 被 slim_read 裁掉，这里按需回捞格式节）；
+    非相关节原文不进上下文。"""
+    captured = {}
+
+    class _CapturingDeep(_FakeDeep):
+        async def ainvoke(self, _input, config=None):
+            captured["user"] = _input["messages"][0].content
+            return await super().ainvoke(_input, config)
+
+    files = {"/chapters/b1.html": {"content": "<p>…</p>"}}
+    monkeypatch.setattr(content_mod, "create_deep_agent", lambda **kw: _CapturingDeep(files))
+    read = {
+        "doc_sections": [
+            {"id": "sec-40-c1", "text": "响应函（格式）"},
+            {"id": "sec-40-c2", "text": "致：（采购人名称）……响应函模板正文段落"},
+            {"id": "sec-2-c1", "text": "无关节的招标原文"},
+        ],
+        "required_structure": [
+            {"id": "s9", "title": "响应函", "kind": "form", "clause_ids": ["sec-40-c1"]},
+        ],
+    }
+    outline = {"chapters": [{"id": "b1", "no": "第一章", "title": "响应函（附件1）",
+                             "structure_ref": "s9", "items": []}]}
+    node = content_mod.make_content_node(_ctx())
+    out = asyncio.run(node({"outline": outline, "read": read}))
+    assert out["chapters"] == {"b1": "<p>…</p>"}
+    assert "【招标格式模板】" in captured["user"]
+    assert "响应函模板正文段落" in captured["user"]   # 该格式节全文注入（含 clause_ids 未直接引用的 c2）
+    assert "无关节的招标原文" not in captured["user"]  # 只取格式章节对应的节
+
+
+def test_content_node_form_chapter_by_title_keyword_items_clauses(monkeypatch):
+    """无 structure_ref 时按章标题关键词（如「报价一览表」）识别，模板定位回退章内 items 的 clause_ids。"""
+    captured = {}
+
+    class _CapturingDeep(_FakeDeep):
+        async def ainvoke(self, _input, config=None):
+            captured["user"] = _input["messages"][0].content
+            return await super().ainvoke(_input, config)
+
+    files = {"/chapters/b2.html": {"content": "<p>…</p>"}}
+    monkeypatch.setattr(content_mod, "create_deep_agent", lambda **kw: _CapturingDeep(files))
+    read = {"doc_sections": [{"id": "sec-51-c1", "text": "报价一览表（格式）：序号/名称/单价/总价"}],
+            "required_structure": []}
+    outline = {"chapters": [{"id": "b2", "no": "第二章", "title": "报价一览表",
+                             "items": [{"id": "i1", "label": "报价表", "clause_ids": ["sec-51-c1"]}]}]}
+    node = content_mod.make_content_node(_ctx())
+    asyncio.run(node({"outline": outline, "read": read}))
+    assert "【招标格式模板】" in captured["user"]
+    assert "序号/名称/单价/总价" in captured["user"]
+
+
+def test_content_node_no_form_chapter_no_template_block(monkeypatch):
+    """无格式类章节（普通技术章）→ 不注入【招标格式模板】，规划消息与今天一致。"""
+    captured = {}
+
+    class _CapturingDeep(_FakeDeep):
+        async def ainvoke(self, _input, config=None):
+            captured["user"] = _input["messages"][0].content
+            return await super().ainvoke(_input, config)
+
+    files = {"/chapters/t1.html": {"content": "<p>…</p>"}}
+    monkeypatch.setattr(content_mod, "create_deep_agent", lambda **kw: _CapturingDeep(files))
+    read = {"doc_sections": [{"id": "sec-1-c1", "text": "技术要求原文"}], "required_structure": []}
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "实施方案",
+                             "items": [{"id": "i1", "label": "方案", "clause_ids": ["sec-1-c1"]}]}]}
+    node = content_mod.make_content_node(_ctx())
+    asyncio.run(node({"outline": outline, "read": read}))
+    assert "【招标格式模板】" not in captured["user"]
+    assert "技术要求原文" not in captured["user"]   # 非格式章不回捞原文
