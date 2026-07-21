@@ -15,6 +15,8 @@ import {
   ShieldCheck,
   ShieldAlert,
   Loader2,
+  Maximize2,
+  Minimize2,
   Coins,
 } from "lucide-react"
 import { usePaywall } from "@/components/paywall"
@@ -371,6 +373,12 @@ export default function ContentPage() {
     }
   }
 
+  /* 工作区全屏（用户需求：目录+正文+AI 助手三栏一起铺满，大画布直接改标书/调格式）。
+     切换只改同一容器的 CSS 类——条件渲染会重挂载 contenteditable，未保存的编辑与光标会随
+     innerHTML 重设丢失。Esc 退出。 */
+  const [editorFullscreen, setEditorFullscreen] = useState(false)
+  useEscapeClose(() => setEditorFullscreen(false), editorFullscreen)
+
   /* 弹窗统一 Escape 关闭 */
   useEscapeClose(() => setExportConfirm(false), exportConfirm)
   useEscapeClose(() => setReportOpen(false), reportOpen)
@@ -495,9 +503,11 @@ export default function ContentPage() {
       </StepPageHeader>
       <AiNotice className="shrink-0" />
 
-      {/* 三栏工作区 */}
+      {/* 三栏工作区；全屏时同一容器改为 fixed 铺满视口（目录/正文/AI 助手一起放大） */}
       <div
-        className={`mt-4 grid min-h-0 flex-1 gap-4 ${
+        className={`${
+          editorFullscreen ? "fixed inset-0 z-[85] grid gap-4 overflow-auto bg-background p-4" : "mt-4 grid min-h-0 flex-1 gap-4"
+        } ${
           // 窄视口（小屏/页面放大）三栏收紧,编辑器保底;xl 以上恢复宽松布局
           chatOpen
             ? "lg:grid-cols-[200px_minmax(0,1fr)_280px] xl:grid-cols-[260px_minmax(0,1fr)_340px]"
@@ -520,6 +530,15 @@ export default function ContentPage() {
             <span className="mr-auto truncate text-sm font-semibold text-foreground">{active.title}</span>
             {/* 编辑工具栏 */}
             <EditorToolbar exec={exec} onUndo={undoChapter} onOpenLibrary={openLibrary} />
+            {/* 工作区全屏：目录/正文/AI 助手三栏一起铺满（Esc 退出） */}
+            <button
+              type="button"
+              onClick={() => setEditorFullscreen((v) => !v)}
+              title={editorFullscreen ? "退出全屏（Esc）" : "全屏编辑"}
+              className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              {editorFullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+            </button>
           </div>
 
           {active.html.trim() ? (
