@@ -58,8 +58,24 @@ export function useMembership() {
       .finally(() => {
         if (alive) setLoading(false)
       })
+    // 订阅全局扣费事件（与侧边栏积分卡同源）：任何计费操作完成都静默重拉——
+    // 此前只有侧边栏订阅，页面底部栏/AI 助手的余额停在旧快照，同屏出现两个不同余额（生产实测）。
+    const onCreditsRefresh = () => {
+      if (!tokenStore.get()) return
+      fetchMembership()
+        .then((ov) => {
+          cachedOverview = ov
+          if (alive) {
+            setOverview(ov)
+            setError(null)
+          }
+        })
+        .catch(() => {})
+    }
+    window.addEventListener("credits:refresh", onCreditsRefresh)
     return () => {
       alive = false
+      window.removeEventListener("credits:refresh", onCreditsRefresh)
     }
   }, [])
 

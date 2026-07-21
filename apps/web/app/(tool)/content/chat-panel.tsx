@@ -5,6 +5,7 @@ import Link from "next/link"
 import { Bot, Library, Loader2, Send, User } from "lucide-react"
 import { ApiError } from "@/lib/api-client"
 import { rewriteChapter } from "@/lib/project"
+import { notifyCreditsChanged } from "@/lib/use-step"
 
 type ChatMsg = { role: "user" | "ai"; text: string; link?: { href: string; label: string } }
 
@@ -67,6 +68,9 @@ export function ChatPanel({
     try {
       const r = await rewriteChapter(projectId, target.id, text)
       onApply(r.chapterId, r.html)
+      // 广播全局扣费事件：侧边栏积分卡 + useMembership（底部栏/本面板余额）一起刷新。
+      // 此前只调 refreshBalance（页面级），侧边栏停在旧值 → 同屏两个余额（生产实测）。
+      notifyCreditsChanged()
       refreshBalance()
       push({ role: "ai", text: `已完成「${target.no} ${target.title}」的改写并替换正文（消耗 ${r.cost} 积分），可在编辑器继续微调。` })
     } catch (e) {
