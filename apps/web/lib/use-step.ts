@@ -109,6 +109,8 @@ export function useStep<T>(step: StepName) {
   const [phase, setPhase] = useState<StepPhase | null>(null)
   // 最近一次 start() 失败的 HTTP 状态码（402 积分不足 / 409 步骤顺序…），非 ApiError 为 null
   const [errorStatus, setErrorStatus] = useState<number | null>(null)
+  // 最近一次 start() 失败的业务错误码（package_required 等需要专属引导动作的场景），非 ApiError 为 null
+  const [errorCode, setErrorCode] = useState<string | null>(null)
   // 防重（同步守卫）：running 是异步 state，双调用（自动触发 effect 重跑/双击）间隙读到的都是 false，
   // 用 ref 挡住所有页面的步骤请求双发——已有一次在途就直接忽略。
   const inFlight = useRef(false)
@@ -199,6 +201,7 @@ export function useStep<T>(step: StepName) {
       setProgress(null)
       setPhase(null)
       setErrorStatus(null)
+      setErrorCode(null)
       // 立刻失效项目缓存：缓存快照是「点击前」抓的（无 running 行）,30s TTL 内切走再切回
       // 会命中它并渲染成「尚未生成」的空闲态 + 计费按钮——运行状态凭空消失（切页断流感）。
       invalidateProjectCache(projectId)
@@ -231,10 +234,14 @@ export function useStep<T>(step: StepName) {
         const status = e instanceof ApiError ? e.status : null
         const code = e instanceof ApiError ? e.code : null
         setErrorStatus(status)
-        // 模型未配置（运营后台未编排主/降级模型）：C 端用户无法自助解决，明确提示联系管理员
+        setErrorCode(code ?? null)
+        // 模型未配置（运营后台未编排主/降级模型）：C 端用户无法自助解决，明确提示联系管理员；
+        // package_required（多包招标未选包）：硬门禁——必须回读标页选包后才能生成大纲
         setError(code === "model_not_configured"
           ? "系统尚未配置生成模型，请联系管理员在运营后台完成模型编排"
-          : stepErrorMessage(status))
+          : code === "package_required"
+            ? "本项目为多包件招标，请先在「招标解读」页选择投标包件，再生成大纲"
+            : stepErrorMessage(status))
         return null
       } finally {
         inFlight.current = false
@@ -244,15 +251,18 @@ export function useStep<T>(step: StepName) {
     [projectId, step, running],
   )
 
-  // 失败文案与引导动作精确化：409 顺序错误 → 点名未完成的前序步并给入口；402 → 引导充值
+  // 失败文案与引导动作精确化：409 顺序错误 → 点名未完成的前序步并给入口；402 → 引导充值；
+  // package_required → 引导回读标页选包
   const prereq = errorStatus === 409 ? stepPrereq(info, step) : null
   const displayError = error && prereq ? `请先完成前序步骤：${prereq.label}` : error
   const errorAction: { href: string; label: string } | null =
     errorStatus === 402
       ? { href: "/membership", label: "去充值" }
-      : prereq
-        ? { href: prereq.href, label: `前往${prereq.label}` }
-        : null
+      : errorCode === "package_required"
+        ? { href: "/read", label: "去选择包件" }
+        : prereq
+          ? { href: prereq.href, label: `前往${prereq.label}` }
+          : null
 
   return { projectId, info, data, dataLoading, running, progress, phase, error: displayError, errorStatus, errorAction, start }
 }

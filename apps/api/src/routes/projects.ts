@@ -1,7 +1,7 @@
 import { Hono } from "hono"
 import { streamSSE } from "hono/streaming"
 import { z } from "zod"
-import { eq, and, desc, sql, inArray } from "drizzle-orm"
+import { eq, and, desc, sql, inArray, ne, isNotNull } from "drizzle-orm"
 import { getDb } from "../db/client"
 import { bidProjects, projectSteps, projectFiles, libraryItems } from "../db/schema"
 import type { User } from "../db/schema"
@@ -97,14 +97,48 @@ const createBodySchema = z.union([
 // 选包请求体（spec324）：裸 body——{id,name} 设置该包，JSON null 清除（不用 {package:...} 包一层）。
 const packageBodySchema = z.union([z.object({ id: z.string().min(1), name: z.string().min(1) }), z.null()])
 
-// 克隆项目请求体（spec324）：同一招标文件投另一个包=另建项目；name 缺省时用「原名（再投）」。
-const cloneBodySchema = z.object({ name: z.string().min(1) }).partial()
+// 克隆项目请求体（spec324）：同一招标文件投另一个包=另建项目。package = 新项目投的包——
+// 多包流程下建项即选包（不再建空项目后补选）；name 缺省时按包名/「（再投）」派生。
+const cloneBodySchema = z
+  .object({ name: z.string().min(1), package: z.object({ id: z.string().min(1), name: z.string().min(1) }) })
+  .partial()
 
 // 项目名：优先落库的 name（建项时取 project_files.filename 原始文件名）；
 // 老数据兜底 key 的 basename（key 里是 sanitize 后的名，不做 decodeURIComponent——上传链路从不 URI 编码）。
 function projectName(name: string | null, tenderFileKey: string | null): string {
   const base = tenderFileKey?.split("/").pop()
   return name ?? (base || "未命名项目")
+}
+
+/** 剥掉项目名尾部的「·包名」后缀（与给定包匹配才剥）。选包改名（重选先剥旧再拼新，幂等不叠加）
+ *  与克隆去后缀（新项目将选自己的包，不继承源项目的包名）共用。 */
+function stripPackageSuffix(name: string, pkg: { name: string } | null | undefined): string {
+  if (!pkg) return name
+  const suffix = `·${pkg.name}`
+  return name.endsWith(suffix) ? name.slice(0, -suffix.length) : name
+}
+
+/** 同一招标文件下兄弟项目里「已生成」的包 id 集：兄弟项目已选该包**且其提纲已开跑**（包已锁定）。
+ *  一包一份投标文件——这些包在本项目不可再选（GET /:id 下发给选包卡置灰；PATCH 选包 409 兜底）。
+ *  仅选了包但提纲未生成的兄弟不算占用（用户可能放弃那个项目换包重来）。
+ *  excludeId=当前项目（自己选的包对自己不算占用）；克隆校验传 null——源项目也算占用方。 */
+async function takenPackageIds(userId: string, tenderFileKey: string | null, excludeId: string | null): Promise<string[]> {
+  if (!tenderFileKey) return []
+  const sibs = await getDb()
+    .select({ id: bidProjects.id, pkg: bidProjects.selectedPackage })
+    .from(bidProjects)
+    .where(and(
+      eq(bidProjects.userId, userId), eq(bidProjects.tenderFileKey, tenderFileKey),
+      ...(excludeId ? [ne(bidProjects.id, excludeId)] : []),
+      isNotNull(bidProjects.selectedPackage),
+    ))
+  if (!sibs.length) return []
+  const locked = await getDb()
+    .select({ projectId: projectSteps.projectId })
+    .from(projectSteps)
+    .where(and(inArray(projectSteps.projectId, sibs.map((s) => s.id)), eq(projectSteps.step, "outline")))
+  const lockedSet = new Set(locked.map((l) => l.projectId))
+  return [...new Set(sibs.filter((s) => lockedSet.has(s.id)).map((s) => s.pkg!.id))]
 }
 
 // 编排依赖可注入（mock 测编排次序），默认真实 billing-stub / agent-client（与 read.ts 同法）。
@@ -291,7 +325,15 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       .where(and(eq(projectSteps.projectId, p.id), eq(projectSteps.step, "outline")))
       .limit(1)
     if (outlineRow) return c.json({ error: "package_locked" }, 409)
-    await getDb().update(bidProjects).set({ selectedPackage: parsed.data }).where(eq(bidProjects.id, p.id))
+    // 包占用（一包一份投标文件）：兄弟项目已用该包生成过大纲 → 409（前端选包卡已置灰，此为服务端兜底）
+    if (parsed.data && (await takenPackageIds(c.get("user").id, p.tenderFileKey, p.id)).includes(parsed.data.id))
+      return c.json({ error: "package_taken" }, 409)
+    // 项目名带上包名（多包项目在列表里可分辨投的是哪个包）：先剥旧包后缀再拼新（重选不叠加）；清包剥回基名
+    const base = stripPackageSuffix(projectName(p.name, p.tenderFileKey), p.selectedPackage)
+    await getDb()
+      .update(bidProjects)
+      .set({ selectedPackage: parsed.data, name: parsed.data ? `${base}·${parsed.data.name}` : base })
+      .where(eq(bidProjects.id, p.id))
     return c.json({ ok: true, selectedPackage: parsed.data })
   })
 
@@ -333,10 +375,17 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const parsed = cloneBodySchema.safeParse(await c.req.json().catch(() => ({})))
     if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
     const threadId = `proj-${crypto.randomUUID()}`
-    const name = parsed.data.name ?? `${projectName(p.name, p.tenderFileKey)}（再投）`
+    // 多包流程：建项即选包（body.package）。占用校验 excludeId=null——源项目已生成的包同样不可再投。
+    const pkg = parsed.data.package ?? null
+    if (pkg && (await takenPackageIds(userId, p.tenderFileKey, null)).includes(pkg.id))
+      return c.json({ error: "package_taken" }, 409)
+    // 默认名：剥掉源项目的包名后缀取基名；带包 → 「基名·包名」；不带包 → 源已选包（多包兼投主流程）
+    // 用干净基名即可分辨（源带·包名），源未选包才需「（再投）」区分。
+    const base = stripPackageSuffix(projectName(p.name, p.tenderFileKey), p.selectedPackage)
+    const name = parsed.data.name ?? (pkg ? `${base}·${pkg.name}` : p.selectedPackage ? base : `${base}（再投）`)
     const [clone] = await getDb()
       .insert(bidProjects)
-      .values({ userId, threadId, tenderFileKey: p.tenderFileKey, tenderFileKeys: p.tenderFileKeys, name })
+      .values({ userId, threadId, tenderFileKey: p.tenderFileKey, tenderFileKeys: p.tenderFileKeys, name, selectedPackage: pkg })
       .returning()
     if (!clone) return c.json({ error: "insert_failed" }, 500)
     return c.json({ id: clone.id, threadId: clone.threadId })
@@ -422,6 +471,20 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       ? step === "read"
       : step === p.currentStep || (step === "export" && p.currentStep === "done")
     if (!allowed) return c.json({ error: "out_of_order", expected: p.currentStep }, 409)
+
+    // 多包件招标必须先选包再生成提纲（一包一份投标文件，不支持多包混出一份大纲）：
+    // 读标结果有多个包而未选 → 400，不占步位不预扣；前端引导回读标页选包。
+    // 只卡 outline：后续步以 outline 为前提（开跑即锁包），单包/无包标书不受影响。
+    // SQL 层只取 result->'packages'——大标书 read result 可达 1MB，绝不为门禁整列拖过隧道（slim 教训）。
+    if (step === "outline" && !p.selectedPackage) {
+      const [read] = await getDb()
+        .select({ pkgs: sql<unknown>`${projectSteps.result} -> 'packages'` })
+        .from(projectSteps)
+        .where(and(eq(projectSteps.projectId, p.id), eq(projectSteps.step, "read"), eq(projectSteps.status, "done")))
+        .orderBy(desc(projectSteps.createdAt))
+        .limit(1)
+      if (Array.isArray(read?.pkgs) && read.pkgs.length > 1) return c.json({ error: "package_required" }, 400)
+    }
 
     // spec315a 契约 3：input 扩为五键——run_input（本 run 参数）+ state_overrides（已存/已编辑结果回灌 state）。
     // 组装必须在占位行/预扣**之前**完成（它不依赖 hold）：若放在预扣之后，DB 抖动抛错会让 hold 冻结、
@@ -673,7 +736,12 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         .orderBy(projectSteps.createdAt)
       const latestSlim = new Map<string, (typeof rows)[number]>()
       for (const s of rows) latestSlim.set(s.step, s)
-      return c.json({ project: p, steps: [...latestSlim.values()].map((s) => ({ ...s, result: null })) })
+      // takenPackageIds：兄弟项目已生成大纲的包（选包卡置灰用）；两个小索引查询，毫秒级，不破 slim
+      return c.json({
+        project: p,
+        steps: [...latestSlim.values()].map((s) => ({ ...s, result: null })),
+        takenPackageIds: await takenPackageIds(c.get("user").id, p.tenderFileKey, p.id),
+      })
     }
     // 失败重试会给同一步留下多行历史（自愈槽位只约束 running 唯一）——每步只回最新一行，
     // 否则前端可能取到旧 failed 行，把已成功的读标渲染成空。
@@ -685,7 +753,11 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const latest = new Map<string, (typeof rows)[number]>()
     for (const s of rows) latest.set(s.step, s) // 后写覆盖 ⇒ 每步保留 createdAt 最新的一行
     const steps = [...latest.values()]
-    return c.json({ project: p, steps: steps.map((s) => ({ ...s, result: resultToClient(s.step, s.result) })) })
+    return c.json({
+      project: p,
+      steps: steps.map((s) => ({ ...s, result: resultToClient(s.step, s.result) })),
+      takenPackageIds: await takenPackageIds(c.get("user").id, p.tenderFileKey, p.id),
+    })
   })
 
   // 单步结果按需拉取（配合 slim 首屏）：只回该步最新 done 行的 result（camelCase）；无 done 行 404。

@@ -131,8 +131,11 @@ export default function ReadPage() {
       setTimeout(() => setPkgState((s) => (s === "saved" ? "idle" : s)), 3000)
     } catch (e) {
       // 409 package_locked：提纲已开跑，包件锁死——引导去克隆项目投另一个包，而非泛化重试。
+      // 409 package_taken：该包已在兄弟项目生成过大纲（一包一份投标文件）——换个包选。
       if (e instanceof ApiError && e.status === 409) {
-        setPkgMessage("提纲已生成，包件已锁定。要投其它包件，请用下方「再建一个项目」。")
+        setPkgMessage(e.code === "package_taken"
+          ? "该包件已在其它项目生成过大纲，请选择其它包件"
+          : "提纲已生成，包件已锁定。要投其它包件，请用下方「再建一个项目」。")
         setPkgState("error")
       } else {
         setPkgMessage("选择包件失败，请重试")
@@ -141,13 +144,14 @@ export default function ReadPage() {
     }
   }
 
-  // 兼投多包件：另建项目（同一招标文件，read 步重新跑）。
+  // 兼投多包件：另建项目（同一招标文件，read 步重新跑）。建项即选包——新项目带着所投的包创建，
+  // 名称同时带包名；只有还没生成过大纲的包可选（已生成的包不重复投）。
   const [cloneState, setCloneState] = useState<"idle" | "cloning" | "error">("idle")
-  async function handleClone() {
+  async function handleClone(pkg: PackageInfo) {
     if (!projectId || cloneState === "cloning") return
     setCloneState("cloning")
     try {
-      await cloneProject(projectId)
+      await cloneProject(projectId, { id: pkg.id, name: pkg.name })
       // 目标仍是 /read（当前路由）：router.push 到相同路径不会重新挂载组件，
       // useStep 的 projectId 初始 state 不会重读 localStorage；改整页跳转确保新项目 id 生效。
       window.location.href = "/read"
@@ -155,6 +159,12 @@ export default function ReadPage() {
       setCloneState("error")
     }
   }
+  // 可再投的包 = 全部包 − 兄弟项目已生成的包 − 本项目已生成的包（提纲已开跑即锁定占用）
+  const outlineStarted = !!info?.steps.some((s) => s.step === "outline")
+  const takenPackageIds = info?.takenPackageIds ?? []
+  const cloneCandidates = packages.filter(
+    (pkg) => !takenPackageIds.includes(pkg.id) && !(outlineStarted && pkg.id === selectedPackageId),
+  )
   // 左栏原文：read 结果带分句时按 id 前缀分组渲染真实原文
   const docSections = useMemo(
     () => (real?.docSections?.length ? groupDocSections(real.docSections) : []),
@@ -309,12 +319,14 @@ export default function ReadPage() {
       {packages.length > 1 && (
         <PackageSelector
           packages={packages}
+          takenIds={takenPackageIds}
+          cloneCandidates={cloneCandidates}
           selectedId={selectedPackageId}
           saving={pkgState === "saving"}
           message={pkgState === "saved" ? pkgMessage : null}
           error={pkgState === "error" ? (pkgMessage || "选择包件失败，请重试") : null}
           onSelect={(pkg) => void selectPackage(pkg)}
-          onClone={() => void handleClone()}
+          onClone={(pkg) => void handleClone(pkg)}
           cloning={cloneState === "cloning"}
           cloneError={cloneState === "error" ? "创建新项目失败，请重试" : null}
         />
@@ -571,9 +583,13 @@ export default function ReadPage() {
   )
 }
 
-/* 多包件招标选包卡（spec324）：单选卡片组，选中 → PATCH 选包；下方「再建一个项目」= 兼投多包件的分开制作入口。 */
+/* 多包件招标选包卡（spec324）：单选卡片组，选中 → PATCH 选包；下方「再投」按钮 = 兼投多包件入口——
+   建项即选包（新项目带着所投的包创建）。takenIds = 兄弟项目已生成大纲的包（一包一份投标文件）：
+   置灰不可选；cloneCandidates = 还可再投（未生成）的包。 */
 function PackageSelector({
   packages,
+  takenIds,
+  cloneCandidates,
   selectedId,
   saving,
   message,
@@ -584,12 +600,14 @@ function PackageSelector({
   cloneError,
 }: {
   packages: PackageInfo[]
+  takenIds: string[]
+  cloneCandidates: PackageInfo[]
   selectedId: string | null
   saving: boolean
   message: string | null
   error: string | null
   onSelect: (pkg: PackageInfo) => void
-  onClone: () => void
+  onClone: (pkg: PackageInfo) => void
   cloning: boolean
   cloneError: string | null
 }) {
@@ -598,18 +616,23 @@ function PackageSelector({
       <header className="flex items-center gap-2 border-b border-border px-5 py-3.5">
         <Boxes className="size-4 shrink-0 text-primary" />
         <span className="text-sm font-semibold text-foreground">选择投标包件</span>
-        <span className="ml-auto text-xs text-muted-foreground">本项目为多包件招标，请选择投哪个包</span>
+        <span className="ml-auto text-xs text-muted-foreground">多包件招标须先选包才能生成大纲，一次只能投一个包</span>
       </header>
       <div className="flex flex-col gap-2 px-4 py-4">
         {packages.map((pkg) => {
           const selected = selectedId === pkg.id
+          const taken = !selected && takenIds.includes(pkg.id)
           return (
             <button
               key={pkg.id}
-              onClick={() => onSelect(pkg)}
-              disabled={saving}
+              onClick={() => !taken && onSelect(pkg)}
+              disabled={saving || taken}
               className={`flex items-start justify-between gap-3 rounded-xl border p-3 text-left transition-colors disabled:opacity-60 ${
-                selected ? "border-primary/50 gradient-brand-soft" : "border-border bg-background hover:border-primary/30"
+                selected
+                  ? "border-primary/50 gradient-brand-soft"
+                  : taken
+                    ? "cursor-not-allowed border-border bg-muted/40"
+                    : "border-border bg-background hover:border-primary/30"
               }`}
             >
               <span className="min-w-0 flex-1">
@@ -620,11 +643,18 @@ function PackageSelector({
                       {pkg.budget}
                     </span>
                   )}
+                  {taken && (
+                    <span className="rounded-md bg-success/10 px-1.5 py-0.5 text-[11px] font-medium text-success">
+                      已生成大纲（其它项目）
+                    </span>
+                  )}
                 </span>
                 {pkg.notes && <span className="mt-1 block text-xs text-muted-foreground">{pkg.notes}</span>}
               </span>
               {selected ? (
                 <Check className="mt-0.5 size-4 shrink-0 text-primary" />
+              ) : taken ? (
+                <Check className="mt-0.5 size-4 shrink-0 text-success/60" />
               ) : (
                 <span className="mt-0.5 size-4 shrink-0 rounded-full border border-border" />
               )}
@@ -634,16 +664,23 @@ function PackageSelector({
         {message && <p className="text-xs font-medium text-success">{message}</p>}
         {error && <p className="text-xs font-medium text-destructive">{error}</p>}
       </div>
-      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-4 py-3">
-        <p className="text-xs text-muted-foreground">兼投多个包件需分开制作投标文件</p>
-        <button
-          onClick={onClone}
-          disabled={cloning}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-60"
-        >
-          {cloning && <Loader2 className="size-3.5 animate-spin" />}
-          要投多个包件？再建一个项目
-        </button>
+      <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-3">
+        <p className="text-xs text-muted-foreground">兼投多包件需分开制作投标文件——选要再投的包，新建一个项目：</p>
+        {cloneCandidates.length === 0 ? (
+          <span className="text-xs text-muted-foreground">所有包件均已生成大纲，无可再投的包</span>
+        ) : (
+          cloneCandidates.map((pkg) => (
+            <button
+              key={pkg.id}
+              onClick={() => onClone(pkg)}
+              disabled={cloning}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-60"
+            >
+              {cloning && <Loader2 className="size-3.5 animate-spin" />}
+              再投「{pkg.name}」
+            </button>
+          ))
+        )}
       </div>
       {cloneError && <p className="px-4 pb-3 text-xs font-medium text-destructive">{cloneError}</p>}
     </section>

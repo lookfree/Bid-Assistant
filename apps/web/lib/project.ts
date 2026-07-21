@@ -97,6 +97,8 @@ export type ProjectInfo = {
     selectedPackage: { id: string; name: string } | null
   }
   steps: ProjectStep[]
+  // 同一招标文件的兄弟项目里已生成大纲的包 id（一包一份投标文件）：选包卡置灰不可再选；旧缓存可能缺省
+  takenPackageIds?: string[]
 }
 
 const KEY = "bid.projectId"
@@ -213,11 +215,12 @@ export async function setProjectPackage(
 }
 
 // 克隆项目（spec324）：兼投多个包件=另建一个项目（同一招标文件，read 步重新跑）。
-// 返回同 createProject 的 {id,threadId} 形状；同样把新 id 落 localStorage，贯穿后续工具页。
-export async function cloneProject(projectId: string): Promise<string> {
+// pkg = 新项目投的包（多包流程建项即选包，名称带包名）；返回同 createProject 的 {id,threadId} 形状；
+// 同样把新 id 落 localStorage，贯穿后续工具页。
+export async function cloneProject(projectId: string, pkg?: { id: string; name: string }): Promise<string> {
   const { id } = await api.request<{ id: string; threadId: string }>(`/api/projects/${projectId}/clone`, {
     method: "POST",
-    body: JSON.stringify({}),
+    body: JSON.stringify(pkg ? { package: pkg } : {}),
   })
   localStorage.setItem(KEY, id)
   return id
