@@ -75,7 +75,11 @@ export default function OutlinePage() {
 
   // 左栏原文：取 read 步结果的分句（按 id 前缀分组），未就绪为空（占位）
   // read 结果按需拉取（slim 首屏不携带跨步结果）：原文栏 doc_sections 来自这里
-  const { data: readResult } = useOtherStepResult<{ docSections?: DocSentence[] }>(projectId, info, "read")
+  const { data: readResult } = useOtherStepResult<{
+    docSections?: DocSentence[]
+    /** 多文件读标（spec320）各文件章节区间：原文栏文件页签用 */
+    docFiles?: { name: string; secFrom: number; secTo: number }[]
+  }>(projectId, info, "read")
   const docSections = useMemo(
     () => (readResult?.docSections?.length ? groupDocSections(readResult.docSections) : []),
     [readResult],
@@ -314,6 +318,7 @@ export default function OutlinePage() {
           sections={docSections}
           activeSection={activeSection}
           activeClauses={activeClauses}
+          files={readResult?.docFiles}
           registerClauseRef={(id, el) => {
             clauseRefs.current[id] = el
           }}

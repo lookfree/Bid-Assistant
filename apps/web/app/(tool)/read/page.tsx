@@ -65,6 +65,8 @@ type RealRead = {
   requiredStructure?: StructureItem[]
   /** 包件划分（spec324），单包标书为空/缺省 */
   packages?: PackageInfo[]
+  /** 多文件读标（spec320）各文件占用的章节区间；单文件项目无该字段 */
+  docFiles?: { name: string; secFrom: number; secTo: number }[]
 }
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepPageHeader } from "@/components/tool/step-page-header"
@@ -339,6 +341,7 @@ export default function ReadPage() {
           sections={docSections}
           activeSection={activeSection}
           activeClauses={activeClauses}
+          files={real?.docFiles}
           registerClauseRef={(id, el) => {
             clauseRefs.current[id] = el
           }}
