@@ -186,19 +186,53 @@ export default function ContentPage() {
       })
   }
 
+  /* 章节级撤销栈（误删文字可回撤，生产反馈）：浏览器原生撤销栈在每次失焦保存（innerHTML 重设）后
+     即被清空靠不住。这里每次保存/AI 改写覆盖前，把被覆盖的版本压入本章快照栈（每章封顶 20）。 */
+  const historyRef = useRef<Record<string, string[]>>({})
+  function pushHistory(chapterId: string, html: string) {
+    const stack = (historyRef.current[chapterId] ??= [])
+    stack.push(html)
+    if (stack.length > 20) stack.shift()
+  }
+
+  /** 撤销（两档）：编辑器里有未保存的改动（如刚误删）→ 先退回上次保存的版本；
+   *  已保存 → 从快照栈弹出上一版恢复并持久化。无可撤时兜底试浏览器原生 undo。 */
+  function undoChapter() {
+    if (!editorRef.current) return
+    const cur = editorRef.current.innerHTML
+    if (cur !== active.html) {
+      editorRef.current.innerHTML = stripDocumentShell(active.html) // 未保存改动 → 丢弃，回到已保存版
+      return
+    }
+    const prev = historyRef.current[active.id]?.pop()
+    if (prev === undefined) {
+      document.execCommand("undo")
+      return
+    }
+    const next = withChapterHtml(data, active.id, prev)
+    setData(next)
+    persistContent(next)
+  }
+
   function saveEditor() {
     if (!editorRef.current) return
     const html = editorRef.current.innerHTML
     // 无变化不回写；上次保存失败则借下次失焦重试
     if (html === active.html && contentSaveState !== "error") return
+    if (html !== active.html) pushHistory(active.id, active.html) // 被覆盖版本入撤销栈
     const next = withChapterHtml(data, active.id, html)
     setData(next)
     persistContent(next)
   }
 
-  /** 单章改写完成：替换该章正文（后端已把改写结果合入 content 步结果，无需再回写） */
+  /** 单章改写完成：替换该章正文（后端已把改写结果合入 content 步结果，无需再回写）。
+   *  改写覆盖前旧版入撤销栈——AI 改写不满意也能一键回退。 */
   function applyRewrite(chapterId: string, html: string) {
-    setData((prev) => withChapterHtml(prev, chapterId, html))
+    setData((prev) => {
+      const old = [...prev.tech, ...prev.business].find((c) => c.id === chapterId)?.html
+      if (old !== undefined && old !== html) pushHistory(chapterId, old)
+      return withChapterHtml(prev, chapterId, html)
+    })
   }
 
   function exec(cmd: string, value?: string) {
@@ -485,7 +519,7 @@ export default function ContentPage() {
             <span className="mr-1 text-xs font-medium text-primary">{active.no}</span>
             <span className="mr-auto truncate text-sm font-semibold text-foreground">{active.title}</span>
             {/* 编辑工具栏 */}
-            <EditorToolbar exec={exec} onOpenLibrary={openLibrary} />
+            <EditorToolbar exec={exec} onUndo={undoChapter} onOpenLibrary={openLibrary} />
           </div>
 
           {active.html.trim() ? (

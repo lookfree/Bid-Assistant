@@ -1,14 +1,17 @@
 "use client"
 
-import { Bold, Heading2, ImagePlus, Italic, Library, List } from "lucide-react"
+import { Bold, Heading2, ImagePlus, Italic, Library, List, Undo2 } from "lucide-react"
 
-/** 正文编辑工具栏：加粗/斜体/小标题/列表/插图 + 「从资料库插入」入口。 */
+/** 正文编辑工具栏：撤销 + 加粗/斜体/小标题/列表/插图 + 「从资料库插入」入口。 */
 export function EditorToolbar({
   exec,
+  onUndo,
   onOpenLibrary,
 }: {
   /** 对当前 contentEditable 编辑器执行 document.execCommand */
   exec: (cmd: string, value?: string) => void
+  /** 章节级撤销（误删回撤）：先撤未保存改动，再逐级回退历史保存版 */
+  onUndo: () => void
   onOpenLibrary: () => void
 }) {
   function insertImage() {
@@ -18,6 +21,9 @@ export function EditorToolbar({
 
   return (
     <div className="flex items-center gap-0.5">
+      <ToolBtn onClick={onUndo} label="撤销（误删回撤）">
+        <Undo2 className="size-4" />
+      </ToolBtn>
       <ToolBtn onClick={() => exec("bold")} label="加粗">
         <Bold className="size-4" />
       </ToolBtn>
