@@ -24,6 +24,7 @@ import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
 import { Separator } from "@/components/ui/separator"
 import { adminApi, AdminApiError, type ApiPlan } from "@/lib/admin-api"
+import { ReferralConfigCard } from "@/components/admin/plans/referral-config-card"
 
 // 积分口径的 6 项真实能力（后端 config key = credit_cost.<op>），种子默认各 10 积分。
 // 积分口径 9 项以 C 端 membership「积分消耗说明」为准（key 对齐后端 credit_cost.<key>）。
@@ -337,6 +338,7 @@ export function PlansClient() {
         </CardContent>
       </Card>
 
+      <ReferralConfigCard />
     </div>
   )
 }
