@@ -35,7 +35,8 @@ import { deriveHealthReport } from "@/lib/risk-derive"
 import { stepPrereq, useOtherStepResult, useStep } from "@/lib/use-step"
 import { useExport } from "./use-export"
 import { AiNotice } from "@/components/tool/ai-notice"
-import { patchErrorMessage, patchStep } from "@/lib/project"
+import { patchErrorMessage, patchStep, triggerDownload } from "@/lib/project"
+import { exportRiskReport } from "@/lib/risk-api"
 import { ChatPanel } from "./chat-panel"
 import { EditorToolbar } from "./editor-toolbar"
 import { ChapterNav, type Chapter } from "./chapter-nav"
@@ -277,14 +278,37 @@ export default function ContentPage() {
     doExport(format)
   }
 
-  /* 导出体检报告（Word / PDF） */
-  function exportReport(format: "word" | "pdf") {
-    const formatName = format === "word" ? "Word" : "PDF"
-    setReportExportStatus(`正在导出体检报告（${formatName}）…`)
-    setTimeout(() => {
-      setReportExportStatus(`已导出体检报告（${formatName}）`)
-      setTimeout(() => setReportExportStatus(""), 2500)
-    }, 900)
+  /* 导出体检报告（Word / PDF）：agent 无状态渲染 → 预签名直下（免计费，体检已收过费）。
+     此前是原型残留的假实现（setTimeout 报「已导出」但从不产生文件——用户找不到下载物，生产反馈）。 */
+  const reportExportingRef = useRef(false)
+  async function exportReport(format: "word" | "pdf") {
+    if (reportExportingRef.current || !healthCheck) return
+    reportExportingRef.current = true
+    const fmt = format === "word" ? "docx" : "pdf"
+    setReportExportStatus(`正在导出体检报告（${format === "word" ? "Word" : "PDF"}）…`)
+    try {
+      const res = await exportRiskReport({
+        projectName: info?.project.name ?? undefined,
+        score: healthCheck.score,
+        high: healthCheck.high,
+        mid: healthCheck.mid,
+        passed: healthCheck.passed,
+        items: healthCheck.items.map((i) => ({ level: i.level, title: i.title, chapter: i.chapter, advice: i.advice })),
+        passedItems: healthCheck.passedItems,
+        format: fmt,
+      })
+      triggerDownload(res.url)
+      setReportExportStatus(
+        fmt === "pdf" && res.format === "docx"
+          ? `PDF 转换失败，已导出 Word 版《${res.filename}》（见浏览器「下载」列表）`
+          : `已开始下载《${res.filename}》，可在浏览器「下载」列表查看`,
+      )
+    } catch {
+      setReportExportStatus("导出体检报告失败，请重试")
+    } finally {
+      reportExportingRef.current = false
+      setTimeout(() => setReportExportStatus(""), 6000)
+    }
   }
 
   /* 弹窗统一 Escape 关闭 */

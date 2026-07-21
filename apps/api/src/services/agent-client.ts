@@ -262,6 +262,12 @@ export async function renderChecklist(payload: {
   return postSync("/render/checklist", body)
 }
 
+/** 废标体检报告渲染：同审核表范式（无状态、免计费——体检 review 步已收过费）。
+ *  format=pdf 为 best-effort（LibreOffice），失败回落 docx，返回的 format 如实反映实际产物。 */
+export async function renderRiskReport(payload: Record<string, unknown>): Promise<{ key: string; format: "docx" | "pdf" }> {
+  return postSync("/render/risk-report", payload)
+}
+
 /** 查 run 终态。对账/自愈的判死依据——错误语义必须分明：
  *  404 = run 确实不存在（返回 status:null，调用方可判死退款）;
  *  其余非 2xx / 超时 = agent 不可达（抛错，调用方按「活」处理绝不误杀）——

@@ -63,8 +63,25 @@ export function createRiskApi(request: RequestFn) {
     /** 导出签字版审核表（计费点在后端：hold "export" → settle）。402 积分不足 / 502 agent_failed。 */
     exportChecklist: (body: { projectId?: string; title?: string; groups: ChecklistExportGroup[] }) =>
       request<{ url: string; cost: number }>("/api/checklist/export", { method: "POST", body: JSON.stringify(body) }),
+
+    /** 导出废标体检报告（免计费——体检 review 步已收费）。format=pdf 为 best-effort，
+     *  转换失败回落 docx（返回的 format/filename 如实反映实际产物）。 */
+    exportRiskReport: (body: {
+      projectName?: string
+      score?: number
+      high: number
+      mid: number
+      passed: number
+      items: { level: string; title: string; chapter: string; advice: string }[]
+      passedItems: string[]
+      format: "docx" | "pdf"
+    }) =>
+      request<{ url: string; filename: string; format: "docx" | "pdf" }>("/api/checklist/report", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
   }
 }
 
 export const riskApi = createRiskApi(api.request)
-export const { runDedupe, getChecklist, saveChecklist, exportChecklist } = riskApi
+export const { runDedupe, getChecklist, saveChecklist, exportChecklist, exportRiskReport } = riskApi

@@ -18,9 +18,12 @@ setDefaultTimeout(TEST_TIMEOUT_MS) // 连真库（钱路径走真账本，只 mo
 let agentFail = false
 let presignFail = false
 let settleError: Error | null = null
+let reportFail = false
+let reportFormat: "docx" | "pdf" | null = null // null = 按请求 format 回显；"docx" 模拟 pdf 转换失败回落
 const captured: {
   preDeductCalls: number
   payload?: Parameters<ChecklistDeps["renderChecklist"]>[0]
+  reportPayload?: Record<string, unknown>
 } = { preDeductCalls: 0 }
 
 const DOCX_KEY = "artifacts/checklist/test-fixed.docx"
@@ -35,6 +38,12 @@ const mockDeps: Partial<ChecklistDeps> = {
     captured.payload = payload
     if (agentFail) throw new Error("agent boom")
     return { key: DOCX_KEY }
+  },
+  renderRiskReport: async (payload) => {
+    captured.reportPayload = payload
+    if (reportFail) throw new Error("agent boom")
+    const fmt = reportFormat ?? ((payload.format as "docx" | "pdf") || "docx")
+    return { key: `artifacts/report/test-fixed.${fmt}`, format: fmt }
   },
   presignGet: async (key, expiresIn) => {
     if (presignFail) throw new Error("presign boom")
@@ -189,5 +198,61 @@ describe("POST /api/checklist/export 导出计费（真账本）", () => {
     }
     expect(captured.preDeductCalls).toBe(calls) // 预扣根本没被调
     expect(await getBalance(userA)).toBe(before)
+  })
+})
+
+describe("POST /api/checklist/report 体检报告导出（免计费）", () => {
+  const REPORT_BODY = {
+    projectName: "招标文件.pdf·包件一",
+    score: 82, high: 1, mid: 2, passed: 9,
+    items: [{ level: "高", title: "缺少★ISO27001 认证", chapter: "资质文件", advice: "补充认证" }],
+    passedItems: ["投标函格式符合要求"],
+    format: "docx",
+  }
+  const exportReport = (token: string, body: unknown) =>
+    app.request("/api/checklist/report", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+
+  it("成功：返回 {url, filename, format}；下载名带项目名（剥内嵌扩展名）；不触计费不动余额", async () => {
+    const calls = captured.preDeductCalls
+    const before = await getBalance(userA)
+    const res = await exportReport(tokenA, REPORT_BODY)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { url: string; filename: string; format: string }
+    expect(body.format).toBe("docx")
+    expect(body.filename).toBe("招标文件·包件一-废标体检报告.docx") // .pdf 内嵌扩展名被剥
+    expect(body.url).toContain("artifacts/report/")
+    expect(captured.preDeductCalls).toBe(calls) // 免费：预扣完全没被调
+    expect(await getBalance(userA)).toBe(before)
+    // agent 契约：payload 转 snake（projectName → project_name，passedItems → passed_items）
+    expect(captured.reportPayload!.project_name).toBe("招标文件.pdf·包件一")
+    expect(captured.reportPayload!.passed_items).toEqual(["投标函格式符合要求"])
+  })
+
+  it("pdf 回落 docx：agent 返回 format=docx → filename 后缀如实 .docx", async () => {
+    reportFormat = "docx" // agent 转换失败回落
+    try {
+      const res = await exportReport(tokenA, { ...REPORT_BODY, format: "pdf" })
+      const body = (await res.json()) as { filename: string; format: string }
+      expect(body.format).toBe("docx")
+      expect(body.filename.endsWith(".docx")).toBe(true)
+    } finally {
+      reportFormat = null
+    }
+  })
+
+  it("坏输入（items 元素缺 title）→ 400；agent 炸 → 502（都不触计费）", async () => {
+    const calls = captured.preDeductCalls
+    expect((await exportReport(tokenA, { ...REPORT_BODY, items: [{ level: "高" }] })).status).toBe(400)
+    reportFail = true
+    try {
+      expect((await exportReport(tokenA, REPORT_BODY)).status).toBe(502)
+    } finally {
+      reportFail = false
+    }
+    expect(captured.preDeductCalls).toBe(calls)
   })
 })

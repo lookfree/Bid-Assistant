@@ -53,3 +53,51 @@ async def test_render_checklist_docx_content(monkeypatch):
     paras = [p.text for p in doc.paragraphs]
     assert any("智慧园区" in p for p in paras)
     assert any("签字" in p for p in paras)                     # 末尾签字/日期栏
+
+
+_REPORT = checklist_mod.RiskReportBody(
+    project_name="智慧园区项目·包件一",
+    score=82, high=1, mid=2, passed=9,
+    items=[checklist_mod.ReportItem(level="高", title="缺少★ISO27001 认证", chapter="资质文件", advice="补充认证复印件并加盖公章")],
+    passed_items=["投标函格式符合要求"],
+)
+
+
+async def test_render_risk_report_docx(monkeypatch):
+    """体检报告 docx：上传一次、key 形如 artifacts/report/<uuid>.docx、format 如实=docx；
+    回读含评分总览/风险表格/已通过项/AI 声明。"""
+    store = _Storage()
+    monkeypatch.setattr(checklist_mod, "storage", store)
+    res = await checklist_mod.render_risk_report(_REPORT)
+    key, data, ct = store.calls[0]
+    assert res == {"key": key, "format": "docx"}
+    assert key.startswith("artifacts/report/") and key.endswith(".docx")
+    assert "wordprocessingml" in ct
+    from docx import Document
+    doc = Document(io.BytesIO(data))
+    cells = [c.text for t in doc.tables for r in t.rows for c in r.cells]
+    assert "风险等级" in cells and "缺少★ISO27001 认证" in cells and "补充认证复印件并加盖公章" in cells
+    paras = [p.text for p in doc.paragraphs]
+    assert any("82 分" in p for p in paras)                    # 评分总览
+    assert any("投标函格式符合要求" in p for p in paras)         # 已通过项
+    assert any("AI 辅助生成" in p for p in paras)               # 声明
+
+
+async def test_render_risk_report_pdf_falls_back_to_docx(monkeypatch):
+    """format=pdf 但转换失败（docx_to_pdf 返回 None）→ 回落 docx，format 如实返回。"""
+    store = _Storage()
+    monkeypatch.setattr(checklist_mod, "storage", store)
+    monkeypatch.setattr(checklist_mod, "docx_to_pdf", lambda _b: None)
+    res = await checklist_mod.render_risk_report(_REPORT.model_copy(update={"format": "pdf"}))
+    assert res["format"] == "docx" and res["key"].endswith(".docx")
+
+
+async def test_render_risk_report_pdf_success(monkeypatch):
+    """format=pdf 转换成功 → 存 pdf 字节、content-type application/pdf、format=pdf。"""
+    store = _Storage()
+    monkeypatch.setattr(checklist_mod, "storage", store)
+    monkeypatch.setattr(checklist_mod, "docx_to_pdf", lambda _b: b"%PDF-fake")
+    res = await checklist_mod.render_risk_report(_REPORT.model_copy(update={"format": "pdf"}))
+    key, data, ct = store.calls[0]
+    assert res == {"key": key, "format": "pdf"}
+    assert key.endswith(".pdf") and data == b"%PDF-fake" and ct == "application/pdf"

@@ -54,8 +54,32 @@ export type ChecklistDeps = {
   settle: typeof billing.settle
   settleFailed: typeof billing.settleFailed
   renderChecklist: typeof client.renderChecklist
+  renderRiskReport: typeof client.renderRiskReport
   presignGet: typeof presignGet
 }
+
+// 废标体检报告导出请求体（免计费——体检 review 步已收费，导报告只是把已有结果落成文档）。
+// 数据由前端从 review 结果映射（与报告弹层同源），串长/条数设上限防超大载荷。
+const reportBodySchema = z.object({
+  projectName: z.string().max(200).optional(),
+  score: z.number().optional(),
+  high: z.number().int().min(0).default(0),
+  mid: z.number().int().min(0).default(0),
+  passed: z.number().int().min(0).default(0),
+  items: z
+    .array(
+      z.object({
+        level: z.string().max(20).default(""),
+        title: z.string().min(1).max(500),
+        chapter: z.string().max(200).default(""),
+        advice: z.string().max(2000).default(""),
+      }),
+    )
+    .max(200)
+    .default([]),
+  passedItems: z.array(z.string().max(500)).max(200).default([]),
+  format: z.enum(["docx", "pdf"]).default("docx"),
+})
 
 /** 属主校验取项目行：只见自己的，查不到与越权同语义（undefined → 调用方 404）。 */
 async function ownedProject(id: string, userId: string) {
@@ -85,10 +109,29 @@ export function checklistRoutes(deps: Partial<ChecklistDeps> = {}) {
   const settle = deps.settle ?? billing.settle
   const settleFailed = deps.settleFailed ?? billing.settleFailed
   const renderChecklist = deps.renderChecklist ?? client.renderChecklist
+  const renderRiskReport = deps.renderRiskReport ?? client.renderRiskReport
   const presign = deps.presignGet ?? presignGet
 
   const r = new Hono<{ Variables: { user: User } }>()
   r.use("*", authMiddleware)
+
+  // 导出废标体检报告（免计费）：agent 无状态渲染 docx/pdf → 预签名（带下载名）。
+  // 不占步位不动账本——绝不因导报告二次收费（体检本身已在 review 步计费）。
+  r.post("/report", async (c) => {
+    const parsed = reportBodySchema.safeParse(await c.req.json().catch(() => ({})))
+    if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
+    let out: { key: string; format: "docx" | "pdf" }
+    try {
+      out = await renderRiskReport(toSnake(parsed.data) as Record<string, unknown>)
+    } catch {
+      return c.json({ error: "agent_failed" }, 502)
+    }
+    // 下载名带项目名（剥掉内嵌的原始扩展名，同 artifacts 路由）；format 如实透传（pdf 可能回落 docx）
+    const base = (parsed.data.projectName ?? "").replace(/\.(pdf|docx?|xlsx?|pptx?|zip|rar)(?=·|（|$)/i, "")
+    const filename = `${base ? `${base}-` : ""}废标体检报告.${out.format}`
+    const url = await presign(out.key, 300, filename)
+    return c.json({ url, filename, format: out.format })
+  })
 
   // 读审核表：?projectId= 可空（空串与缺省同义 = 用户级默认行）；无行返回空对象（前端全 pending 初始态）
   r.get("/", async (c) => {
