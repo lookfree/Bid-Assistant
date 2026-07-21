@@ -1,6 +1,7 @@
 "use client"
 
 import { useRef, useState } from "react"
+import { uploadErrorMessage } from "@/lib/files"
 import Link from "next/link"
 import { Building2, Check, ChevronRight, History, Loader2, Lock, Palette, Upload, X } from "lucide-react"
 import { useEscapeClose } from "@/hooks/use-escape-close"
@@ -35,8 +36,8 @@ function useBusyTask() {
     try {
       await task()
       setBusyMsg(null)
-    } catch {
-      setBusyMsg(failMsg)
+    } catch (e) {
+      setBusyMsg(uploadErrorMessage(e, failMsg)) // 类型/大小被拒给具体原因（如 .potx 之外的模板格式）
     } finally {
       setBusy(false)
     }

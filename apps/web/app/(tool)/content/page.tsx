@@ -206,7 +206,19 @@ export default function ContentPage() {
     document.execCommand(cmd, false, value)
   }
 
-  /* 从资料库插入：把条目内容拼成 HTML 插入正文光标处 */
+  /* 从资料库插入：把条目内容拼成 HTML 插入正文。
+     光标处理（生产实测「点了插入却没插进去」）：打开弹窗/点击条目的过程中选区已离开编辑器，
+     此时 execCommand("insertHTML") 会静默失败、什么都不发生。故打开弹窗前先保存编辑器内选区，
+     插入时恢复；没有有效光标（用户从没点过正文）则追加到本章末尾——保证插入一定可见。 */
+  const savedSelection = useRef<Range | null>(null)
+  function openLibrary() {
+    const sel = window.getSelection()
+    savedSelection.current =
+      sel && sel.rangeCount > 0 && editorRef.current?.contains(sel.anchorNode)
+        ? sel.getRangeAt(0).cloneRange()
+        : null
+    setLibraryOpen(true)
+  }
   function insertFromLibrary(item: LibraryItem) {
     let html = ""
     if (item.body) {
@@ -222,7 +234,21 @@ export default function ContentPage() {
       if (item.attachments?.length) parts.push(`附件：${item.attachments.map((a) => a.name).join("、")}`)
       html = `<p>${parts.join("，")}。</p>`
     }
-    exec("insertHTML", html)
+    editorRef.current?.focus()
+    let inserted = false
+    const range = savedSelection.current
+    if (range && editorRef.current?.contains(range.startContainer)) {
+      const sel = window.getSelection()
+      sel?.removeAllRanges()
+      sel?.addRange(range)
+      inserted = document.execCommand("insertHTML", false, html)
+    }
+    if (!inserted && editorRef.current) {
+      // 无光标/插入失败 → 追加到本章末尾并滚动到位（绝不静默丢弃）
+      editorRef.current.insertAdjacentHTML("beforeend", html)
+      editorRef.current.scrollTop = editorRef.current.scrollHeight
+    }
+    savedSelection.current = null
     saveEditor()
     setLibraryOpen(false)
   }
@@ -459,7 +485,7 @@ export default function ContentPage() {
             <span className="mr-1 text-xs font-medium text-primary">{active.no}</span>
             <span className="mr-auto truncate text-sm font-semibold text-foreground">{active.title}</span>
             {/* 编辑工具栏 */}
-            <EditorToolbar exec={exec} onOpenLibrary={() => setLibraryOpen(true)} />
+            <EditorToolbar exec={exec} onOpenLibrary={openLibrary} />
           </div>
 
           {active.html.trim() ? (
@@ -531,7 +557,7 @@ export default function ContentPage() {
             rewriteCost={rewriteCost}
             onApply={applyRewrite}
             refreshBalance={reloadMembership}
-            onOpenLibrary={() => setLibraryOpen(true)}
+            onOpenLibrary={openLibrary}
           />
         )}
       </div>

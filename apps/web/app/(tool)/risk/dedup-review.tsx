@@ -18,7 +18,7 @@ import {
 import Link from "next/link"
 import { CreditEstimate } from "@/components/credit-estimate"
 import { ApiError } from "@/lib/api-client"
-import { uploadFile, type UploadedFile } from "@/lib/files"
+import { uploadFile, uploadErrorMessage, type UploadedFile } from "@/lib/files"
 import { creditCostValue } from "@/lib/membership-view"
 import { useMembership } from "@/lib/use-membership"
 import { runDedupe, type DedupeDim, type DedupeResult, type DedupeStrategy } from "@/lib/risk-api"
@@ -64,8 +64,8 @@ function useDedupeFiles(setError: (e: { status: number | null; msg: string } | n
         if (kind === "bid") setBids((p) => (p.length >= 3 ? p : [...p, up]))
         else setTender(up)
       }
-    } catch {
-      setError({ status: null, msg: "文件上传失败，请重试" })
+    } catch (e) {
+      setError({ status: null, msg: uploadErrorMessage(e, "文件上传失败，请重试") })
     } finally {
       setUploading(false)
     }

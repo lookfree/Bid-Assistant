@@ -4,7 +4,7 @@ import { useRef, useState } from "react"
 import { Loader2, Paperclip, Upload, X } from "lucide-react"
 import type { LibraryAttachment, LibraryCategoryId } from "@/lib/library"
 import type { LibraryEntry, LibraryEntryInput } from "@/lib/library-api"
-import { uploadFile } from "@/lib/files"
+import { uploadFile, uploadErrorMessage } from "@/lib/files"
 import { useEscapeClose } from "@/hooks/use-escape-close"
 
 const inputCls =
@@ -203,8 +203,8 @@ function AttachmentsField({
     try {
       const uploaded = await uploadFile(file)
       setAttachments((arr) => [...arr, uploaded])
-    } catch {
-      onError("附件上传失败，请重试")
+    } catch (e) {
+      onError(uploadErrorMessage(e, "附件上传失败，请重试")) // 类型/大小被拒给具体原因，别让用户拿坏文件反复重试
     } finally {
       setUploading(false)
       if (fileRef.current) fileRef.current.value = ""
