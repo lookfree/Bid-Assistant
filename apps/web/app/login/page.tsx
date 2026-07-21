@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState, useEffect, useRef, useCallback, Suspense } from "react"
+import { useState, useEffect, useRef, Suspense } from "react"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Phone, ShieldCheck, Sparkles, ArrowRight, FileSearch, PenLine, Download, QrCode } from "lucide-react"
@@ -53,22 +53,24 @@ function LoginContent() {
   const canSend = phoneValid && countdown === 0
   const canSubmit = phoneValid && code.length === 6 && agreed
 
-  // 初始化滑块 SDK。实测（浏览器现场）：SDK 的 `button` 自动绑定在本页 React 环境下不触发弹窗；且首个
-  // init 得到的实例 show() 也无效（子引擎 FeiLin/sg 是首个 init 异步拉起的，首个实例不可用）；而「再 init
-  // 一次拿到就绪实例、并把 show() 放到下一个宏任务（setTimeout 0，等 init 同步流程走完）后调用」则必弹。
-  // 故：挂载先 init 一次预热子引擎（thenShow=false 不弹）；点击发码时再 init 一次拿就绪实例并延后 show()。
-  const buildCaptcha = useCallback((thenShow: boolean) => {
+  // 初始化滑块 SDK（官方标准接法，现场逐一验证）：AliyunCaptchaConfig(region+prefix) 在脚本加载前设好
+  // （loadAliyunCaptcha 内部）；挂载 init 一次、拿到实例句柄。SDK 的 button 自动绑定在本页 React/HTTP 环境下
+  // 不弹窗（实测），故不靠它——由「获取验证码」onClick 调 instance.show()，且 show() 必须延后到下一个宏任务
+  // （见 handleSendCode）否则同步调用不弹。tab 切走时 destroy，切回手机号 tab（表单节点重建）时重新 init。
+  useEffect(() => {
+    if (!captchaEnabled || tab !== "phone") return
+    let cancelled = false
     const sendAfterSlide = (param: string) => {
       const currentPhone = phoneRef.current
       if (!/^1\d{10}$/.test(currentPhone)) return Promise.reject(new Error("手机号无效"))
       return api.authApi.sendSmsCode(currentPhone, param).then(() => undefined)
     }
-    loadAliyunCaptcha()
+    loadAliyunCaptcha({ region: "cn", prefix: captchaPrefix })
       .then((initFn) => {
+        if (cancelled) return
         initCaptcha({
           initFn,
           sceneId: captchaSceneId,
-          prefix: captchaPrefix,
           buttonSel: "#captcha-send-btn",
           elementSel: "#captcha-box",
           verifyHandler: makeCaptchaVerifyHandler(
@@ -81,23 +83,16 @@ function LoginContent() {
           ),
           getInstance: (inst) => {
             captchaInstance.current = inst
-            // show() 必须放到 init 同步流程走完后的下一个宏任务再调用，否则不弹窗（实测）。
-            if (thenShow) setTimeout(() => inst?.show?.(), 0)
           },
         })
       })
       .catch(() => setCaptchaError(true))
-  }, [])
-
-  // 挂载即预热子引擎（不弹窗）；切 tab / 卸载时销毁，切回手机号 tab 再预热。
-  useEffect(() => {
-    if (!captchaEnabled || tab !== "phone") return
-    buildCaptcha(false)
     return () => {
+      cancelled = true
       captchaInstance.current?.destroy?.()
       captchaInstance.current = null
     }
-  }, [tab, buildCaptcha])
+  }, [tab])
 
   // 手机号为纯 11 位（+86 由后端 normalizePhone 补全）；滑块关闭时不带 captchaToken，后端 DevPass 放行。
   // 滑块开启时：手动弹出拼图（instance.show()），拖动通过后由 captchaVerifyCallback 真正发码；
@@ -119,7 +114,8 @@ function LoginContent() {
       setMsg("验证组件加载失败，请刷新重试")
       return
     }
-    buildCaptcha(true) // 重新初始化拿就绪实例，并在其 getInstance 里延后 show() 弹出滑块
+    // 弹出滑块：show() 必须延后到下一个宏任务（setTimeout 0）——同步调用不弹窗（现场实测）。
+    setTimeout(() => captchaInstance.current?.show?.(), 0)
   }
 
   async function handleSubmit(e: React.FormEvent) {

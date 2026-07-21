@@ -20,7 +20,6 @@ export type CaptchaInstance = {
 
 export type InitAliyunCaptchaOptions = {
   SceneId: string
-  prefix: string
   mode: "popup"
   button: string
   element: string
@@ -30,9 +29,14 @@ export type InitAliyunCaptchaOptions = {
 
 export type InitAliyunCaptcha = (opts: InitAliyunCaptchaOptions) => void
 
+// 身份/区域配置：官方要求在「加载 SDK 脚本之前」设到 window.AliyunCaptchaConfig（region + prefix）。
+// prefix 归这里、不再传进 initAliyunCaptcha；缺了它按钮触发/弹窗会时灵时不灵（实测）。region: cn=华东2(上海)。
+export type AliyunCaptchaConfig = { region: string; prefix: string }
+
 declare global {
   interface Window {
     initAliyunCaptcha?: InitAliyunCaptcha
+    AliyunCaptchaConfig?: AliyunCaptchaConfig
   }
 }
 
@@ -40,8 +44,10 @@ declare global {
 let loadPromise: Promise<InitAliyunCaptcha> | null = null
 
 // 惰性注入官方 CDN 脚本，resolve 出全局暴露的 initAliyunCaptcha。SSR 下无 window，直接 reject。
-export function loadAliyunCaptcha(): Promise<InitAliyunCaptcha> {
+// 铁律：AliyunCaptchaConfig（region + prefix）必须在脚本注入前设好（下面就在 append 前设）。
+export function loadAliyunCaptcha(config: AliyunCaptchaConfig): Promise<InitAliyunCaptcha> {
   if (typeof window === "undefined") return Promise.reject(new Error("SSR: window 不可用"))
+  window.AliyunCaptchaConfig = config // 脚本加载前设好（幂等：同一实例每次值相同）
   if (loadPromise) return loadPromise
   if (window.initAliyunCaptcha) {
     loadPromise = Promise.resolve(window.initAliyunCaptcha)
@@ -90,19 +96,18 @@ export function makeCaptchaVerifyHandler(
 export type InitCaptchaOptions = {
   initFn: InitAliyunCaptcha
   sceneId: string
-  prefix: string
   buttonSel: string
   elementSel: string
   verifyHandler: (param: string) => Promise<boolean>
-  // 可选：拿到 SDK 实例句柄，供调用方在 tab 切走时 destroy 掉，避免重新 init 时和上一个实例并存/重复绑定。
+  // 可选：拿到 SDK 实例句柄，供调用方触发 show() 弹窗、以及 tab 切走时 destroy 收尾。
   getInstance?: (instance: CaptchaInstance) => void
 }
 
 // 薄封装：把 verifyHandler 的 boolean 结果包成 SDK 要求的 { captchaResult } 形状。
+// prefix 不在这里——它已随 region 进了 window.AliyunCaptchaConfig（loadAliyunCaptcha 里设，脚本加载前）。
 export function initCaptcha(opts: InitCaptchaOptions): void {
   opts.initFn({
     SceneId: opts.sceneId,
-    prefix: opts.prefix,
     mode: "popup",
     button: opts.buttonSel,
     element: opts.elementSel,
