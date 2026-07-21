@@ -67,6 +67,17 @@ const tabs: { id: TabId; name: string; icon: React.ElementType }[] = [
 let idCounter = 0
 const genId = () => `gen-${Date.now()}-${idCounter++}`
 
+/** 序号 n → 「第X章」（中文数字，1..99 覆盖实际章数）。一键重排/新增章节共用。 */
+const CN_DIGITS = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"]
+function chapterNo(n: number): string {
+  const cn =
+    n <= 9 ? CN_DIGITS[n]
+    : n === 10 ? "十"
+    : n < 20 ? `十${CN_DIGITS[n % 10]}`
+    : `${CN_DIGITS[Math.floor(n / 10)]}十${n % 10 ? CN_DIGITS[n % 10] : ""}`
+  return `第${cn}章`
+}
+
 export default function OutlinePage() {
   // 计费步绝不自动触发：该步未跑时停在显式生成入口，用户点击才跑
   const { projectId, info, data: real, dataLoading, running, phase, error, errorAction, start } = useStep<RealOutline>("outline")
@@ -212,11 +223,13 @@ export default function OutlinePage() {
     setDraft("新增子项")
   }
 
-  /* -------- 章节编辑 -------- */
+  /* -------- 章节编辑（标题 + 序号都可改） -------- */
+  const [noDraft, setNoDraft] = useState("")
   function startEditChapter(ch: Chapter) {
     setEditingItem(null)
     setEditingChapter(ch.id)
     setDraft(ch.title)
+    setNoDraft(ch.no)
   }
 
   function saveChapter(kind: "tech" | "business", chapterId: string) {
@@ -225,9 +238,13 @@ export default function OutlinePage() {
       setEditingChapter(null)
       return
     }
-    setter(kind)((prev) => prev.map((ch) => (ch.id === chapterId ? { ...ch, title: text } : ch)))
+    const no = noDraft.trim()
+    setter(kind)((prev) =>
+      prev.map((ch) => (ch.id === chapterId ? { ...ch, title: text, no: no || ch.no } : ch)),
+    )
     setEditingChapter(null)
     setDraft("")
+    setNoDraft("")
   }
 
   function deleteChapter(kind: "tech" | "business", chapterId: string) {
@@ -237,9 +254,18 @@ export default function OutlinePage() {
   function addChapter(kind: "tech" | "business") {
     setter(kind)((prev) => {
       const newId = genId()
-      const no = `第${prev.length + 1}章`
-      return [...prev, { id: newId, no, title: "新增章节", sourced: false, items: [] }]
+      return [...prev, { id: newId, no: chapterNo(prev.length + 1), title: "新增章节", sourced: false, items: [] }]
     })
+  }
+
+  /** 一键重排章节编号（用户需求：部分标书要求全文从第一章顺到底，而默认技术/商务各自从第一章起）。
+   *  continuous=技术标→商务标全文连续；grouped=两组各自从第一章。只改本地状态，点「保存提纲」持久化。 */
+  function renumber(mode: "continuous" | "grouped") {
+    const techLen = techChapters.length
+    setTechChapters((prev) => prev.map((ch, i) => ({ ...ch, no: chapterNo(i + 1) })))
+    setBusinessChapters((prev) =>
+      prev.map((ch, i) => ({ ...ch, no: chapterNo((mode === "continuous" ? techLen : 0) + i + 1) })),
+    )
   }
 
   // 无进行中项目：只引导上传，不渲染任何示例内容
@@ -352,6 +378,26 @@ export default function OutlinePage() {
                 </button>
               )
             })}
+            {/* 一键重排章节编号（改完点「保存提纲」持久化）：部分标书要求全文从第一章顺到底 */}
+            {real && (
+              <span className="ml-auto inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                章节编号
+                <button
+                  onClick={() => renumber("continuous")}
+                  title="技术标→商务标全文从第一章连续编号（部分标书要求）；改完点「保存提纲」生效"
+                  className="rounded-md border border-border bg-card px-2 py-1 font-medium text-foreground transition-colors hover:bg-muted"
+                >
+                  全文连续
+                </button>
+                <button
+                  onClick={() => renumber("grouped")}
+                  title="技术标 / 商务标各自从第一章编号；改完点「保存提纲」生效"
+                  className="rounded-md border border-border bg-card px-2 py-1 font-medium text-foreground transition-colors hover:bg-muted"
+                >
+                  分组各自
+                </button>
+              </span>
+            )}
           </div>
 
           <div className="flex flex-1 flex-col overflow-y-auto px-4 py-4">
@@ -387,7 +433,17 @@ export default function OutlinePage() {
                         {/* 章节标题行 */}
                         {editingChapter === chapter.id ? (
                           <div className="flex items-center gap-2">
-                            <span className="text-xs font-medium text-primary">{chapter.no}</span>
+                            {/* 序号可编辑（用户需求：部分标书要求自定义章节编号） */}
+                            <input
+                              value={noDraft}
+                              onChange={(e) => setNoDraft(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") saveChapter(group.kind, chapter.id)
+                                if (e.key === "Escape") setEditingChapter(null)
+                              }}
+                              placeholder="第一章"
+                              className="w-20 shrink-0 rounded-md border border-primary bg-card px-2 py-1 text-xs font-medium text-primary outline-none"
+                            />
                             <input
                               autoFocus
                               value={draft}
