@@ -138,9 +138,15 @@ function useReferralConfigState() {
   return { rules, setRules, expireDays, setExpireDays, loading, saving, dirty, save, reset }
 }
 
-export function ReferralConfigCard() {
+// onDirtyChange：可选，供 plans-client.tsx 的 tab 名旁小圆点感知本卡是否有未保存的更改
+// （本卡的 dirty 状态完全封装在 useReferralConfigState 里，父组件只能通过回调拿到一份镜像）。
+export function ReferralConfigCard({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = {}) {
   const { rules, setRules, expireDays, setExpireDays, loading, saving, dirty, save, reset } =
     useReferralConfigState()
+
+  useEffect(() => {
+    onDirtyChange?.(dirty)
+  }, [dirty, onDirtyChange])
 
   // 本地校验与服务端同规则，提前拦截（服务端 400 无字段明细，无法逐字段定位）。
   const ruleErrors = rules ? validateReferralRules(rules) : {}

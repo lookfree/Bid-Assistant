@@ -23,8 +23,15 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
 import { Separator } from "@/components/ui/separator"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { adminApi, AdminApiError, type ApiPlan } from "@/lib/admin-api"
 import { ReferralConfigCard } from "@/components/admin/plans/referral-config-card"
+
+// tab 名旁的"有未保存的更改"小圆点：不强拦切换，只是轻提示（spec327 反馈：单页塞两块配置太长，
+// 拆成 tab 后容易忘记另一个 tab 还有未保存的编辑，需要一个不打断操作的信号）。
+function UnsavedDot() {
+  return <span className="size-1.5 rounded-full bg-amber-500" title="有未保存的更改" />
+}
 
 // 积分口径的 6 项真实能力（后端 config key = credit_cost.<op>），种子默认各 10 积分。
 // 积分口径 9 项以 C 端 membership「积分消耗说明」为准（key 对齐后端 credit_cost.<key>）。
@@ -101,6 +108,9 @@ export function PlansClient() {
   const [savedPlanForms, setSavedPlanForms] = useState<PlanForm[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  // 邀请奖励 tab 的 dirty 状态：完全封装在 ReferralConfigCard 自己的 hook 里，这里只接收
+  // onDirtyChange 回调同步一份，供 tab 名旁的小圆点判断是否显示"有未保存的更改"。
+  const [referralDirty, setReferralDirty] = useState(false)
 
   // 从真实后端拉取积分口径 + 套餐列表，mount 与 reset() 共用。
   async function loadData(isAlive: () => boolean) {
@@ -212,133 +222,154 @@ export function PlansClient() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-lg font-semibold text-foreground">套餐与积分口径配置</h2>
-          <p className="text-sm text-muted-foreground text-pretty">
-            配置化管理会员档位与各能力的积分消耗，保存后即时生效。
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {dirty && (
-            <Badge variant="secondary" className="font-normal">
-              有未保存的更改
-            </Badge>
-          )}
-          <Button variant="outline" size="sm" onClick={reset} disabled={disableActions}>
-            <RotateCcw data-icon="inline-start" />
-            还原
-          </Button>
-          <Button size="sm" onClick={save} disabled={disableActions}>
-            <Save data-icon="inline-start" />
-            保存并生效
-          </Button>
-        </div>
+      <div>
+        <h2 className="text-lg font-semibold text-foreground">套餐、积分与邀请奖励配置</h2>
+        <p className="text-sm text-muted-foreground text-pretty">
+          配置化管理会员档位、各能力的积分消耗与邀请奖励规则，保存后即时生效。
+        </p>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>会员档位</CardTitle>
-          <CardDescription>价格与每周期赠送积分，按套餐+计费周期逐行展示。</CardDescription>
-        </CardHeader>
-        <CardContent className="overflow-x-auto">
-          {loading ? (
-            <p className="text-sm text-muted-foreground">加载中…</p>
-          ) : planForms.length === 0 ? (
-            <p className="text-sm text-muted-foreground">暂无套餐，去数据库/种子创建</p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="min-w-24">档位</TableHead>
-                  <TableHead>代码</TableHead>
-                  <TableHead>计费周期</TableHead>
-                  <TableHead>价格(元)</TableHead>
-                  <TableHead>每周期赠送积分</TableHead>
-                  <TableHead className="min-w-64">权限</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {planForms.map((plan) => (
-                  <TableRow key={plan.id}>
-                    <TableCell className="font-medium text-foreground">{plan.name}</TableCell>
-                    <TableCell className="text-muted-foreground">{plan.code ?? "-"}</TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {BILLING_CYCLE_LABELS[plan.billingCycle] ?? plan.billingCycle}
-                    </TableCell>
-                    <TableCell>
-                      <Input
-                        type="number"
-                        step="0.01"
-                        className="h-9 w-28"
-                        value={plan.priceYuan}
-                        onChange={(e) => updatePlanPrice(plan.id, e.target.value)}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Input
-                        type="number"
-                        className="h-9 w-28"
-                        value={plan.grantCreditsPerCycle}
-                        onChange={(e) => updatePlanCredits(plan.id, e.target.value)}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
-                        {Object.entries(FEATURE_LABELS).map(([key, label]) => (
-                          <label key={key} className="flex items-center gap-2 text-xs">
-                            <Switch checked={plan.features[key] === true} onCheckedChange={(v) => updatePlanFeature(plan.id, key, v)} />
-                            <span className="text-muted-foreground">{label}</span>
-                          </label>
-                        ))}
+      {/* 两个面板都 keepMounted：默认行为下 base-ui Tabs 切走会把面板整个卸载。「套餐与积分」
+         这半的 dirty 状态本就存在 Tabs 外层的本组件里，卸载面板不丢状态；但「邀请奖励」半的
+         dirty/编辑态完全封装在 ReferralConfigCard 自己的 hook 里，若面板被卸载会连带把 hook
+         state 一起销毁重建——重新拉一次接口、丢掉用户还没保存的修改。keepMounted 让切换只是
+         hidden 属性（CSS 隐藏），不卸载组件树，两个 tab 各自的编辑态因此都不受切换影响。 */}
+      <Tabs defaultValue="plans-credits">
+        <TabsList>
+          <TabsTrigger value="plans-credits" className="gap-1.5">
+            套餐与积分
+            {dirty && <UnsavedDot />}
+          </TabsTrigger>
+          <TabsTrigger value="referral" className="gap-1.5">
+            邀请奖励
+            {referralDirty && <UnsavedDot />}
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="plans-credits" keepMounted className="mt-4 flex flex-col gap-6">
+          <div className="flex items-center justify-end gap-2">
+            {dirty && (
+              <Badge variant="secondary" className="font-normal">
+                有未保存的更改
+              </Badge>
+            )}
+            <Button variant="outline" size="sm" onClick={reset} disabled={disableActions}>
+              <RotateCcw data-icon="inline-start" />
+              还原
+            </Button>
+            <Button size="sm" onClick={save} disabled={disableActions}>
+              <Save data-icon="inline-start" />
+              保存并生效
+            </Button>
+          </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>会员档位</CardTitle>
+              <CardDescription>价格与每周期赠送积分，按套餐+计费周期逐行展示。</CardDescription>
+            </CardHeader>
+            <CardContent className="overflow-x-auto">
+              {loading ? (
+                <p className="text-sm text-muted-foreground">加载中…</p>
+              ) : planForms.length === 0 ? (
+                <p className="text-sm text-muted-foreground">暂无套餐，去数据库/种子创建</p>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="min-w-24">档位</TableHead>
+                      <TableHead>代码</TableHead>
+                      <TableHead>计费周期</TableHead>
+                      <TableHead>价格(元)</TableHead>
+                      <TableHead>每周期赠送积分</TableHead>
+                      <TableHead className="min-w-64">权限</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {planForms.map((plan) => (
+                      <TableRow key={plan.id}>
+                        <TableCell className="font-medium text-foreground">{plan.name}</TableCell>
+                        <TableCell className="text-muted-foreground">{plan.code ?? "-"}</TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {BILLING_CYCLE_LABELS[plan.billingCycle] ?? plan.billingCycle}
+                        </TableCell>
+                        <TableCell>
+                          <Input
+                            type="number"
+                            step="0.01"
+                            className="h-9 w-28"
+                            value={plan.priceYuan}
+                            onChange={(e) => updatePlanPrice(plan.id, e.target.value)}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Input
+                            type="number"
+                            className="h-9 w-28"
+                            value={plan.grantCreditsPerCycle}
+                            onChange={(e) => updatePlanCredits(plan.id, e.target.value)}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                            {Object.entries(FEATURE_LABELS).map(([key, label]) => (
+                              <label key={key} className="flex items-center gap-2 text-xs">
+                                <Switch checked={plan.features[key] === true} onCheckedChange={(v) => updatePlanFeature(plan.id, key, v)} />
+                                <span className="text-muted-foreground">{label}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>积分消耗口径</CardTitle>
+              <CardDescription>
+                每项能力调用所扣减的积分值，支持随时调整。修改后立即应用于后续调用。
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {loading || !costs ? (
+                <p className="text-sm text-muted-foreground">加载中…</p>
+              ) : (
+                <div className="grid gap-x-8 sm:grid-cols-2">
+                  {CREDIT_COST_OPS.map((op, i) => (
+                    <div key={op.key}>
+                      <div className="flex items-center justify-between gap-4 py-3">
+                        <div className="flex flex-col">
+                          <span className="text-sm font-medium text-foreground">{op.label}</span>
+                          <span className="text-xs text-muted-foreground">{op.desc}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Input
+                            type="number"
+                            className="h-9 w-24 text-right"
+                            value={costs[op.key]}
+                            onChange={(e) => updateCost(op.key, e.target.value)}
+                          />
+                          <span className="text-sm text-muted-foreground">积分</span>
+                        </div>
                       </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>积分消耗口径</CardTitle>
-          <CardDescription>
-            每项能力调用所扣减的积分值，支持随时调整。修改后立即应用于后续调用。
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {loading || !costs ? (
-            <p className="text-sm text-muted-foreground">加载中…</p>
-          ) : (
-            <div className="grid gap-x-8 sm:grid-cols-2">
-              {CREDIT_COST_OPS.map((op, i) => (
-                <div key={op.key}>
-                  <div className="flex items-center justify-between gap-4 py-3">
-                    <div className="flex flex-col">
-                      <span className="text-sm font-medium text-foreground">{op.label}</span>
-                      <span className="text-xs text-muted-foreground">{op.desc}</span>
+                      {i < CREDIT_COST_OPS.length - 1 && <Separator />}
                     </div>
-                    <div className="flex items-center gap-2">
-                      <Input
-                        type="number"
-                        className="h-9 w-24 text-right"
-                        value={costs[op.key]}
-                        onChange={(e) => updateCost(op.key, e.target.value)}
-                      />
-                      <span className="text-sm text-muted-foreground">积分</span>
-                    </div>
-                  </div>
-                  {i < CREDIT_COST_OPS.length - 1 && <Separator />}
+                  ))}
                 </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
 
-      <ReferralConfigCard />
+        <TabsContent value="referral" keepMounted className="mt-4">
+          <ReferralConfigCard onDirtyChange={setReferralDirty} />
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }
