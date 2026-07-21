@@ -33,8 +33,9 @@ function LoginContent() {
   const [agreed, setAgreed] = useState(false)
   const [msg, setMsg] = useState("")
   const [busy, setBusy] = useState(false)
-  const [captchaReady, setCaptchaReady] = useState(false) // 滑块 SDK 是否已加载并绑定完成
   const [captchaError, setCaptchaError] = useState(false) // SDK 加载失败 → fail-closed，禁止直接发码
+  const captchaInited = useRef(false)                     // 滑块 SDK 是否已绑定（每个挂载周期只绑一次）
+  const captchaInstance = useRef<CaptchaInstance | null>(null)
 
   // 供滑块的 captchaVerifyCallback 读取最新手机号：SDK 在 init 时绑定一次回调，若直接闭包捕获 state
   // 会永远读到挂载时的初始值（空串）；用 ref 保证每次拖动通过时读到的是当前输入框的号码。
@@ -53,15 +54,17 @@ function LoginContent() {
   const canSend = phoneValid && countdown === 0
   const canSubmit = phoneValid && code.length === 6 && agreed
 
-  // 滑块开启时：加载阿里云验证码2.0 SDK 并把「获取验证码」按钮接管为弹窗触发器；拖动通过后才真正发码。
-  // 依赖 [tab]：手机号表单（含 #captcha-send-btn）在切到微信 tab 时会被卸载，再切回来会挂载一个
-  // 同 id 的新 DOM 节点——SDK 是按选择器绑定的旧节点引用，不会自动跟着新节点走。这里只在 tab==="phone"
-  // 时初始化，并在 cleanup（切走 / 卸载）里 destroy 掉上一个实例，切回来再重新 init 绑定到新节点，
-  // 避免旧实例悬空导致点击无反应，也避免重复 init 堆出多个监听。
+  // 滑块 SDK 预加载脚本（不绑定）：手机号一合法就能立刻绑定、缩短空窗。
   useEffect(() => {
-    if (!captchaEnabled || tab !== "phone") return
-    let cancelled = false
-    let instance: CaptchaInstance | null = null
+    if (captchaEnabled && tab === "phone") loadAliyunCaptcha().catch(() => setCaptchaError(true))
+  }, [tab])
+
+  // 绑定滑块触发器：阿里云 SDK 绑定的是「触发按钮」DOM 节点，绑定时按钮若为 disabled，绑定会静默失效、
+  // 之后点击永不弹窗（生产实测：挂载即绑到 disabled 的发码按钮 → 点击无反应；改到按钮可点时再绑即正常）。
+  // 故推迟到 canSend（手机号合法、按钮已启用）时再 init，并用 ref 保证每个挂载周期只绑一次（SDK 不支持重复 init）。
+  useEffect(() => {
+    if (!captchaEnabled || tab !== "phone" || !canSend || captchaInited.current) return
+    captchaInited.current = true
     const sendAfterSlide = (param: string) => {
       const currentPhone = phoneRef.current
       if (!/^1\d{10}$/.test(currentPhone)) return Promise.reject(new Error("手机号无效"))
@@ -74,7 +77,7 @@ function LoginContent() {
     const onSlideError = (message: string) => setMsg(message)
     loadAliyunCaptcha()
       .then((initFn) => {
-        if (cancelled) return
+        if (!captchaInited.current) return // 已切走/卸载（cleanup 置回 false）→ 不绑定到失效节点
         initCaptcha({
           initFn,
           sceneId: captchaSceneId,
@@ -83,15 +86,19 @@ function LoginContent() {
           elementSel: "#captcha-box",
           verifyHandler: makeCaptchaVerifyHandler(sendAfterSlide, onSlideSuccess, onSlideError),
           getInstance: (inst) => {
-            instance = inst
+            captchaInstance.current = inst
           },
         })
-        setCaptchaReady(true)
       })
       .catch(() => setCaptchaError(true))
+  }, [tab, canSend])
+
+  // 切 tab / 卸载：销毁实例并复位，切回手机号 tab（表单节点重建）时按上面逻辑重新绑定到新节点。
+  useEffect(() => {
     return () => {
-      cancelled = true
-      instance?.destroy?.()
+      captchaInstance.current?.destroy?.()
+      captchaInstance.current = null
+      captchaInited.current = false
     }
   }, [tab])
 
@@ -249,7 +256,7 @@ function LoginContent() {
                     id="captcha-send-btn"
                     type="button"
                     onClick={handleSendCode}
-                    disabled={!canSend || (captchaEnabled && !captchaReady && !captchaError)}
+                    disabled={!canSend}
                     className="shrink-0 rounded-lg border border-input bg-background px-4 text-sm font-medium text-primary transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:text-muted-foreground"
                   >
                     {countdown > 0 ? `${countdown}s 后重发` : "获取验证码"}
