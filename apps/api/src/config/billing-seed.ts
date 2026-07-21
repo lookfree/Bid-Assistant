@@ -24,6 +24,7 @@ export const BILLING_SEED: Record<string, unknown> = {
     unlockOn: "invitee_first_paid",
     capPerUser: 500,
     riskMaxPerIpPerHour: 20, // 占位，spec307 风控阈值不写死
+    abandonDays: 0, // 0=关闭，注册即弃闸门（spec327 Task C 消费）
   },
   renewal_reminder_days: [7, 3, 1], // 到期提醒天数档（T-7/T-3/T-1）
   renewal_grace_days: 3, // past_due 宽限期（天）
