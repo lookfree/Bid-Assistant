@@ -34,7 +34,6 @@ function LoginContent() {
   const [msg, setMsg] = useState("")
   const [busy, setBusy] = useState(false)
   const [captchaError, setCaptchaError] = useState(false) // SDK 加载失败 → fail-closed，禁止直接发码
-  const captchaInited = useRef(false)                     // 滑块 SDK 是否已绑定（每个挂载周期只绑一次）
   const captchaInstance = useRef<CaptchaInstance | null>(null)
 
   // 供滑块的 captchaVerifyCallback 读取最新手机号：SDK 在 init 时绑定一次回调，若直接闭包捕获 state
@@ -54,17 +53,13 @@ function LoginContent() {
   const canSend = phoneValid && countdown === 0
   const canSubmit = phoneValid && code.length === 6 && agreed
 
-  // 滑块 SDK 预加载脚本（不绑定）：手机号一合法就能立刻绑定、缩短空窗。
+  // 挂载即加载并初始化滑块 SDK：构建弹窗 DOM + 拿到实例句柄（getInstance）。
+  // 关键：不依赖 SDK 的 `button` 自动绑定——实测该绑定在本页 React 环境下不触发（点击发码按钮无反应，
+  // 而 initAliyunCaptcha 传的 button 绑定静默失效）；改由「获取验证码」onClick 手动调 instance.show() 弹窗。
+  // tab 切走时 destroy，切回手机号 tab（表单节点重建）时重新 init。
   useEffect(() => {
-    if (captchaEnabled && tab === "phone") loadAliyunCaptcha().catch(() => setCaptchaError(true))
-  }, [tab])
-
-  // 绑定滑块触发器：阿里云 SDK 绑定的是「触发按钮」DOM 节点，绑定时按钮若为 disabled，绑定会静默失效、
-  // 之后点击永不弹窗（生产实测：挂载即绑到 disabled 的发码按钮 → 点击无反应；改到按钮可点时再绑即正常）。
-  // 故推迟到 canSend（手机号合法、按钮已启用）时再 init，并用 ref 保证每个挂载周期只绑一次（SDK 不支持重复 init）。
-  useEffect(() => {
-    if (!captchaEnabled || tab !== "phone" || !canSend || captchaInited.current) return
-    captchaInited.current = true
+    if (!captchaEnabled || tab !== "phone") return
+    let cancelled = false
     const sendAfterSlide = (param: string) => {
       const currentPhone = phoneRef.current
       if (!/^1\d{10}$/.test(currentPhone)) return Promise.reject(new Error("手机号无效"))
@@ -77,7 +72,7 @@ function LoginContent() {
     const onSlideError = (message: string) => setMsg(message)
     loadAliyunCaptcha()
       .then((initFn) => {
-        if (!captchaInited.current) return // 已切走/卸载（cleanup 置回 false）→ 不绑定到失效节点
+        if (cancelled) return
         initCaptcha({
           initFn,
           sceneId: captchaSceneId,
@@ -91,20 +86,16 @@ function LoginContent() {
         })
       })
       .catch(() => setCaptchaError(true))
-  }, [tab, canSend])
-
-  // 切 tab / 卸载：销毁实例并复位，切回手机号 tab（表单节点重建）时按上面逻辑重新绑定到新节点。
-  useEffect(() => {
     return () => {
+      cancelled = true
       captchaInstance.current?.destroy?.()
       captchaInstance.current = null
-      captchaInited.current = false
     }
   }, [tab])
 
   // 手机号为纯 11 位（+86 由后端 normalizePhone 补全）；滑块关闭时不带 captchaToken，后端 DevPass 放行。
-  // 滑块开启时按钮已被 SDK 接管弹出拼图，这里不再直接发码（交给 captchaVerifyCallback）；
-  // 仅在 SDK 加载失败时兜底报错，避免静默跳过验证（fail-closed）。
+  // 滑块开启时：手动弹出拼图（instance.show()），拖动通过后由 captchaVerifyCallback 真正发码；
+  // SDK 加载失败则兜底报错，避免静默跳过验证（fail-closed）。
   async function handleSendCode() {
     if (!canSend) return
     setMsg("")
@@ -118,7 +109,12 @@ function LoginContent() {
       }
       return
     }
-    if (captchaError) setMsg("验证组件加载失败，请刷新重试")
+    if (captchaError) {
+      setMsg("验证组件加载失败，请刷新重试")
+      return
+    }
+    if (captchaInstance.current?.show) captchaInstance.current.show()
+    else setMsg("验证组件加载中，请稍候再试")
   }
 
   async function handleSubmit(e: React.FormEvent) {

@@ -11,8 +11,10 @@ export type CaptchaVerifyCallbackResult = {
   bizResult?: boolean
 }
 
-// SDK 实例句柄（由 getInstance 回调交付）；destroy 用于 tab 切走时收尾，字段名以官方 SDK 实测为准（可能没有）。
+// SDK 实例句柄（由 getInstance 回调交付）：show 手动弹出滑块（本页不依赖 SDK 的 button 自动绑定——
+// 实测该绑定在 React 环境下不触发，改由发码按钮 onClick 调 show()）；destroy 用于 tab 切走时收尾。
 export type CaptchaInstance = {
+  show?: () => void
   destroy?: () => void
 }
 
