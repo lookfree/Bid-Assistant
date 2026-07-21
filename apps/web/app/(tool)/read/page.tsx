@@ -429,13 +429,14 @@ export default function ReadPage() {
                               </td>
                               <td className="whitespace-nowrap px-3 py-2 font-semibold text-primary">{row.score} 分</td>
                               <td className="px-3 py-2">
+                                {/* 定位列限宽 + 截断：条款多时不挤压评分项列；完整定位见 title 悬浮提示 */}
                                 <button
                                   onClick={() => handleItemClick(row.clauseIds, row.id)}
-                                  className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-muted-foreground hover:text-primary"
-                                  aria-label={`定位到招标原文 ${locate(row.clauseIds)}`}
+                                  className="inline-flex max-w-[11rem] items-center gap-1 text-xs text-muted-foreground hover:text-primary"
+                                  title={`定位到招标原文 ${locate(row.clauseIds)}`}
                                 >
-                                  <MapPin className="size-3.5" />
-                                  {locate(row.clauseIds)}
+                                  <MapPin className="size-3.5 shrink-0" />
+                                  <span className="truncate">{locate(row.clauseIds)}</span>
                                 </button>
                               </td>
                             </tr>
@@ -492,9 +493,13 @@ export default function ReadPage() {
                                 {item.value}
                               </span>
                               {item.status === "found" && (
-                                <span className="mt-1.5 inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
-                                  <MapPin className="size-3" />
-                                  定位 {locate(item.clauseIds)}
+                                /* 定位徽标限宽 + 截断（条款多时不撑爆卡片）；完整定位见 title 悬浮提示 */
+                                <span
+                                  className="mt-1.5 inline-flex max-w-full items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground"
+                                  title={`定位 ${locate(item.clauseIds)}`}
+                                >
+                                  <MapPin className="size-3 shrink-0" />
+                                  <span className="truncate">定位 {locate(item.clauseIds)}</span>
                                 </span>
                               )}
                             </span>
@@ -556,9 +561,13 @@ export default function ReadPage() {
                         <span className="mt-0.5 block text-xs text-muted-foreground">{item.notes}</span>
                       )}
                       {hasClauses && (
-                        <span className="mt-1.5 inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
-                          <MapPin className="size-3" />
-                          定位 {locate(item.clauseIds)}
+                        /* 定位徽标限宽 + 截断（条款多时不撑爆卡片）；完整定位见 title 悬浮提示 */
+                        <span
+                          className="mt-1.5 inline-flex max-w-full items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground"
+                          title={`定位 ${locate(item.clauseIds)}`}
+                        >
+                          <MapPin className="size-3 shrink-0" />
+                          <span className="truncate">定位 {locate(item.clauseIds)}</span>
                         </span>
                       )}
                     </span>

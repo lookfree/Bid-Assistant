@@ -487,12 +487,14 @@ export default function OutlinePage() {
                                       <span className="min-w-0 flex-1 truncate text-foreground">{item.label}</span>
                                     </button>
                                     {indexed ? (
+                                      /* 定位徽标限宽 45% + 内部截断：条款多时（技术需求可引用 60+ 条）绝不把
+                                         条目标题挤出可视区（生产实测）；完整定位见 title 悬浮提示。 */
                                       <span
-                                        className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-success/10 px-1.5 py-0.5 text-[11px] font-medium text-success"
+                                        className="inline-flex max-w-[45%] shrink-0 items-center gap-1 rounded-md bg-success/10 px-1.5 py-0.5 text-[11px] font-medium text-success"
                                         title={`定位到 ${locate(item.clauseIds)}`}
                                       >
-                                        <MapPin className="size-3" />
-                                        {locate(item.clauseIds)}
+                                        <MapPin className="size-3 shrink-0" />
+                                        <span className="truncate">{locate(item.clauseIds)}</span>
                                       </span>
                                     ) : (
                                       <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary">
