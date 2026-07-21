@@ -28,7 +28,8 @@ import { useStep } from "@/lib/use-step"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import { clauseLocationIn, groupDocSections, type DocSentence } from "@/lib/doc-sections"
-import { cloneProject, setProjectPackage } from "@/lib/project"
+import { cloneProject, setProjectPackage, triggerDownload } from "@/lib/project"
+import { exportReadReport } from "@/lib/risk-api"
 
 // 分类解读类目 icon（agent 结果只带 key，不产 UI 组件），未知 key 兜底 FileText
 const CATEGORY_ICONS: Record<string, LucideIcon> = {
@@ -207,6 +208,26 @@ export default function ReadPage() {
     setTimeout(() => setReportState("ready"), 1600)
   }
 
+  /* 下载标书分析报告（真实渲染：服务端取存量 read 结果 → agent 出 docx → 预签名直下，免计费）。
+     此前按钮无任何实现（原型残留），点了没反应。 */
+  const [reportMsg, setReportMsg] = useState("")
+  const reportBusyRef = useRef(false)
+  async function downloadReport() {
+    if (!projectId || reportBusyRef.current) return
+    reportBusyRef.current = true
+    setReportMsg("正在生成报告文件…")
+    try {
+      const { url, filename } = await exportReadReport(projectId)
+      triggerDownload(url)
+      setReportMsg(`已开始下载《${filename}》，可在浏览器「下载」列表查看`)
+    } catch {
+      setReportMsg("下载报告失败，请重试")
+    } finally {
+      reportBusyRef.current = false
+      setTimeout(() => setReportMsg(""), 6000)
+    }
+  }
+
   // 无进行中项目：只引导上传，不渲染任何示例内容
   if (!projectId)
     return (
@@ -299,10 +320,14 @@ export default function ReadPage() {
               <p className="mt-0.5 text-xs text-muted-foreground">
                 已覆盖 {foundCount} 项关键要求，{missingCount} 项招标文件中未明确，可在编标时重点关注
               </p>
+              {reportMsg && <p className="mt-1 text-xs font-medium text-primary">{reportMsg}</p>}
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <button className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium text-foreground hover:bg-muted">
+            <button
+              onClick={() => void downloadReport()}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium text-foreground hover:bg-muted"
+            >
               <Upload className="size-4 rotate-180" />
               下载报告
             </button>

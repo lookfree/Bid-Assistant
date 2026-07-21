@@ -268,6 +268,11 @@ export async function renderRiskReport(payload: Record<string, unknown>): Promis
   return postSync("/render/risk-report", payload)
 }
 
+/** 标书分析报告渲染（读标结论全量落 docx）：无状态、免计费——读标步已收过费。 */
+export async function renderReadReport(payload: Record<string, unknown>): Promise<{ key: string }> {
+  return postSync("/render/read-report", payload)
+}
+
 /** 查 run 终态。对账/自愈的判死依据——错误语义必须分明：
  *  404 = run 确实不存在（返回 status:null，调用方可判死退款）;
  *  其余非 2xx / 超时 = agent 不可达（抛错，调用方按「活」处理绝不误杀）——

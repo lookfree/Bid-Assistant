@@ -131,6 +131,112 @@ def render_risk_report_docx(body: RiskReportBody) -> bytes:
     return out.getvalue()
 
 
+class ReadReportBody(BaseModel):
+    """标书分析报告（读标结论全量落 docx）。字段与 read result 同构但宽松（dict 直传），
+    旧读标结果缺字段不至 422。"""
+    title: str = "标书分析报告"
+    project_name: str | None = None
+    project_meta: dict = Field(default_factory=dict)
+    categories: list[dict] = Field(default_factory=list)
+    scoring: list[dict] = Field(default_factory=list)
+    risk_summary: list[str] = Field(default_factory=list)
+    required_structure: list[dict] = Field(default_factory=list)
+    packages: list[dict] = Field(default_factory=list)
+
+
+_META_LABELS = (("name", "项目名称"), ("code", "招标编号"), ("buyer", "采购人"),
+                ("budget", "预算/最高限价"), ("deadline", "投标截止"), ("evaluation_method", "评标办法"))
+
+
+def _item_flags(it: dict) -> str:
+    """条目标志列：★不可偏离 / 废标风险 / 未明确（missing），无标志显示 —。"""
+    flags = []
+    if it.get("star"):
+        flags.append("★不可偏离")
+    if it.get("risk"):
+        flags.append("废标风险")
+    if it.get("status") == "missing":
+        flags.append("未明确")
+    return "、".join(flags) or "—"
+
+
+def _read_report_categories(doc: Document, categories: list[dict]) -> None:
+    """分类解读：每类一节，三列表格（条目/内容/标志）。"""
+    for c in categories:
+        items = c.get("items") or []
+        doc.add_heading(str(c.get("title") or "分类"), level=1)
+        if not items:
+            doc.add_paragraph("（无条目）")
+            continue
+        t = doc.add_table(rows=len(items) + 1, cols=3)
+        t.style = "Table Grid"
+        for j, h in enumerate(("条目", "内容", "标志")):
+            t.rows[0].cells[j].text = h
+        for i, it in enumerate(items, start=1):
+            for j, v in enumerate((str(it.get("title") or ""), str(it.get("value") or ""), _item_flags(it))):
+                t.rows[i].cells[j].text = v
+
+
+def _read_report_extras(doc: Document, body: ReadReportBody) -> None:
+    """评分表 / 废标红线 / 投标文件构成 / 包件划分（有数据才出对应节）。"""
+    if body.scoring:
+        doc.add_heading("评分表", level=1)
+        t = doc.add_table(rows=len(body.scoring) + 1, cols=3)
+        t.style = "Table Grid"
+        for j, h in enumerate(("评分项", "分值", "类别")):
+            t.rows[0].cells[j].text = h
+        for i, s in enumerate(body.scoring, start=1):
+            star = "★" if s.get("star") else ""
+            for j, v in enumerate((f"{star}{s.get('name') or ''}", str(s.get("score") or ""), str(s.get("category") or ""))):
+                t.rows[i].cells[j].text = v
+    if body.risk_summary:
+        doc.add_heading("废标红线汇总", level=1)
+        for r in body.risk_summary:
+            doc.add_paragraph(f"⚠ {r}")
+    if body.required_structure:
+        doc.add_heading("投标文件构成清单", level=1)
+        for s in body.required_structure:
+            req = "必备" if s.get("required", True) else "可选"
+            notes = f"（{s.get('notes')}）" if s.get("notes") else ""
+            doc.add_paragraph(f"· [{req}] {s.get('title') or ''}{notes}")
+    if body.packages:
+        doc.add_heading("包件划分", level=1)
+        for p in body.packages:
+            budget = f"，预算 {p.get('budget')}" if p.get("budget") else ""
+            notes = f"（{p.get('notes')}）" if p.get("notes") else ""
+            doc.add_paragraph(f"· {p.get('name') or ''}{budget}{notes}")
+
+
+def render_read_report_docx(body: ReadReportBody) -> bytes:
+    """标书分析报告 .docx：项目要素 → 分类解读表格 → 评分表/红线/构成/包件 → AI 声明。
+    确定性无 LLM（读标结论已存在，渲染免费），与审核表/体检报告同风格。"""
+    doc = Document()
+    doc.add_heading(body.title, level=0)
+    if body.project_name:
+        doc.add_paragraph(f"项目：{body.project_name}")
+    doc.add_paragraph(f"导出日期：{date.today().isoformat()}")
+    for key, label in _META_LABELS:
+        v = body.project_meta.get(key)
+        if v:
+            doc.add_paragraph(f"{label}：{v}")
+    _read_report_categories(doc, body.categories)
+    _read_report_extras(doc, body)
+    doc.add_paragraph("")
+    doc.add_paragraph("本报告由 AI 辅助生成，仅供投标文件编制参考，请结合招标文件原文人工复核确认后使用。")
+    out = io.BytesIO()
+    doc.save(out)
+    return out.getvalue()
+
+
+@router.post("/render/read-report")
+async def render_read_report(body: ReadReportBody):
+    """渲染标书分析报告 → MinIO artifacts/report/<uuid>.docx → {key}。免计费（读标已收费）。"""
+    data = render_read_report_docx(body)
+    key = f"artifacts/report/{uuid.uuid4()}.docx"
+    await storage.put_bytes(key, data, content_type=_DOCX_CT)
+    return {"key": key}
+
+
 @router.post("/render/risk-report")
 async def render_risk_report(body: RiskReportBody):
     """渲染体检报告 → MinIO artifacts/report/<uuid>.docx|pdf → {key, format}。

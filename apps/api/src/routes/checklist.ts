@@ -1,8 +1,8 @@
 import { Hono } from "hono"
 import { z } from "zod"
-import { and, eq, isNull } from "drizzle-orm"
+import { and, desc, eq, isNull } from "drizzle-orm"
 import { getDb } from "../db/client"
-import { bidProjects, projectChecklists } from "../db/schema"
+import { bidProjects, projectChecklists, projectSteps } from "../db/schema"
 import type { User } from "../db/schema"
 import { authMiddleware } from "../middleware/auth"
 import { getUserId } from "../lib/auth-user"
@@ -55,7 +55,14 @@ export type ChecklistDeps = {
   settleFailed: typeof billing.settleFailed
   renderChecklist: typeof client.renderChecklist
   renderRiskReport: typeof client.renderRiskReport
+  renderReadReport: typeof client.renderReadReport
   presignGet: typeof presignGet
+}
+
+/** 下载名基名：项目名剥掉内嵌的原始扩展名（含「·包名」「（再投）」后缀前的位置），同 artifacts 路由口径。 */
+function reportBaseName(name: string | null, tenderFileKey: string | null): string {
+  const raw = name ?? tenderFileKey?.split("/").pop() ?? "项目"
+  return raw.replace(/\.(pdf|docx?|xlsx?|pptx?|zip|rar)(?=·|（|$)/i, "")
 }
 
 // 废标体检报告导出请求体（免计费——体检 review 步已收费，导报告只是把已有结果落成文档）。
@@ -110,10 +117,46 @@ export function checklistRoutes(deps: Partial<ChecklistDeps> = {}) {
   const settleFailed = deps.settleFailed ?? billing.settleFailed
   const renderChecklist = deps.renderChecklist ?? client.renderChecklist
   const renderRiskReport = deps.renderRiskReport ?? client.renderRiskReport
+  const renderReadReport = deps.renderReadReport ?? client.renderReadReport
   const presign = deps.presignGet ?? presignGet
 
   const r = new Hono<{ Variables: { user: User } }>()
   r.use("*", authMiddleware)
+
+  // 导出标书分析报告（免计费——读标步已收费）：服务端取存量 read 结果组载荷 → agent 无状态渲染
+  // docx → 预签名（带项目名下载名）。不占步位不动账本。此前前端「下载报告」是无实现的原型按钮。
+  r.post("/report/read", async (c) => {
+    const parsed = z.object({ projectId: z.string().uuid() }).safeParse(await c.req.json().catch(() => ({})))
+    if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
+    const p = await ownedProject(parsed.data.projectId, getUserId(c))
+    if (!p) return c.json({ error: "not_found" }, 404)
+    const [row] = await getDb()
+      .select({ result: projectSteps.result })
+      .from(projectSteps)
+      .where(and(eq(projectSteps.projectId, p.id), eq(projectSteps.step, "read"), eq(projectSteps.status, "done")))
+      .orderBy(desc(projectSteps.createdAt))
+      .limit(1)
+    const read = row?.result as Record<string, unknown> | null
+    if (!read) return c.json({ error: "read_not_ready" }, 404)
+    const base = reportBaseName(p.name, p.tenderFileKey)
+    let out: { key: string }
+    try {
+      // read result 存的就是 snake（agent 原样），字段名与渲染契约一致，直传即可
+      out = await renderReadReport({
+        project_name: base,
+        project_meta: read.project_meta ?? {},
+        categories: read.categories ?? [],
+        scoring: read.scoring ?? [],
+        risk_summary: read.risk_summary ?? [],
+        required_structure: read.required_structure ?? [],
+        packages: read.packages ?? [],
+      })
+    } catch {
+      return c.json({ error: "agent_failed" }, 502)
+    }
+    const filename = `${base}-标书分析报告.docx`
+    return c.json({ url: await presign(out.key, 300, filename), filename })
+  })
 
   // 导出废标体检报告（免计费）：agent 无状态渲染 docx/pdf → 预签名（带下载名）。
   // 不占步位不动账本——绝不因导报告二次收费（体检本身已在 review 步计费）。

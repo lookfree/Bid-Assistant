@@ -64,6 +64,13 @@ export function createRiskApi(request: RequestFn) {
     exportChecklist: (body: { projectId?: string; title?: string; groups: ChecklistExportGroup[] }) =>
       request<{ url: string; cost: number }>("/api/checklist/export", { method: "POST", body: JSON.stringify(body) }),
 
+    /** 导出标书分析报告（免计费——读标步已收费）：服务端取存量 read 结果渲染 docx。 */
+    exportReadReport: (projectId: string) =>
+      request<{ url: string; filename: string }>("/api/checklist/report/read", {
+        method: "POST",
+        body: JSON.stringify({ projectId }),
+      }),
+
     /** 导出废标体检报告（免计费——体检 review 步已收费）。format=pdf 为 best-effort，
      *  转换失败回落 docx（返回的 format/filename 如实反映实际产物）。 */
     exportRiskReport: (body: {
@@ -84,4 +91,4 @@ export function createRiskApi(request: RequestFn) {
 }
 
 export const riskApi = createRiskApi(api.request)
-export const { runDedupe, getChecklist, saveChecklist, exportChecklist, exportRiskReport } = riskApi
+export const { runDedupe, getChecklist, saveChecklist, exportChecklist, exportRiskReport, exportReadReport } = riskApi

@@ -7,7 +7,7 @@ import { grant, getBalance } from "../src/services/credits"
 import { seedConfigs, setConfig } from "../src/services/config"
 import { loginWithPhone } from "../src/services/auth"
 import { getDb, closeDb } from "../src/db/client"
-import { users } from "../src/db/schema"
+import { users, bidProjects, projectSteps } from "../src/db/schema"
 import { uniquePhone, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连真库（钱路径走真账本，只 mock agent client / presign）
@@ -24,6 +24,7 @@ const captured: {
   preDeductCalls: number
   payload?: Parameters<ChecklistDeps["renderChecklist"]>[0]
   reportPayload?: Record<string, unknown>
+  readPayload?: Record<string, unknown>
 } = { preDeductCalls: 0 }
 
 const DOCX_KEY = "artifacts/checklist/test-fixed.docx"
@@ -38,6 +39,11 @@ const mockDeps: Partial<ChecklistDeps> = {
     captured.payload = payload
     if (agentFail) throw new Error("agent boom")
     return { key: DOCX_KEY }
+  },
+  renderReadReport: async (payload) => {
+    captured.readPayload = payload
+    if (reportFail) throw new Error("agent boom")
+    return { key: "artifacts/report/read-fixed.docx" }
   },
   renderRiskReport: async (payload) => {
     captured.reportPayload = payload
@@ -254,5 +260,45 @@ describe("POST /api/checklist/report 体检报告导出（免计费）", () => {
       reportFail = false
     }
     expect(captured.preDeductCalls).toBe(calls)
+  })
+})
+
+describe("POST /api/checklist/report/read 标书分析报告导出（免计费）", () => {
+  const exportRead = (token: string, body: unknown) =>
+    app.request("/api/checklist/report/read", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+
+  it("成功：服务端取存量 read 结果组载荷 → {url, filename 带项目基名}；不触计费", async () => {
+    const calls = captured.preDeductCalls
+    const [p] = await getDb().insert(bidProjects).values({
+      userId: userA, threadId: `proj-${crypto.randomUUID()}`,
+      tenderFileKey: "uploads/x/招标文件.pdf", name: "招标文件.pdf·包件一",
+    }).returning()
+    await getDb().insert(projectSteps).values({
+      projectId: p!.id, step: "read", status: "done",
+      result: { project_meta: { name: "统一认证项目", code: "ZB1" }, categories: [
+        { key: "overview", title: "项目概况", items: [{ title: "项目名称", value: "统一认证项目" }] },
+      ], risk_summary: ["红线1"] },
+    } as never)
+    const res = await exportRead(tokenA, { projectId: p!.id })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { url: string; filename: string }
+    expect(body.filename).toBe("招标文件·包件一-标书分析报告.docx") // 内嵌 .pdf 扩展名被剥
+    expect(body.url).toContain("artifacts/report/")
+    expect(captured.preDeductCalls).toBe(calls) // 免费
+    expect((captured.readPayload!.project_meta as { code: string }).code).toBe("ZB1")
+    expect(captured.readPayload!.risk_summary).toEqual(["红线1"])
+  })
+
+  it("read 未完成 → 404 read_not_ready；他人项目 → 404；非 uuid → 400", async () => {
+    const [p2] = await getDb().insert(bidProjects).values({
+      userId: userA, threadId: `proj-${crypto.randomUUID()}`, tenderFileKey: null, name: "无读标项目",
+    }).returning()
+    expect((await exportRead(tokenA, { projectId: p2!.id })).status).toBe(404)
+    expect((await exportRead(tokenB, { projectId: p2!.id })).status).toBe(404)
+    expect((await exportRead(tokenA, { projectId: "not-a-uuid" })).status).toBe(400)
   })
 })

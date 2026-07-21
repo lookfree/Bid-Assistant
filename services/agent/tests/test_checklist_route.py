@@ -101,3 +101,40 @@ async def test_render_risk_report_pdf_success(monkeypatch):
     key, data, ct = store.calls[0]
     assert res == {"key": key, "format": "pdf"}
     assert key.endswith(".pdf") and data == b"%PDF-fake" and ct == "application/pdf"
+
+
+async def test_render_read_report_docx(monkeypatch):
+    """标书分析报告：上传一次、key 形如 artifacts/report/<uuid>.docx；
+    回读含项目要素/分类表格（★/未明确标志）/评分表/红线/构成/包件与 AI 声明。"""
+    store = _Storage()
+    monkeypatch.setattr(checklist_mod, "storage", store)
+    body = checklist_mod.ReadReportBody(
+        project_name="统一身份认证项目",
+        project_meta={"name": "统一身份认证管理项目", "code": "ZB0797", "budget": "600 万"},
+        categories=[{"title": "资格要求", "items": [
+            {"title": "★ISO27001", "value": "不可偏离", "star": True},
+            {"title": "对照清单", "value": "未给出", "status": "missing"},
+        ]}],
+        scoring=[{"name": "技术方案", "score": 40, "category": "技术", "star": True}],
+        risk_summary=["未按要求密封即废标"],
+        required_structure=[{"title": "开标一览表", "kind": "form", "required": True}],
+        packages=[{"name": "包1", "budget": "300 万"}],
+    )
+    res = await checklist_mod.render_read_report(body)
+    key, data, ct = store.calls[0]
+    assert res == {"key": key}
+    assert key.startswith("artifacts/report/") and key.endswith(".docx")
+    assert "wordprocessingml" in ct
+    import io
+    from docx import Document
+    doc = Document(io.BytesIO(data))
+    cells = [c.text for t in doc.tables for r in t.rows for c in r.cells]
+    assert "★ISO27001" in cells and any("★不可偏离" in c for c in cells)   # 标志列
+    assert any("未明确" in c for c in cells)                               # missing 标志
+    assert any("技术方案" in c for c in cells)                             # 评分表
+    paras = [p.text for p in doc.paragraphs]
+    assert any("ZB0797" in p for p in paras)                              # 项目要素
+    assert any("未按要求密封" in p for p in paras)                          # 红线
+    assert any("开标一览表" in p for p in paras)                            # 构成清单
+    assert any("包1" in p for p in paras)                                  # 包件
+    assert any("AI 辅助生成" in p for p in paras)
