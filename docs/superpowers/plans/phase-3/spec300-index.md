@@ -105,6 +105,11 @@ STEP_COST 常量                    ──▶    billing_configs 的「操作→
 **依赖**：spec301 配置机制（`billing_configs`/`getConfig`/`setConfig`）、spec310 admin 通用配置端点（`PUT /plans/configs/:key`）、Phase 1-2 agent 模型网关。
 **要点**：App API 权威；`billing_configs` 键 `agent_model`；建 run 随请求体下发 `model` → agent `settings.model_copy` 覆盖 env 默认；API Key 仍留 env；缺省回退 env（向后兼容）。计划：`spec311-agent-model-config.md`。
 
+## spec327：邀请奖励引擎收口（2026-07-22 追加）
+
+**目标**：spec307 引擎已大部分落地但未收口——运营后台「价格菜单」（套餐&配置页）补**邀请奖励专属配置区**（奖励/解锁条件/封顶/有效期/风控阈值可视化编辑）；`PUT /plans/configs/:key` 对 `referral_rules`/`reward_expire_days` 加形状校验；补「注册即弃」风控闸门（配置开关 `abandonDays`，默认关）；盘点勾账 spec307（35 项 0 勾与实现脱节）。
+**依赖**：spec307（引擎主体）、spec310（admin 通用配置端点 + plans 页）、spec302（账本，判定"有效行为"）。计划：`spec327-referral-closeout.md`。
+
 ## 执行方式
 
 每个 spec 用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 逐任务实现。spec 内步骤用 `- [ ]` 复选框跟踪。
