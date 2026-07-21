@@ -1,18 +1,24 @@
 "use client"
 
-import { Bold, Heading2, ImagePlus, Italic, Library, List, Undo2 } from "lucide-react"
+import { Bold, Heading2, ImagePlus, Italic, Library, List, Maximize2, Minimize2, Undo2 } from "lucide-react"
 
-/** 正文编辑工具栏：撤销 + 加粗/斜体/小标题/列表/插图 + 「从资料库插入」入口。 */
+/** 正文编辑工具栏：撤销 + 加粗/斜体/小标题/列表/插图 + 「从资料库插入」+ 全屏切换。
+ *  全屏按钮并入工具栏而非独立元素：窄视口断行时整条工具栏一起换行，不会孤零零挤出一行。 */
 export function EditorToolbar({
   exec,
   onUndo,
   onOpenLibrary,
+  fullscreen,
+  onToggleFullscreen,
 }: {
   /** 对当前 contentEditable 编辑器执行 document.execCommand */
   exec: (cmd: string, value?: string) => void
   /** 章节级撤销（误删回撤）：先撤未保存改动，再逐级回退历史保存版 */
   onUndo: () => void
   onOpenLibrary: () => void
+  /** 工作区全屏态（目录/正文/AI 助手三栏一起铺满，Esc 退出） */
+  fullscreen: boolean
+  onToggleFullscreen: () => void
 }) {
   function insertImage() {
     const url = "/professional-business-chart.png"
@@ -46,6 +52,9 @@ export function EditorToolbar({
         <Library className="size-3.5" />
         从资料库插入
       </button>
+      <ToolBtn onClick={onToggleFullscreen} label={fullscreen ? "退出全屏（Esc）" : "全屏编辑"}>
+        {fullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+      </ToolBtn>
     </div>
   )
 }

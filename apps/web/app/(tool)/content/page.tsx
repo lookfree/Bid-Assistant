@@ -15,8 +15,6 @@ import {
   ShieldCheck,
   ShieldAlert,
   Loader2,
-  Maximize2,
-  Minimize2,
   Coins,
 } from "lucide-react"
 import { usePaywall } from "@/components/paywall"
@@ -526,19 +524,17 @@ export default function ContentPage() {
         {/* 中：可编辑正文 */}
         <section className="flex min-h-0 flex-col rounded-2xl border border-border bg-card">
           <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
-            <span className="mr-1 text-xs font-medium text-primary">{active.no}</span>
-            <span className="mr-auto truncate text-sm font-semibold text-foreground">{active.title}</span>
-            {/* 编辑工具栏 */}
-            <EditorToolbar exec={exec} onUndo={undoChapter} onOpenLibrary={openLibrary} />
-            {/* 工作区全屏：目录/正文/AI 助手三栏一起铺满（Esc 退出） */}
-            <button
-              type="button"
-              onClick={() => setEditorFullscreen((v) => !v)}
-              title={editorFullscreen ? "退出全屏（Esc）" : "全屏编辑"}
-              className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              {editorFullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
-            </button>
+            <span className="mr-1 shrink-0 text-xs font-medium text-primary">{active.no}</span>
+            {/* min-w-0：flex 子项默认不肯收缩，长标题会把工具栏挤断行（全屏按钮曾被单独挤成一行） */}
+            <span className="mr-auto min-w-0 truncate text-sm font-semibold text-foreground">{active.title}</span>
+            {/* 编辑工具栏（含全屏切换：目录/正文/AI 助手三栏一起铺满，Esc 退出） */}
+            <EditorToolbar
+              exec={exec}
+              onUndo={undoChapter}
+              onOpenLibrary={openLibrary}
+              fullscreen={editorFullscreen}
+              onToggleFullscreen={() => setEditorFullscreen((v) => !v)}
+            />
           </div>
 
           {active.html.trim() ? (
