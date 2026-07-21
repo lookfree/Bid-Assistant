@@ -14,12 +14,6 @@ class ModelGateway:
     def __init__(self, settings: Settings) -> None:
         self.s = settings
 
-    def _api_key(self, provider: str) -> str:
-        key = getattr(self.s, KEY_FIELD[provider], None)
-        if not key:
-            raise RuntimeError(f"模型 provider '{provider}' 缺少 API Key（{KEY_FIELD[provider].upper()}）")
-        return key
-
     def _model_params(self) -> dict:
         """把 Settings 里的采样参数组装成 ChatOpenAI 构造 kwargs（None 的不传，用 provider 默认）。
         注意：max_tokens 不在此——它必须走 extra_body（见 _extra_body），否则被 langchain 改名后失效。"""
@@ -51,10 +45,20 @@ class ModelGateway:
         base_url: str | None = None, api_key: str | None = None,
         thinking: bool | None = None, **kw: Any,
     ) -> ChatOpenAI:
-        """统一端点解析（内置与自建同一套）：base_url 显式给了用它，否则取内置服务商注册表默认；
-        api_key 显式给了用它（后台可为内置服务商配 key，覆盖 env），否则回退 env（KEY_FIELD）。
-        这样内置服务商既能零配置用 env key，也能在后台改链接/换 key，不必改 env 重新部署。
+        """统一端点解析（内置与自建同一套）：base_url 显式给了用它，否则取内置服务商注册表默认。
+        api_key **只认显式传入**（运营后台配置，经模型链/调用方下发）——绝不回退环境变量：
+        env key 会静默掩盖「后台未配置」，违反铁律「模型唯一来自运营后台配置，未配置就报错」。
         thinking：每模型思考开关；None=取全局默认（settings.model_thinking，缺省关），True 显式开启。"""
+        # 完全未指定模型（provider/base_url/api_key 全空）且有后台模型链 → 采用链首（主模型）完整配置。
+        # content(deepagent)/make_agent_node 只调 get_chat(provider=None)：此前该路径回退
+        # default_provider + env key，后台配置的 api_key 传不进来——key 只在后台配置（铁律）、env 无 key
+        # 的部署下直接抛「缺少 API Key」，而走链条的读标/提纲等步骤全部正常（生产实测 content 步复现）。
+        if provider is None and base_url is None and api_key is None and self.s.model_chain:
+            head = self.s.model_chain[0]
+            provider = head.get("provider")
+            model = model or head.get("model")
+            base_url = head.get("base_url")
+            api_key = head.get("api_key")
         p = PROVIDERS.get(provider) if provider else None
         if not base_url:
             if p:
@@ -63,7 +67,10 @@ class ModelGateway:
                 provider = self.s.model_default_provider
                 base_url = PROVIDERS[provider]["base_url"]
                 p = PROVIDERS[provider]
-        key = api_key or (self._api_key(provider) if provider in KEY_FIELD else None) or "sk-noauth"
+        # 内置服务商（KEY_FIELD 名单）必须有显式 key；自建/未知 provider 用占位（端点自己不鉴权）。
+        key = api_key or ("sk-noauth" if provider not in KEY_FIELD else None)
+        if not key:
+            raise RuntimeError(f"模型 provider '{provider}' 未配置 API Key——请在运营后台「模型管理」为该模型配置密钥")
         # max_tokens 与思考关闭参统一走 extra_body（原样透传）。显式 kw > settings；
         # 调用方自带 extra_body 时整体让路（不注入思考/上限，避免覆盖其自定义字段）。
         max_tokens = kw.pop("max_tokens", None)

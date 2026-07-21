@@ -26,20 +26,41 @@ class _Rec:  # 捕获埋点调用（无 DB）
 
 def test_get_chat_uses_provider_base_url():
     gw = ModelGateway(_settings())
-    chat = gw.get_chat("deepseek")
+    chat = gw.get_chat("deepseek", api_key="k")
+    assert chat.model_name == "deepseek-chat"
+    assert "deepseek.com" in str(chat.openai_api_base)
+
+
+def test_get_chat_no_provider_adopts_chain_head():
+    """回归（生产实测 content 步）：env 无任何 key、模型只在后台配置（model_chain 项带 api_key）时，
+    get_chat(provider=None)（content deepagent / make_agent_node 路径）必须采用链首完整配置——
+    此前回退 default_provider + env key 直接抛「缺少 API Key」，而走链条的步骤全部正常。"""
+    chain = [{"provider": "deepseek", "model": "deepseek-v4", "base_url": None, "api_key": "sk-admin", "thinking": False}]
+    gw = ModelGateway(_settings(deepseek_api_key=None, model_chain=chain))
+    chat = gw.get_chat(provider=None)   # 不再抛 RuntimeError
+    assert chat.model_name == "deepseek-v4"
+    assert chat.openai_api_key.get_secret_value() == "sk-admin"   # 链首后台 key，而非 env
+    assert "deepseek.com" in str(chat.openai_api_base)            # provider 注册表默认端点
+
+
+def test_get_chat_explicit_provider_unaffected_by_chain():
+    """显式指定 provider 的调用（如后台连通性测试路由）不受链首采用逻辑影响。"""
+    chain = [{"provider": "custom", "model": "m1", "base_url": "http://h/v1", "api_key": "k-c", "thinking": False}]
+    gw = ModelGateway(_settings(model_chain=chain))
+    chat = gw.get_chat("deepseek", api_key="k")
     assert chat.model_name == "deepseek-chat"
     assert "deepseek.com" in str(chat.openai_api_base)
 
 
 def test_get_chat_disables_thinking_by_default_for_deepseek():
     """思考默认关：deepseek 端点下发 extra_body={thinking:{type:disabled}}（让混合思考模型可流式强制提交）。"""
-    chat = ModelGateway(_settings()).get_chat("deepseek", "deepseek-v4-flash")
+    chat = ModelGateway(_settings()).get_chat("deepseek", "deepseek-v4-flash", api_key="k")
     assert chat.extra_body == {"thinking": {"type": "disabled"}}
 
 
 def test_get_chat_thinking_on_sends_no_disable():
     """思考开：不下发关闭参（该模型走思考模式）。"""
-    chat = ModelGateway(_settings()).get_chat("deepseek", "deepseek-v4-flash", thinking=True)
+    chat = ModelGateway(_settings()).get_chat("deepseek", "deepseek-v4-flash", api_key="k", thinking=True)
     assert not getattr(chat, "extra_body", None)
 
 
@@ -112,7 +133,7 @@ def _patch_fake_chat_openai(monkeypatch):
 def test_get_chat_passes_sampling_params_from_settings(monkeypatch):
     calls = _patch_fake_chat_openai(monkeypatch)
     gw = ModelGateway(_settings(model_temperature=0.3, model_max_tokens=8192, model_top_p=0.9))
-    gw.get_chat("deepseek")
+    gw.get_chat("deepseek", api_key="k")
     assert calls[-1]["temperature"] == 0.3
     assert calls[-1]["top_p"] == 0.9
     # max_tokens 走 extra_body（不作构造参，否则被 langchain 改名 max_completion_tokens，deepseek 不认）
@@ -126,7 +147,7 @@ def test_get_chat_max_tokens_via_extra_body_not_constructor(monkeypatch):
     故 max_tokens 必须走 extra_body 原样透传；构造参里绝不能出现 max_tokens。"""
     calls = _patch_fake_chat_openai(monkeypatch)
     gw = ModelGateway(_settings(model_max_tokens=16384))
-    gw.get_chat("deepseek", "deepseek-v4-flash")
+    gw.get_chat("deepseek", "deepseek-v4-flash", api_key="k")
     assert "max_tokens" not in calls[-1] and "max_completion_tokens" not in calls[-1]
     assert calls[-1]["extra_body"]["max_tokens"] == 16384
     # 思考关闭参与 max_tokens 并存于同一 extra_body
@@ -136,7 +157,7 @@ def test_get_chat_max_tokens_via_extra_body_not_constructor(monkeypatch):
 def test_get_chat_omits_sampling_params_when_none(monkeypatch):
     calls = _patch_fake_chat_openai(monkeypatch)
     gw = ModelGateway(_settings())  # 默认全 None
-    gw.get_chat("deepseek")
+    gw.get_chat("deepseek", api_key="k")
     assert "temperature" not in calls[-1]
     assert "max_tokens" not in calls[-1]
     assert "top_p" not in calls[-1]
@@ -145,7 +166,7 @@ def test_get_chat_omits_sampling_params_when_none(monkeypatch):
 def test_get_chat_explicit_kw_overrides_settings(monkeypatch):
     calls = _patch_fake_chat_openai(monkeypatch)
     gw = ModelGateway(_settings(model_temperature=0.3, model_max_tokens=8192, model_top_p=0.9))
-    gw.get_chat("deepseek", temperature=0.1, max_tokens=4096, top_p=0.5)
+    gw.get_chat("deepseek", api_key="k", temperature=0.1, max_tokens=4096, top_p=0.5)
     assert calls[-1]["temperature"] == 0.1   # temperature/top_p 走构造参，显式 kw 覆盖 settings
     assert calls[-1]["top_p"] == 0.5
     assert calls[-1]["extra_body"]["max_tokens"] == 4096   # max_tokens 走 extra_body，显式 kw 覆盖 settings
@@ -156,7 +177,7 @@ def test_get_chat_caller_extra_body_merges_with_injected(monkeypatch):
     否则 max_tokens 被丢 → deepseek 回退默认 8192 输出、重现截断 bug。调用方字段与注入字段并存。"""
     calls = _patch_fake_chat_openai(monkeypatch)
     gw = ModelGateway(_settings(model_max_tokens=16384))
-    gw.get_chat("deepseek", "deepseek-v4-flash", extra_body={"foo": "bar"})
+    gw.get_chat("deepseek", "deepseek-v4-flash", api_key="k", extra_body={"foo": "bar"})
     eb = calls[-1]["extra_body"]
     assert eb["max_tokens"] == 16384                  # 注入的 max_tokens 未被调用方 extra_body 挤掉
     assert eb["thinking"] == {"type": "disabled"}     # 注入的思考关闭参保留
@@ -238,16 +259,16 @@ def test_get_chat_builtin_provider_override_key_beats_env():
 
 
 def test_get_chat_builtin_provider_override_base_url():
-    """内置服务商后台改了 base_url(如自建代理) ⇒ 用它,key 仍回退 env。"""
-    gw = ModelGateway(_settings(deepseek_api_key="env-key"))
-    chat = gw.get_chat("deepseek", "deepseek-chat", base_url="http://proxy:9000/v1")
+    """内置服务商后台改了 base_url(如自建代理) ⇒ 用它;key 同样只认后台显式下发。"""
+    gw = ModelGateway(_settings())
+    chat = gw.get_chat("deepseek", "deepseek-chat", base_url="http://proxy:9000/v1", api_key="ui-key")
     assert "proxy:9000" in str(chat.openai_api_base)
-    assert chat.openai_api_key.get_secret_value() == "env-key"
+    assert chat.openai_api_key.get_secret_value() == "ui-key"
 
 
-def test_get_chat_builtin_provider_falls_back_to_env():
-    """内置服务商零配置(无 base_url/api_key) ⇒ 注册表 base_url + env key,行为不变。"""
+def test_get_chat_builtin_provider_no_key_raises_never_env():
+    """铁律：模型 key 唯一来自运营后台配置——内置服务商无显式 key 即报错，**绝不回退 env**
+    （env 有 key 也不用：静默用 env 会掩盖「后台未配置」，两处 key 不一致时排障成本极高）。"""
     gw = ModelGateway(_settings(deepseek_api_key="env-key"))
-    chat = gw.get_chat("deepseek", "deepseek-chat")
-    assert "api.deepseek.com" in str(chat.openai_api_base)
-    assert chat.openai_api_key.get_secret_value() == "env-key"
+    with pytest.raises(RuntimeError, match="未配置 API Key"):
+        gw.get_chat("deepseek", "deepseek-chat")
