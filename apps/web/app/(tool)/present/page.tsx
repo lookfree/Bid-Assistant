@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
@@ -271,10 +271,14 @@ export default function PresentPage() {
   /* 预计问答：deck 生成的 QA；缺失则不渲染问答卡 */
   const qaList = realDeck?.qa ?? []
 
+  /* 导出在途（含产物整理的付费 export 步）：按钮置灰防重——在途仍可点是怪设计（用户反馈） */
+  const [exporting, setExporting] = useState(false)
+  const exportingRef = useRef(false)
+
   /* ---------------- 导出 ---------------- */
   function onExportEntry() {
     // 余额加载中不做付费墙判定（按钮已禁用，双保险防按 balance=0 误弹）
-    if (membershipLoading) return
+    if (membershipLoading || exportingRef.current) return
     setExportGate(null)
     if (!canAfford) {
       openPaywall("present")
@@ -285,6 +289,7 @@ export default function PresentPage() {
   function doExport(_format: "pptx" | "pdf") {
     setExportOpen(false)
     setExportGate(null)
+    if (exportingRef.current) return // 同步防重：在途时忽略重复触发
     // 只有真实项目产物可导出（导出按钮无项目时已禁用；此处兜底提示）
     if (!projectId || !realDeck) {
       setExportStatus("请先从项目进入并生成述标演示，再导出")
@@ -300,6 +305,8 @@ export default function PresentPage() {
       return
     }
     // 真实导出：present 步已把 .pptx 落 MinIO，取预签名 URL 直下
+    exportingRef.current = true
+    setExporting(true)
     setExportStatus("正在获取下载链接…")
     void (async () => {
       try {
@@ -327,6 +334,8 @@ export default function PresentPage() {
           setExportStatus("下载失败，请重试")
         }
       } finally {
+        exportingRef.current = false
+        setExporting(false)
         setTimeout(() => setExportStatus(""), 6000) // 成功提示含文件名，3 秒读不完
       }
     })()
@@ -429,12 +438,12 @@ export default function PresentPage() {
               {/* 导出 */}
               <button
                 onClick={onExportEntry}
-                disabled={membershipLoading || !projectId}
+                disabled={membershipLoading || !projectId || exporting}
                 title={!projectId ? "请先从项目进入" : undefined}
                 className="inline-flex items-center gap-1.5 rounded-lg gradient-brand px-3 py-2 text-xs font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <FileDown className="size-4" />
-                {membershipLoading ? "余额加载中…" : "导出"}
+                {membershipLoading ? "余额加载中…" : exporting ? "导出中…" : "导出"}
               </button>
             </div>
           )}

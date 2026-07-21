@@ -38,6 +38,10 @@ export function useExport(opts: {
   const [exportStatus, setExportStatus] = useState<string>("")
   const [exportGate, setExportGate] = useState<ExportGate | null>(null)
   const [hasExported, setHasExported] = useState(false)
+  // 导出在途（含从导出流程触发的体检等待）：驱动导出按钮置灰——体检/渲染中按钮仍可点是怪设计（用户反馈）。
+  // ref 是同步防重（state 异步，双击间隙读到旧值）；state 供 UI 渲染。
+  const [exporting, setExporting] = useState(false)
+  const exportingRef = useRef(false)
 
   // spec323：已跑过 export 步且结果无 pdf key ⇒ 该次 docx→pdf 转换失败（agent best-effort），PDF 选项置灰
   const { data: exportedResult } = useOtherStepResult<{ pdf?: string }>(projectId, info, "export")
@@ -82,6 +86,7 @@ export function useExport(opts: {
   /* 付费用户在导出菜单点「确认导出」：体检未跑不再静默触发，先显式确认计费；再按风险弱拦截 */
   async function attemptExport() {
     setExportOpen(false)
+    if (exportingRef.current || opts.checkState === "checking") return // 在途防重（按钮已置灰，双保险）
     if (!opts.canCheck) {
       flashExportStatus("完成正文生成后可体检并导出")
       return
@@ -106,6 +111,7 @@ export function useExport(opts: {
   function doExport(format: "word" | "pdf") {
     setExportOpen(false)
     setExportGate(null)
+    if (exportingRef.current) return // 同步防重：渲染/下载在途时忽略重复触发
     // 只有真实项目才可导出（导出按钮无项目时已禁用；报告弹层等入口在此兜底提示）
     if (!projectId || !info) {
       flashExportStatus("请先从项目进入，再导出标书文件")
@@ -119,6 +125,8 @@ export function useExport(opts: {
     }
     // 真实导出：export 步（渲染完整 .docx，best-effort 转 .pdf，落 MinIO）→ 预签名 URL 直下
     const kind = format === "pdf" ? "pdf" : "docx"
+    exportingRef.current = true
+    setExporting(true)
     setExportStatus(format === "pdf" ? "正在渲染完整标书（PDF）…" : "正在渲染完整标书…")
     void (async () => {
       try {
@@ -165,7 +173,9 @@ export function useExport(opts: {
           setExportStatus("导出失败，请重试")
         }
       } finally {
-        setTimeout(() => setExportStatus(""), 3000)
+        exportingRef.current = false
+        setExporting(false)
+        setTimeout(() => setExportStatus(""), 6000) // 成功提示含文件名，3 秒读不完
       }
     })()
   }
@@ -177,6 +187,8 @@ export function useExport(opts: {
     if (!projectId || exportResumed.current) return
     if (!info?.steps.some((s) => s.step === "export" && s.status === "running")) return
     exportResumed.current = true
+    exportingRef.current = true
+    setExporting(true)
     setExportStatus("正在渲染完整标书…")
     void (async () => {
       try {
@@ -186,6 +198,8 @@ export function useExport(opts: {
       } catch {
         setExportStatus("")
       } finally {
+        exportingRef.current = false
+        setExporting(false)
         setTimeout(() => setExportStatus(""), 5000)
       }
     })()
@@ -196,7 +210,7 @@ export function useExport(opts: {
     exportFormat, setExportFormat,
     exportStatus, flashExportStatus,
     exportGate, exportGateHint,
-    hasExported, pdfUnavailable,
+    hasExported, pdfUnavailable, exporting,
     onExportEntry, attemptExport, doExport,
   }
 }

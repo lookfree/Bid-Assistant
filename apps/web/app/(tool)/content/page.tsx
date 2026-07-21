@@ -124,7 +124,7 @@ export default function ContentPage() {
   /* 导出全流程（入口/步序闸/断流收敛/断点续看）拆到 use-export.ts；确认弹层仍在本页,回调发信号 */
   const {
     exportOpen, setExportOpen, exportFormat, setExportFormat, exportStatus, flashExportStatus,
-    exportGate, exportGateHint, hasExported, pdfUnavailable, onExportEntry, attemptExport, doExport,
+    exportGate, exportGateHint, hasExported, pdfUnavailable, exporting, onExportEntry, attemptExport, doExport,
   } = useExport({
     projectId, info, membershipLoading, canAfford,
     openPaywall: () => openPaywall("export"),
@@ -609,14 +609,21 @@ export default function ContentPage() {
 
           {/* 导出文件 */}
           <div className="relative">
+            {/* 体检/导出在途时置灰并显示状态——在途仍可点是怪设计（用户反馈），且防重复触发 */}
             <button
               onClick={onExportEntry}
-              disabled={membershipLoading || !projectId}
+              disabled={membershipLoading || !projectId || exporting || checkState === "checking"}
               title={!projectId ? "请先从项目进入" : undefined}
               className="inline-flex items-center gap-2 rounded-xl gradient-brand px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Download className="size-4" />
-              {membershipLoading ? "余额加载中…" : "导出文件"}
+              {membershipLoading
+                ? "余额加载中…"
+                : checkState === "checking"
+                  ? "体检进行中…"
+                  : exporting
+                    ? "导出中…"
+                    : "导出文件"}
             </button>
 
             {/* 导出菜单（积分不足时已走付费墙，不会展开） */}
