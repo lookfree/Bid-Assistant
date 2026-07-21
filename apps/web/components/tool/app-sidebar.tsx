@@ -62,9 +62,8 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const { balance, loading: balanceLoading, reload } = useMembership()
 
   // (tool) 布局跨路由常驻不重挂载，useMembership 的首次拉取不会随导航重跑——
-  // 这里补两条刷新路径，避免余额卡在首次进入时的旧值：
-  // 1) 路由切换（跳过首次挂载，首次已由 useMembership 自身拉取）；
-  // 2) 任意步骤跑完后广播的 credits:refresh（扣费发生在服务端，前端靠事件得知该重拉）。
+  // 路由切换时补一次刷新（跳过首次挂载；共享 store 并发合并，多处触发也只打一次接口）。
+  // credits:refresh 事件已由 useMembership 模块级统一监听（全站积分单一来源），这里不再重复订阅。
   const firstRender = useRef(true)
   useEffect(() => {
     if (firstRender.current) {
@@ -73,11 +72,6 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
     }
     reload()
   }, [pathname, reload])
-
-  useEffect(() => {
-    window.addEventListener("credits:refresh", reload)
-    return () => window.removeEventListener("credits:refresh", reload)
-  }, [reload])
 
   return (
     <>
