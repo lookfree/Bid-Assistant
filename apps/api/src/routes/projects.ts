@@ -790,7 +790,12 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       })
       .find((k): k is string => typeof k === "string")
     if (!key) return c.json({ error: "artifact_not_ready" }, 404)
-    return c.json({ url: await presign(key, 300, ARTIFACT_NAME[kind]) })
+    // 下载名带项目名（用户反馈：静态「投标文件.docx」下载后分不清是哪个标的产物）。
+    // 项目名多取自上传原始文件名，可能内嵌 .pdf 等扩展名（含「·包名」「（再投）」后缀前的位置）——剥掉再拼。
+    // filename 一并返回：前端「下载成功」提示要点名具体文件（与 Content-Disposition 同源）。
+    const base = projectName(p.name, p.tenderFileKey).replace(/\.(pdf|docx?|xlsx?|pptx?|zip|rar)(?=·|（|$)/i, "")
+    const filename = `${base}-${ARTIFACT_NAME[kind]}`
+    return c.json({ url: await presign(key, 300, filename), filename })
   })
 
   return r

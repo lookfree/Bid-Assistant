@@ -309,8 +309,22 @@ export async function rewriteChapter(
   return result
 }
 
-// 产物预签名下载 URL（docx/pptx/pdf，pdf 为 spec323 best-effort 转换产物，可能不存在），浏览器直下 MinIO。
-export async function artifactUrl(id: string, kind: "docx" | "pptx" | "pdf"): Promise<string> {
-  const { url } = await api.request<{ url: string }>(`/api/projects/${id}/artifacts/${kind}`)
-  return url
+// 产物预签名下载（docx/pptx/pdf，pdf 为 spec323 best-effort 转换产物，可能不存在），浏览器直下 MinIO。
+// filename = 服务端下发的下载名（带项目名），供「下载成功」提示点名具体文件。
+export async function artifactDownload(
+  id: string,
+  kind: "docx" | "pptx" | "pdf",
+): Promise<{ url: string; filename: string }> {
+  return api.request<{ url: string; filename: string }>(`/api/projects/${id}/artifacts/${kind}`)
+}
+
+/** 触发浏览器下载：隐藏 <a> 点击。比 window.open 好在不闪空白标签页、await 之后也不被弹窗拦截。
+ *  仅用于带 attachment disposition 的预签名 URL（服务端已带下载名），否则会把当前页导航走。 */
+export function triggerDownload(url: string): void {
+  const a = document.createElement("a")
+  a.href = url
+  a.rel = "noopener"
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
 }

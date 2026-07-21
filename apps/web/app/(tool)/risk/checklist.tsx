@@ -17,7 +17,7 @@ import { CreditEstimate } from "@/components/credit-estimate"
 import { ApiError } from "@/lib/api-client"
 import { libraryMatch } from "@/lib/library"
 import { creditCostValue } from "@/lib/membership-view"
-import { currentProjectId } from "@/lib/project"
+import { currentProjectId, triggerDownload } from "@/lib/project"
 import { useLibrary } from "@/lib/use-library"
 import { useMembership } from "@/lib/use-membership"
 import {
@@ -520,11 +520,11 @@ function ExportPanel({
         title: "投递前终极审核表",
         groups: buildExportGroups(statusMap, ownerMap, noteMap, libItems),
       })
-      // 付费产物的交付以下方「下载 Word」链接为准；window.open 在 await 之后常被
-      // Safari 等拦截，只作为便利尝试（弹不出来无所谓）。
+      // 付费产物的交付以下方「下载 Word」链接为准；triggerDownload（隐藏 <a> 点击）不开新
+      // 标签页、await 之后也不被弹窗拦截（预签名已带 attachment 下载名）。
       setDownloadUrl(url)
-      window.open(url, "_blank")
-      setMessage({ tone: "info", text: "已生成签字版审核表（Word）" })
+      triggerDownload(url)
+      setMessage({ tone: "info", text: "已开始下载《投递前终极审核表.docx》，可在浏览器「下载」列表查看" })
       onExported() // 扣费成功，刷新余额
     } catch (e) {
       const status = e instanceof ApiError ? e.status : null

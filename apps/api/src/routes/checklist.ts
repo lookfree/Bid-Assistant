@@ -153,7 +153,8 @@ export function checklistRoutes(deps: Partial<ChecklistDeps> = {}) {
 
     let url: string
     try {
-      url = await presign(key, 300)
+      // 带下载名：无 disposition 时浏览器按 key 的 uuid 命名且可能内联打开，用户找不到/认不出产物
+      url = await presign(key, 300, "投递前终极审核表.docx")
     } catch (e) {
       // 预签名炸 = 用户没拿到产物 URL：退还预扣（净 0），不让用户为未交付的产物买单
       await settleFailed(ref, hold.holdId!).catch(() => {})

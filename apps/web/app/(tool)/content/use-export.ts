@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import { ApiError } from "@/lib/api-client"
-import { artifactUrl, fetchStepResult, runStep, StreamIncompleteError, type ProjectInfo } from "@/lib/project"
+import { artifactDownload, triggerDownload, fetchStepResult, runStep, StreamIncompleteError, type ProjectInfo } from "@/lib/project"
 import { notifyCreditsChanged, pollStepResult, useOtherStepResult } from "@/lib/use-step"
 import type { RealRisk } from "@/lib/risk-derive"
 
@@ -123,8 +123,9 @@ export function useExport(opts: {
     void (async () => {
       try {
         if (!(await fetchStepResult(projectId, "export"))) await runStep(projectId, "export")
-        window.open(await artifactUrl(projectId, kind), "_blank")
-        setExportStatus("已导出，浏览器开始下载")
+        const dl = await artifactDownload(projectId, kind)
+        triggerDownload(dl.url)
+        setExportStatus(`已开始下载《${dl.filename}》，可在浏览器「下载」列表查看`)
         setHasExported(true)
       } catch (e) {
         // 连接中途断开 / 双发撞 running / 撞上对账刚收尾（step_already_done）：run 在服务端照常
@@ -137,8 +138,9 @@ export function useExport(opts: {
           try {
             await pollStepResult(projectId, "export")
             notifyCreditsChanged()
-            window.open(await artifactUrl(projectId, kind), "_blank")
-            setExportStatus("已导出，浏览器开始下载")
+            const dl = await artifactDownload(projectId, kind)
+            triggerDownload(dl.url)
+            setExportStatus(`已开始下载《${dl.filename}》，可在浏览器「下载」列表查看`)
             setHasExported(true)
             return
           } catch (e2) {

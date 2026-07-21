@@ -43,7 +43,7 @@ import { AiNotice } from "@/components/tool/ai-notice"
 import { type LibraryItem } from "@/lib/library"
 import { ApiError } from "@/lib/api-client"
 import { stepPrereq, useStep } from "@/lib/use-step"
-import { artifactUrl, patchErrorMessage, patchStep, runStep } from "@/lib/project"
+import { artifactDownload, triggerDownload, patchErrorMessage, patchStep, runStep } from "@/lib/project"
 import { AiPanel } from "./ai-panel"
 import { EmptyState, DURATIONS, type Duration } from "./empty-state"
 import { TemplatePicker } from "./template-picker"
@@ -303,17 +303,19 @@ export default function PresentPage() {
     setExportStatus("正在获取下载链接…")
     void (async () => {
       try {
-        let url: string
+        let dl: { url: string; filename: string }
         try {
-          url = await artifactUrl(projectId, "pptx")
-        } catch {
-          // pptx key 随 export 步的 artifacts 快照可见：未跑过 export 就先跑（确定性、低成本）
+          dl = await artifactDownload(projectId, "pptx")
+        } catch (e) {
+          // 仅 404（产物不存在=从未跑过 export）才触发计费的 export 步；瞬断/5xx 一律如实报错——
+          // 计费红线：重复下载免费，绝不能因网络抖动静默重跑付费步骤。
+          if (!(e instanceof ApiError && e.status === 404)) throw e
           setExportStatus("正在整理产物…")
           await runStep(projectId, "export")
-          url = await artifactUrl(projectId, "pptx")
+          dl = await artifactDownload(projectId, "pptx")
         }
-        window.open(url, "_blank")
-        setExportStatus("已导出，浏览器开始下载")
+        triggerDownload(dl.url)
+        setExportStatus(`已开始下载《${dl.filename}》，可在浏览器「下载」列表查看`)
       } catch (e) {
         // 错误码直通：402 引导充值（持久提示），409 步骤顺序，其余通用重试
         if (e instanceof ApiError && e.status === 402) {
@@ -325,7 +327,7 @@ export default function PresentPage() {
           setExportStatus("下载失败，请重试")
         }
       } finally {
-        setTimeout(() => setExportStatus(""), 3000)
+        setTimeout(() => setExportStatus(""), 6000) // 成功提示含文件名，3 秒读不完
       }
     })()
   }

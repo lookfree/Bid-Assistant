@@ -63,9 +63,16 @@ const GROUPS = [
   },
 ]
 
+let prevSignupGrant: unknown
+
 beforeAll(async () => {
   await seedConfigs()
   await setConfig("credit_cost.export", 20) // 钉死口径，与环境解耦
+  // 注册赠送积分会打破本文件的余额假设（userA=100 变 300、userB≠0 → 402 永不触发）——
+  // 注册前钉死为 0，afterAll 恢复原值（共享 dev 库，别把赠送配置永久关掉）。
+  const { getConfig } = await import("../src/services/config")
+  prevSignupGrant = await getConfig("signup_grant_credits")
+  await setConfig("signup_grant_credits", 0)
   const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
   tokenA = a.token
   userA = a.user.id
@@ -76,6 +83,8 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  // 恢复注册赠送配置（beforeAll 记录的原值；原本无该键则回落种子默认 200）
+  await setConfig("signup_grant_credits", Number(prevSignupGrant ?? 200))
   await getDb().delete(users).where(inArray(users.id, [userA, userB])) // 账本随 user 级联删
   await closeDb()
 })
