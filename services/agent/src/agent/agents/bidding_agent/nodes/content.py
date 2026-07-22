@@ -199,7 +199,7 @@ def _collect_chapters(files: dict | None) -> dict[str, str]:
         cid = norm[len(_CHAPTER_PREFIX):].removesuffix(".html")
         # content 允许缺省（deepagents 自身也按可缺处理）；空稿跳过——全空最终触发 fail-loud
         content = data.get("content", "") if isinstance(data, dict) else str(data)
-        content = strip_document_shell(content)   # 模型可能交整份 HTML 文档，收稿剥壳去 <style>（防全页样式泄漏）
+        content = strip_document_shell(strip_chat_wrapper(content))  # 收稿统一清洗：剥对话包装 + 文档壳（防样式泄漏/围栏入库）
         if content:
             chapters[cid] = content
     return chapters

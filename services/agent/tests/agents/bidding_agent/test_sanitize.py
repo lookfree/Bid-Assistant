@@ -59,6 +59,32 @@ def test_chat_wrapper_plain_html_idempotent():
     assert strip_chat_wrapper("") == ""
 
 
-def test_chat_wrapper_picks_longest_fence():
-    text = "说明：```\n<p>短</p>\n```正文在这：```html\n<h3>长的一段</h3><p>内容内容内容</p>\n```"
-    assert strip_chat_wrapper(text) == "<h3>长的一段</h3><p>内容内容内容</p>"
+def test_chat_wrapper_joins_all_html_fences():
+    # 模型把整章拆成多段围栏：所有含标签的围栏段都要保留（原实现只取最长段，丢半章）
+    text = "```html\n<h3>上半</h3>\n```\n接下来是下半：\n```html\n<table><tr><td>下半</td></tr></table>\n```"
+    out = strip_chat_wrapper(text)
+    assert "<h3>上半</h3>" in out and "<td>下半</td>" in out
+    assert "接下来" not in out
+
+
+def test_chat_wrapper_tail_only_chat_stripped():
+    # 正文以标签开头、仅结尾带闲聊（原实现前缀分支不触发导致尾巴入库）
+    out = strip_chat_wrapper("<h3>5.1 方案</h3><p>正文</p>\n以上是全部修改，请查收。")
+    assert out == "<h3>5.1 方案</h3><p>正文</p>"
+
+
+def test_chat_wrapper_keeps_legit_bare_text():
+    # 宁留勿删：裸文本标题开头/落款结尾/行内标签开头都是合法正文，不得误删
+    keep_head = "第五章 应急响应方案\n<p>正文</p>"
+    assert strip_chat_wrapper(keep_head) == keep_head
+    keep_tail = "<p>正文</p>\nXX科技有限公司\n2026年7月22日"
+    assert strip_chat_wrapper(keep_tail) == keep_tail
+    inline = "<strong>重点提示：</strong><p>正文</p>"
+    assert strip_chat_wrapper(inline) == inline
+
+
+def test_chat_wrapper_aside_fence_with_unfenced_chapter():
+    # 模型只把旁白围了起来、正文没围（原实现取围栏 → 整章被旁白替换）
+    text = "修改点如下：```\n- 响应时间改为15分钟\n```\n<h3>5.1 应急响应</h3><p>正文</p>"
+    out = strip_chat_wrapper(text)
+    assert out == "<h3>5.1 应急响应</h3><p>正文</p>"
