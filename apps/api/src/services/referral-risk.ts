@@ -1,6 +1,6 @@
 import { and, eq, gte, sql } from "drizzle-orm"
 import { getDb } from "../db/client"
-import { referrals, referralRiskAudits, userIdentities, creditTransactions } from "../db/schema"
+import { referrals, referralRiskAudits, userIdentities, creditTransactions, paymentOrders } from "../db/schema"
 import type { Tx } from "./credits"
 
 // 推荐防刷风控（spec307）：建关系前判定，命中即冻结（status=frozen 不进可发奖）+ 写审计留痕。
@@ -50,26 +50,29 @@ export async function assessRisk(
 
 /**
  * 「注册即弃」判定（spec327 Task C，发奖前置闸门，与风控判定同一模块）：
- * 绑定超过 abandonDays 天，且该被邀请人从未产生任何负向消费流水（credit_transactions.amount<0，
- * 代表真实用过积分），才判定为白嫖注册刷奖励，应冻结不发。
+ * 绑定超过 abandonDays 天，且该被邀请人从未产生任何**有效行为**，才判定为白嫖注册刷奖励，冻结不发。
+ * 有效行为 = 负向消费流水（credit_transactions.amount<0，真实用过积分）**或** 已支付订单
+ * （payment_orders.status='paid'，首付也算——延迟解锁的触发条件正是首付，付了钱还被判「即弃」自相矛盾）。
  * abandonDays<=0 视为闸门关闭，不查库直接放行（配置语义 + 避免无谓查询）。
  * “超过 N 天”取严格大于——恰好 N 天整视为未超期，照发（边界照发，从宽不误伤）。
- *
- * 语义澄清（终审确认的设计意图）：这是**解锁有效期窗口**——「有效行为」只认积分消费，
- * 充值/首付本身不计入。延迟解锁模式下，被邀请人拖过窗口才首次付费的，付费触发解锁时同样
- * 命中本闸门（迟付费不补发）。方向恒为少发不多发（withhold），账本安全；后台配置卡已向
- * 运营明示该语义，默认 0=关闭。若业务日后要求「首付也算有效行为」，在此处扩判定条件。
+ * 方向恒为少发不多发（withhold），账本安全；默认 0=关闭。
  */
 export async function assessAbandoned(inviteeId: string, boundAt: Date, abandonDays: number): Promise<boolean> {
   if (abandonDays <= 0) return false
   if (Date.now() - boundAt.getTime() <= abandonDays * DAY_MS) return false // 未超期
-  // 只判存在性，limit 1 短路；走 credit_tx_user_idx（userId 索引），非全表扫描
-  const [row] = await getDb()
+  // 两个存在性判定都 limit 1 短路，分走 credit_tx_user_idx / payment_orders_user_idx，非全表扫描
+  const [consumed] = await getDb()
     .select({ id: creditTransactions.id })
     .from(creditTransactions)
     .where(and(eq(creditTransactions.userId, inviteeId), sql`${creditTransactions.amount} < 0`))
     .limit(1)
-  return !row
+  if (consumed) return false
+  const [paid] = await getDb()
+    .select({ id: paymentOrders.id })
+    .from(paymentOrders)
+    .where(and(eq(paymentOrders.userId, inviteeId), eq(paymentOrders.status, "paid")))
+    .limit(1)
+  return !paid
 }
 
 /** 冻结留痕：写风控审计（reason + detail 前后值）。 */
