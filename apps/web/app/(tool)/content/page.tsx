@@ -49,6 +49,7 @@ import { libraryItemHtml } from "./use-editor-insert"
 import { RichEditor } from "./rich-editor"
 import type { Editor as TiptapEditor } from "@tiptap/react"
 import { imageFileToDataUrl } from "@/lib/image-insert"
+import { GenerationConfigDialog } from "./generation-config"
 
 // agent content 步结果（camelCase）：{chapterId: bodyHtml}；章结构取 outline 步结果
 type RealChapters = Record<string, string>
@@ -122,6 +123,7 @@ export default function ContentPage() {
   const [reportExportStatus, setReportExportStatus] = useState<string>("")
   /* 从资料库插入弹层 */
   const [libraryOpen, setLibraryOpen] = useState(false)
+  const [genConfigOpen, setGenConfigOpen] = useState(false)
   /* 导出前高风险二次确认 */
   const [exportConfirm, setExportConfirm] = useState(false)
   /* 用户已软放行（确认仍要导出后不再重复拦截） */
@@ -439,7 +441,7 @@ export default function ContentPage() {
             </p>
           </div>
           <button
-            onClick={() => void start()}
+            onClick={() => setGenConfigOpen(true)}
             className="inline-flex shrink-0 items-center gap-2 rounded-xl gradient-brand px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90"
           >
             <Sparkles className="size-4" />
@@ -447,7 +449,6 @@ export default function ContentPage() {
           </button>
         </div>
       )}
-      {/* 头部：统一卡片式标题栏（StepPageHeader） */}
       <StepPageHeader icon={FileText} title="标书生成" desc="AI 逐章生成标书正文，支持在线编辑与对话润色，完成后一键导出">
         <div className="flex items-center gap-3">
           {/* 技术标 / 商务标 / 标书全文 切换 */}
@@ -774,6 +775,15 @@ export default function ContentPage() {
       )}
 
       {/* 从资料库插入选择器（数据由页面级 useLibrary 提供） */}
+      {genConfigOpen && (
+        <GenerationConfigDialog
+          chapterCount={[...data.tech, ...data.business].length || 10}
+          costText={`短章 ${contentShortCost} 积分/章、长章 ${contentLongCost} 积分/章,按实际产出分档结算`}
+          onConfirm={({ targetChars }) => (setGenConfigOpen(false), void start({ targetChars }))}
+          onClose={() => setGenConfigOpen(false)}
+        />
+      )}
+
       {libraryOpen && (
         <LibraryPicker
           items={libItems}

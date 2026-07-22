@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { ApiError } from "@/lib/api-client"
 import { artifactDownload, triggerDownload, fetchStepResult, runStep, StreamIncompleteError, type ProjectInfo } from "@/lib/project"
+import { storedFormat } from "@/lib/generation-config"
 import { notifyCreditsChanged, pollStepResult, useOtherStepResult } from "@/lib/use-step"
 import type { RealRisk } from "@/lib/risk-derive"
 
@@ -123,7 +124,9 @@ export function useExport(opts: {
     setExportStatus(format === "pdf" ? "正在渲染完整标书（PDF）…" : "正在渲染完整标书…")
     void (async () => {
       try {
-        if (!(await fetchStepResult(projectId, "export"))) await runStep(projectId, "export")
+        // spec330：导出带上用户存好的输出格式（未配置过则不带,后端走现行样式）
+        const fmt = storedFormat()
+        if (!(await fetchStepResult(projectId, "export"))) await runStep(projectId, "export", undefined, fmt ? { format: fmt } : undefined)
         const dl = await artifactDownload(projectId, kind)
         triggerDownload(dl.url)
         setExportStatus(`已开始下载《${dl.filename}》，可在浏览器「下载」列表查看`)
