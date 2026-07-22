@@ -6,6 +6,7 @@ import { Bot, Library, Loader2, Send, User } from "lucide-react"
 import { ApiError } from "@/lib/api-client"
 import { rewriteChapter } from "@/lib/project"
 import { notifyCreditsChanged } from "@/lib/use-step"
+import { isQuestionNotInstruction, QUESTION_GUIDE_REPLY } from "@/lib/assistant-guard"
 
 type ChatMsg = { role: "user" | "ai"; text: string; link?: { href: string; label: string } }
 
@@ -38,7 +39,7 @@ export function ChatPanel({
   onOpenLibrary: () => void
 }) {
   const [chat, setChat] = useState<ChatMsg[]>([
-    { role: "ai", text: "你好，我是智启元 · 投标助手。选中目标章节后输入指令，我会改写该章内容并直接替换正文。" },
+    { role: "ai", text: "你好，我是智启元 · 投标助手。选中目标章节后输入改写指令（如「把响应时间改为15分钟」「本章更正式一些」），我会改写该章内容并直接替换正文。" },
   ])
   const [input, setInput] = useState("")
   const [sending, setSending] = useState(false)
@@ -55,6 +56,11 @@ export function ChatPanel({
     if (!text || sending || !target) return
     push({ role: "user", text })
     setInput("")
+    // 明显提问/闲聊 → 本地引导，不发起计费改写（误当问答机器人会白扣积分还重写正文）
+    if (isQuestionNotInstruction(text)) {
+      push({ role: "ai", text: QUESTION_GUIDE_REPLY })
+      return
+    }
     if (!projectId) {
       push({ role: "ai", text: "当前为示例体验，AI 改写需上传招标文件创建真实项目后使用。" })
       return
