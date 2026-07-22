@@ -1,6 +1,7 @@
 "use client"
 
 import { AlertTriangle, CheckCircle2 } from "lucide-react"
+import { countChars, estimatePages, fmtChars } from "@/lib/doc-stats"
 
 export type Chapter = {
   id: string
@@ -26,13 +27,21 @@ export function ChapterNav({
   total: number
   onSelect: (id: string) => void
 }) {
+  const totalChars = groups.reduce((sum, g) => sum + g.items.reduce((s, c) => s + countChars(c.html), 0), 0)
   return (
     <aside className="flex min-h-0 flex-col rounded-2xl border border-border bg-card">
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <span className="text-sm font-semibold text-foreground">标书目录</span>
-        <span className="text-xs text-muted-foreground">
-          {generatedCount}/{total}
-        </span>
+      <div className="border-b border-border px-4 py-3">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-semibold text-foreground">标书目录</span>
+          <span className="text-xs text-muted-foreground">
+            {generatedCount}/{total}
+          </span>
+        </div>
+        {totalChars > 0 && (
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            全文约 {fmtChars(totalChars)} 字 · 约 {estimatePages(totalChars)} 页（A4 估算）
+          </p>
+        )}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {groups.map((grp) => (
@@ -63,7 +72,10 @@ export function ChapterNav({
                   <span className="min-w-0 flex-1">
                     <span className="block text-[11px] font-medium text-primary">{ch.no}</span>
                     <span className="block truncate text-[13px] font-medium text-foreground">{ch.title}</span>
-                    <span className="mt-0.5 flex flex-wrap gap-1">
+                    <span className="mt-0.5 flex flex-wrap items-center gap-1">
+                      {!isMissing && (
+                        <span className="text-[10px] text-muted-foreground">约 {fmtChars(countChars(ch.html))} 字</span>
+                      )}
                       {!ch.sourced && (
                         <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
                           新增

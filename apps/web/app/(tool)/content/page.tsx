@@ -2,6 +2,7 @@
 
 import Link from "next/link"
 import { stripDocumentShell } from "@/lib/bid-types"
+import { countChars, estimatePages, fmtChars } from "@/lib/doc-stats"
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
   FileText,
@@ -577,6 +578,9 @@ export default function ContentPage() {
               <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                 <RefreshCw className="size-3.5" />
                 重写本章可在右侧 AI 助手输入指令（{rewriteCost} 积分/次）
+              </span>
+              <span className="text-xs text-muted-foreground">
+                · 本章约 {fmtChars(countChars(active.html))} 字 · 约 {estimatePages(countChars(active.html))} 页
               </span>
               <span
                 className={`ml-auto text-xs ${contentSaveState === "error" ? "font-medium text-destructive" : "text-muted-foreground"}`}
