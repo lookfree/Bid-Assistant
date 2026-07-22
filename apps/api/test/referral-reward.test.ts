@@ -28,6 +28,7 @@ const rewardRow = (referralId: string, role: string) =>
 
 describe("spec307 两段发放 + 双方额度（断言=配置值，不写死魔数）", () => {
   it("延迟解锁：首次付费后双方各得配置额度，落 referral_reward 流水带有效期", async () => {
+    await setConfig("reward_expire_days", 30) // 本例断言 expireAt 非空，显式给有效期（种子默认 0=不过期）
     const rules = (await getConfig<typeof SEED_RULES>("referral_rules"))!
     const inviter = await mkUser()
     const invitee = await mkUser()
