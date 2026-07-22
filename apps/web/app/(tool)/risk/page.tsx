@@ -13,7 +13,7 @@ import {
 } from "lucide-react"
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepPageHeader } from "@/components/tool/step-page-header"
-import { NoProjectGuide } from "@/components/tool/no-project-guide"
+import { ReviewEntry } from "./review-entry"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { StepRunCta } from "@/components/tool/step-run-cta"
 import { StepPrereqGuide } from "@/components/tool/step-prereq-guide"
@@ -82,8 +82,8 @@ function RejectReview() {
   const { overview: membershipOverview } = useMembership()
   const reviewCost = creditCostValue(membershipOverview, "review", 60)
 
-  // 无进行中项目：只引导上传，不渲染任何示例内容
-  if (!projectId) return <NoProjectGuide />
+  // 无当前项目：独立审查入口（spec328）——选已有标书或上传线下标书
+  if (!projectId) return <ReviewEntry />
 
   // 项目状态/审查报告加载中：数据未就绪绝不裸露「开始废标体检」计费按钮
   if (!info || dataLoading) return <StepPlaceholder text={dataLoading ? "正在加载审查报告…" : "正在加载项目…"} delayMs={250} />

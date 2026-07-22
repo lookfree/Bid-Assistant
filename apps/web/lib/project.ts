@@ -217,6 +217,15 @@ export async function setProjectPackage(
 // 克隆项目（spec324）：兼投多个包件=另建一个项目（同一招标文件，read 步重新跑）。
 // pkg = 新项目投的包（多包流程建项即选包，名称带包名）；返回同 createProject 的 {id,threadId} 形状；
 // 同样把新 id 落 localStorage，贯穿后续工具页。
+/** 独立审查建项（spec328）：线下标书必传,招标文件可选（附了先读标做对照审查）。返回项目 id。 */
+export async function createReviewProject(bidFileKey: string, tenderFileKey?: string): Promise<string> {
+  const { id } = await api.request<{ id: string; threadId: string }>("/api/projects/review", {
+    method: "POST",
+    body: JSON.stringify(tenderFileKey ? { bidFileKey, tenderFileKey } : { bidFileKey }),
+  })
+  return id
+}
+
 /** 删除标书（生成中的后端 409 project_running 拒删）；删的是当前项目则顺带清本地指向。 */
 export async function deleteProject(projectId: string): Promise<void> {
   await api.request(`/api/projects/${projectId}`, { method: "DELETE" })
