@@ -26,6 +26,7 @@ import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { adminApi, AdminApiError, type ApiPlan } from "@/lib/admin-api"
 import { ReferralConfigCard } from "@/components/admin/plans/referral-config-card"
+import { SignupGrantCard } from "@/components/admin/plans/signup-grant-card"
 
 // tab 名旁的"有未保存的更改"小圆点：不强拦切换，只是轻提示（spec327 反馈：单页塞两块配置太长，
 // 拆成 tab 后容易忘记另一个 tab 还有未保存的编辑，需要一个不打断操作的信号）。
@@ -111,6 +112,8 @@ export function PlansClient() {
   // 邀请奖励 tab 的 dirty 状态：完全封装在 ReferralConfigCard 自己的 hook 里，这里只接收
   // onDirtyChange 回调同步一份，供 tab 名旁的小圆点判断是否显示"有未保存的更改"。
   const [referralDirty, setReferralDirty] = useState(false)
+  // 注册赠送卡同理：自带保存/还原，这里只镜像 dirty 供 tab 圆点显示。
+  const [signupDirty, setSignupDirty] = useState(false)
 
   // 从真实后端拉取积分口径 + 套餐列表，mount 与 reset() 共用。
   async function loadData(isAlive: () => boolean) {
@@ -238,7 +241,7 @@ export function PlansClient() {
         <TabsList>
           <TabsTrigger value="plans-credits" className="gap-1.5">
             套餐与积分
-            {dirty && <UnsavedDot />}
+            {(dirty || signupDirty) && <UnsavedDot />}
           </TabsTrigger>
           <TabsTrigger value="referral" className="gap-1.5">
             邀请奖励
@@ -364,6 +367,8 @@ export function PlansClient() {
               )}
             </CardContent>
           </Card>
+
+          <SignupGrantCard onDirtyChange={setSignupDirty} />
         </TabsContent>
 
         <TabsContent value="referral" keepMounted className="mt-4">
