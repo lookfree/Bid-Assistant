@@ -169,3 +169,17 @@ def test_render_docx_credential_corrupt_image_placeholder():
     doc = Document(io.BytesIO(data))
     texts = "\n".join(p.text for p in doc.paragraphs)
     assert "（图片加载失败：bad.png）" in texts
+
+
+def test_render_docx_embeds_inline_data_url_images():
+    """编辑器插图（data URL 内嵌）要落进导出文件：裸 img 与 p 内嵌 img 都算；坏 base64 丢图保文。"""
+    import base64
+    src = "data:image/png;base64," + base64.b64encode(_TINY_PNG).decode()
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "方案", "group": "tech"}]}
+    html = f'<p>拓扑如下：<img src="{src}"/></p><img src="{src}"/><img src="data:image/png;base64,@@bad@@"/>'
+    data = render_docx(outline, {"t1": html})
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        media = [n for n in z.namelist() if n.startswith("word/media/")]
+    assert len(media) >= 1  # 两张同内容图（python-docx 按内容去重）至少落一份；坏图被跳过未炸
+    doc = Document(io.BytesIO(data))
+    assert any("拓扑如下" in p.text for p in doc.paragraphs)  # 段落文字仍在

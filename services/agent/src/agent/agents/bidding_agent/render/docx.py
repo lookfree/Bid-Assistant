@@ -1,4 +1,5 @@
 from __future__ import annotations
+import base64
 import io
 from bs4 import BeautifulSoup
 from docx import Document
@@ -44,6 +45,8 @@ def _emit_el(doc: Document, el) -> None:
         doc.add_heading(el.get_text(strip=True), level=2 if name in ("h1", "h2") else 3)
     elif name == "p":
         doc.add_paragraph(el.get_text(strip=True))
+        for img in el.find_all("img"):  # 光标处插图常嵌在段落里，只取文字会把图整个丢掉
+            _emit_el(doc, img)
     elif name == "ul":
         for li in el.find_all("li", recursive=False):
             doc.add_paragraph(li.get_text(strip=True), style="List Bullet")
@@ -57,6 +60,14 @@ def _emit_el(doc: Document, el) -> None:
             for i, r in enumerate(rows):
                 for j, c in enumerate(r.find_all(["td", "th"])):
                     t.rows[i].cells[j].text = c.get_text(strip=True)
+    elif name == "img":
+        # 用户在编辑器插入的图片（data URL 内嵌，spec 无外链图）：解码落图；坏图跳过不阻断整本渲染
+        src = el.get("src", "")
+        if src.startswith("data:image/"):
+            try:
+                doc.add_picture(io.BytesIO(base64.b64decode(src.split(",", 1)[1])), width=Inches(5.5))
+            except Exception:  # noqa: BLE001 base64 破损/格式不支持——丢图保文
+                pass
     elif name in _CONTAINERS:
         for child in el.children:
             _emit_el(doc, child)
