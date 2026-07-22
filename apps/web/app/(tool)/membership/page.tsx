@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
+import { copyText } from "@/lib/clipboard"
 import Link from "next/link"
 import { memberTiers, type TierId } from "@/lib/plans"
 import { fetchMembership, fetchOrders, startRecharge, renewMembership } from "@/lib/membership-api"
@@ -467,39 +468,24 @@ function PayModal(props: {
   )
 }
 
-// 复制文本：HTTP 非安全上下文下 navigator.clipboard 不存在（本环境走公网 HTTP），须降级 execCommand
-async function copyText(text: string): Promise<boolean> {
-  try {
-    if (window.isSecureContext && navigator.clipboard) {
-      await navigator.clipboard.writeText(text)
-      return true
-    }
-  } catch {
-    // 继续走降级
-  }
-  const ta = document.createElement("textarea")
-  ta.value = text
-  ta.style.position = "fixed"
-  ta.style.opacity = "0"
-  document.body.appendChild(ta)
-  ta.select()
-  const ok = document.execCommand("copy")
-  ta.remove()
-  return ok
-}
-
 /** 邀请入口（spec307）：展示我的邀请码 + 邀请数 + 一键复制邀请链接；绑定在注册流程完成，此处不做绑定写。 */
 function ReferralCard() {
   const [code, setCode] = useState<string | null>(null)
   const [count, setCount] = useState<number | null>(null)
-  const [copied, setCopied] = useState(false)
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle")
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   async function copyLink() {
     if (!code) return
     const ok = await copyText(`${window.location.origin}/login?ref=${code}`)
-    setCopied(ok)
-    if (ok) setTimeout(() => setCopied(false), 2000)
+    setCopyState(ok ? "copied" : "failed") // 失败也要反馈，静默失败会让用户拿旧剪贴板去分享
+    if (copyTimer.current) clearTimeout(copyTimer.current)
+    copyTimer.current = setTimeout(() => setCopyState("idle"), 2000)
   }
+  useEffect(() => () => {
+    if (copyTimer.current) clearTimeout(copyTimer.current)
+  }, [])
 
   useEffect(() => {
     let alive = true
@@ -511,7 +497,7 @@ function ReferralCard() {
         setCode(c.code)
         setCount(l.list.length)
       } catch {
-        // 邀请信息加载失败不阻塞会员中心主体
+        if (alive) setLoadFailed(true) // 不阻塞会员中心主体，但不能永远停在"加载中"
       }
     })()
     return () => {
@@ -532,11 +518,13 @@ function ReferralCard() {
             onClick={copyLink}
             className="mt-4 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted"
           >
-            {copied ? <Check className="size-4 text-success" /> : <Copy className="size-4" />}
-            {copied ? "已复制，快去分享吧" : "复制邀请链接"}
+            {copyState === "copied" ? <Check className="size-4 text-success" /> : <Copy className="size-4" />}
+            {copyState === "copied" ? "已复制，快去分享吧" : copyState === "failed" ? "复制失败，请手动复制" : "复制邀请链接"}
           </button>
           <p className="mt-2 text-xs leading-relaxed text-muted-foreground">好友通过链接注册，双方都得积分奖励</p>
         </>
+      ) : loadFailed ? (
+        <p className="mt-1.5 text-xs text-muted-foreground">邀请信息加载失败，刷新页面重试</p>
       ) : (
         <p className="mt-1.5 text-xs text-muted-foreground">加载中…</p>
       )}

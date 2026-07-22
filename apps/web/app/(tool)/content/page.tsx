@@ -45,6 +45,7 @@ import { CheckConfirm, CheckSummary, ExportConfirm } from "./check-dialogs"
 import { ExportMenu, type BidType } from "./export-menu"
 import { ReportDialog } from "./report-dialog"
 import { useHealthCheck } from "./use-health-check"
+import { useEditorInsert, libraryItemHtml } from "./use-editor-insert"
 
 // agent content 步结果（camelCase）：{chapterId: bodyHtml}；章结构取 outline 步结果
 type RealChapters = Record<string, string>
@@ -140,6 +141,8 @@ export default function ContentPage() {
   const list: Chapter[] = bidType === "full" ? [...data.tech, ...data.business] : data[bidType]
   const active = list.find((c) => c.id === activeId) ?? list[0]
   const generatedCount = list.filter((c) => c.html.trim()).length
+  // 本章字数只在 html 变化时重算（正则扫大章节不便宜，页面因保存态/余额刷新频繁重渲染）
+  const activeChars = useMemo(() => countChars(active?.html ?? ""), [active?.html])
 
   // 目录分组（全文模式下展示技术标 / 商务标分组标题）
   const groups: { label: string; items: Chapter[] }[] =
@@ -241,49 +244,14 @@ export default function ContentPage() {
     document.execCommand(cmd, false, value)
   }
 
-  /* 从资料库插入：把条目内容拼成 HTML 插入正文。
-     光标处理（生产实测「点了插入却没插进去」）：打开弹窗/点击条目的过程中选区已离开编辑器，
-     此时 execCommand("insertHTML") 会静默失败、什么都不发生。故打开弹窗前先保存编辑器内选区，
-     插入时恢复；没有有效光标（用户从没点过正文）则追加到本章末尾——保证插入一定可见。 */
-  const savedSelection = useRef<Range | null>(null)
+  /* 从资料库插入（选区保存/恢复与兜底追加见 use-editor-insert.ts） */
+  const { capture: captureSelection, insert: insertHtml } = useEditorInsert(editorRef)
   function openLibrary() {
-    const sel = window.getSelection()
-    savedSelection.current =
-      sel && sel.rangeCount > 0 && editorRef.current?.contains(sel.anchorNode)
-        ? sel.getRangeAt(0).cloneRange()
-        : null
+    captureSelection()
     setLibraryOpen(true)
   }
   function insertFromLibrary(item: LibraryItem) {
-    let html = ""
-    if (item.body) {
-      html = item.body
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => `<p>${line}</p>`)
-        .join("")
-    } else {
-      const parts: string[] = [`<strong>${item.title}</strong>`]
-      if (item.meta) parts.push(item.meta)
-      if (item.fields?.length) parts.push(item.fields.map((f) => `${f.label}：${f.value}`).join("；"))
-      if (item.attachments?.length) parts.push(`附件：${item.attachments.map((a) => a.name).join("、")}`)
-      html = `<p>${parts.join("，")}。</p>`
-    }
-    editorRef.current?.focus()
-    let inserted = false
-    const range = savedSelection.current
-    if (range && editorRef.current?.contains(range.startContainer)) {
-      const sel = window.getSelection()
-      sel?.removeAllRanges()
-      sel?.addRange(range)
-      inserted = document.execCommand("insertHTML", false, html)
-    }
-    if (!inserted && editorRef.current) {
-      // 无光标/插入失败 → 追加到本章末尾并滚动到位（绝不静默丢弃）
-      editorRef.current.insertAdjacentHTML("beforeend", html)
-      editorRef.current.scrollTop = editorRef.current.scrollHeight
-    }
-    savedSelection.current = null
+    insertHtml(libraryItemHtml(item))
     saveEditor()
     setLibraryOpen(false)
   }
@@ -580,7 +548,7 @@ export default function ContentPage() {
                 重写本章可在右侧 AI 助手输入指令（{rewriteCost} 积分/次）
               </span>
               <span className="text-xs text-muted-foreground">
-                · 本章约 {fmtChars(countChars(active.html))} 字 · 约 {estimatePages(countChars(active.html))} 页
+                · 本章约 {fmtChars(activeChars)} 字 · 约 {estimatePages(activeChars)} 页
               </span>
               <span
                 className={`ml-auto text-xs ${contentSaveState === "error" ? "font-medium text-destructive" : "text-muted-foreground"}`}

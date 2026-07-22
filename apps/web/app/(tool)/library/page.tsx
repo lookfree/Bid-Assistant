@@ -18,6 +18,7 @@ import { libraryCategories, expiryStatus, type LibraryCategoryId, type LibraryCa
 import { createEntry, updateEntry, deleteEntry, type LibraryEntry, type LibraryEntryInput } from "@/lib/library-api"
 import { useLibrary } from "@/lib/use-library"
 import { fileDownloadUrl } from "@/lib/files"
+import { copyText } from "@/lib/clipboard"
 import { ItemEditor } from "./item-editor"
 
 const expiryMeta: Record<"ok" | "soon" | "expired", { label: string; cls: string }> = {
@@ -236,7 +237,7 @@ function CategoryPanel({
   const [copiedId, setCopiedId] = useState<string | null>(null)
 
   function copyBody(item: LibraryEntry) {
-    if (item.body) navigator.clipboard?.writeText(item.body)
+    if (item.body) void copyText(item.body) // 共享工具：HTTP 环境走 execCommand 降级（裸 clipboard 在本环境静默失效）
     setCopiedId(item.id)
     setTimeout(() => setCopiedId(null), 1800)
   }
