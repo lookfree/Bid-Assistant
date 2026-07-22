@@ -36,8 +36,8 @@ import {
 // 提交/展示前再与真实取值互转，不改变 referral_rules 里存的实际字段值。
 const UNLOCK_IMMEDIATE = "immediate"
 const UNLOCK_ON_OPTIONS = [
-  { value: UNLOCK_IMMEDIATE, label: "注册绑定即发放" },
-  { value: "invitee_first_paid", label: "被邀请人首次付费解锁" },
+  { value: UNLOCK_IMMEDIATE, label: "注册绑定后立即发放" },
+  { value: "invitee_first_paid", label: "被邀请人首次付费后发放" },
 ]
 
 // 五个数值字段的展示元数据（unlockOn 是下拉框，reward_expire_days 是独立键，单独渲染）。
@@ -254,8 +254,9 @@ function ReferralFieldsGrid({
           </div>
         ))}
         <div className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-foreground">解锁方式</span>
+          <span className="text-sm font-medium text-foreground">奖励发放时机</span>
           <Select
+            items={UNLOCK_ON_OPTIONS}
             value={rules.unlockOn === "invitee_first_paid" ? "invitee_first_paid" : UNLOCK_IMMEDIATE}
             onValueChange={(v) => v && onUnlockOnChange(v)}
           >
@@ -288,8 +289,8 @@ function ReferralFieldsGrid({
       <div className="flex flex-col gap-1 text-xs text-muted-foreground">
         <span>单用户累计奖励达封顶（capPerUser）后，该用户的邀请关系 reward_state 置为 capped，不再继续发放。</span>
         <span>
-          注册即弃判定 = 解锁有效期窗口：被邀请人须在绑定后 N 天内产生<b>积分消费</b>（充值/首付本身不计入），
-          超窗后即使付费解锁也不再补发、关系按「注册即弃」冻结留痕——开启前请确认业务接受迟付费用户不发奖。
+          注册即弃判定：绑定超过 N 天时，被邀请人须已产生<b>有效行为</b>（积分消费或任意一笔已支付订单，首付即算），
+          否则按「注册即弃」冻结关系不发奖并留痕；付过钱或用过积分的用户不受影响。
         </span>
         <span>实名唯一校验：系统当前无实名体系，待实名体系接入后启用，暂不做假校验/假开关。</span>
       </div>
