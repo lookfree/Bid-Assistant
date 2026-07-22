@@ -97,6 +97,9 @@ const createBodySchema = z.union([
 // 选包请求体（spec324）：裸 body——{id,name} 设置该包，JSON null 清除（不用 {package:...} 包一层）。
 const packageBodySchema = z.union([z.object({ id: z.string().min(1), name: z.string().min(1) }), z.null()])
 
+// 独立审查建项（spec328）：线下标书必传,招标文件可选（附了做对照审查,否则通用自查）。
+const reviewProjectSchema = z.object({ bidFileKey: z.string().min(1), tenderFileKey: z.string().min(1).optional() })
+
 // 克隆项目请求体（spec324）：同一招标文件投另一个包=另建项目。package = 新项目投的包——
 // 多包流程下建项即选包（不再建空项目后补选）；name 缺省时按包名/「（再投）」派生。
 const cloneBodySchema = z
@@ -307,6 +310,39 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     return c.json({ id: p.id, threadId: p.threadId })
   })
 
+  // 独立审查项目（spec328）：上传线下标书直接审查。带招标文件→先读标再对照审查（draft 起步）;
+  // 不带→直接可跑 review（通用自查,agent 报告首条明示局限）。计费沿用 read/review 既有口径。
+  r.post("/review", async (c) => {
+    const parsed = reviewProjectSchema.safeParse(await c.req.json().catch(() => ({})))
+    if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
+    const userId = c.get("user").id
+    const { bidFileKey, tenderFileKey } = parsed.data
+    const wanted = tenderFileKey ? [bidFileKey, tenderFileKey] : [bidFileKey]
+    const rows = await getDb()
+      .select({ key: projectFiles.key, filename: projectFiles.filename })
+      .from(projectFiles)
+      .where(and(inArray(projectFiles.key, wanted), eq(projectFiles.userId, userId)))
+    const filenameByKey = new Map(rows.map((f) => [f.key, f.filename]))
+    if (wanted.some((k) => !filenameByKey.has(k))) return c.json({ error: "invalid_files" }, 400)
+    const [p] = await getDb()
+      .insert(bidProjects)
+      .values({
+        userId,
+        threadId: `proj-${crypto.randomUUID()}`,
+        kind: "review",
+        bidFileKey,
+        tenderFileKey: tenderFileKey ?? null,
+        tenderFileKeys: tenderFileKey ? [tenderFileKey] : null,
+        name: `${(filenameByKey.get(bidFileKey) ?? "线下标书").replace(/\.[a-zA-Z0-9]+$/, "")}（审查）`,
+        // 带招标文件走 draft→read（读标计费后自动接 review）;不带直接站上 review 步
+        status: tenderFileKey ? "draft" : "running",
+        currentStep: tenderFileKey ? "read" : "review",
+      })
+      .returning()
+    if (!p) return c.json({ error: "insert_failed" }, 500)
+    return c.json({ id: p.id, threadId: p.threadId })
+  })
+
   // 选包（spec324）：body 裸 {id,name} 设置，JSON null 清除。只影响 outline 及之后步骤的 run_input
   // （read 步/单包标书不受影响）。属主校验同其它项目路由。
   r.patch("/:id/package", async (c) => {
@@ -469,6 +505,9 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     //   ① export 在 present/done 时均可跑——present 时=跳过述标直出文件；done 时=重渲重出
     //     （渲染器升级/模板调整后,已完成项目才能重新出文件,否则只会一直下载旧产物）；
     //   ② present 在 done 后可补跑（先导出后补述标,补完重导出可带 PPT）。
+    // spec328 审查专用项目：只有 read（带招标文件对照）与 review 两步,生成/述标/导出一律拒绝
+    if (p.kind === "review" && step !== "read" && step !== "review")
+      return c.json({ error: "out_of_order", expected: p.currentStep }, 409)
     const allowed = p.status === "draft"
       ? step === "read"
       : step === p.currentStep ||
@@ -506,6 +545,8 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         rag: await ragRunInput(),
         ...(step !== "read" && p.selectedPackage ? { package: p.selectedPackage } : {}),
         ...(step === "export" ? await exportCredentials(userId) : {}),
+        // spec328：线下标书审查——review 节点用该 key 确定性解析出 chapters（无 LLM 不计费）
+        ...(step === "review" && p.bidFileKey ? { bid_file_key: p.bidFileKey } : {}),
       },
       state_overrides: await stateOverrides(p.id, step as Step),
     }

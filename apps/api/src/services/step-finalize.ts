@@ -63,12 +63,19 @@ async function settleAndAdvance(opts: {
       : await b.settle(opts.stepId, opts.hold.holdId, opts.hold.heldAmount)
   }
   await getDb().update(projectSteps).set({ costPoints: cost }).where(eq(projectSteps.id, opts.stepId))
-  const next = STEP_ORDER[STEP_ORDER.indexOf(opts.step) + 1]
+  const [proj] = await getDb().select({ kind: bidProjects.kind }).from(bidProjects).where(eq(bidProjects.id, opts.projectId))
+  const next = nextStepFor(opts.step, proj?.kind ?? "bid")
   await getDb()
     .update(bidProjects)
     .set({ currentStep: next ?? "done", status: next ? "running" : "done" })
     .where(and(eq(bidProjects.id, opts.projectId), advanceGuard(opts.step)))
   return cost
+}
+
+/** 步进表按项目类型分叉（spec328）：review-kind 只有 read→review→done;bid 走完整流水线。 */
+function nextStepFor(step: Step, kind: string): Step | undefined {
+  if (kind === "review") return step === "read" ? "review" : undefined
+  return STEP_ORDER[STEP_ORDER.indexOf(step) + 1]
 }
 
 /** 条件推进的 WHERE 守卫：常规=停在本步才推进（幂等/并发安全）。
@@ -231,11 +238,11 @@ export async function sweepStuckSteps(
         continue
       }
       const [proj] = await getDb()
-        .select({ currentStep: bidProjects.currentStep })
+        .select({ currentStep: bidProjects.currentStep, kind: bidProjects.kind })
         .from(bidProjects)
         .where(eq(bidProjects.id, row.projectId))
       if (proj && (proj.currentStep === row.step || (row.step === "export" && proj.currentStep === "present"))) {
-        const next = STEP_ORDER[STEP_ORDER.indexOf(row.step as Step) + 1]
+        const next = nextStepFor(row.step as Step, proj.kind ?? "bid")
         await getDb()
           .update(bidProjects)
           .set({ currentStep: next ?? "done", status: next ? "running" : "done" })

@@ -16,6 +16,9 @@ export const bidProjects = pgTable(
     tenderFileKeys: jsonb("tender_file_keys").$type<string[]>(), // spec320：全部招标文件 key（公告/主文件/技术规范书/附件…）
     // spec324：多包件招标用户选投的包（{id,name}）；可空——单包标书/未选包时全链路行为不变。
     selectedPackage: jsonb("selected_package").$type<{ id: string; name: string }>(),
+    // spec328：项目类型——bid=生成流水线（默认,存量不变）;review=独立审查（线下标书,只跑 read/review）
+    kind: text("kind").notNull().default("bid").$type<"bid" | "review">(),
+    bidFileKey: text("bid_file_key"), // spec328：线下上传的投标文件 key（review-kind 专用）
     status: text("status").notNull().default("draft"), // draft/running/done
     currentStep: text("current_step").notNull().default("read"),
     createdAt: createdAt(),
