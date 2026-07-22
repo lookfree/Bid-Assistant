@@ -41,20 +41,36 @@ def _split_clauses(lines: list[str]) -> list[dict]:
     return clauses
 
 
+def _docx_lines_in_order(d) -> list[str]:
+    """按文档顺序遍历正文块（段落与表格交错）→ 文本行。表格行以 \t 连接单元格。
+    2026-07-22 生产实测根因：招标文件的格式模板（授权委托书/应答一览表等）几乎都排在**表格**里，
+    旧实现条款分句只喂段落 → 格式章只剩标题占节号、模板正文整段缺失（sec 空洞），
+    内容生成拿不到招标模板原文只能自创格式。"""
+    from docx.oxml.ns import qn
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+    lines: list[str] = []
+    for child in d.element.body.iterchildren():
+        if child.tag == qn("w:p"):
+            t = Paragraph(child, d).text
+            if t.strip():
+                lines.append(t)
+        elif child.tag == qn("w:tbl"):
+            for r in Table(child, d).rows:
+                line = "\t".join(c.text for c in r.cells)
+                if line.strip():
+                    lines.append(line)
+    return lines
+
+
 def parse_docx(data: bytes) -> ParsedDoc:
-    """解析 .docx 字节 → 段落文本 + 表格 + 条款 id。"""
+    """解析 .docx 字节 → 段落文本 + 表格 + 条款 id（条款按文档顺序含表格行，见 _docx_lines_in_order）。"""
     from docx import Document
     d = Document(io.BytesIO(data))
-    para_texts = [p.text for p in d.paragraphs if p.text.strip()]
-    text_parts = list(para_texts)
-    tables: list[list[list[str]]] = []
-    for t in d.tables:
-        rows = [[c.text for c in r.cells] for r in t.rows]
-        tables.append(rows)
-        for r in rows:
-            text_parts.append("\t".join(r))
-    return ParsedDoc(text="\n".join(text_parts), kind="docx", tables=tables,
-                     clauses=_split_clauses(para_texts))
+    lines = _docx_lines_in_order(d)
+    tables: list[list[list[str]]] = [[[c.text for c in r.cells] for r in t.rows] for t in d.tables]
+    return ParsedDoc(text="\n".join(lines), kind="docx", tables=tables,
+                     clauses=_split_clauses(lines))
 
 
 def parse_pdf(data: bytes) -> ParsedDoc:
