@@ -103,28 +103,30 @@ function useReferralConfigState() {
     (JSON.stringify(rules) !== JSON.stringify(savedRules) || expireDays !== savedExpireDays)
 
   // 两个 PUT 串行：先 referral_rules 后 reward_expire_days；只提交实际变化的键，避免
-  // 对未改动的键产生无意义的审计记录。失败时保留当前编辑态，不回滚，方便运营重试。
+  // 对未改动的键产生无意义的审计记录。逐键成功即推进 saved：第一键成功第二键失败时
+  // （配置写入即生效）不能笼统报"保存失败"——已生效的键要如实告知，重试也不会重复提交它。
   async function save() {
     if (!rules || !savedRules || expireDays === null || savedExpireDays === null) return
     setSaving(true)
+    let rulesApplied = false
     try {
       if (JSON.stringify(rules) !== JSON.stringify(savedRules)) {
         await adminApi.plans.setConfig("referral_rules", toReferralRulesPayload(rules))
+        rulesApplied = true
+        setSavedRules(rules)
       }
       if (expireDays !== savedExpireDays) {
         await adminApi.plans.setConfig("reward_expire_days", expireDays)
+        setSavedExpireDays(expireDays)
       }
-      setSavedRules(rules)
-      setSavedExpireDays(expireDays)
       toast.success("配置已保存并生效", {
         description: "新规则即时生效，仅影响此后发放，历史奖励流水不受影响。",
       })
     } catch (e) {
-      toast.error(
-        e instanceof AdminApiError && e.status === 403
-          ? "无权限：需要 config.write 权限"
-          : "保存失败，请重试，当前编辑内容已保留",
-      )
+      const perm = e instanceof AdminApiError && e.status === 403
+      toast.error(perm ? "无权限：需要 config.write 权限" : "保存失败，请重试", {
+        description: rulesApplied ? "注意：邀请奖励规则已保存并生效，仅「奖励积分有效期」未保存。" : "当前编辑内容已保留。",
+      })
     } finally {
       setSaving(false)
     }
@@ -291,6 +293,8 @@ function ReferralFieldsGrid({
         <span>
           注册即弃判定：绑定超过 N 天时，被邀请人须已产生<b>有效行为</b>（积分消费或任意一笔已支付订单，首付即算），
           否则按「注册即弃」冻结关系不发奖并留痕；付过钱或用过积分的用户不受影响。
+          注意：「充值即发放」模式下发放本就由付款触发，届时必已满足有效行为，本判定实际不会拦截任何人
+          ——它只对「注册即发放」模式的延迟补发场景生效。
         </span>
         <span>实名唯一校验：系统当前无实名体系，待实名体系接入后启用，暂不做假校验/假开关。</span>
       </div>

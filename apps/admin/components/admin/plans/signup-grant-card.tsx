@@ -45,20 +45,32 @@ function useSignupGrantState() {
     }
   }, [])
 
-  const dirty = values !== null && saved !== null && (values.credits !== saved.credits || values.expireDays !== saved.expireDays)
+  // dirty 从 FIELDS 派生（手写枚举的话，未来新增字段会渲染/保存但 dirty 永远不亮，保存按钮点不了）
+  const dirty = values !== null && saved !== null && FIELDS.some((f) => values[f.key] !== saved[f.key])
 
-  // 只提交实际变化的键，避免对未改动键产生无意义审计记录；失败保留编辑态便于重试。
+  // 只提交实际变化的键，避免对未改动键产生无意义审计记录。逐键提交逐键推进 saved：
+  // 第一键成功第二键失败时（配置写入即生效）不能笼统报"保存失败"——已生效的键要如实告知，
+  // 且推进 saved 后重试只补发失败键，不会对已成功键产生同值重复审计。
   async function save() {
     if (!values || !saved) return
     setSaving(true)
+    const applied: string[] = []
+    let failedAt: string | null = null
     try {
       for (const f of FIELDS) {
-        if (values[f.key] !== saved[f.key]) await adminApi.plans.setConfig(f.configKey, values[f.key])
+        if (values[f.key] === saved[f.key]) continue
+        failedAt = f.label
+        await adminApi.plans.setConfig(f.configKey, values[f.key])
+        failedAt = null
+        applied.push(f.label)
+        setSaved((prev) => (prev ? { ...prev, [f.key]: values[f.key] } : prev))
       }
-      setSaved(values)
       toast.success("注册赠送配置已保存并生效", { description: "仅影响此后注册的新用户，已发放的赠送不受影响。" })
     } catch (e) {
-      toast.error(e instanceof AdminApiError && e.status === 403 ? "无权限：需要 config.write 权限" : "保存失败，请重试，当前编辑内容已保留")
+      const perm = e instanceof AdminApiError && e.status === 403
+      toast.error(perm ? "无权限：需要 config.write 权限" : `「${failedAt}」保存失败，请重试`, {
+        description: applied.length > 0 ? `注意：「${applied.join("、")}」已保存并生效。` : "当前编辑内容已保留。",
+      })
     } finally {
       setSaving(false)
     }
