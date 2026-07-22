@@ -34,7 +34,7 @@ class BiddingAgent(BaseAgent):
         else:                                        # 新标书 → 从 read 起（read 节点用 state['file_key']/['files']）
             payload = {"file_key": input.get("file_key", ""),
                        "files": input.get("files") or [],   # spec320：不播种 files，多文件路径永不触发
-                       "run_input": input.get("run_input") or {}}
+                       "run_input": _run_input_with_step(input)}
         # 记「本 run 实际跑过的最后一个节点」：靠流事件而非 state 真值判定——
         # 否则节点产空结果（如模型没 submit → read={}）会被当成没跑，漏发 step.done、假成功。
         ran_node = None
@@ -60,9 +60,17 @@ _RESULT_KEY = {"read": "read", "outline": "outline", "content": "chapters",
 _OVERRIDE_KEYS = ("outline", "chapters", "deck")
 
 
+def _run_input_with_step(input: dict) -> dict:
+    """run_input 并入顶层 step：graph 的 review/export 条件边靠它路由（present 可跳可补）。"""
+    ri = dict(input.get("run_input") or {})
+    if input.get("step"):
+        ri["step"] = input["step"]
+    return ri
+
+
 def _resume_update(input: dict) -> dict:
     """续跑前的状态增量：run_input 每 run 覆盖；state_overrides 只取白名单键且非空的。"""
-    update: dict = {"run_input": input.get("run_input") or {}}
+    update: dict = {"run_input": _run_input_with_step(input)}
     overrides = input.get("state_overrides") or {}
     for k in _OVERRIDE_KEYS:
         v = overrides.get(k)

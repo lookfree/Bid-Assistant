@@ -11,8 +11,25 @@ from agent.agents.bidding_agent.nodes.export import make_export_node
 NODE_ORDER = ["read", "outline", "content", "review", "present", "export"]
 
 
+def _requested_step(state) -> str | None:
+    return (state.get("run_input") or {}).get("step")
+
+
+def _route_after_review(state):
+    """述标（present）是独立可选步：review 后本 run 显式请求 export 时直达 export，
+    不再强制先跑述标（用户口径：下载标书不要求完成述标生成）。"""
+    return "export" if _requested_step(state) == "export" else "present"
+
+
+def _route_after_export(state):
+    """export 后按请求路由：present=补跑述标（补跑后重导出可带 PPT）；export=重渲文件
+    （渲染器升级/模板调整后重出）；其余结束。"""
+    step = _requested_step(state)
+    return step if step in ("present", "export") else END
+
+
 def build_bidding_workflow(ctx):
-    """投标工作流：6 节点顺序串联，每个节点后 interrupt（每步一个 run）。
+    """投标工作流：6 节点串联 + review/export 两处条件边，每个节点后 interrupt（每步一个 run）。
     checkpointer 来自 ctx（PostgresSaver，§4.7），保证同 thread_id 续 BiddingState。"""
     g = StateGraph(BiddingState)
     g.add_node("read", make_read_node(ctx))
@@ -22,8 +39,11 @@ def build_bidding_workflow(ctx):
     g.add_node("present", make_present_node(ctx))
     g.add_node("export", make_export_node(ctx))
     g.add_edge(START, "read")
-    for a, b in zip(NODE_ORDER, NODE_ORDER[1:]):
-        g.add_edge(a, b)
-    g.add_edge("export", END)
+    g.add_edge("read", "outline")
+    g.add_edge("outline", "content")
+    g.add_edge("content", "review")
+    g.add_conditional_edges("review", _route_after_review, {"present": "present", "export": "export"})
+    g.add_edge("present", "export")
+    g.add_conditional_edges("export", _route_after_export, {"present": "present", "export": "export", END: END})
     # 每个节点产出后暂停 → App 在对应原型页确认后发新 run 续跑
     return g.compile(checkpointer=ctx.checkpointer, interrupt_after=NODE_ORDER)
