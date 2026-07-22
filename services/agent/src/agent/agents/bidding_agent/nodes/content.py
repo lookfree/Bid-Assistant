@@ -13,7 +13,7 @@ from agent.agents.bidding_agent.nodes.common import slim_read, package_scope, fi
 from agent.agents.bidding_agent.prompts.content import (
     CONTENT_PLANNER_PROMPT, CHAPTER_WRITER_PROMPT, REWRITE_PROMPT, DEVIATION_TABLE_GUIDE, TEMPLATE_GUIDE)
 from agent.rag import retrieve as rag_retrieve
-from agent.agents.bidding_agent.render.sanitize import strip_document_shell
+from agent.agents.bidding_agent.render.sanitize import strip_document_shell, strip_chat_wrapper
 from agent.runtime.channels import progress_stream
 
 logger = logging.getLogger(__name__)
@@ -278,4 +278,5 @@ async def rewrite_chapter(ctx, chapter_id: str, instruction: str, state: dict) -
     sub = build_create_agent(REWRITE_PROMPT, [], ctx)
     msg = _rewrite_msg(old, instruction, ref)
     out = await sub.ainvoke({"messages": [HumanMessage(content=msg)]})
-    return strip_document_shell(out["messages"][-1].content)
+    # 先剥对话包装（开场白/```围栏）再剥文档壳：提示词禁不住模型客套，确定性清洗兜底
+    return strip_document_shell(strip_chat_wrapper(out["messages"][-1].content))

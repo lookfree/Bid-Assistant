@@ -1,4 +1,4 @@
-from agent.agents.bidding_agent.render.sanitize import strip_document_shell
+from agent.agents.bidding_agent.render.sanitize import strip_document_shell, strip_chat_wrapper
 
 FULL_DOC = """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -34,3 +34,31 @@ def test_plain_fragment_idempotent():
     frag = "<h3>小节</h3><p>内容</p><table><tr><td>x</td></tr></table>"
     assert strip_document_shell(frag) == frag
     assert strip_document_shell("") == ""
+
+
+# 2026-07-22 生产实测样本：改写输出带开场白 + ```html 围栏，整段被存进正文
+CHATTY_FENCED = """好的，这是根据您的指令，对原章"第五章 应急响应能力"进行的改写。修改之处已用 HTML 注释 `` 标注在相应位置，方便您对照查阅。```html
+<p>第五章 应急响应能力</p><h3>5.1 应急响应方案</h3><table><tr><td>P1</td></tr></table>
+```"""
+
+
+def test_chat_wrapper_fenced_preamble_stripped():
+    out = strip_chat_wrapper(CHATTY_FENCED)
+    assert out.startswith("<p>第五章 应急响应能力</p>")
+    assert "```" not in out and "好的" not in out and "根据您的指令" not in out
+
+
+def test_chat_wrapper_prose_prefix_and_tail_stripped():
+    out = strip_chat_wrapper("已按要求改写如下：\n<h3>5.1 方案</h3><p>正文</p>\n以上是全部修改，请查收。")
+    assert out == "<h3>5.1 方案</h3><p>正文</p>"
+
+
+def test_chat_wrapper_plain_html_idempotent():
+    frag = "<h3>小节</h3><p>内容</p>"
+    assert strip_chat_wrapper(frag) == frag
+    assert strip_chat_wrapper("") == ""
+
+
+def test_chat_wrapper_picks_longest_fence():
+    text = "说明：```\n<p>短</p>\n```正文在这：```html\n<h3>长的一段</h3><p>内容内容内容</p>\n```"
+    assert strip_chat_wrapper(text) == "<h3>长的一段</h3><p>内容内容内容</p>"
