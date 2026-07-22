@@ -54,6 +54,11 @@ export async function assessRisk(
  * 代表真实用过积分），才判定为白嫖注册刷奖励，应冻结不发。
  * abandonDays<=0 视为闸门关闭，不查库直接放行（配置语义 + 避免无谓查询）。
  * “超过 N 天”取严格大于——恰好 N 天整视为未超期，照发（边界照发，从宽不误伤）。
+ *
+ * 语义澄清（终审确认的设计意图）：这是**解锁有效期窗口**——「有效行为」只认积分消费，
+ * 充值/首付本身不计入。延迟解锁模式下，被邀请人拖过窗口才首次付费的，付费触发解锁时同样
+ * 命中本闸门（迟付费不补发）。方向恒为少发不多发（withhold），账本安全；后台配置卡已向
+ * 运营明示该语义，默认 0=关闭。若业务日后要求「首付也算有效行为」，在此处扩判定条件。
  */
 export async function assessAbandoned(inviteeId: string, boundAt: Date, abandonDays: number): Promise<boolean> {
   if (abandonDays <= 0) return false
