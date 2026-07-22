@@ -78,7 +78,7 @@ docs/superpowers/plans/phase-3/
 | `unlockOn` | `""` \| `"invitee_first_paid"` | 空=被邀请人注册即发放；否则充值/开通会员即发放（充值/购买会员/续费付款单均触发） |
 | `capPerUser` | int ≥ 0，且 ≥ max(inviterReward, inviteeReward) | 单用户 `referral_reward` 累计封顶；达上限 `reward_state=capped` |
 | `riskMaxPerIpPerHour` | int ≥ 1 | 同 IP 1 小时绑定数阈值，超过冻结 |
-| `abandonDays` | int ≥ 0（新增，默认 0=关闭） | 注册即弃判定：绑定超过 N 天且被邀请人无任何积分消费 → 冻结不发 |
+| `abandonDays` | int ≥ 0（新增，默认 0=关闭） | 注册即弃判定：绑定超过 N 天且被邀请人无任何有效行为（积分消费或已支付订单）→ 冻结不发（充值即发放模式下发放由付款触发、必满足有效行为，本判定实际仅对注册即发放的延迟补发场景生效） |
 
 独立键 `reward_expire_days`：int ≥ 0，奖励积分有效期（天）。
 
