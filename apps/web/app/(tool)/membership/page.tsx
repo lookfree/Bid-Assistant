@@ -8,9 +8,7 @@ import { api } from "@/lib/api"
 import type { MembershipOverview, OrderView, LaunchResponse, Payway } from "@/lib/membership-types"
 import { formatPeriodEnd, statusLabel, tierCardState, planPriceYuan, plansByTier } from "@/lib/membership-view"
 import { peekMembershipCache, primeMembershipCache } from "@/lib/use-membership"
-import { Check, X, Coins, Receipt, ArrowRight, Sparkles, Info, Infinity as InfinityIcon, TrendingUp } from "lucide-react"
-
-const REFERRAL_ENABLED = process.env.NEXT_PUBLIC_REFERRAL_ENABLED === "true"
+import { Check, X, Coins, Receipt, ArrowRight, Sparkles, Info, Infinity as InfinityIcon, TrendingUp, Copy } from "lucide-react"
 
 const ORDER_STATUS: Record<OrderView["status"], { label: string; tone: string }> = {
   paid: { label: "已支付", tone: "bg-success/10 text-success" },
@@ -385,7 +383,7 @@ export default function MembershipPage() {
         </section>
 
         <aside className="flex flex-col gap-4">
-          {REFERRAL_ENABLED && <ReferralCard />}
+          <ReferralCard />
           <div className="rounded-2xl border border-border bg-card p-5">
             <p className="text-sm font-semibold text-foreground">对套餐有疑问？</p>
             <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
@@ -469,10 +467,39 @@ function PayModal(props: {
   )
 }
 
-/** 邀请入口（spec307）：只展示我的邀请码 + 邀请数；绑定在注册流程完成，此处不做绑定写。 */
+// 复制文本：HTTP 非安全上下文下 navigator.clipboard 不存在（本环境走公网 HTTP），须降级 execCommand
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (window.isSecureContext && navigator.clipboard) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    // 继续走降级
+  }
+  const ta = document.createElement("textarea")
+  ta.value = text
+  ta.style.position = "fixed"
+  ta.style.opacity = "0"
+  document.body.appendChild(ta)
+  ta.select()
+  const ok = document.execCommand("copy")
+  ta.remove()
+  return ok
+}
+
+/** 邀请入口（spec307）：展示我的邀请码 + 邀请数 + 一键复制邀请链接；绑定在注册流程完成，此处不做绑定写。 */
 function ReferralCard() {
   const [code, setCode] = useState<string | null>(null)
   const [count, setCount] = useState<number | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  async function copyLink() {
+    if (!code) return
+    const ok = await copyText(`${window.location.origin}/login?ref=${code}`)
+    setCopied(ok)
+    if (ok) setTimeout(() => setCopied(false), 2000)
+  }
 
   useEffect(() => {
     let alive = true
@@ -500,6 +527,15 @@ function ReferralCard() {
           <p className="mt-1.5 text-xs text-muted-foreground">我的邀请码</p>
           <p className="mt-1 font-mono text-lg font-bold tracking-widest text-primary">{code}</p>
           <p className="mt-2 text-xs text-muted-foreground">已邀请 {count ?? 0} 人</p>
+          <button
+            type="button"
+            onClick={copyLink}
+            className="mt-4 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+          >
+            {copied ? <Check className="size-4 text-success" /> : <Copy className="size-4" />}
+            {copied ? "已复制，快去分享吧" : "复制邀请链接"}
+          </button>
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">好友通过链接注册，双方都得积分奖励</p>
         </>
       ) : (
         <p className="mt-1.5 text-xs text-muted-foreground">加载中…</p>
