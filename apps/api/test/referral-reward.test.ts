@@ -19,6 +19,7 @@ beforeEach(async () => {
 })
 afterAll(async () => {
   await setConfig("referral_rules", SEED_RULES)
+  await setConfig("reward_expire_days", 0) // 还原种子默认（0=不过期；本文件有例设过 30，防泄漏进共享库）
   for (const id of madeUsers) await getDb().delete(users).where(eq(users.id, id))
   await closeDb()
 })

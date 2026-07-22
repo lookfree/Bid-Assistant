@@ -691,6 +691,13 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       return c.json({ error: "agent_failed" }, 502)
     }
 
+    // 兜底校验：产出必须是 HTML 片段（至少含一个标签）。模型偶发用纯文字回答（提问式输入等），
+    // 存库等于拿闲聊替换用户章节——拒收并全额退款，不让用户为废品买单（前端正则只是引导，钱闸在这）
+    if (!/<[a-zA-Z][^>]*>/.test(html)) {
+      await settleFailed(ref, hold.holdId!).catch(() => {})
+      return c.json({ error: "rewrite_not_html" }, 502)
+    }
+
     try {
       // 持久化：content 步 result 就是 chapters 字典（agent _RESULT_KEY['content']='chapters'）。
       // agent 调用长达 ~120s，期间用户可能 PATCH 了其他章——必须在事务内 FOR UPDATE 重读该行，

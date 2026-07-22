@@ -4,7 +4,7 @@ import { Hono } from "hono"
 import { projectRoutes, type ProjectDeps } from "../src/routes/projects"
 import * as billing from "../src/services/billing-stub"
 import { grant, getBalance } from "../src/services/credits"
-import { seedConfigs, setConfig } from "../src/services/config"
+import { seedConfigs, setConfig, getConfig } from "../src/services/config"
 import { loginWithPhone } from "../src/services/auth"
 import { getDb, closeDb } from "../src/db/client"
 import { users, bidProjects, projectSteps } from "../src/db/schema"
@@ -16,6 +16,7 @@ setDefaultTimeout(TEST_TIMEOUT_MS) // 连真库（钱路径走真账本，只 mo
 // hold(rewrite=25) → agent → 持久化 → settle 足额；失败 settleFailed 净 0；余额不足 402；content 未 done 409。
 
 let agentFail = false
+let agentReturnsProse = false // 置 true 模拟模型纯文字回答（无任何 HTML 标签）
 let settleFail = false // 置 true 模拟 settle 瞬断（持久化已成功）
 let duringRewrite: (() => Promise<void>) | null = null // agent 调用期间执行（模拟并发 PATCH 编辑）
 const captured: {
@@ -46,7 +47,7 @@ const mockDeps: Partial<ProjectDeps> = {
     captured.rewriteArgs = opts
     if (agentFail) throw new Error("agent boom")
     if (duringRewrite) await duringRewrite() // 改写耗时窗口里的并发编辑
-    return { chapter_id: opts.chapterId, html: NEW_HTML }
+    return { chapter_id: opts.chapterId, html: agentReturnsProse ? "这一章主要修改了响应时间与故障分级。" : NEW_HTML }
   },
 }
 
@@ -62,9 +63,14 @@ let threadId = ""
 let draftProjectId = "" // A 的项目，content 未 done
 let poorProjectId = "" // B 的项目，content done 但 B 没积分
 
+let prevSignupGrant: unknown
+
 beforeAll(async () => {
   await seedConfigs()
   await setConfig("credit_cost.rewrite", 25) // 钉死口径，与环境解耦
+  // 本文件用绝对余额断言（100→75、B=0）：注册赠送必须钉 0，否则新用户带 200 分全盘打偏（同 checklist.export 惯例）
+  prevSignupGrant = await getConfig("signup_grant_credits")
+  await setConfig("signup_grant_credits", 0)
   const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
   tokenA = a.token
   userA = a.user.id
@@ -107,6 +113,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  await setConfig("signup_grant_credits", Number(prevSignupGrant ?? 200)) // 还原注册赠送（beforeAll 钉过 0）
   await getDb().delete(users).where(inArray(users.id, [userA, userB])) // 项目/步/账本随 user 级联删
   await closeDb()
 })
@@ -165,6 +172,20 @@ describe("POST /:id/chapters/:chapterId/rewrite 单章改写（真账本）", ()
       expect((await contentResult())["ch-2"]).toBe("<p>旧正文二</p>") // 失败不落任何改写
     } finally {
       agentFail = false
+    }
+  })
+
+  it("②d 模型纯文字回答（无 HTML 标签）：拒收 502 rewrite_not_html、全额退款净 0、result 不变", async () => {
+    agentReturnsProse = true
+    try {
+      const before = await getBalance(userA)
+      const res = await rewrite(projectId, "ch-2", { instruction: "你改了哪里" }, tokenA)
+      expect(res.status).toBe(502)
+      expect(((await res.json()) as { error: string }).error).toBe("rewrite_not_html")
+      expect(await getBalance(userA)).toBe(before) // settleFailed 全额退还
+      expect((await contentResult())["ch-2"]).toBe("<p>旧正文二</p>") // 废品不落库
+    } finally {
+      agentReturnsProse = false
     }
   })
 

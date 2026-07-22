@@ -21,7 +21,9 @@ afterAll(async () => {
   for (const id of madeAdmins) await getDb().delete(adminUsers).where(eq(adminUsers.id, id))
   await setConfig("credit_cost.read", 10) // 还原种子占位
   await setConfig("referral_rules", { inviterReward: 50, inviteeReward: 50, unlockOn: "invitee_first_paid", capPerUser: 500, riskMaxPerIpPerHour: 20, abandonDays: 0 }) // 还原种子占位
-  await setConfig("reward_expire_days", 30) // 还原种子占位
+  await setConfig("reward_expire_days", 0) // 还原种子默认（0=不过期）
+  await setConfig("signup_grant_credits", 200) // 还原种子默认（新增两键测试改过；放 afterAll 保证断言失败也还原）
+  await setConfig("grant_expire_days", 0)
   await getDb().delete(billingConfigs).where(eq(billingConfigs.key, "test_free_key"))
   await closeDb()
 })
@@ -149,8 +151,7 @@ describe("spec327 配置写入形状校验（钱相关键白名单）", () => {
       }
       expect(await getConfig<number>(key)).toBe(66) // 坏值全部拒绝，维持上一次合法值
     }
-    await setConfig("signup_grant_credits", 200) // 还原（signup-grant 测试依赖）
-    await setConfig("grant_expire_days", 0)
+    // 还原在 afterAll：写在这里的话断言中途失败会跳过还原，66 泄漏进共享库
   })
 
   it("白名单外任意键仍宽松直存（现行为不变）", async () => {

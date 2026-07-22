@@ -16,8 +16,9 @@ const SIGNUP_GRANT_DEFAULT = 200
 async function grantSignupBonus(userId: string): Promise<void> {
   const amount = Number((await getConfig("signup_grant_credits")) ?? SIGNUP_GRANT_DEFAULT)
   if (!Number.isFinite(amount) || amount <= 0) return
-  // pickNonNegative 而非 ||：配置 0 是合法值（不过期），|| 会把 0 吞成缺省 30 天
-  const days = pickNonNegative(await getConfig("grant_expire_days"), 30)
+  // pickNonNegative 而非 ||：配置 0 是合法值（不过期），|| 会把 0 吞成缺省。
+  // 缺键兜底必须与种子默认(0)和后台展示兜底(0)一致，否则后台显示"不过期"实际却发 30 天过期
+  const days = pickNonNegative(await getConfig("grant_expire_days"), 0)
   await grant(userId, amount, {
     type: "grant",
     sourceBatch: "signup",
