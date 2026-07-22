@@ -37,7 +37,7 @@ import {
 const UNLOCK_IMMEDIATE = "immediate"
 const UNLOCK_ON_OPTIONS = [
   { value: UNLOCK_IMMEDIATE, label: "被邀请人注册即发放" },
-  { value: "invitee_first_paid", label: "充值即发放" },
+  { value: "invitee_first_paid", label: "充值/开通会员即发放" },
 ]
 
 // 五个数值字段的展示元数据（unlockOn 是下拉框，reward_expire_days 是独立键，单独渲染）。
