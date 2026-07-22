@@ -16,7 +16,7 @@ import { ragRunInput } from "../services/rag-config"
 import { credentialsRunInput, type CredentialInput } from "../services/credentials"
 import { toCamel, toSnake } from "../lib/case"
 import { parsePagination, pagedBody, pagedResult } from "../lib/pagination"
-import { presignGet } from "../storage/s3"
+import { presignGet, deleteObject } from "../storage/s3"
 
 // 与 agent 节点序一致（spec201 NODE_ORDER）；定义随收尾核心迁至 step-finalize.ts，这里 re-export 保兼容
 export { STEP_ORDER } from "../services/step-finalize"
@@ -807,6 +807,32 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const base = projectName(p.name, p.tenderFileKey).replace(/\.(pdf|docx?|xlsx?|pptx?|zip|rar)(?=·|（|$)/i, "")
     const filename = `${base}-${ARTIFACT_NAME[kind]}`
     return c.json({ url: await presign(key, 300, filename), filename })
+  })
+
+  // 删除标书（前端有二次确认）：生成中（有 running 步）的拒删——删了会打断在途 run 且钱已预扣；
+  // 连带清理：steps 随 FK 级联删，上传文件记录按 key 删，MinIO 对象（招标文件 + 导出产物）
+  // best-effort 删（残留只占存储不影响业务）。账本不动：已消费积分不随删除退回。
+  r.delete("/:id", async (c) => {
+    const { id } = c.req.param()
+    if (!isUuid(id)) return c.json({ error: "not_found" }, 404)
+    const p = await ownedProject(id, getUserId(c))
+    if (!p) return c.json({ error: "not_found" }, 404)
+    const [running] = await getDb()
+      .select({ id: projectSteps.id })
+      .from(projectSteps)
+      .where(and(eq(projectSteps.projectId, p.id), eq(projectSteps.status, "running")))
+      .limit(1)
+    if (running) return c.json({ error: "project_running" }, 409)
+    // 待清对象：全部招标文件 + export 步产物（result 即 artifacts 字典 {docx,pdf,pptx}）
+    const keys = new Set<string>(p.tenderFileKeys ?? (p.tenderFileKey ? [p.tenderFileKey] : []))
+    const exportRow = await latestDoneStep(p.id, "export")
+    for (const v of Object.values((exportRow?.result as Record<string, unknown>) ?? {})) {
+      if (typeof v === "string" && v.startsWith("artifacts/")) keys.add(v)
+    }
+    await getDb().delete(bidProjects).where(eq(bidProjects.id, p.id))
+    if (keys.size) await getDb().delete(projectFiles).where(inArray(projectFiles.key, [...keys]))
+    for (const k of keys) await deleteObject(k).catch(() => {})
+    return c.json({ ok: true })
   })
 
   return r

@@ -17,7 +17,9 @@ import {
   AlertTriangle,
   UploadCloud,
 } from "lucide-react"
-import { listProjects, setCurrentProjectId, type ProjectListItem } from "@/lib/project"
+import { Trash2 } from "lucide-react"
+import { ApiError } from "@/lib/api-client"
+import { listProjects, setCurrentProjectId, deleteProject, type ProjectListItem } from "@/lib/project"
 
 type CurrentStep = ProjectListItem["currentStep"]
 
@@ -56,6 +58,30 @@ export default function ProjectsPage() {
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState("")
+  // 删除流程：目标 → 二次确认弹层 → 调接口 → 本地移除；生成中的后端 409 拒删，在弹层内提示
+  const [deleteTarget, setDeleteTarget] = useState<ProjectListItem | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+
+  async function confirmDelete() {
+    if (!deleteTarget || deleting) return
+    setDeleting(true)
+    setDeleteError(null)
+    try {
+      await deleteProject(deleteTarget.id)
+      setProjects((prev) => prev.filter((p) => p.id !== deleteTarget.id))
+      setTotal((t) => Math.max(0, t - 1))
+      setDeleteTarget(null)
+    } catch (e) {
+      setDeleteError(
+        e instanceof ApiError && e.code === "project_running"
+          ? "该标书正在生成中，等当前步骤结束后再删除"
+          : "删除失败，请稍后重试",
+      )
+    } finally {
+      setDeleting(false)
+    }
+  }
   // 焦点刷新读当前页码用（effect 只挂一次,直读 state 会闭包旧值）
   const pageRef = useRef(page)
   pageRef.current = page
@@ -131,9 +157,23 @@ export default function ProjectsPage() {
       {!loading && filtered.length > 0 && (
         <div className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-3">
           {filtered.map((p) => (
-            <ProjectCard key={p.id} project={p} />
+            <ProjectCard key={p.id} project={p} onDelete={() => setDeleteTarget(p)} />
           ))}
         </div>
+      )}
+
+      {/* 删除二次确认（生成中的后端拒删并提示） */}
+      {deleteTarget && (
+        <DeleteConfirm
+          project={deleteTarget}
+          deleting={deleting}
+          error={deleteError}
+          onCancel={() => {
+            setDeleteTarget(null)
+            setDeleteError(null)
+          }}
+          onConfirm={() => void confirmDelete()}
+        />
       )}
 
       {/* 加载更多（有下一页时展示；搜索只作用于已加载部分） */}
@@ -284,7 +324,7 @@ function EmptyProjects() {
 }
 
 /* 单个项目卡片：点击设为当前项目并跳到对应工具页续作 */
-function ProjectCard({ project: p }: { project: ProjectListItem }) {
+function ProjectCard({ project: p, onDelete }: { project: ProjectListItem; onDelete: () => void }) {
   const stage = stepMap[p.currentStep] ?? stepMap.read
   const Icon = stage.icon
   const progress = p.totalSteps > 0 ? Math.min(100, Math.round((p.stepIndex / p.totalSteps) * 100)) : 0
@@ -292,8 +332,21 @@ function ProjectCard({ project: p }: { project: ProjectListItem }) {
     <Link
       href={stage.href}
       onClick={() => setCurrentProjectId(p.id)}
-      className="group rounded-2xl border border-border bg-card p-4 transition-colors hover:border-primary/40"
+      className="group relative rounded-2xl border border-border bg-card p-4 transition-colors hover:border-primary/40"
     >
+      <button
+        type="button"
+        title="删除标书"
+        aria-label={`删除「${p.name}」`}
+        onClick={(e) => {
+          e.preventDefault() // 别触发卡片跳转
+          e.stopPropagation()
+          onDelete()
+        }}
+        className="absolute right-2.5 top-2.5 hidden size-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive group-hover:flex"
+      >
+        <Trash2 className="size-4" />
+      </button>
       <div className="flex items-start gap-3.5">
         <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground group-hover:gradient-brand group-hover:text-white">
           <Icon className="size-5" />
@@ -324,5 +377,51 @@ function ProjectCard({ project: p }: { project: ProjectListItem }) {
         </div>
       </div>
     </Link>
+  )
+}
+
+/* 删除二次确认弹层：点名项目、说清连带删除范围与不可恢复；生成中被后端拒删时就地提示 */
+function DeleteConfirm({
+  project,
+  deleting,
+  error,
+  onCancel,
+  onConfirm,
+}: {
+  project: ProjectListItem
+  deleting: boolean
+  error: string | null
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/40 p-4" onClick={onCancel}>
+      <div className="w-full max-w-md rounded-2xl border border-border bg-card p-5" onClick={(e) => e.stopPropagation()}>
+        <p className="text-sm font-semibold text-foreground">删除标书「{project.name}」？</p>
+        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+          删除后该标书的全部内容（读标结果、提纲、正文、审查报告）、上传的招标文件与已导出文件将一并清除，
+          <b className="text-destructive">不可恢复</b>；已消耗的积分不退回。
+        </p>
+        {error && <p className="mt-2 text-xs font-medium text-destructive">{error}</p>}
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-lg border border-border px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-muted"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={deleting}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-destructive px-3 py-1.5 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            {deleting ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+            确认删除
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
