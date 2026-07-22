@@ -1,13 +1,14 @@
 "use client"
 
-import { Bold, Heading2, ImagePlus, Italic, Library, List, Maximize2, Minimize2, Undo2 } from "lucide-react"
+import { Bold, Heading2, ImagePlus, Italic, Library, List, Maximize2, Minimize2, Table, Undo2 } from "lucide-react"
 
-/** 正文编辑工具栏：撤销 + 加粗/斜体/小标题/列表/插图 + 「从资料库插入」+ 全屏切换。
+/** 正文编辑工具栏：撤销 + 加粗/斜体/小标题/列表/插图/插表格 + 「从资料库插入」+ 全屏切换。
  *  全屏按钮并入工具栏而非独立元素：窄视口断行时整条工具栏一起换行，不会孤零零挤出一行。 */
 export function EditorToolbar({
   exec,
   onUndo,
   onOpenLibrary,
+  onInsertImage,
   fullscreen,
   onToggleFullscreen,
 }: {
@@ -16,13 +17,19 @@ export function EditorToolbar({
   /** 章节级撤销（误删回撤）：先撤未保存改动，再逐级回退历史保存版 */
   onUndo: () => void
   onOpenLibrary: () => void
+  /** 选本地图片插入正文（页面持有文件选择器与选区保存/恢复，此前是写死的占位示意图） */
+  onInsertImage: () => void
   /** 工作区全屏态（目录/正文/AI 助手三栏一起铺满，Esc 退出） */
   fullscreen: boolean
   onToggleFullscreen: () => void
 }) {
-  function insertImage() {
-    const url = "/professional-business-chart.png"
-    exec("insertHTML", `<img src="${url}" alt="示意图" class="my-3 rounded-lg border border-border max-w-full" />`)
+
+  // 插入 3×3 空表（首行加粗当表头，占位文字直接改）：与 AI 生成正文同款裸 table 标签，
+  // 编辑器样式与导出 docx 渲染都按既有表格路径处理；表后补空段落，光标能落到表格下方
+  function insertTable() {
+    const head = `<tr><td><strong>项目</strong></td><td><strong>内容</strong></td><td><strong>说明</strong></td></tr>`
+    const row = `<tr><td>　</td><td>　</td><td>　</td></tr>`
+    exec("insertHTML", `<table>${head}${row}${row}</table><p>　</p>`)
   }
 
   return (
@@ -42,8 +49,11 @@ export function EditorToolbar({
       <ToolBtn onClick={() => exec("insertUnorderedList")} label="列表">
         <List className="size-4" />
       </ToolBtn>
-      <ToolBtn onClick={insertImage} label="插入图片">
+      <ToolBtn onClick={onInsertImage} label="插入图片">
         <ImagePlus className="size-4" />
+      </ToolBtn>
+      <ToolBtn onClick={insertTable} label="插入表格">
+        <Table className="size-4" />
       </ToolBtn>
       <button
         onClick={onOpenLibrary}

@@ -25,7 +25,6 @@ export function useExport(opts: {
   checkState: "idle" | "checking" | "done"
   runCheck: () => Promise<RealRisk | null>
   softPassed: boolean
-  presentCost: number
   reviewCost: number
   /** 体检未跑：页面弹计费确认（checkConfirm="export"） */
   requestCheckConfirm: () => void
@@ -68,19 +67,13 @@ export function useExport(opts: {
     setExportOpen((v) => !v)
   }
 
-  /** 步序闸：agent 图线性（…→review→present→export），export 只能在 present 完成后跑。
-      currentStep 非 export/done 时不调 runStep("export")（后端必 409），改给完成路径提示。 */
+  /** 步序闸：export 在废标审查完成后即可跑——述标（present）已是独立可选步，agent 图有
+      review→export 条件边直达，不再要求先完成述标。currentStep 早于 review 完成时不调
+      runStep("export")（后端必 409），给完成路径提示。 */
   function exportGateHint(): ExportGate | null {
     const cur = info?.project.currentStep
-    if (!cur || cur === "export" || cur === "done") return null
-    const reviewDone = opts.checkState === "done" || !!opts.findings
-    if (cur === "present" || reviewDone)
-      return { text: `导出前需完成：述标生成（${opts.presentCost} 积分）`, href: "/present", label: "前往述标页" }
-    return {
-      text: `导出前需完成：废标审查（${opts.reviewCost} 积分）→ 述标生成（${opts.presentCost} 积分）`,
-      href: "/risk",
-      label: "前往审查页",
-    }
+    if (!cur || cur === "present" || cur === "export" || cur === "done") return null
+    return { text: `导出前需完成：废标审查（${opts.reviewCost} 积分）`, href: "/risk", label: "前往审查页" }
   }
 
   /* 付费用户在导出菜单点「确认导出」：体检未跑不再静默触发，先显式确认计费；再按风险弱拦截 */

@@ -46,6 +46,7 @@ import { ExportMenu, type BidType } from "./export-menu"
 import { ReportDialog } from "./report-dialog"
 import { useHealthCheck } from "./use-health-check"
 import { useEditorInsert, libraryItemHtml } from "./use-editor-insert"
+import { imageFileToDataUrl } from "@/lib/image-insert"
 
 // agent content 步结果（camelCase）：{chapterId: bodyHtml}；章结构取 outline 步结果
 type RealChapters = Record<string, string>
@@ -96,7 +97,6 @@ export default function ContentPage() {
   const { overview, balance, isMember, loading: membershipLoading, error: membershipError, reload: reloadMembership } = useMembership()
   /* 计费口径：优先后端实时配置（运营可改），缺省回落默认值 */
   const reviewCost = creditCostValue(overview, "review", 60)
-  const presentCost = creditCostValue(overview, "present", 80)
   const rewriteCost = creditCostValue(overview, "rewrite", 25)
   const contentShortCost = creditCostValue(overview, "content_short", 40)
   const contentLongCost = creditCostValue(overview, "content_long", 80)
@@ -132,7 +132,7 @@ export default function ContentPage() {
     projectId, info, membershipLoading, canAfford,
     openPaywall: () => openPaywall("export"),
     canCheck, isReal, findings, checkState, runCheck, softPassed,
-    presentCost, reviewCost,
+    reviewCost,
     requestCheckConfirm: () => setCheckConfirm("export"),
     onHighRisk: () => setExportConfirm(true),
   })
@@ -254,6 +254,26 @@ export default function ContentPage() {
     insertHtml(libraryItemHtml(item))
     saveEditor()
     setLibraryOpen(false)
+  }
+
+  /* 插入图片：选本地图 → 压缩为 data URL 内嵌正文（此前是写死的占位示意图，生产实测被当成 bug）。
+     文件对话框会夺走编辑器选区，与资料库插入同款 capture/insert 处理。 */
+  const imageInputRef = useRef<HTMLInputElement>(null)
+  function openImagePicker() {
+    captureSelection()
+    imageInputRef.current?.click()
+  }
+  async function onImageChosen(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = "" // 允许连续选同一文件
+    if (!file || !file.type.startsWith("image/")) return
+    try {
+      const dataUrl = await imageFileToDataUrl(file)
+      insertHtml(`<img src="${dataUrl}" alt="插图" class="my-3 rounded-lg border border-border max-w-full" />`)
+      saveEditor()
+    } catch {
+      window.alert("图片读取失败，请换一张（支持 JPG/PNG 等常见格式）")
+    }
   }
 
   /* 点击「一键废标体检」按钮：真实项目首次体检先显式确认计费；已有结果开合摘要弹层 */
@@ -501,9 +521,11 @@ export default function ContentPage() {
               exec={exec}
               onUndo={undoChapter}
               onOpenLibrary={openLibrary}
+              onInsertImage={openImagePicker}
               fullscreen={editorFullscreen}
               onToggleFullscreen={() => setEditorFullscreen((v) => !v)}
             />
+            <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => void onImageChosen(e)} />
           </div>
 
           {active.html.trim() ? (
@@ -720,7 +742,6 @@ export default function ContentPage() {
         <CheckConfirm
           cost={reviewCost}
           balance={balance}
-          note={checkConfirm === "export" ? `体检完成后还需完成述标生成（${presentCost} 积分），才能导出标书文件。` : undefined}
           skip={
             checkConfirm === "export" && !exportGateHint()
               ? {
