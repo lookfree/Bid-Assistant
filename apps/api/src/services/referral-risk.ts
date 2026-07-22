@@ -1,6 +1,6 @@
 import { and, eq, gte, sql } from "drizzle-orm"
 import { getDb } from "../db/client"
-import { referrals, referralRiskAudits, userIdentities } from "../db/schema"
+import { referrals, referralRiskAudits, userIdentities, creditTransactions } from "../db/schema"
 import type { Tx } from "./credits"
 
 // 推荐防刷风控（spec307）：建关系前判定，命中即冻结（status=frozen 不进可发奖）+ 写审计留痕。
@@ -10,6 +10,7 @@ import type { Tx } from "./credits"
 type Db = Tx | ReturnType<typeof getDb>
 
 const IP_BURST_WINDOW_MS = 3_600_000 // 同 IP 集中判定窗口：最近 1 小时
+const DAY_MS = 86_400_000
 
 export type RiskVerdict = { frozen: boolean; reason?: string }
 
@@ -45,6 +46,25 @@ export async function assessRisk(
     if (Number(c?.n ?? 0) >= opts.maxPerIpPerHour) return { frozen: true, reason: "same_ip_burst" }
   }
   return { frozen: false }
+}
+
+/**
+ * 「注册即弃」判定（spec327 Task C，发奖前置闸门，与风控判定同一模块）：
+ * 绑定超过 abandonDays 天，且该被邀请人从未产生任何负向消费流水（credit_transactions.amount<0，
+ * 代表真实用过积分），才判定为白嫖注册刷奖励，应冻结不发。
+ * abandonDays<=0 视为闸门关闭，不查库直接放行（配置语义 + 避免无谓查询）。
+ * “超过 N 天”取严格大于——恰好 N 天整视为未超期，照发（边界照发，从宽不误伤）。
+ */
+export async function assessAbandoned(inviteeId: string, boundAt: Date, abandonDays: number): Promise<boolean> {
+  if (abandonDays <= 0) return false
+  if (Date.now() - boundAt.getTime() <= abandonDays * DAY_MS) return false // 未超期
+  // 只判存在性，limit 1 短路；走 credit_tx_user_idx（userId 索引），非全表扫描
+  const [row] = await getDb()
+    .select({ id: creditTransactions.id })
+    .from(creditTransactions)
+    .where(and(eq(creditTransactions.userId, inviteeId), sql`${creditTransactions.amount} < 0`))
+    .limit(1)
+  return !row
 }
 
 /** 冻结留痕：写风控审计（reason + detail 前后值）。 */

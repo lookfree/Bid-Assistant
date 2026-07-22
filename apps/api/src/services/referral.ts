@@ -5,7 +5,7 @@ import { referralCodes, referrals, creditTransactions, paymentOrders } from "../
 import { getConfig, pickNonNegative } from "./config"
 import { grant, lockUserBalanceRow, type Tx } from "./credits"
 import { DuplicateInviteeError, InvalidCodeError, SelfReferralError } from "./referral-errors"
-import { assessRisk, freezeAndAudit } from "./referral-risk"
+import { assessRisk, assessAbandoned, freezeAndAudit } from "./referral-risk"
 
 // 推荐奖励引擎（架构 §6.2，spec307）：规则全配置化（referral_rules + reward_expire_days），代码不写死数值。
 // 每用户唯一邀请码 → 被邀请人注册绑定 → 两段发放（立即/首付延迟解锁）→ 双方各得配置额度 → 封顶 capped → 风控冻结。
@@ -22,6 +22,7 @@ type ReferralRules = {
   unlockOn: string // "" 立即发；"invitee_first_paid" 延迟解锁
   capPerUser: number
   riskMaxPerIpPerHour: number
+  abandonDays?: number // 注册即弃闸门天数，0/缺失=关闭（spec327 Task C；老库行可能无此字段）
 }
 
 async function getRules(): Promise<ReferralRules> {
@@ -108,7 +109,24 @@ async function unlockAndReward(referralId: string): Promise<void> {
   const rules = await getRules()
   const expireDays = pickNonNegative(await getConfig<number>("reward_expire_days"), 0) // 钱相关：挡 NaN/负值静默采纳
   const [r] = await getDb().select().from(referrals).where(eq(referrals.id, referralId))
-  if (!r || !r.inviteeId || r.rewardState !== "pending") return // 已解锁/封顶/无被邀请人 → 幂等返回
+  if (!r || !r.inviteeId || r.status !== "bound" || r.rewardState !== "pending") return // 已解锁/封顶/冻结/无被邀请人 → 幂等返回
+
+  // 「注册即弃」闸门（spec327 Task C）：立即发放（bindByCode）与延迟解锁（onInviteeFirstPaid/sweep）
+  // 都收口到本函数，闸门加在此处即覆盖两条路径。命中 → 冻结关系 + 审计，不发任何一方。
+  // pickNonNegative 兜底：老库行缺该字段/坏值一律按 0（关闭）处理，绝不因缺配置阻断发放。
+  const abandonDays = pickNonNegative(rules.abandonDays, 0)
+  if (abandonDays > 0 && (await assessAbandoned(r.inviteeId, r.createdAt, abandonDays))) {
+    await getDb().transaction(async (tx) => {
+      // WHERE status='bound' 兜并发/重复触发：已冻结则本次 no-op，不重复写审计（幂等）
+      const frozen = await tx
+        .update(referrals)
+        .set({ status: "frozen", frozenReason: "abandoned" })
+        .where(and(eq(referrals.id, referralId), eq(referrals.status, "bound")))
+        .returning({ id: referrals.id })
+      if (frozen.length > 0) await freezeAndAudit(tx, { referralId, inviteeId: r.inviteeId!, reason: "abandoned" })
+    })
+    return
+  }
 
   const inviterPaid = await grantReward({ userId: r.inviterId, amount: rules.inviterReward, referralId, role: "inviter", cap: rules.capPerUser, expireDays })
   const inviteePaid = await grantReward({ userId: r.inviteeId, amount: rules.inviteeReward, referralId, role: "invitee", cap: rules.capPerUser, expireDays })
