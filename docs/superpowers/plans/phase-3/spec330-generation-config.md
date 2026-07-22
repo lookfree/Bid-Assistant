@@ -50,14 +50,14 @@
 
 ## Tasks（TDD）
 
-- [ ] T1 agent：content 规划轮字数预算注入（prompt + 单测:有/无 target_chars 的消息差异）;
+- [x] T1 agent：content 规划轮字数预算注入（prompt + 单测:有/无 target_chars 的消息差异）;
       写手 prompt 目标字数规则。
-- [ ] T2 agent：render_docx format 参数（字体/字号/行距/页边距映射 + eastAsia）;单测:配置后 docx 的
+- [x] T2 agent：render_docx format 参数（字体/字号/行距/页边距映射 + eastAsia）;单测:配置后 docx 的
       styles.xml/sectPr 断言;缺省字节级回归。
-- [ ] T3 api：两步 runInput 的 target_chars/format zod 白名单校验 + 真库测试（透传/坏值 400/缺省不变）。
-- [ ] T4 web：generation-config 弹层（滑杆+自定义+格式面板+预设+预计档位）;start/export 透传;
+- [x] T3 api：两步 runInput 的 target_chars/format zod 白名单校验 + 真库测试（透传/坏值 400/缺省不变）。
+- [x] T4 web：generation-config 弹层（滑杆+自定义+格式面板+预设+预计档位）;start/export 透传;
       localStorage 偏好;typecheck+测试。
-- [ ] T5 部署 230 全链验证;勾账本文件;docs 镜像 mbp。
+- [x] T5 部署 230 全链验证;勾账本文件;docs 镜像 mbp。
 
 ## 验收
 
