@@ -33,12 +33,12 @@
 
 ## Tasks（TDD,每任务一测一实现一提交）
 
-- [ ] T1 agent：graph 条件入口/条件边 + 路由函数单测（START→review、read→review、缺省不变）。
-- [ ] T2 agent：review 节点外部标书解析（bid_file_key→chapters;read 空→通用自查提示词）+ 节点测试（mock gateway）。
-- [ ] T3 api：migration 0022（kind + bid_file_key,幂等）+ journal;POST /projects/review 路由 + 真库测试（两种模式建项、越权/缺参）。
-- [ ] T4 api：review-kind 步序闸与推进分叉 + 真库测试（read→review→done;禁 outline/export）。
-- [ ] T5 web：/risk 入口态双卡 + 上传流 + 项目选择器;typecheck+既有测试全绿。
-- [ ] T6 收尾：mbp 全量相关套件绿;部署 230(agent/api/web);容器内验证;本文件勾账。
+- [x] T1 agent：graph 条件入口/条件边 + 路由函数单测（START→review、read→review、缺省不变）。
+- [x] T2 agent：review 节点外部标书解析（bid_file_key→chapters;read 空→通用自查提示词）+ 节点测试（mock gateway）。
+- [x] T3 api：migration 0022（kind + bid_file_key,幂等）+ journal;POST /projects/review 路由 + 真库测试（两种模式建项、越权/缺参）。
+- [x] T4 api：review-kind 步序闸与推进分叉 + 真库测试（read→review→done;禁 outline/export）。
+- [x] T5 web：/risk 入口态双卡 + 上传流 + 项目选择器;typecheck+既有测试全绿。
+- [x] T6 收尾：mbp 全量相关套件绿;部署 230(agent/api/web);容器内验证;本文件勾账。
 
 ## 验收
 
