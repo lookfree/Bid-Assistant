@@ -100,6 +100,29 @@ const packageBodySchema = z.union([z.object({ id: z.string().min(1), name: z.str
 // 独立审查建项（spec328）：线下标书必传,招标文件可选（附了做对照审查,否则通用自查）。
 const reviewProjectSchema = z.object({ bidFileKey: z.string().min(1), tenderFileKey: z.string().min(1).optional() })
 
+// 生成配置（spec330）：content 步收目标字数,export 步收输出格式;白名单校验,坏值 400 不占步位不预扣。
+const marginSchema = z.number().min(0.5).max(6)
+const fontEnum = z.enum(["宋体", "仿宋", "楷体", "黑体"])
+const sizeEnum = z.enum(["三号", "四号", "小四", "五号"])
+const generationConfigSchema = z
+  .object({
+    targetChars: z.number().int().min(10_000).max(500_000).optional(),
+    format: z
+      .object({
+        margin_cm: z.object({ top: marginSchema, bottom: marginSchema, left: marginSchema, right: marginSchema }).partial().optional(),
+        heading_font: fontEnum.optional(),
+        heading_size: sizeEnum.optional(),
+        heading_bold: z.boolean().optional(),
+        body_font: fontEnum.optional(),
+        body_size: sizeEnum.optional(),
+        body_indent_chars: z.union([z.literal(0), z.literal(2)]).optional(),
+        line_spacing: z.union([z.literal(1), z.literal(1.5), z.literal("fixed22")]).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+
 // 克隆项目请求体（spec324）：同一招标文件投另一个包=另建项目。package = 新项目投的包——
 // 多包流程下建项即选包（不再建空项目后补选）；name 缺省时按包名/「（再投）」派生。
 const cloneBodySchema = z
@@ -496,6 +519,13 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     // 先于占位行校验（400 不留残行）；企业模板解析需要 userId（属主+分类校验），故 userId 提到这之前取。
     const runInput = step === "present" ? await parsePresentInput(await c.req.json().catch(() => ({})), userId) : {}
     if (!runInput) return c.json({ error: "invalid_input" }, 400)
+    // spec330 生成配置：content 收 targetChars、export 收 format;坏值 400（先于占位/预扣）
+    const genParsed =
+      step === "content" || step === "export"
+        ? generationConfigSchema.safeParse(await c.req.json().catch(() => ({})))
+        : { success: true as const, data: {} as z.infer<typeof generationConfigSchema> }
+    if (!genParsed.success) return c.json({ error: "invalid_input" }, 400)
+    const gen = genParsed.data
 
     const p = await ownedProject(id, userId)
     if (!p) return c.json({ error: "not_found" }, 404)
@@ -547,6 +577,9 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         ...(step === "export" ? await exportCredentials(userId) : {}),
         // spec328：线下标书审查——review 节点用该 key 确定性解析出 chapters（无 LLM 不计费）
         ...(step === "review" && p.bidFileKey ? { bid_file_key: p.bidFileKey } : {}),
+        // spec330 生成配置：目标字数（规划轮拆各章预算）/ 输出格式（docx 渲染）
+        ...(step === "content" && gen.targetChars ? { target_chars: gen.targetChars } : {}),
+        ...(step === "export" && gen.format ? { format: gen.format } : {}),
       },
       state_overrides: await stateOverrides(p.id, step as Step),
     }

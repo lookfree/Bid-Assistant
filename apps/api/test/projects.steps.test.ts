@@ -212,6 +212,44 @@ describe("/api/projects 按步编排", () => {
     expect(after2?.status).toBe("done")
   })
 
+  it("spec330 生成配置：content 收 targetChars 转 run_input.target_chars;坏值 400 不预扣", async () => {
+    const [p5] = await getDb()
+      .insert(bidProjects)
+      .values({ userId, threadId: `proj-${crypto.randomUUID()}`, currentStep: "content", status: "running" })
+      .returning()
+    const bad = await app.request(`/api/projects/${p5!.id}/steps/content`, {
+      method: "POST", headers: auth(), body: JSON.stringify({ targetChars: 5000 }), // 低于 1 万下限
+    })
+    expect(bad.status).toBe(400)
+    const before = captured.preDeductSteps.length
+    expect(captured.preDeductSteps.length).toBe(before) // 未预扣
+    const ok = await app.request(`/api/projects/${p5!.id}/steps/content`, {
+      method: "POST", headers: auth(), body: JSON.stringify({ targetChars: 120000 }),
+    })
+    expect(ok.status).toBe(200)
+    await ok.text()
+    expect((captured.createRunOpts?.input as { run_input: { target_chars?: number } }).run_input.target_chars).toBe(120000)
+  })
+
+  it("spec330 生成配置：export 收 format 转 run_input.format;非法字体 400", async () => {
+    const [p6] = await getDb()
+      .insert(bidProjects)
+      .values({ userId, threadId: `proj-${crypto.randomUUID()}`, currentStep: "export", status: "running" })
+      .returning()
+    const bad = await app.request(`/api/projects/${p6!.id}/steps/export`, {
+      method: "POST", headers: auth(), body: JSON.stringify({ format: { body_font: "Comic Sans" } }),
+    })
+    expect(bad.status).toBe(400)
+    const ok = await app.request(`/api/projects/${p6!.id}/steps/export`, {
+      method: "POST", headers: auth(),
+      body: JSON.stringify({ format: { body_font: "仿宋", margin_cm: { top: 2.2 }, line_spacing: 1.5 } }),
+    })
+    expect(ok.status).toBe(200)
+    await ok.text()
+    const ri = (captured.createRunOpts?.input as { run_input: { format?: Record<string, unknown> } }).run_input
+    expect(ri.format).toEqual({ body_font: "仿宋", margin_cm: { top: 2.2 }, line_spacing: 1.5 })
+  })
+
   it("再推 read（已不是当前步）→ 409", async () => {
     const res = await app.request(`/api/projects/${projectId}/steps/read`, { method: "POST", headers: auth() })
     expect(res.status).toBe(409)
