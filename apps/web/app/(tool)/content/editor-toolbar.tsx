@@ -46,6 +46,25 @@ export function EditorToolbar({
       <ToolBtn onClick={() => exec("formatBlock", "<h3>")} label="小标题">
         <Heading2 className="size-4" />
       </ToolBtn>
+      {/* 字号：作用于当前选中文字（execCommand fontSize 1-7 档）。应用后拨回占位，可连续换档 */}
+      <select
+        value=""
+        title="字号（先选中文字再选档位）"
+        aria-label="字号"
+        onMouseDown={(e) => e.stopPropagation()}
+        onChange={(e) => {
+          if (e.target.value) exec("fontSize", e.target.value)
+        }}
+        className="h-8 rounded-lg border border-transparent bg-transparent px-1 text-xs text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground"
+      >
+        <option value="" disabled>
+          字号
+        </option>
+        <option value="2">小</option>
+        <option value="3">正文</option>
+        <option value="4">大</option>
+        <option value="5">特大</option>
+      </select>
       <ToolBtn onClick={() => exec("insertUnorderedList")} label="列表">
         <List className="size-4" />
       </ToolBtn>

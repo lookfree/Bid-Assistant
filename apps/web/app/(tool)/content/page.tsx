@@ -47,6 +47,7 @@ import { ReportDialog } from "./report-dialog"
 import { useHealthCheck } from "./use-health-check"
 import { useEditorInsert, libraryItemHtml } from "./use-editor-insert"
 import { imageFileToDataUrl } from "@/lib/image-insert"
+import { TableTools } from "./table-tools"
 
 // agent content 步结果（camelCase）：{chapterId: bodyHtml}；章结构取 outline 步结果
 type RealChapters = Record<string, string>
@@ -256,8 +257,7 @@ export default function ContentPage() {
     setLibraryOpen(false)
   }
 
-  /* 插入图片：选本地图 → 压缩为 data URL 内嵌正文（此前是写死的占位示意图，生产实测被当成 bug）。
-     文件对话框会夺走编辑器选区，与资料库插入同款 capture/insert 处理。 */
+  /* 插入图片：选本地图 → 压缩 data URL 内嵌（原是写死占位图）；文件对话框夺选区，同资料库 capture/insert 处理 */
   const imageInputRef = useRef<HTMLInputElement>(null)
   function openImagePicker() {
     captureSelection()
@@ -527,6 +527,7 @@ export default function ContentPage() {
             />
             <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => void onImageChosen(e)} />
           </div>
+          <TableTools editorRef={editorRef} onChanged={saveEditor} />
 
           {active.html.trim() ? (
             <div
