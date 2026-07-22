@@ -10,6 +10,7 @@ import {
   Lightbulb,
   Copy,
   ListChecks,
+  UploadCloud,
 } from "lucide-react"
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepPageHeader } from "@/components/tool/step-page-header"
@@ -213,7 +214,11 @@ function RejectReview() {
 function EntryBar({ onOpen }: { onOpen: () => void }) {
   return (
     <div className="flex justify-end">
-      <button onClick={onOpen} className="text-xs font-medium text-primary hover:underline">
+      <button
+        onClick={onOpen}
+        className="inline-flex items-center gap-1.5 rounded-xl border border-primary/30 gradient-brand-soft px-4 py-2 text-sm font-semibold text-primary transition-opacity hover:opacity-90"
+      >
+        <UploadCloud className="size-4" />
         审查其它标书 / 上传线下标书 →
       </button>
     </div>
