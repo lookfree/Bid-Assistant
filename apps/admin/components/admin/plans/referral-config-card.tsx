@@ -36,8 +36,8 @@ import {
 // 提交/展示前再与真实取值互转，不改变 referral_rules 里存的实际字段值。
 const UNLOCK_IMMEDIATE = "immediate"
 const UNLOCK_ON_OPTIONS = [
-  { value: UNLOCK_IMMEDIATE, label: "注册绑定后立即发放" },
-  { value: "invitee_first_paid", label: "被邀请人首次付费后发放" },
+  { value: UNLOCK_IMMEDIATE, label: "被邀请人注册即发放" },
+  { value: "invitee_first_paid", label: "充值即发放" },
 ]
 
 // 五个数值字段的展示元数据（unlockOn 是下拉框，reward_expire_days 是独立键，单独渲染）。
