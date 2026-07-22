@@ -246,7 +246,7 @@ export default function ContentPage() {
   }
 
   /* 从资料库插入（选区保存/恢复与兜底追加见 use-editor-insert.ts） */
-  const { capture: captureSelection, insert: insertHtml } = useEditorInsert(editorRef)
+  const { capture: captureSelection, restore: restoreSelection, insert: insertHtml } = useEditorInsert(editorRef)
   function openLibrary() {
     captureSelection()
     setLibraryOpen(true)
@@ -522,6 +522,8 @@ export default function ContentPage() {
               onUndo={undoChapter}
               onOpenLibrary={openLibrary}
               onInsertImage={openImagePicker}
+              captureSelection={captureSelection}
+              restoreSelection={restoreSelection}
               fullscreen={editorFullscreen}
               onToggleFullscreen={() => setEditorFullscreen((v) => !v)}
             />

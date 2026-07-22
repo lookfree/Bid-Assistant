@@ -40,19 +40,25 @@ export function useEditorInsert(editorRef: RefObject<HTMLDivElement | null>) {
     }
   }
 
+  /** 恢复捕获的选区（先校验没被 DOM 变动挪动）；成功返回 true。 */
+  function restore(): boolean {
+    const ed = editorRef.current
+    const s = saved.current
+    if (!ed || !s) return false
+    ed.focus({ preventScroll: true }) // 不抢滚动：焦点复位本身不许把视口拽回顶部
+    const intact = ed.contains(s.range.startContainer) && s.range.startContainer === s.node && s.range.startOffset === s.offset
+    if (!intact) return false
+    const sel = window.getSelection()
+    sel?.removeAllRanges()
+    sel?.addRange(s.range)
+    return true
+  }
+
   function insert(html: string) {
     const ed = editorRef.current
     if (!ed) return
-    ed.focus({ preventScroll: true }) // 不抢滚动：焦点复位本身不许把视口拽回顶部
-    let inserted = false
-    const s = saved.current
-    const intact = s && ed.contains(s.range.startContainer) && s.range.startContainer === s.node && s.range.startOffset === s.offset
-    if (intact) {
-      const sel = window.getSelection()
-      sel?.removeAllRanges()
-      sel?.addRange(s.range)
-      inserted = document.execCommand("insertHTML", false, html)
-    }
+    ed.focus({ preventScroll: true })
+    const inserted = restore() && document.execCommand("insertHTML", false, html)
     if (!inserted) {
       // 无光标/选区已被 DOM 变动挪走 → 追加到本章末尾并滚动到位（绝不静默丢弃、绝不误插开头）
       ed.insertAdjacentHTML("beforeend", html)
@@ -61,5 +67,5 @@ export function useEditorInsert(editorRef: RefObject<HTMLDivElement | null>) {
     saved.current = null
   }
 
-  return { capture, insert }
+  return { capture, restore, insert }
 }

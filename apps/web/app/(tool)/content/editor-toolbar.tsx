@@ -9,6 +9,8 @@ export function EditorToolbar({
   onUndo,
   onOpenLibrary,
   onInsertImage,
+  captureSelection,
+  restoreSelection,
   fullscreen,
   onToggleFullscreen,
 }: {
@@ -19,6 +21,9 @@ export function EditorToolbar({
   onOpenLibrary: () => void
   /** 选本地图片插入正文（页面持有文件选择器与选区保存/恢复，此前是写死的占位示意图） */
   onInsertImage: () => void
+  /** 字号下拉必须获焦（无法 preventDefault），按下先存编辑器选区、应用前恢复 */
+  captureSelection: () => void
+  restoreSelection: () => boolean
   /** 工作区全屏态（目录/正文/AI 助手三栏一起铺满，Esc 退出） */
   fullscreen: boolean
   onToggleFullscreen: () => void
@@ -51,9 +56,9 @@ export function EditorToolbar({
         value=""
         title="字号（先选中文字再选档位）"
         aria-label="字号"
-        onMouseDown={(e) => e.stopPropagation()}
+        onMouseDown={captureSelection}
         onChange={(e) => {
-          if (e.target.value) exec("fontSize", e.target.value)
+          if (e.target.value && restoreSelection()) exec("fontSize", e.target.value)
         }}
         className="h-8 rounded-lg border border-transparent bg-transparent px-1 text-xs text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground"
       >
@@ -76,6 +81,7 @@ export function EditorToolbar({
       </ToolBtn>
       <button
         onClick={onOpenLibrary}
+        onMouseDown={(e) => e.preventDefault()}
         className="ml-1 inline-flex items-center gap-1.5 rounded-lg border border-primary/30 gradient-brand-soft px-2.5 py-1.5 text-xs font-medium text-primary transition-opacity hover:opacity-90"
       >
         <Library className="size-3.5" />
@@ -101,6 +107,7 @@ function ToolBtn({
     <button
       type="button"
       onClick={onClick}
+      onMouseDown={(e) => e.preventDefault() /* 不夺走编辑器焦点：失焦→保存→React 重建正文 DOM 会把选区打回开头（表格/加粗插到顶部的根因） */}
       title={label}
       aria-label={label}
       className="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
