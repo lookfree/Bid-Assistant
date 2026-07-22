@@ -15,7 +15,7 @@ export const BILLING_SEED: Record<string, unknown> = {
     { id: "pack_1000", amountCents: 1000, credits: 1100 },
   ],
   credit_rate: { credits_per_cny_cent: 1 }, // 正向汇率：credits = floor(amountCents × credits_per_cny_cent)（占位 1 分=1 积分）
-  grant_expire_days: 30, // 赠送积分有效期
+  grant_expire_days: 0, // 赠送积分有效期（0=不过期，产品口径：注册送积分不过期）
   reward_expire_days: 0, // 奖励积分有效期（0=不过期，产品口径：邀请积分不过期）
   signup_grant_credits: 200, // 首次注册一次性赠送积分（运营后台可改；0 = 不赠送）
   referral_rules: {

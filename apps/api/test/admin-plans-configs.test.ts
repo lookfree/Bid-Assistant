@@ -135,6 +135,24 @@ describe("spec327 配置写入形状校验（钱相关键白名单）", () => {
     expect(await getConfig<number>("reward_expire_days")).toBe(60) // 坏值全部拒绝，维持上一次合法值
   })
 
+  it("signup_grant_credits / grant_expire_days：合法非负整数 → 200；负数/小数/非数 → 400 且库值不变", async () => {
+    const { headers } = await makeAdminSession("ops", regA)
+    for (const key of ["signup_grant_credits", "grant_expire_days"]) {
+      const put = (value: unknown) =>
+        app.request(`http://x/admin-api/plans/configs/${key}`, { method: "PUT", headers, body: JSON.stringify({ value }) })
+      const ok = await put(66)
+      expect(ok.status).toBe(200)
+      expect(await getConfig<number>(key)).toBe(66)
+      for (const bad of [-1, 1.5, "30"]) {
+        const res = await put(bad)
+        expect(res.status).toBe(400)
+      }
+      expect(await getConfig<number>(key)).toBe(66) // 坏值全部拒绝，维持上一次合法值
+    }
+    await setConfig("signup_grant_credits", 200) // 还原（signup-grant 测试依赖）
+    await setConfig("grant_expire_days", 0)
+  })
+
   it("白名单外任意键仍宽松直存（现行为不变）", async () => {
     const { headers } = await makeAdminSession("ops", regA)
     const res = await app.request("http://x/admin-api/plans/configs/test_free_key", {

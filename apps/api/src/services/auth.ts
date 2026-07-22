@@ -5,23 +5,24 @@ import { InvalidCodeError as RefInvalidCodeError, SelfReferralError, DuplicateIn
 import { createSession, findValidSession, revokeSession } from "../repos/sessions"
 import { sha256Hex } from "./crypto"
 import { grant } from "./credits"
-import { getConfig } from "./config"
+import { getConfig, pickNonNegative } from "./config"
 import type { User } from "../db/schema"
 
 // 首次注册一次性赠送积分默认额度（运营后台 billing_configs.signup_grant_credits 可覆盖）。
 const SIGNUP_GRANT_DEFAULT = 200
 
 /** 首次注册赠送积分：额度读 signup_grant_credits（缺省 200，≤0 或非法则不发）；
- *  幂等键 `signup_grant:<userId>` 保证每用户仅发一次；有效期走 grant_expire_days（缺省 30 天）。 */
+ *  幂等键 `signup_grant:<userId>` 保证每用户仅发一次；有效期走 grant_expire_days（0=不过期）。 */
 async function grantSignupBonus(userId: string): Promise<void> {
   const amount = Number((await getConfig("signup_grant_credits")) ?? SIGNUP_GRANT_DEFAULT)
   if (!Number.isFinite(amount) || amount <= 0) return
-  const days = Number(await getConfig("grant_expire_days")) || 30
+  // pickNonNegative 而非 ||：配置 0 是合法值（不过期），|| 会把 0 吞成缺省 30 天
+  const days = pickNonNegative(await getConfig("grant_expire_days"), 30)
   await grant(userId, amount, {
     type: "grant",
     sourceBatch: "signup",
     ref: "signup_bonus",
-    expireAt: new Date(Date.now() + days * 86_400_000),
+    expireAt: days > 0 ? new Date(Date.now() + days * 86_400_000) : undefined,
     idempotencyKey: `signup_grant:${userId}`,
   })
 }

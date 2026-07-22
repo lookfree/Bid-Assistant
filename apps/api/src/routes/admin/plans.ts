@@ -31,6 +31,8 @@ const CONFIG_SCHEMAS: Record<string, z.ZodTypeAny> = {
       message: "capPerUser_must_be_at_least_max_reward",
     }),
   reward_expire_days: z.number().int().nonnegative(),
+  signup_grant_credits: z.number().int().nonnegative(), // 注册赠送积分（0=不送）
+  grant_expire_days: z.number().int().nonnegative(), // 赠送积分有效期天数（0=不过期）
 }
 
 plansRouter.put("/configs/:key", requirePermission("config.write"), async (c) => {
