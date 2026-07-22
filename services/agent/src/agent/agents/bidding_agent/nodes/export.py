@@ -75,7 +75,8 @@ def make_export_node(ctx):
                        if credentials_input else None)
         await _scan_and_flag(ctx, state)
         data = render_docx(state.get("outline") or {}, state.get("chapters") or {},
-                            meta=meta, package=package, credentials=credentials)
+                            meta=meta, package=package, credentials=credentials,
+                            fmt=run_input.get("format"))  # spec330 输出格式（缺省 None=现行样式）
         key = await upload_artifact(
             ctx, "bid.docx", data,
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document")

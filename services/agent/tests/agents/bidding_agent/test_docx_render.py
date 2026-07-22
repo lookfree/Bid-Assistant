@@ -183,3 +183,34 @@ def test_render_docx_embeds_inline_data_url_images():
     assert len(media) >= 1  # 两张同内容图（python-docx 按内容去重）至少落一份；坏图被跳过未炸
     doc = Document(io.BytesIO(data))
     assert any("拓扑如下" in p.text for p in doc.paragraphs)  # 段落文字仍在
+
+
+def test_render_docx_custom_format_applies(caplog):
+    """spec330：传 fmt → A4 + 页边距 2.2/2.3、正文仿宋小四缩进2字符、标题字体字号加粗、1.5倍行距;
+    改哪项覆盖哪项（body_font 覆盖为仿宋,其余走默认）。"""
+    from docx.shared import Cm, Pt
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "方案", "group": "tech"}]}
+    data = render_docx(outline, {"t1": "<p>正文</p>"}, fmt={"body_font": "仿宋"})
+    doc = Document(io.BytesIO(data))
+    sec = doc.sections[0]
+    assert round(sec.page_width.cm, 1) == 21.0 and round(sec.page_height.cm, 1) == 29.7  # A4 纵向
+    assert round(sec.top_margin.cm, 1) == 2.2 and round(sec.left_margin.cm, 1) == 2.3
+    normal = doc.styles["Normal"]
+    assert normal.font.name == "仿宋"                    # 覆盖项生效
+    assert normal.font.size == Pt(12)                    # 默认小四
+    assert normal.paragraph_format.first_line_indent == Pt(24)  # 首行缩进 2 字符 = 2×12pt
+    assert normal.paragraph_format.line_spacing == 1.5
+    h2 = doc.styles["Heading 2"]
+    assert h2.font.name == "宋体" and h2.font.size == Pt(14) and h2.font.bold  # 标题默认宋体四号加粗
+    assert h2.paragraph_format.first_line_indent == Pt(0)
+
+
+def test_render_docx_without_fmt_keeps_legacy_styles():
+    """不传 fmt：与现行样式一致（正文宋体12pt、标题黑体、默认页面）——旧路径零变化。"""
+    from docx.shared import Pt
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "方案", "group": "tech"}]}
+    doc = Document(io.BytesIO(render_docx(outline, {"t1": "<p>正文</p>"})))
+    normal = doc.styles["Normal"]
+    assert normal.font.name == "宋体" and normal.font.size == Pt(12)
+    assert normal.paragraph_format.first_line_indent is None       # 旧路径不设缩进
+    assert doc.styles["Heading 2"].font.name == "黑体"             # 旧路径标题黑体

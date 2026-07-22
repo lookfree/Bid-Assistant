@@ -7,7 +7,8 @@ from agent.agents.bidding_agent.render.sanitize import strip_document_shell
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Inches, Pt, RGBColor
+from docx.enum.text import WD_LINE_SPACING
+from docx.shared import Cm, Inches, Pt, RGBColor
 
 _CONTAINERS = ("div", "section", "article", "body")
 
@@ -195,9 +196,58 @@ def _add_ai_notice(doc: Document) -> None:
         run.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
 
 
+# spec330 输出格式：GB 字号 → 磅值;默认参数=用户 2026-07-23 提供的口径。
+# fmt=None（不传）→ 维持现行样式,与既有导出一致;传 fmt（含空 dict）→ 以默认值起底逐项覆盖。
+_GB_PT = {"三号": 16, "四号": 14, "小四": 12, "五号": 10.5}
+_FMT_DEFAULT = {
+    "margin_cm": {"top": 2.2, "bottom": 2.2, "left": 2.3, "right": 2.3},
+    "heading_font": "宋体", "heading_size": "四号", "heading_bold": True,
+    "body_font": "宋体", "body_size": "小四", "body_indent_chars": 2,
+    "line_spacing": 1.5,  # 1 / 1.5 / "fixed22"（固定 22 磅）
+}
+
+
+def _set_line_spacing(pf, spacing) -> None:
+    if spacing == "fixed22":
+        pf.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+        pf.line_spacing = Pt(22)
+    else:
+        pf.line_spacing = float(spacing)
+
+
+def _apply_custom_format(doc: Document, fmt: dict) -> None:
+    """按用户输出格式覆盖样式（spec330）：A4 纵向 + 页边距 + 正文/标题字体字号缩进行距。
+    只在显式传 fmt 时调用;逐项以 _FMT_DEFAULT 起底,用户改哪项覆盖哪项。"""
+    f = {**_FMT_DEFAULT, **{k: v for k, v in fmt.items() if v is not None}}
+    m = {**_FMT_DEFAULT["margin_cm"], **(f.get("margin_cm") or {})}
+    for sec in doc.sections:
+        sec.page_width, sec.page_height = Cm(21), Cm(29.7)  # A4 纵向
+        sec.top_margin, sec.bottom_margin = Cm(float(m["top"])), Cm(float(m["bottom"]))
+        sec.left_margin, sec.right_margin = Cm(float(m["left"])), Cm(float(m["right"]))
+    body_pt = _GB_PT.get(f["body_size"], 12)
+    normal = doc.styles["Normal"]
+    normal.font.name = f["body_font"]
+    normal.font.size = Pt(body_pt)
+    normal.element.rPr.rFonts.set(qn("w:eastAsia"), f["body_font"])
+    # 首行缩进 N 字符 = N × 字号;行距设在 Normal 段落格式上,全文（含标题继承前的基准）统一
+    normal.paragraph_format.first_line_indent = Pt(body_pt * int(f["body_indent_chars"]))
+    _set_line_spacing(normal.paragraph_format, f["line_spacing"])
+    head_pt = _GB_PT.get(f["heading_size"], 14)
+    for style_name in _HEADING_SIZES:
+        style = doc.styles[style_name]
+        style.font.name = f["heading_font"]
+        style.font.size = Pt(head_pt)
+        style.font.bold = bool(f["heading_bold"])
+        style.font.color.rgb = RGBColor(0, 0, 0)
+        style.element.rPr.rFonts.set(qn("w:eastAsia"), f["heading_font"])
+        style.paragraph_format.first_line_indent = Pt(0)  # 标题首行缩进 0 字符、左对齐
+        _set_line_spacing(style.paragraph_format, f["line_spacing"])
+
+
 def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
                  package: dict | None = None,
-                 credentials: list[dict] | None = None) -> bytes:
+                 credentials: list[dict] | None = None,
+                 fmt: dict | None = None) -> bytes:
     """完整标书 .docx：封面 + 真目录域页 + 按 outline 顺序各章正文 + 资格证明文件附录（可选）
     + 签章页 + AI 生成提示（spec326 算法备案，恒定追加，见 _add_ai_notice）。确定性，无 LLM。
     package（选包，spec324）存在时封面项目名下加一行包件名。
@@ -205,6 +255,8 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
     meta = _norm_meta(meta or {})
     doc = Document()
     _apply_bid_styles(doc)
+    if fmt is not None:  # spec330 输出格式：显式配置才覆盖,缺省与既有导出一致
+        _apply_custom_format(doc, fmt)
     _style_cover(doc, meta, package)
     _add_toc_field(doc)
     _add_page_number_footer(doc, meta.get("name", "投标文件"))

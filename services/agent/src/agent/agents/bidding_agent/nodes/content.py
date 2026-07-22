@@ -162,6 +162,24 @@ def _template_block(read: dict, outline: dict) -> str:
     return TEMPLATE_GUIDE + "\n" + "\n\n".join(parts)
 
 
+def _length_plan_block(run_input: dict, outline: dict) -> str:
+    """【篇幅规划】（spec330）：用户在生成配置里选了目标总字数 → 按章节权重（子项数为代理权重,
+    子项多的章通常评分占比高）拆成各章字数预算,随规划轮下发。未配置返回空串（行为与今天逐字节一致）。"""
+    target = run_input.get("target_chars")
+    chapters = outline.get("chapters") or []
+    if not isinstance(target, int) or target <= 0 or not chapters:
+        return ""
+    weights = [max(1, len(c.get("items") or []) + 1) for c in chapters]
+    total_w = sum(weights)
+    lines = []
+    for c, w in zip(chapters, weights):
+        budget = max(300, round(target * w / total_w / 100) * 100)  # 百字取整,单章下限 300
+        lines.append(f"- {c.get('id')}「{c.get('title', '')}」目标约 {budget} 字")
+    return ("【篇幅规划】全书目标约 " + f"{target} 字。各章目标字数（按章节权重分配,允许 ±20%）：\n"
+            + "\n".join(lines)
+            + "\n主笔派发每章任务时必须把该章目标字数写进指令；写手按目标组织篇幅,内容优先,严禁为凑字数堆套话。")
+
+
 def _deviation_items_block(read: dict) -> str:
     """技术/商务/资格分类全量条目（title/value/clause_ids/star），供偏离表子写手逐条落表——
     不动 slim_read 本身，这里另起一段附加给规划轮（spec322）。"""
@@ -229,8 +247,9 @@ def make_content_node(ctx):
         deviation = _deviation_items_block(read) if _has_deviation_chapters(outline, structure) else ""
         # 招标自带格式模板（响应函/证明/一览表等）：抠原文随规划轮下发，对应章沿用模板不得自创格式
         template = _template_block(read, outline)
+        length_plan = _length_plan_block(state.get("run_input") or {}, outline)  # spec330 目标字数
         ref = await _content_reference_block(ctx, state)
-        mid_parts = [p for p in (deviation, template, ref) if p]
+        mid_parts = [p for p in (length_plan, deviation, template, ref) if p]
         mid = ("\n\n".join(mid_parts) + "\n\n") if mid_parts else ""
         user = f"{head}\n\n{mid}请逐章生成正文，每章写入 chapters/<章id>.html。"
         user += package_scope(state.get("run_input"))  # 选包时追加范围约束（spec324）

@@ -342,3 +342,25 @@ def test_content_node_no_form_chapter_no_template_block(monkeypatch):
     asyncio.run(node({"outline": outline, "read": read}))
     assert "【招标格式模板】" not in captured["user"]
     assert "技术要求原文" not in captured["user"]   # 非格式章不回捞原文
+
+
+def test_length_plan_block_budgets_by_weight():
+    """spec330：target_chars → 按章节子项权重拆各章字数预算;未配置返回空串（行为不变）。"""
+    from agent.agents.bidding_agent.nodes.content import _length_plan_block
+    outline = {"chapters": [
+        {"id": "t1", "title": "项目理解", "items": [{}, {}, {}]},   # 权重 4
+        {"id": "t2", "title": "实施方案", "items": [{}] * 7},        # 权重 8
+        {"id": "b1", "title": "报价说明", "items": []},              # 权重 1
+    ]}
+    block = _length_plan_block({"target_chars": 130000}, outline)
+    assert "全书目标约 130000 字" in block
+    assert "t1「项目理解」" in block and "t2「实施方案」" in block
+    # 权重大的章预算更高
+    import re
+    budgets = {m.group(1): int(m.group(2)) for m in re.finditer(r"- (\w+)「[^」]*」目标约 (\d+) 字", block)}
+    assert budgets["t2"] > budgets["t1"] > budgets["b1"]
+    assert abs(sum(budgets.values()) - 130000) < 130000 * 0.05  # 预算总和≈目标
+    # 未配置/坏值 → 空串
+    assert _length_plan_block({}, outline) == ""
+    assert _length_plan_block({"target_chars": 0}, outline) == ""
+    assert _length_plan_block({"target_chars": "1万"}, outline) == ""
