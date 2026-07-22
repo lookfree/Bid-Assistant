@@ -5,10 +5,12 @@ import { FolderOpen, Loader2, UploadCloud } from "lucide-react"
 import { listProjects, setCurrentProjectId, createReviewProject, type ProjectListItem } from "@/lib/project"
 import { uploadFile, uploadErrorMessage } from "@/lib/files"
 
-/** 标书审查独立入口（spec328）：无当前项目时展示——
+/** 标书审查独立入口（spec328）：
  *  ① 选择「我的标书」里已生成正文的项目直接审查（走既有流程）；
- *  ② 上传线下生成的标书（可选附招标文件：附了做对照审查,先读标;不附做通用自查）。 */
-export function ReviewEntry() {
+ *  ② 上传线下生成的标书（可选附招标文件：附了做对照审查,先读标;不附做通用自查）。
+ *  onBack：从「当前项目审查」切过来时给返回入口（用户反馈：废标 tab 也要能直达上传,
+ *  否则只有查重 tab 见得到上传,被误解为只有查重支持传标书）。 */
+export function ReviewEntry({ onBack }: { onBack?: () => void } = {}) {
   const [projects, setProjects] = useState<ProjectListItem[]>([])
   const [loadingList, setLoadingList] = useState(true)
   useEffect(() => {
@@ -27,7 +29,13 @@ export function ReviewEntry() {
   }, [])
 
   return (
-    <div className="grid gap-4 lg:grid-cols-2">
+    <div className="flex flex-col gap-3">
+      {onBack && (
+        <button onClick={onBack} className="self-start text-xs font-medium text-primary hover:underline">
+          ← 返回当前项目的审查
+        </button>
+      )}
+      <div className="grid gap-4 lg:grid-cols-2">
       <section className="rounded-2xl border border-border bg-card p-5">
         <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
           <FolderOpen className="size-4 text-primary" />
@@ -56,7 +64,8 @@ export function ReviewEntry() {
           )}
         </div>
       </section>
-      <UploadReviewCard />
+        <UploadReviewCard />
+      </div>
     </div>
   )
 }

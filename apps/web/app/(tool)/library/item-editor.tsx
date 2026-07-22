@@ -135,6 +135,16 @@ export function ItemEditor({
   )
 }
 
+/* 分类各自的输入提示（用户反馈：全分类共用资质示例,在案例/人员里非常突兀混乱） */
+const FIELD_HINTS: Record<LibraryCategoryId, { title: string; meta: string; tags: string }> = {
+  qualification: { title: "如：ISO27001 信息安全管理体系认证", meta: "如：认证机构、证书编号", tags: "如：信息安全、体系认证" },
+  performance: { title: "如：某市政务云运维服务项目（2025）", meta: "如：客户名称、合同金额、验收时间", tags: "如：政务、千万级" },
+  personnel: { title: "如：张三 · 项目经理", meta: "如：职称、从业年限、持有证书", tags: "如：PMP、高级工程师" },
+  finance: { title: "如：2025 年度审计报告", meta: "如：出具机构、覆盖年度", tags: "如：审计、纳税" },
+  text: { title: "如：公司简介（标准版）", meta: "如：适用场景、更新时间", tags: "如：简介、售后承诺" },
+  presentation: { title: "如：企业介绍 PPT 母版", meta: "如：适用场景、页数", tags: "如：述标、母版" },
+}
+
 /* 文本字段区：名称 / 说明 / 有效期（资质类）/ 模板正文（文本类）/ 标签 */
 function EditorFields({
   catId,
@@ -148,10 +158,10 @@ function EditorFields({
   return (
     <>
       <label className="block text-xs font-medium text-foreground">名称</label>
-      <input value={form.title} onChange={(e) => setField("title")(e.target.value)} placeholder="如：ISO27001 信息安全管理体系认证" className={inputCls} />
+      <input value={form.title} onChange={(e) => setField("title")(e.target.value)} placeholder={FIELD_HINTS[catId].title} className={inputCls} />
 
       <label className="mt-4 block text-xs font-medium text-foreground">说明 / 副信息</label>
-      <input value={form.meta} onChange={(e) => setField("meta")(e.target.value)} placeholder="如：认证机构、客户名称、职称等" className={inputCls} />
+      <input value={form.meta} onChange={(e) => setField("meta")(e.target.value)} placeholder={FIELD_HINTS[catId].meta} className={inputCls} />
 
       {catId === "qualification" && (
         <>
@@ -174,7 +184,7 @@ function EditorFields({
       )}
 
       <label className="mt-4 block text-xs font-medium text-foreground">标签（用、或逗号分隔）</label>
-      <input value={form.tags} onChange={(e) => setField("tags")(e.target.value)} placeholder="如：信息安全、千万级" className={inputCls} />
+      <input value={form.tags} onChange={(e) => setField("tags")(e.target.value)} placeholder={FIELD_HINTS[catId].tags} className={inputCls} />
     </>
   )
 }

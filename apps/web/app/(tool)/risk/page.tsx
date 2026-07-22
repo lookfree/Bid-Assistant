@@ -81,9 +81,11 @@ function RejectReview() {
   const { projectId, info, data: real, dataLoading, running, phase, error, errorAction, start } = useStep<RealRisk>("review")
   const { overview: membershipOverview } = useMembership()
   const reviewCost = creditCostValue(membershipOverview, "review", 60)
+  // 挂着项目也要能直达独立审查入口（用户反馈：只有查重 tab 见得到上传,被误解为仅查重支持传标书）
+  const [showEntry, setShowEntry] = useState(false)
 
-  // 无当前项目：独立审查入口（spec328）——选已有标书或上传线下标书
-  if (!projectId) return <ReviewEntry />
+  // 无当前项目：独立审查入口（spec328）——选已有标书或上传线下标书;有项目时可手动切过来
+  if (!projectId || showEntry) return <ReviewEntry onBack={projectId ? () => setShowEntry(false) : undefined} />
 
   // 项目状态/审查报告加载中：数据未就绪绝不裸露「开始废标体检」计费按钮
   if (!info || dataLoading) return <StepPlaceholder text={dataLoading ? "正在加载审查报告…" : "正在加载项目…"} delayMs={250} />
@@ -113,6 +115,8 @@ function RejectReview() {
   if (!real) {
     const prereq = stepPrereq(info, "review")
     return (
+      <div className="flex flex-col gap-3">
+      <EntryBar onOpen={() => setShowEntry(true)} />
       <div className="rounded-2xl border border-border bg-card">
         {prereq ? (
           <StepPrereqGuide prereq={prereq} currentDesc="废标体检需要逐条比对招标要求与已生成的标书内容" />
@@ -126,12 +130,14 @@ function RejectReview() {
           />
         )}
       </div>
+      </div>
     )
   }
 
   const { score, overview, riskItems, passed } = deriveRisk(real)
   return (
     <div className="flex flex-col gap-6">
+        <EntryBar onOpen={() => setShowEntry(true)} />
         <AiNotice />
         {/* 健康分 */}
         <div className="flex flex-col items-center gap-5 rounded-3xl border border-border bg-card p-8 sm:flex-row sm:gap-8">
@@ -200,5 +206,16 @@ function RejectReview() {
           </ul>
         </section>
       </div>
+  )
+}
+
+/* 独立审查入口条：挂着项目时也能一键切到「选标书/上传线下标书」（防止只有查重 tab 可见上传的误解） */
+function EntryBar({ onOpen }: { onOpen: () => void }) {
+  return (
+    <div className="flex justify-end">
+      <button onClick={onOpen} className="text-xs font-medium text-primary hover:underline">
+        审查其它标书 / 上传线下标书 →
+      </button>
+    </div>
   )
 }
