@@ -67,8 +67,18 @@ async function settleAndAdvance(opts: {
   await getDb()
     .update(bidProjects)
     .set({ currentStep: next ?? "done", status: next ? "running" : "done" })
-    .where(and(eq(bidProjects.id, opts.projectId), eq(bidProjects.currentStep, opts.step)))
+    .where(and(eq(bidProjects.id, opts.projectId), advanceGuard(opts.step)))
   return cost
+}
+
+/** 条件推进的 WHERE 守卫：常规=停在本步才推进（幂等/并发安全）。
+ *  export 例外（述标独立化）：跳过述标直出时项目停在 present，export 完成也要推到 done——
+ *  否则项目永远停 running。present 在 done 后补跑时本守卫不匹配（currentStep=done），
+ *  不会把已完成项目回退到 export，正是想要的。 */
+function advanceGuard(step: Step) {
+  return step === "export"
+    ? inArray(bidProjects.currentStep, ["present", "export"])
+    : eq(bidProjects.currentStep, step)
 }
 
 /** 成功收尾核心：条件翻转 running→done（result 同条 UPDATE 落库,翻转即交付）作并发唯一
@@ -224,12 +234,12 @@ export async function sweepStuckSteps(
         .select({ currentStep: bidProjects.currentStep })
         .from(bidProjects)
         .where(eq(bidProjects.id, row.projectId))
-      if (proj && proj.currentStep === row.step) {
+      if (proj && (proj.currentStep === row.step || (row.step === "export" && proj.currentStep === "present"))) {
         const next = STEP_ORDER[STEP_ORDER.indexOf(row.step as Step) + 1]
         await getDb()
           .update(bidProjects)
           .set({ currentStep: next ?? "done", status: next ? "running" : "done" })
-          .where(and(eq(bidProjects.id, row.projectId), eq(bidProjects.currentStep, row.step)))
+          .where(and(eq(bidProjects.id, row.projectId), advanceGuard(row.step as Step)))
         counts.repaired += 1
       }
     } catch (e) {

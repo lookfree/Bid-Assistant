@@ -192,6 +192,26 @@ describe("/api/projects 按步编排", () => {
     expect(rerun.status).not.toBe(409) // export 过了顺序门（后续 2xx/402 由计费与 mock 决定）
   })
 
+  it("述标独立：currentStep=present 允许直接 export（跳过述标）→ 完成后推进 done；done 后可补跑 present 且不回退", async () => {
+    const [p4] = await getDb()
+      .insert(bidProjects)
+      .values({ userId, threadId: `proj-${crypto.randomUUID()}`, currentStep: "present", status: "running" })
+      .returning()
+    const res = await app.request(`/api/projects/${p4!.id}/steps/export`, { method: "POST", headers: auth() })
+    expect(res.status).toBe(200)
+    await res.text() // 排干 SSE 流，确保收尾（finalize）完成后再断言推进
+    const [after] = await getDb().select().from(bidProjects).where(eq(bidProjects.id, p4!.id))
+    expect(after?.currentStep).toBe("done") // 跳过述标直出：export 完成即整本 done，不留永久 running
+    expect(after?.status).toBe("done")
+    // done 后补跑 present：过顺序门；完成后仍是 done（advanceGuard 不匹配，不回退到 export）
+    const res2 = await app.request(`/api/projects/${p4!.id}/steps/present`, { method: "POST", headers: auth() })
+    expect(res2.status).toBe(200)
+    await res2.text() // 同上：排干流再断言
+    const [after2] = await getDb().select().from(bidProjects).where(eq(bidProjects.id, p4!.id))
+    expect(after2?.currentStep).toBe("done")
+    expect(after2?.status).toBe("done")
+  })
+
   it("再推 read（已不是当前步）→ 409", async () => {
     const res = await app.request(`/api/projects/${projectId}/steps/read`, { method: "POST", headers: auth() })
     expect(res.status).toBe(409)

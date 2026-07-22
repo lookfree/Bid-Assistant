@@ -465,11 +465,15 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     if (!p) return c.json({ error: "not_found" }, 404)
 
     // 跳步校验：只允许推进「当前步」（draft 项目限 read），避免与 agent checkpoint 顺序错位。
-    // done 后允许重跑 export（正常计费）：渲染器升级/模板调整后,已完成项目才能重新出文件——
-    // 否则导出入口只会一直下载 MinIO 里的旧产物。
+    // 例外（述标独立化，用户口径「下载标书不要求完成述标生成」，agent 图有对应条件边）：
+    //   ① export 在 present/done 时均可跑——present 时=跳过述标直出文件；done 时=重渲重出
+    //     （渲染器升级/模板调整后,已完成项目才能重新出文件,否则只会一直下载旧产物）；
+    //   ② present 在 done 后可补跑（先导出后补述标,补完重导出可带 PPT）。
     const allowed = p.status === "draft"
       ? step === "read"
-      : step === p.currentStep || (step === "export" && p.currentStep === "done")
+      : step === p.currentStep ||
+        (step === "export" && (p.currentStep === "present" || p.currentStep === "done")) ||
+        (step === "present" && p.currentStep === "done")
     if (!allowed) return c.json({ error: "out_of_order", expected: p.currentStep }, 409)
 
     // 多包件招标必须先选包再生成提纲（一包一份投标文件，不支持多包混出一份大纲）：
