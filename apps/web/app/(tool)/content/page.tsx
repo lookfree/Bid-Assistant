@@ -45,9 +45,10 @@ import { CheckConfirm, CheckSummary, ExportConfirm } from "./check-dialogs"
 import { ExportMenu, type BidType } from "./export-menu"
 import { ReportDialog } from "./report-dialog"
 import { useHealthCheck } from "./use-health-check"
-import { useEditorInsert, libraryItemHtml } from "./use-editor-insert"
+import { libraryItemHtml } from "./use-editor-insert"
+import { RichEditor } from "./rich-editor"
+import type { Editor as TiptapEditor } from "@tiptap/react"
 import { imageFileToDataUrl } from "@/lib/image-insert"
-import { TableTools } from "./table-tools"
 
 // agent content 步结果（camelCase）：{chapterId: bodyHtml}；章结构取 outline 步结果
 type RealChapters = Record<string, string>
@@ -91,7 +92,8 @@ export default function ContentPage() {
   const [activeId, setActiveId] = useState<string>("t1")
   const [chatOpen, setChatOpen] = useState(true)
   const [exportScope, setExportScope] = useState<BidType>("full")
-  const editorRef = useRef<HTMLDivElement>(null)
+  const [editor, setEditor] = useState<TiptapEditor | null>(null)
+  const editorScrollRef = useRef<HTMLDivElement>(null)
   const { openPaywall } = usePaywall()
 
   /* 真实积分余额与会员身份（GET /api/membership；仅 active 订阅算会员，决定整改建议是否完整可见） */
@@ -200,32 +202,28 @@ export default function ContentPage() {
     if (stack.length > 20) stack.shift()
   }
 
-  /** 撤销（两档）：编辑器里有未保存的改动（如刚误删）→ 先退回上次保存的版本；
-   *  已保存 → 从快照栈弹出上一版恢复并持久化。无可撤时兜底试浏览器原生 undo。 */
+  /** 撤销（两档）：先走 TipTap 原生撤销（编辑中的细粒度回退）；原生栈见底后从章节快照栈
+   *  弹出上一保存版恢复并持久化（跨保存/AI 改写的粗粒度回退）。 */
   function undoChapter() {
-    if (!editorRef.current) return
-    const cur = editorRef.current.innerHTML
-    if (cur !== active.html) {
-      editorRef.current.innerHTML = stripDocumentShell(active.html) // 未保存改动 → 丢弃，回到已保存版
+    if (!editor) return
+    if (editor.can().undo()) {
+      editor.chain().focus().undo().run()
       return
     }
     const prev = historyRef.current[active.id]?.pop()
-    if (prev === undefined) {
-      document.execCommand("undo")
-      return
-    }
+    if (prev === undefined) return
     const next = withChapterHtml(data, active.id, prev)
     setData(next)
     persistContent(next)
   }
 
-  function saveEditor() {
-    if (!editorRef.current) return
-    const html = editorRef.current.innerHTML
-    // 无变化不回写；上次保存失败则借下次失焦重试
-    if (html === active.html && contentSaveState !== "error") return
-    if (html !== active.html) pushHistory(active.id, active.html) // 被覆盖版本入撤销栈
-    const next = withChapterHtml(data, active.id, html)
+  /** 失焦保存（RichEditor onBlur 吐 HTML）：无变化不回写;被覆盖版本入撤销栈。 */
+  function saveEditor(html?: string) {
+    const cur = html ?? editor?.getHTML()
+    if (cur === undefined) return
+    if (cur === active.html && contentSaveState !== "error") return
+    if (cur !== active.html) pushHistory(active.id, active.html)
+    const next = withChapterHtml(data, active.id, cur)
     setData(next)
     persistContent(next)
   }
@@ -240,27 +238,19 @@ export default function ContentPage() {
     })
   }
 
-  function exec(cmd: string, value?: string) {
-    editorRef.current?.focus()
-    document.execCommand(cmd, false, value)
-  }
-
-  /* 从资料库插入（选区保存/恢复与兜底追加见 use-editor-insert.ts） */
-  const { capture: captureSelection, restore: restoreSelection, insert: insertHtml } = useEditorInsert(editorRef)
+  /* 从资料库插入：TipTap 在失焦时保留文档内选区,insertContent 天然落在光标处（选区补丁族已删） */
   function openLibrary() {
-    captureSelection()
     setLibraryOpen(true)
   }
   function insertFromLibrary(item: LibraryItem) {
-    insertHtml(libraryItemHtml(item))
+    editor?.chain().focus().insertContent(libraryItemHtml(item)).run()
     saveEditor()
     setLibraryOpen(false)
   }
 
-  /* 插入图片：选本地图 → 压缩 data URL 内嵌（原是写死占位图）；文件对话框夺选区，同资料库 capture/insert 处理 */
+  /* 插入图片：选本地图 → 压缩 data URL 内嵌（原是写死占位图） */
   const imageInputRef = useRef<HTMLInputElement>(null)
   function openImagePicker() {
-    captureSelection()
     imageInputRef.current?.click()
   }
   async function onImageChosen(e: React.ChangeEvent<HTMLInputElement>) {
@@ -269,7 +259,7 @@ export default function ContentPage() {
     if (!file || !file.type.startsWith("image/")) return
     try {
       const dataUrl = await imageFileToDataUrl(file)
-      insertHtml(`<img src="${dataUrl}" alt="插图" class="my-3 rounded-lg border border-border max-w-full" />`)
+      editor?.chain().focus().setImage({ src: dataUrl, alt: "插图" }).run()
       saveEditor()
     } catch {
       window.alert("图片读取失败，请换一张（支持 JPG/PNG 等常见格式）")
@@ -317,7 +307,7 @@ export default function ContentPage() {
     setBidType(tab)
     setActiveId(id)
     setReportOpen(false)
-    editorRef.current?.scrollTo({ top: 0 })
+    editorScrollRef.current?.scrollTo({ top: 0 })
   }
 
   /* 在体检报告弹层内直接导出标书文件：已查看风险，软放行后导出 */
@@ -518,28 +508,24 @@ export default function ContentPage() {
             <span className="mr-auto min-w-0 truncate text-sm font-semibold text-foreground">{active.title}</span>
             {/* 编辑工具栏（含全屏切换：目录/正文/AI 助手三栏一起铺满，Esc 退出） */}
             <EditorToolbar
-              exec={exec}
+              editor={editor}
               onUndo={undoChapter}
               onOpenLibrary={openLibrary}
               onInsertImage={openImagePicker}
-              captureSelection={captureSelection}
-              restoreSelection={restoreSelection}
               fullscreen={editorFullscreen}
               onToggleFullscreen={() => setEditorFullscreen((v) => !v)}
             />
             <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => void onImageChosen(e)} />
           </div>
-          <TableTools editorRef={editorRef} onChanged={saveEditor} />
 
           {active.html.trim() ? (
-            <div
+            <RichEditor
               key={active.id}
-              ref={editorRef}
-              contentEditable
-              suppressContentEditableWarning
-              onBlur={saveEditor}
-              className="prose-sm min-h-0 min-w-0 flex-1 overflow-y-auto break-words px-6 py-5 text-sm leading-relaxed text-foreground outline-none [&_h3]:mb-2 [&_h3]:mt-4 [&_h3]:text-base [&_h3]:font-semibold [&_li]:ml-5 [&_li]:list-disc [&_p]:mb-3 [&_table]:my-3 [&_table]:w-full [&_table]:table-fixed [&_table]:border-collapse [&_th]:border [&_th]:border-border [&_th]:bg-muted/40 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-medium [&_th]:break-words [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_td]:break-words"
-              dangerouslySetInnerHTML={{ __html: stripDocumentShell(active.html) }}
+              html={stripDocumentShell(active.html)}
+              scrollRef={editorScrollRef}
+              onBlurSave={saveEditor}
+              onEditor={setEditor}
+              contentClass="prose-sm min-w-0 break-words px-6 py-5 text-sm leading-relaxed text-foreground outline-none [&_h3]:mb-2 [&_h3]:mt-4 [&_h3]:text-base [&_h3]:font-semibold [&_li]:ml-5 [&_li]:list-disc [&_p]:mb-3 [&_table]:my-3 [&_table]:w-full [&_table]:border-collapse [&_th]:border [&_th]:border-border [&_th]:bg-muted/40 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-medium [&_th]:break-words [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_td]:break-words"
             />
           ) : (
             <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 py-10 text-center">
