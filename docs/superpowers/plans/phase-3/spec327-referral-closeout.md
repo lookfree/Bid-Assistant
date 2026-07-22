@@ -90,38 +90,38 @@ docs/superpowers/plans/phase-3/
 
 ### Task 0 · spec307 盘点勾账（先核实再动代码）
 
-- [ ] `./test-on-mbp.sh test/referral-code.test.ts test/referral-reward.test.ts test/referral-risk.test.ts test/referral-routes.test.ts test/referral-wiring.test.ts` 跑通全部既有测试并记录结果。
-- [ ] 对照测试与代码，把 `spec307-referral-engine.md` 中**确已实现**的任务如实勾选；确不在的（如注册即弃）在该 spec 尾部补一行“遗留 → spec327”。
-- [ ] 提交：`docs(spec307): reconcile checkboxes with shipped implementation`。
+- [x] `./test-on-mbp.sh test/referral-code.test.ts test/referral-reward.test.ts test/referral-risk.test.ts test/referral-routes.test.ts test/referral-wiring.test.ts` 跑通全部既有测试并记录结果。
+- [x] 对照测试与代码，把 `spec307-referral-engine.md` 中**确已实现**的任务如实勾选；确不在的（如注册即弃）在该 spec 尾部补一行“遗留 → spec327”。
+- [x] 提交：`docs(spec307): reconcile checkboxes with shipped implementation`。
 
 ### Task A · 配置写入形状校验（API，先测后码）
 
-- [ ] 测试：`admin-plans-configs.test.ts` —— ① `PUT /plans/configs/referral_rules` 合法五键+`abandonDays` → 200 且落库；② 缺键/负数/`unlockOn` 非法枚举/`capPerUser < max(两奖励)`/非对象 → 400 `invalid_input` 且**库值不变**；③ `reward_expire_days` 非负整数校验同理；④ 其它任意键不受影响（仍宽松直存）；⑤ 审计行带 before/after。
-- [ ] 实现：`routes/admin/plans.ts` 建 `CONFIG_SCHEMAS: Record<string, ZodSchema>` 白名单（`referral_rules`、`reward_expire_days`），命中则先校验再存；未命中键保持现行为。校验规则见上表（含跨字段 `capPerUser ≥ max` refine）。
-- [ ] mbp 全绿后提交：`feat(admin-api): shape-validate referral config keys`。
+- [x] 测试：`admin-plans-configs.test.ts` —— ① `PUT /plans/configs/referral_rules` 合法五键+`abandonDays` → 200 且落库；② 缺键/负数/`unlockOn` 非法枚举/`capPerUser < max(两奖励)`/非对象 → 400 `invalid_input` 且**库值不变**；③ `reward_expire_days` 非负整数校验同理；④ 其它任意键不受影响（仍宽松直存）；⑤ 审计行带 before/after。
+- [x] 实现：`routes/admin/plans.ts` 建 `CONFIG_SCHEMAS: Record<string, ZodSchema>` 白名单（`referral_rules`、`reward_expire_days`），命中则先校验再存；未命中键保持现行为。校验规则见上表（含跨字段 `capPerUser ≥ max` refine）。
+- [x] mbp 全绿后提交：`feat(admin-api): shape-validate referral config keys`。
 
 ### Task B · 后台价格菜单「邀请奖励」配置卡（admin 前端）
 
-- [ ] `referral-config-card.tsx`：从 `GET /admin-api/plans/configs` 取 `referral_rules` + `reward_expire_days`；六个数值/枚举字段表单（`unlockOn` 用下拉：立即发放 / 被邀请人首次付费解锁；`abandonDays=0` 显示“关闭”提示）；本地校验与服务端同规则（提前拦，错误逐字段提示）。
-- [ ] 接入 `plans-client.tsx`：作为「套餐与积分口径配置」页新增区块（与现有卡片同风格）；dirty 检测、保存（两个 PUT，先 `referral_rules` 后 `reward_expire_days`，任一失败 toast 并保留编辑态）、还原按钮；保存成功 toast 文案注明“新规则即时生效，仅影响此后发放”。
-- [ ] 卡片底部只读提示区：当前封顶语义（达 `capPerUser` 后 `reward_state=capped` 不再发）、实名校验预留说明。
-- [ ] admin 测试（沿 `apps/admin` 现有测试基建）：表单校验拦截 + 保存请求体形状断言。
-- [ ] 提交：`feat(admin): referral reward config card in plans page`。
+- [x] `referral-config-card.tsx`：从 `GET /admin-api/plans/configs` 取 `referral_rules` + `reward_expire_days`；六个数值/枚举字段表单（`unlockOn` 用下拉：立即发放 / 被邀请人首次付费解锁；`abandonDays=0` 显示“关闭”提示）；本地校验与服务端同规则（提前拦，错误逐字段提示）。
+- [x] 接入 `plans-client.tsx`：作为「套餐与积分口径配置」页新增区块（与现有卡片同风格）；dirty 检测、保存（两个 PUT，先 `referral_rules` 后 `reward_expire_days`，任一失败 toast 并保留编辑态）、还原按钮；保存成功 toast 文案注明“新规则即时生效，仅影响此后发放”。
+- [x] 卡片底部只读提示区：当前封顶语义（达 `capPerUser` 后 `reward_state=capped` 不再发）、实名校验预留说明。
+- [x] admin 测试（沿 `apps/admin` 现有测试基建）：表单校验拦截 + 保存请求体形状断言。
+- [x] 提交：`feat(admin): referral reward config card in plans page`。
 
 ### Task C · 「注册即弃」风控闸门（API，先测后码）
 
-- [ ] 种子：`billing-seed.ts` 的 `referral_rules` 增 `abandonDays: 0`（幂等种子只补缺，不覆盖运营已改值）。
-- [ ] 测试：`referral-abandon.test.ts` —— ① `abandonDays=0`：既有行为逐字节不变（立即发/延迟解锁照旧）；② `abandonDays=N` 且绑定超 N 天、被邀请人**无任何积分消费流水** → 解锁触发时不发奖、`referrals` 冻结、`referral_risk_audits` 记 `abandoned`；③ 同条件但被邀请人有过消费 → 照发；④ 幂等：已冻结关系重复触发解锁不发不重复审计。
-- [ ] 实现：`referral-risk.ts` 增 `assessAbandoned(inviteeId, boundAt, abandonDays)`（有效行为 = `credit_transactions` 存在该用户任意负向消费流水；查询走现有索引）；`referral.ts` 发奖入口（立即发放分支与 `onInviteeFirstPaid` 共用的 `grantRewards` 前置）接闸门。
-- [ ] 回归：`referral-reward.test.ts` 全绿（新增闸门默认关闭不影响既有用例）。
-- [ ] 提交：`feat(api): register-and-abandon gate for referral rewards`。
+- [x] 种子：`billing-seed.ts` 的 `referral_rules` 增 `abandonDays: 0`（幂等种子只补缺，不覆盖运营已改值）。
+- [x] 测试：`referral-abandon.test.ts` —— ① `abandonDays=0`：既有行为逐字节不变（立即发/延迟解锁照旧）；② `abandonDays=N` 且绑定超 N 天、被邀请人**无任何积分消费流水** → 解锁触发时不发奖、`referrals` 冻结、`referral_risk_audits` 记 `abandoned`；③ 同条件但被邀请人有过消费 → 照发；④ 幂等：已冻结关系重复触发解锁不发不重复审计。
+- [x] 实现：`referral-risk.ts` 增 `assessAbandoned(inviteeId, boundAt, abandonDays)`（有效行为 = `credit_transactions` 存在该用户任意负向消费流水；查询走现有索引）；`referral.ts` 发奖入口（立即发放分支与 `onInviteeFirstPaid` 共用的 `grantRewards` 前置）接闸门。
+- [x] 回归：`referral-reward.test.ts` 全绿（新增闸门默认关闭不影响既有用例）。
+- [x] 提交：`feat(api): register-and-abandon gate for referral rewards`。
 
 ### Task D · 收尾
 
-- [ ] `./test-on-mbp.sh` 相关文件全量绿；`bun run typecheck`（api/admin）双绿。
-- [ ] `/code-review` 全修（钱相关从严）→ `/simplify`。
-- [ ] 合并 main + 推送；230 部署（api 原生构建 + admin 经 mbp buildx，流程见仓库部署备忘）。
-- [ ] 更新 `spec300-index.md`：追加 spec327 行（依赖 spec307/spec310）。
+- [x] `./test-on-mbp.sh` 相关文件全量绿；`bun run typecheck`（api/admin）双绿。
+- [x] `/code-review` 全修（钱相关从严）→ `/simplify`。
+- [x] 合并 main + 推送；230 部署（api 原生构建 + admin 经 mbp buildx，流程见仓库部署备忘）。
+- [x] 更新 `spec300-index.md`：追加 spec327 行（依赖 spec307/spec310）。
 
 ## 验收清单
 
