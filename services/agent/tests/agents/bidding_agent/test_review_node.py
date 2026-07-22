@@ -52,3 +52,41 @@ def test_review_node_with_required_structure_injects_payload(submit_gateway):
     asyncio.run(node(state))
     user_msg = gw.chats[-1].last_messages[1].content
     assert "required_structure" in user_msg and "投标报价一览表" in user_msg
+
+
+def test_review_node_parses_external_bid_when_no_chapters(submit_gateway, monkeypatch):
+    """spec328 独立审查：chapters 空 + run_input.bid_file_key → 确定性解析上传标书成章;
+    read 为空 → 注入通用自查口径（明示未对照招标文件）。"""
+    import agent.agents.bidding_agent.nodes.review as review_mod
+
+    class _Parsed:
+        clauses = [
+            {"id": "sec-1-c1", "text": "第一部分正文A"},
+            {"id": "sec-1-c2", "text": "第一部分正文B"},
+            {"id": "sec-2-c1", "text": "报价合计 100 万元"},
+        ]
+
+    monkeypatch.setattr(review_mod, "read_and_parse", lambda key: _Parsed())
+    gw = submit_gateway({"submit_risk_report": _RISK_ARGS})
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
+    node = make_review_node(ctx)
+    out = asyncio.run(node({"run_input": {"bid_file_key": "uploads/u/bid.docx"}}))
+    assert out["risk"]["high"] == 1
+    user_msg = gw.chats[-1].last_messages[-1].content
+    assert "第一部分正文A" in user_msg and "报价合计 100 万元" in user_msg  # 解析出的章进了审查材料
+    assert "通用自查模式" in user_msg and "未提供招标文件" in user_msg      # 无 read → 明示局限
+
+
+def test_review_node_with_tender_and_bid_file_uses_compare_mode(submit_gateway, monkeypatch):
+    """带招标文件（read 非空）时即便 chapters 来自解析,也走对照口径（不注入通用自查说明）。"""
+    import agent.agents.bidding_agent.nodes.review as review_mod
+    monkeypatch.setattr(review_mod, "read_and_parse",
+                        lambda key: type("P", (), {"clauses": [{"id": "sec-1-c1", "text": "响应正文"}]})())
+    gw = submit_gateway({"submit_risk_report": _RISK_ARGS})
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
+    node = make_review_node(ctx)
+    asyncio.run(node({"read": {"risk_summary": ["缺 ISO27001 即废标"]},
+                      "run_input": {"bid_file_key": "uploads/u/bid.docx"}}))
+    user_msg = gw.chats[-1].last_messages[-1].content
+    assert "响应正文" in user_msg
+    assert "通用自查模式" not in user_msg

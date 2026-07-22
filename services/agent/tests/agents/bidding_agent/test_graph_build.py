@@ -47,3 +47,22 @@ def test_graph_has_conditional_edges_review_to_export():
     assert ("review", "export") in edges   # 跳过述标直出
     assert ("review", "present") in edges  # 缺省仍走述标
     assert ("export", "present") in edges  # 补跑述标
+
+
+def test_route_entry_and_after_read_for_standalone_review():
+    """spec328 独立审查：新线程 step=review 直接进 review；read 后 step=review 跳过 outline/content。"""
+    from agent.agents.bidding_agent.graph import _route_entry, _route_after_read
+    assert _route_entry({"run_input": {"step": "review"}}) == "review"
+    assert _route_entry({"run_input": {"step": "read"}}) == "read"
+    assert _route_entry({}) == "read"
+    assert _route_after_read({"run_input": {"step": "review"}}) == "review"
+    assert _route_after_read({"run_input": {"step": "outline"}}) == "outline"
+    assert _route_after_read({}) == "outline"
+
+
+def test_graph_has_standalone_review_edges():
+    g = build_bidding_workflow(_FakeCtx())
+    edges = {(e.source, e.target) for e in g.get_graph().edges}
+    assert ("__start__", "review") in edges  # 无招标文件直接审查
+    assert ("read", "review") in edges       # 对照审查跳过提纲/正文
+    assert ("read", "outline") in edges      # 缺省流水线不变
