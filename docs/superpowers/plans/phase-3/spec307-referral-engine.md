@@ -11,7 +11,7 @@
 - **两段发放**（条件全由 `referral_rules` 配置开关决定）：
   - ① **立即发放**：若配置启用（如 `inviteeReward` 在注册即发 / `unlockOn` 为空），绑定即给。
   - ② **延迟解锁**：`unlockOn="invitee_first_paid"` → 被邀请人首次付费触发 `onInviteeFirstPaid` → 把 `reward_state` 从 `pending` 推到 `unlocked` 并发双方奖励。
-- **奖励落账**：调 spec302 `credits.grant(userId, amount, { type:"referral_reward", expireAt, ref, idempotencyKey })`；`amount` 取自配置 `inviterReward`/`inviteeReward`；`expireAt = now + reward_expire_days`；幂等键 `referral:<referralId>:inviter` / `referral:<referralId>:invitee`（同一关系同一角色只发一次）。
+- **奖励落账**：调 spec302 `credits.grant(userId, amount, { type:"referral_reward", expireAt, ref, idempotencyKey })`；`amount` 取自配置 `inviterReward`/`inviteeReward`；`expireAt = now + reward_expire_days`（配置 0=不过期，不设 `expireAt`）；幂等键 `referral:<referralId>:inviter` / `referral:<referralId>:invitee`（同一关系同一角色只发一次）。
 - **封顶**：发奖励前算该用户**累计 `referral_reward` 流水之和**，若 `+本次 > capPerUser` → 跳过发放、把该用户相关 `referrals.reward_state` 标 `capped`。
 - **防刷风控**：手机号/设备唯一校验（建关系前查重）；异常邀请（同 IP 段、集中时段、注册即弃）标记冻结（`referrals.status` 不进入可发奖状态 + 写风控审计 `referral_risk_audits`）。
 - **路由**：`GET /api/referral/code`（我的邀请码）、`GET /api/referral/list`（邀请列表 + 奖励状态）。
@@ -21,7 +21,7 @@
 ## Global Constraints
 
 见 `spec300-index.md`。本 spec 关键：
-- **规则全配置化**：奖励数值、`unlockOn`、`capPerUser`、`reward_expire_days` 一律 `getConfig("referral_rules")` / `getConfig("reward_expire_days")`（spec301 种子已占位 `{inviterReward:50,inviteeReward:50,unlockOn:"invitee_first_paid",capPerUser:500}`、`reward_expire_days:30`）。**代码不写死任何数值**——测试用配置注入，断言"等于配置值"，不断言魔数 50。
+- **规则全配置化**：奖励数值、`unlockOn`、`capPerUser`、`reward_expire_days` 一律 `getConfig("referral_rules")` / `getConfig("reward_expire_days")`（spec301 种子已占位 `{inviterReward:50,inviteeReward:50,unlockOn:"invitee_first_paid",capPerUser:500}`、`reward_expire_days:30`——2026-07-22 起默认改 0=不过期，产品口径：邀请积分不过期）。**代码不写死任何数值**——测试用配置注入，断言"等于配置值"，不断言魔数 50。
 - 奖励是积分账本里的一笔，**走 spec302 `credits.grant`** 的幂等/有效期/FIFO，不另起一套发放逻辑。
 - 钱只在 App API 动；本 spec 不碰支付，只在被邀请人首次付费时被回调 `onInviteeFirstPaid`。
 - `referrals.invitee_id` 唯一（spec301 已建约束）保证一个被邀请人只属一个邀请关系。

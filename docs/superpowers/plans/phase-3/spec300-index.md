@@ -108,7 +108,7 @@ STEP_COST 常量                    ──▶    billing_configs 的「操作→
 ## spec327：邀请奖励引擎收口（2026-07-22 追加）
 
 **目标**：spec307 引擎已大部分落地但未收口——运营后台「价格菜单」（套餐&配置页）补**邀请奖励专属配置区**（奖励/解锁条件/封顶/有效期/风控阈值可视化编辑）；`PUT /plans/configs/:key` 对 `referral_rules`/`reward_expire_days` 加形状校验；补「注册即弃」风控闸门（配置开关 `abandonDays`，默认关）；盘点勾账 spec307（35 项 0 勾与实现脱节）。
-**依赖**：spec307（引擎主体）、spec310（admin 通用配置端点 + plans 页）、spec302（账本，判定"有效行为"）。计划：`spec327-referral-closeout.md`。
+**依赖**：spec307（引擎主体）、spec310（admin 通用配置端点 + plans 页）、spec302 账本 + spec304 支付单（消费流水或已支付订单判定"有效行为"）。计划：`spec327-referral-closeout.md`。
 
 ## 执行方式
 
