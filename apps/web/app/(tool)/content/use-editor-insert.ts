@@ -23,30 +23,40 @@ export function libraryItemHtml(item: LibraryItem): string {
  *  此时 execCommand("insertHTML") 会静默失败。故打开弹窗前 capture() 保存编辑器内选区，
  *  insert() 恢复选区插入；无有效光标（用户从没点过正文）或插入失败则追加到本章末尾并滚到位
  *  ——保证插入一定可见，绝不静默丢弃。 */
+type SavedCaret = { range: Range; node: Node; offset: number }
+
 export function useEditorInsert(editorRef: RefObject<HTMLDivElement | null>) {
-  const saved = useRef<Range | null>(null)
+  const saved = useRef<SavedCaret | null>(null)
 
   function capture() {
     const sel = window.getSelection()
-    saved.current =
-      sel && sel.rangeCount > 0 && editorRef.current?.contains(sel.anchorNode)
-        ? sel.getRangeAt(0).cloneRange()
-        : null
+    if (sel && sel.rangeCount > 0 && editorRef.current?.contains(sel.anchorNode)) {
+      const range = sel.getRangeAt(0).cloneRange()
+      // 边界快照：Range 是"活"的——弹窗期间正文 DOM 一旦变动，浏览器会把它折叠回容器开头
+      //（生产实测：点在文末插入，结果被插到文档开头还跳顶）。恢复前用快照校验有没有被挪动。
+      saved.current = { range, node: range.startContainer, offset: range.startOffset }
+    } else {
+      saved.current = null
+    }
   }
 
   function insert(html: string) {
-    editorRef.current?.focus()
+    const ed = editorRef.current
+    if (!ed) return
+    ed.focus({ preventScroll: true }) // 不抢滚动：焦点复位本身不许把视口拽回顶部
     let inserted = false
-    const range = saved.current
-    if (range && editorRef.current?.contains(range.startContainer)) {
+    const s = saved.current
+    const intact = s && ed.contains(s.range.startContainer) && s.range.startContainer === s.node && s.range.startOffset === s.offset
+    if (intact) {
       const sel = window.getSelection()
       sel?.removeAllRanges()
-      sel?.addRange(range)
+      sel?.addRange(s.range)
       inserted = document.execCommand("insertHTML", false, html)
     }
-    if (!inserted && editorRef.current) {
-      editorRef.current.insertAdjacentHTML("beforeend", html)
-      editorRef.current.scrollTop = editorRef.current.scrollHeight
+    if (!inserted) {
+      // 无光标/选区已被 DOM 变动挪走 → 追加到本章末尾并滚动到位（绝不静默丢弃、绝不误插开头）
+      ed.insertAdjacentHTML("beforeend", html)
+      ed.scrollTop = ed.scrollHeight
     }
     saved.current = null
   }
