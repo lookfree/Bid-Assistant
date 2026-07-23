@@ -199,12 +199,22 @@ function AccountsTab() {
   )
 }
 
-/* 重置密码弹窗：超管为任意账号（含自己）设新密码（≥8 位）。走 PUT /admins/:id，
+// 密码策略（与后端 system.ts PASSWORD 同规则）：≥8 位，字母+数字+特殊字符缺一不可；返回错误文案或 null。
+function passwordError(pw: string): string | null {
+  if (pw.length < 8) return "密码至少 8 位"
+  if (!/[A-Za-z]/.test(pw) || !/\d/.test(pw) || !/[^A-Za-z0-9]/.test(pw)) return "需同时包含字母、数字和特殊字符"
+  return null
+}
+
+/* 重置密码弹窗：超管为任意账号（含自己）设新密码（≥8 位含字母数字 + 两次确认）。走 PUT /admins/:id，
    服务端只哈希入库、审计记 passwordReset 标记不落明文。重置后该账号需用新密码重新登录。 */
 function ResetPasswordDialog({ admin, onClose }: { admin: ApiAdmin; onClose: () => void }) {
   const [password, setPassword] = useState("")
+  const [confirm, setConfirm] = useState("")
   const [saving, setSaving] = useState(false)
-  const valid = password.length >= 8
+  const pwErr = password ? passwordError(password) : null
+  const matchErr = confirm && confirm !== password ? "两次输入不一致" : null
+  const valid = passwordError(password) === null && confirm === password
 
   async function submit() {
     if (!valid || saving) return
@@ -231,8 +241,13 @@ function ResetPasswordDialog({ admin, onClose }: { admin: ApiAdmin; onClose: () 
           </p>
           <label className="flex flex-col gap-1 text-sm">
             新密码
-            <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="至少 8 位" />
-            {password.length > 0 && password.length < 8 && <span className="text-xs text-destructive">密码至少 8 位</span>}
+            <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="至少 8 位，含字母、数字和特殊字符" />
+            {pwErr && <span className="text-xs text-destructive">{pwErr}</span>}
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            确认新密码
+            <Input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="再次输入新密码" />
+            {matchErr && <span className="text-xs text-destructive">{matchErr}</span>}
           </label>
         </div>
         <DialogFooter>
@@ -253,9 +268,12 @@ function CreateAdminDialog({ onClose, onCreated }: { onClose: () => void; onCrea
   const [username, setUsername] = useState("")
   const [role, setRole] = useState("ops")
   const [password, setPassword] = useState("")
+  const [confirm, setConfirm] = useState("")
   const [saving, setSaving] = useState(false)
 
-  const valid = username.trim().length > 0 && password.length >= 8
+  const pwErr = password ? passwordError(password) : null
+  const matchErr = confirm && confirm !== password ? "两次输入不一致" : null
+  const valid = username.trim().length > 0 && passwordError(password) === null && confirm === password
   async function submit() {
     if (!valid || saving) return
     setSaving(true)
@@ -304,8 +322,13 @@ function CreateAdminDialog({ onClose, onCreated }: { onClose: () => void; onCrea
           </label>
           <label className="flex flex-col gap-1 text-sm">
             初始密码
-            <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="至少 8 位" />
-            {password.length > 0 && password.length < 8 && <span className="text-xs text-destructive">密码至少 8 位</span>}
+            <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="至少 8 位，含字母、数字和特殊字符" />
+            {pwErr && <span className="text-xs text-destructive">{pwErr}</span>}
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            确认密码
+            <Input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="再次输入密码" />
+            {matchErr && <span className="text-xs text-destructive">{matchErr}</span>}
           </label>
         </div>
         <DialogFooter>

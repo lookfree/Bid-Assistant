@@ -26,7 +26,7 @@ describe("spec310 系统页", () => {
   })
 
   it("运营账号 CRUD + 改角色走审计", async () => {
-    const a = await createAdminAccount({ username: `ops_new_${Date.now()}`, role: "ops", password: "pw123456" }, { operator: "superadmin_root" })
+    const a = await createAdminAccount({ username: `ops_new_${Date.now()}`, role: "ops", password: "Pw12345!" }, { operator: "superadmin_root" })
     madeAdmins.push(a.id)
     expect(a.role).toBe("ops")
     const upd = await updateAdminAccount(a.id, { role: "finance", status: "disabled" }, { operator: "superadmin_root" })
@@ -44,13 +44,13 @@ describe("spec310 系统页", () => {
 
   it("ops 管理运营账号 → 403（仅 superadmin admin.manage）", async () => {
     const { headers } = await makeAdminSession("ops", regA)
-    const res = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username: "x", role: "support", password: "pw123456" }) })
+    const res = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username: "x", role: "support", password: "Pw12345!" }) })
     expect(res.status).toBe(403)
   })
 
   it("superadmin 建账号 → 200", async () => {
     const { headers } = await makeAdminSession("superadmin", regA)
-    const res = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username: `sa_new_${Date.now()}`, role: "support", password: "pw123456" }) })
+    const res = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username: `sa_new_${Date.now()}`, role: "support", password: "Pw12345!" }) })
     expect(res.status).toBe(200)
     madeAdmins.push(((await res.json()) as { id: string }).id)
   })
@@ -58,10 +58,10 @@ describe("spec310 系统页", () => {
   it("重名建账号 → 409 username_taken（前端可给「用户名已存在」）", async () => {
     const { headers } = await makeAdminSession("superadmin", regA)
     const name = `dup_${Date.now()}`
-    const first = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username: name, role: "support", password: "pw123456" }) })
+    const first = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username: name, role: "support", password: "Pw12345!" }) })
     expect(first.status).toBe(200)
     madeAdmins.push(((await first.json()) as { id: string }).id)
-    const dup = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username: name, role: "ops", password: "pw123456" }) })
+    const dup = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username: name, role: "ops", password: "Pw12345!" }) })
     expect(dup.status).toBe(409)
     expect(((await dup.json()) as { error: string }).error).toBe("username_taken")
   })
@@ -69,27 +69,35 @@ describe("spec310 系统页", () => {
   it("重置密码 → 新密码可登录、旧密码失效（PUT /admins/:id password）", async () => {
     const { headers } = await makeAdminSession("superadmin", regA)
     const username = `pwd_${Date.now()}`
-    const created = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username, role: "support", password: "oldpass123" }) })
+    const created = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username, role: "support", password: "Oldpass1!" }) })
     const id = ((await created.json()) as { id: string }).id
     madeAdmins.push(id)
-    const res = await app.request(`http://x/admin-api/admins/${id}`, { method: "PUT", headers, body: JSON.stringify({ password: "newpass456" }) })
+    const res = await app.request(`http://x/admin-api/admins/${id}`, { method: "PUT", headers, body: JSON.stringify({ password: "Newpass4!" }) })
     expect(res.status).toBe(200)
-    expect(await loginAdmin(username, "newpass456")).not.toBeNull()
-    expect(await loginAdmin(username, "oldpass123")).toBeNull()
+    expect(await loginAdmin(username, "Newpass4!")).not.toBeNull()
+    expect(await loginAdmin(username, "Oldpass1!")).toBeNull()
   })
 
   it("重置密码 < 8 位 → 400 invalid_input", async () => {
     const { headers } = await makeAdminSession("superadmin", regA)
-    const created = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username: `short_${Date.now()}`, role: "support", password: "validpass123" }) })
+    const created = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username: `short_${Date.now()}`, role: "support", password: "Validpass1!" }) })
     const id = ((await created.json()) as { id: string }).id
     madeAdmins.push(id)
     const res = await app.request(`http://x/admin-api/admins/${id}`, { method: "PUT", headers, body: JSON.stringify({ password: "short" }) })
     expect(res.status).toBe(400)
   })
 
+  it("弱密码（纯数字 / 缺特殊字符）→ 400", async () => {
+    const { headers } = await makeAdminSession("superadmin", regA)
+    const digits = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username: `weak1_${Date.now()}`, role: "support", password: "12345678" }) })
+    expect(digits.status).toBe(400)
+    const letters = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username: `weak2_${Date.now()}`, role: "support", password: "abcd1234" }) })
+    expect(letters.status).toBe(400)
+  })
+
   it("改角色/停用 → 200 且落审计（PUT /admins/:id）", async () => {
     const { headers } = await makeAdminSession("superadmin", regA)
-    const created = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username: `edit_${Date.now()}`, role: "support", password: "pw123456" }) })
+    const created = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username: `edit_${Date.now()}`, role: "support", password: "Pw12345!" }) })
     const id = ((await created.json()) as { id: string }).id
     madeAdmins.push(id)
     const res = await app.request(`http://x/admin-api/admins/${id}`, { method: "PUT", headers, body: JSON.stringify({ role: "finance", status: "disabled" }) })

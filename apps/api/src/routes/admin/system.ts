@@ -24,7 +24,12 @@ systemRouter.get("/admins", requirePermission("admin.manage"), async (c) => {
   }
   return c.json(pagedBody(pg, await listAdmins({ page: pg.page, pageSize: pg.pageSize })))
 })
-const CreateBody = z.object({ username: z.string().min(1), role: z.enum(["superadmin", "ops", "finance", "support"]), password: z.string().min(8) })
+// 密码策略：≥8 位，字母 + 数字 + 特殊字符三者缺一不可（前端同规则预校验，服务端兜底）。
+const PASSWORD = z
+  .string()
+  .min(8)
+  .refine((v) => /[A-Za-z]/.test(v) && /\d/.test(v) && /[^A-Za-z0-9]/.test(v), "password_weak")
+const CreateBody = z.object({ username: z.string().min(1), role: z.enum(["superadmin", "ops", "finance", "support"]), password: PASSWORD })
 systemRouter.post("/admins", requirePermission("admin.manage"), async (c) => {
   const parsed = CreateBody.safeParse(await c.req.json().catch(() => null))
   if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
@@ -35,7 +40,7 @@ systemRouter.post("/admins", requirePermission("admin.manage"), async (c) => {
 const UpdateBody = z.object({
   role: z.enum(["superadmin", "ops", "finance", "support"]).optional(),
   status: z.enum(["active", "disabled"]).optional(),
-  password: z.string().min(8).optional(), // 重置密码：仅超管（admin.manage），≥8 位
+  password: PASSWORD.optional(), // 重置密码：仅超管（admin.manage），≥8 位含字母数字
 })
 systemRouter.put("/admins/:id", requirePermission("admin.manage"), async (c) => {
   const parsed = UpdateBody.safeParse(await c.req.json().catch(() => null))
