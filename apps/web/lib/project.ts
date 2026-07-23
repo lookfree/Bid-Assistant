@@ -93,6 +93,7 @@ export type ProjectInfo = {
     status: string
     currentStep: string
     tenderFileKey: string | null
+    kind?: "bid" | "review" // spec328：审查专用项目（工具页据此改导航,不进生成流水线）
     // 已选投标包件（spec324，多包件招标才有；单包/未选包为 null，outline 及之后步骤行为不变）
     selectedPackage: { id: string; name: string } | null
   }
@@ -123,6 +124,7 @@ export type ProjectListItem = {
   id: string
   name: string
   status: "draft" | "running" | "done"
+  kind?: "bid" | "review" // spec328：审查专用项目前端按此路由 /risk（旧缓存可能缺省）
   currentStep: "read" | "outline" | "content" | "review" | "present" | "export" | "done"
   stepIndex: number
   totalSteps: number

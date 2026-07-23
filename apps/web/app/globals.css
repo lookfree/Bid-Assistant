@@ -244,3 +244,6 @@
   background: color-mix(in srgb, var(--color-primary, #2563eb) 12%, transparent);
 }
 .tiptap img.ProseMirror-selectednode { outline: 2px solid var(--color-primary, #2563eb); }
+
+/* TipTap 编辑器内图片:限宽防溢出侧栏（新插图与遗留 class 被剥的图都兜住） */
+.tiptap img { max-width: 100%; height: auto; }

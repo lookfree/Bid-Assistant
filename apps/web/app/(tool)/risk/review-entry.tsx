@@ -84,8 +84,7 @@ function UploadReviewCard() {
     setBusy(true)
     setError(null)
     try {
-      const bid = await uploadFile(bidFile)
-      const tender = tenderFile ? await uploadFile(tenderFile) : null
+      const [bid, tender] = await Promise.all([uploadFile(bidFile), tenderFile ? uploadFile(tenderFile) : null])
       const id = await createReviewProject(bid.key, tender?.key)
       setCurrentProjectId(id)
       // 带招标文件：先去读标（读完自动接审查步）;不带：留在本页直接可点体检
@@ -121,8 +120,8 @@ function UploadReviewCard() {
       <div className="mt-3 space-y-2">
         {fileBtn("选择投标文件", bidFile, () => bidRef.current?.click(), true)}
         {fileBtn("选择招标文件", tenderFile, () => tenderRef.current?.click(), false)}
-        <input ref={bidRef} type="file" accept=".doc,.docx,.pdf" className="hidden" onChange={(e) => setBidFile(e.target.files?.[0] ?? null)} />
-        <input ref={tenderRef} type="file" accept=".doc,.docx,.pdf,.xls,.xlsx" className="hidden" onChange={(e) => setTenderFile(e.target.files?.[0] ?? null)} />
+        <input ref={bidRef} type="file" accept=".doc,.docx,.pdf" className="hidden" onChange={(e) => { setBidFile(e.target.files?.[0] ?? null); e.target.value = "" /* 允许重选同名文件 */ }} />
+        <input ref={tenderRef} type="file" accept=".doc,.docx,.pdf,.xls,.xlsx" className="hidden" onChange={(e) => { setTenderFile(e.target.files?.[0] ?? null); e.target.value = "" }} />
       </div>
       {error && <p className="mt-2 text-xs font-medium text-destructive">{error}</p>}
       <button

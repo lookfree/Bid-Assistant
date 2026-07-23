@@ -5,16 +5,16 @@ import { Sparkles } from "lucide-react"
 import { estimatePages, fmtChars } from "@/lib/doc-stats"
 import {
   DEFAULT_FORMAT,
+  FONT_OPTIONS,
+  SIZE_OPTIONS,
   TARGET_MAX,
   TARGET_MIN,
   loadGenConfig,
+  sanitizeFormat,
   saveGenConfig,
   suggestedTarget,
   type DocFormat,
 } from "@/lib/generation-config"
-
-const FONTS = ["宋体", "仿宋", "楷体", "黑体"]
-const SIZES = ["三号", "四号", "小四", "五号"]
 
 /** 生成配置弹层（spec330）：目标字数滑杆 + 自定义 + 可折叠输出格式;确认后回传配置并记住偏好。 */
 export function GenerationConfigDialog({
@@ -28,16 +28,20 @@ export function GenerationConfigDialog({
   onConfirm: (cfg: { targetChars: number; format: DocFormat }) => void
   onClose: () => void
 }) {
-  const saved = loadGenConfig()
-  const [target, setTarget] = useState<number>(saved.targetChars ?? suggestedTarget(chapterCount))
+  // localStorage 只在挂载时读一次（懒初始化）;拖滑杆的每次重渲不再重复 JSON.parse
+  const [target, setTarget] = useState<number>(() => loadGenConfig().targetChars ?? suggestedTarget(chapterCount))
   const [custom, setCustom] = useState(false)
-  const [fmt, setFmt] = useState<DocFormat>({ ...DEFAULT_FORMAT, ...(saved.format ?? {}), margin_cm: { ...DEFAULT_FORMAT.margin_cm, ...(saved.format?.margin_cm ?? {}) } })
+  // 自定义输入用「原始字符串」状态：受控值若绑夹位后的数字,逐位输入会被强改（审查实测 15000 打成 100005）
+  const [customText, setCustomText] = useState("")
+  const [fmt, setFmt] = useState<DocFormat>(() => sanitizeFormat(loadGenConfig().format ?? {}))
   const [fmtOpen, setFmtOpen] = useState(false)
 
-  const clamped = Math.min(TARGET_MAX, Math.max(TARGET_MIN, Math.round(target) || TARGET_MIN))
+  const raw = custom ? Number(customText) : target
+  const clamped = Math.min(TARGET_MAX, Math.max(TARGET_MIN, Math.round(raw) || TARGET_MIN))
   function confirm() {
-    saveGenConfig({ targetChars: clamped, format: fmt })
-    onConfirm({ targetChars: clamped, format: fmt })
+    const clean = sanitizeFormat(fmt) // 确认时消毒（夹边距/回落非法枚举）,坏值绝不进 localStorage
+    saveGenConfig({ targetChars: clamped, format: clean })
+    onConfirm({ targetChars: clamped, format: clean })
   }
   const setF = (patch: Partial<DocFormat>) => setFmt((p) => ({ ...p, ...patch }))
   const setMargin = (k: "top" | "bottom" | "left" | "right", v: number) =>
@@ -63,17 +67,28 @@ export function GenerationConfigDialog({
           </span>
         </div>
         <label className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
-          <input type="checkbox" checked={custom} onChange={(e) => setCustom(e.target.checked)} className="accent-primary" />
+          <input
+            type="checkbox"
+            checked={custom}
+            onChange={(e) => {
+              setCustom(e.target.checked)
+              if (e.target.checked) setCustomText(String(target))
+            }}
+            className="accent-primary"
+          />
           自定义标书字数
           {custom && (
             <input
               type="number"
-              value={clamped}
+              value={customText}
               min={TARGET_MIN}
               max={TARGET_MAX}
-              onChange={(e) => setTarget(Number(e.target.value))}
+              onChange={(e) => setCustomText(e.target.value)}
               className="w-28 rounded-lg border border-border bg-background px-2 py-1 text-xs text-foreground outline-none focus:border-primary"
             />
+          )}
+          {custom && (Number(customText) < TARGET_MIN || Number(customText) > TARGET_MAX) && (
+            <span className="text-destructive">将按 {fmtChars(clamped)} 字执行（范围 1万~50万）</span>
           )}
         </label>
         <p className="mt-1.5 text-xs text-muted-foreground">
@@ -136,10 +151,10 @@ function FormatPanel({
       <div className="flex flex-wrap items-center gap-2">
         <span className="w-14 shrink-0 font-medium text-foreground">标题</span>
         <select value={fmt.heading_font} onChange={(e) => setF({ heading_font: e.target.value })} className={sel}>
-          {FONTS.map((f) => <option key={f}>{f}</option>)}
+          {FONT_OPTIONS.map((f) => <option key={f}>{f}</option>)}
         </select>
         <select value={fmt.heading_size} onChange={(e) => setF({ heading_size: e.target.value })} className={sel}>
-          {SIZES.map((s) => <option key={s}>{s}</option>)}
+          {SIZE_OPTIONS.map((s) => <option key={s}>{s}</option>)}
         </select>
         <label className="flex items-center gap-1 text-muted-foreground">
           <input type="checkbox" checked={fmt.heading_bold ?? true} onChange={(e) => setF({ heading_bold: e.target.checked })} className="accent-primary" />
@@ -150,10 +165,10 @@ function FormatPanel({
       <div className="flex flex-wrap items-center gap-2">
         <span className="w-14 shrink-0 font-medium text-foreground">正文</span>
         <select value={fmt.body_font} onChange={(e) => setF({ body_font: e.target.value })} className={sel}>
-          {FONTS.map((f) => <option key={f}>{f}</option>)}
+          {FONT_OPTIONS.map((f) => <option key={f}>{f}</option>)}
         </select>
         <select value={fmt.body_size} onChange={(e) => setF({ body_size: e.target.value })} className={sel}>
-          {SIZES.map((s) => <option key={s}>{s}</option>)}
+          {SIZE_OPTIONS.map((s) => <option key={s}>{s}</option>)}
         </select>
         <select value={String(fmt.body_indent_chars ?? 2)} onChange={(e) => setF({ body_indent_chars: Number(e.target.value) as 0 | 2 })} className={sel}>
           <option value="2">首行缩进2字符</option>

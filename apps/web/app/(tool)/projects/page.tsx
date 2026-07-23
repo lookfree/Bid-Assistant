@@ -326,11 +326,13 @@ function EmptyProjects() {
 /* 单个项目卡片：点击设为当前项目并跳到对应工具页续作 */
 function ProjectCard({ project: p, onDelete }: { project: ProjectListItem; onDelete: () => void }) {
   const stage = stepMap[p.currentStep] ?? stepMap.read
+  // 审查专用项目（spec328）不进生成流水线:读标阶段去读标页,其余一律回审查页看报告
+  const href = p.kind === "review" ? (p.currentStep === "read" ? "/read" : "/risk") : stage.href
   const Icon = stage.icon
   const progress = p.totalSteps > 0 ? Math.min(100, Math.round((p.stepIndex / p.totalSteps) * 100)) : 0
   return (
     <Link
-      href={stage.href}
+      href={href}
       onClick={() => setCurrentProjectId(p.id)}
       className="group relative rounded-2xl border border-border bg-card p-4 transition-colors hover:border-primary/40"
     >
@@ -355,7 +357,7 @@ function ProjectCard({ project: p, onDelete }: { project: ProjectListItem; onDel
           <div className="flex items-center gap-2">
             <p className="truncate text-sm font-medium text-foreground">{p.name}</p>
             <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${stage.tone}`}>
-              {p.status === "done" ? statusLabel.done : stage.label}
+              {p.kind === "review" ? (p.currentStep === "done" ? "审查完成" : "标书审查") : p.status === "done" ? statusLabel.done : stage.label}
             </span>
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">

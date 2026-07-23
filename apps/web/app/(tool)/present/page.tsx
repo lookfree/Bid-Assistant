@@ -42,6 +42,7 @@ import { LibraryPicker } from "@/components/tool/library-picker"
 import { AiNotice } from "@/components/tool/ai-notice"
 import { type LibraryItem } from "@/lib/library"
 import { ApiError } from "@/lib/api-client"
+import { storedFormat } from "@/lib/generation-config"
 import { stepPrereq, useStep } from "@/lib/use-step"
 import { artifactDownload, triggerDownload, patchErrorMessage, patchStep, runStep } from "@/lib/project"
 import { AiPanel } from "./ai-panel"
@@ -318,7 +319,9 @@ export default function PresentPage() {
           // 计费红线：重复下载免费，绝不能因网络抖动静默重跑付费步骤。
           if (!(e instanceof ApiError && e.status === 404)) throw e
           setExportStatus("正在整理产物…")
-          await runStep(projectId, "export")
+          // 审查修正：回退重渲也带用户存好的输出格式,否则会把定制版式的 docx/pdf 覆盖回默认版式
+          const fmt = storedFormat()
+          await runStep(projectId, "export", undefined, fmt ? { format: fmt } : undefined)
           dl = await artifactDownload(projectId, "pptx")
         }
         triggerDownload(dl.url)

@@ -332,7 +332,7 @@ export default function ReadPage() {
               下载报告
             </button>
             <Link
-              href="/outline"
+              href={info?.project.kind === "review" ? "/risk" : "/outline"}
               className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
             >
               生成提纲
@@ -609,11 +609,11 @@ export default function ReadPage() {
 
       {/* 右下角悬浮：进入大纲生成 */}
       <Link
-        href="/outline"
+        href={info?.project.kind === "review" ? "/risk" : "/outline"}
         className="fixed bottom-6 right-6 z-40 inline-flex items-center gap-2 rounded-full gradient-brand px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-primary/30 transition-opacity hover:opacity-90"
       >
         <CheckCircle2 className="size-4" />
-        已知悉，生成投标文件大纲
+        {info?.project.kind === "review" ? "已知悉，去标书审查" : "已知悉，生成投标文件大纲"}
         <ArrowRight className="size-4" />
       </Link>
     </div>

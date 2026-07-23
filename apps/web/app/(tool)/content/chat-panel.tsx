@@ -84,6 +84,8 @@ export function ChatPanel({
         push({ role: "ai", text: "积分余额不足，本次改写未执行。", link: { href: "/membership", label: "去充值" } })
       } else if (e instanceof ApiError && e.status === 409) {
         push({ role: "ai", text: "正文尚未生成完成，暂不能改写本章。" })
+      } else if (e instanceof ApiError && e.code === "rewrite_not_instruction") {
+        push({ role: "ai", text: "这看起来是提问而不是改写指令,本次未修改正文、积分已全额退还。想改正文请用指令句式,例如「把响应时间改为15分钟」。" })
       } else if (e instanceof ApiError && e.code === "rewrite_not_html") {
         push({ role: "ai", text: "本次指令没有产出有效正文，积分已全额退还。请把要求写成修改指令再试，例如「把响应时间改为15分钟」。" })
       } else {

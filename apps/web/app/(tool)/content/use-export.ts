@@ -74,6 +74,9 @@ export function useExport(opts: {
   function exportGateHint(): ExportGate | null {
     const cur = info?.project.currentStep
     if (!cur || cur === "present" || cur === "export" || cur === "done") return null
+    // 就地体检刚跑完时 info 是陈旧快照（仍显示 review）——checkState/findings 是新鲜信号,
+    // 审查已完成就放行,否则用户刚付完体检费立刻被这里拦死（审查修正 2026-07-23,恢复被误删的桥）
+    if (cur === "review" && (opts.checkState === "done" || opts.findings)) return null
     return { text: `导出前需完成：废标审查（${opts.reviewCost} 积分）`, href: "/risk", label: "前往审查页" }
   }
 
@@ -124,9 +127,17 @@ export function useExport(opts: {
     setExportStatus(format === "pdf" ? "正在渲染完整标书（PDF）…" : "正在渲染完整标书…")
     void (async () => {
       try {
-        // spec330：导出带上用户存好的输出格式（未配置过则不带,后端走现行样式）
+        // spec330：导出带上用户存好的输出格式（未配置过则不带,后端走现行样式）。
+        // 格式指纹（审查修正）：已有产物但格式改过 → 必须重渲（正常计费）,否则用户改完格式
+        // 永远只能拿到旧版式文件;指纹在成功后落 localStorage,未改格式的重复下载仍旧免费直下。
         const fmt = storedFormat()
-        if (!(await fetchStepResult(projectId, "export"))) await runStep(projectId, "export", undefined, fmt ? { format: fmt } : undefined)
+        const fmtKey = `bid.exportFmt.${projectId}`
+        const fmtNow = JSON.stringify(fmt ?? null)
+        const fmtChanged = localStorage.getItem(fmtKey) !== null && localStorage.getItem(fmtKey) !== fmtNow
+        if (fmtChanged || !(await fetchStepResult(projectId, "export"))) {
+          await runStep(projectId, "export", undefined, fmt ? { format: fmt } : undefined)
+        }
+        localStorage.setItem(fmtKey, fmtNow)
         const dl = await artifactDownload(projectId, kind)
         triggerDownload(dl.url)
         setExportStatus(`已开始下载《${dl.filename}》，可在浏览器「下载」列表查看`)

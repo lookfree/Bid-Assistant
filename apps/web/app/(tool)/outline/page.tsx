@@ -407,6 +407,9 @@ export default function OutlinePage() {
                 <StepPlaceholder text={error ? "结果加载异常，请按上方提示重试或刷新" : "提纲生成中…完成后在此展示，可自由增删改"} />
               ) : info?.project.currentStep === "read" ? (
                 <StepPlaceholder text="先完成读标步骤，再生成提纲" action={{ href: "/read", label: "前往读标" }} />
+              ) : info?.project.kind === "review" ? (
+                /* 审查专用项目（spec328）没有提纲步:渲染引导而非计费 CTA（点了必 409） */
+                <StepPlaceholder text="本项目为「标书审查」专用,不含提纲/正文生成" action={{ href: "/risk", label: "前往标书审查" }} />
               ) : (
                 <StepRunCta
                   title="生成投标文件大纲"

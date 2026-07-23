@@ -50,6 +50,7 @@ import { RichEditor } from "./rich-editor"
 import type { Editor as TiptapEditor } from "@tiptap/react"
 import { imageFileToDataUrl } from "@/lib/image-insert"
 import { GenerationConfigDialog } from "./generation-config"
+import { loadGenConfig } from "@/lib/generation-config"
 
 // agent content 步结果（camelCase）：{chapterId: bodyHtml}；章结构取 outline 步结果
 type RealChapters = Record<string, string>
@@ -95,6 +96,8 @@ export default function ContentPage() {
   const [exportScope, setExportScope] = useState<BidType>("full")
   const [editor, setEditor] = useState<TiptapEditor | null>(null)
   const editorScrollRef = useRef<HTMLDivElement>(null)
+  // 外部替换正文（AI 改写/快照回退）→ epoch+1 → RichEditor 换 key 重挂:内容与撤销栈干净重置
+  const [editorEpoch, setEditorEpoch] = useState(0)
   const { openPaywall } = usePaywall()
 
   /* 真实积分余额与会员身份（GET /api/membership；仅 active 订阅算会员，决定整改建议是否完整可见） */
@@ -141,6 +144,13 @@ export default function ContentPage() {
     requestCheckConfirm: () => setCheckConfirm("export"),
     onHighRisk: () => setExportConfirm(true),
   })
+
+  /** 起跑正文生成：显式给参数用之;缺省（含失败重试路径）回读用户存过的目标字数——
+   *  否则重试的付费 run 会静默丢掉篇幅配置（审查修正 2026-07-23）。 */
+  function startContent(body?: { targetChars?: number }) {
+    const target = body?.targetChars ?? loadGenConfig().targetChars
+    return start(target ? { targetChars: target } : undefined)
+  }
 
   // 当前 tab 对应的章节列表（全文为技术标 + 商务标合并）
   const list: Chapter[] = bidType === "full" ? [...data.tech, ...data.business] : data[bidType]
@@ -205,7 +215,7 @@ export default function ContentPage() {
   }
 
   /** 撤销（两档）：先走 TipTap 原生撤销（编辑中的细粒度回退）；原生栈见底后从章节快照栈
-   *  弹出上一保存版恢复并持久化（跨保存/AI 改写的粗粒度回退）。 */
+   *  弹出上一保存版恢复并持久化（跨保存/AI 改写的粗粒度回退,经 epoch 重挂,撤销栈干净重置）。 */
   function undoChapter() {
     if (!editor) return
     if (editor.can().undo()) {
@@ -217,6 +227,7 @@ export default function ContentPage() {
     const next = withChapterHtml(data, active.id, prev)
     setData(next)
     persistContent(next)
+    setEditorEpoch((e) => e + 1)
   }
 
   /** 失焦保存（RichEditor onBlur 吐 HTML）：无变化不回写;被覆盖版本入撤销栈。 */
@@ -238,15 +249,23 @@ export default function ContentPage() {
       if (old !== undefined && old !== html) pushHistory(chapterId, old)
       return withChapterHtml(prev, chapterId, html)
     })
+    setEditorEpoch((e) => e + 1) // 改写替换经重挂生效（见 RichEditor 文档注释）
   }
 
-  /* 从资料库插入：TipTap 在失焦时保留文档内选区,insertContent 天然落在光标处（选区补丁族已删） */
+  /* 插入内容：TipTap 失焦仍保留文档内选区,insertContent 落在光标处;
+     用户从未点过正文时选区停在文首（会插到视口外顶端,生产实测投诉）→ 追加到末尾并滚到位 */
+  function insertAtCaret(html: string) {
+    if (!editor) return
+    const neverFocused = !editor.view.hasFocus() && editor.state.selection.from <= 1
+    const chain = editor.chain()
+    ;(neverFocused ? chain.focus("end") : chain.focus()).insertContent(html).scrollIntoView().run()
+    saveEditor()
+  }
   function openLibrary() {
     setLibraryOpen(true)
   }
   function insertFromLibrary(item: LibraryItem) {
-    editor?.chain().focus().insertContent(libraryItemHtml(item)).run()
-    saveEditor()
+    insertAtCaret(libraryItemHtml(item))
     setLibraryOpen(false)
   }
 
@@ -261,8 +280,7 @@ export default function ContentPage() {
     if (!file || !file.type.startsWith("image/")) return
     try {
       const dataUrl = await imageFileToDataUrl(file)
-      editor?.chain().focus().setImage({ src: dataUrl, alt: "插图" }).run()
-      saveEditor()
+      insertAtCaret(`<img src="${dataUrl}" alt="插图" class="my-3 rounded-lg border border-border max-w-full" />`)
     } catch {
       window.alert("图片读取失败，请换一张（支持 JPG/PNG 等常见格式）")
     }
@@ -391,7 +409,7 @@ export default function ContentPage() {
           running={running}
           error={error}
           runningText={contentRunningText}
-          onRetry={() => void start()}
+          onRetry={() => void startContent()}
           action={errorAction ?? undefined}
         />
         {outlineLoading || dataLoading ? (
@@ -429,7 +447,7 @@ export default function ContentPage() {
         running={running}
         error={error}
         runningText={contentRunningText}
-        onRetry={() => void start()}
+        onRetry={() => void startContent()}
         action={errorAction ?? undefined}
       />
       {needsRun && (
@@ -442,7 +460,8 @@ export default function ContentPage() {
           </div>
           <button
             onClick={() => setGenConfigOpen(true)}
-            className="inline-flex shrink-0 items-center gap-2 rounded-xl gradient-brand px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+            disabled={membershipLoading}
+            className="inline-flex shrink-0 items-center gap-2 rounded-xl gradient-brand px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
           >
             <Sparkles className="size-4" />
             生成投标正文（{contentShortCost} 积分/章起）
@@ -521,7 +540,7 @@ export default function ContentPage() {
 
           {active.html.trim() ? (
             <RichEditor
-              key={active.id}
+              key={`${active.id}:${editorEpoch}`}
               html={stripDocumentShell(active.html)}
               scrollRef={editorScrollRef}
               onBlurSave={saveEditor}
@@ -779,7 +798,10 @@ export default function ContentPage() {
         <GenerationConfigDialog
           chapterCount={[...data.tech, ...data.business].length || 10}
           costText={`短章 ${contentShortCost} 积分/章、长章 ${contentLongCost} 积分/章,按实际产出分档结算`}
-          onConfirm={({ targetChars }) => (setGenConfigOpen(false), void start({ targetChars }))}
+          onConfirm={({ targetChars }) => {
+            setGenConfigOpen(false)
+            void startContent({ targetChars }) // format 不随本请求走:存 localStorage,导出时由 use-export 读取下发
+          }}
           onClose={() => setGenConfigOpen(false)}
         />
       )}
