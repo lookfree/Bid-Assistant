@@ -31,6 +31,13 @@ export type AppDeps = {
 
 export function createApp(deps: AppDeps) {
   const app = new Hono()
+  // JSON 响应显式带 charset=utf-8（spec331 加固）：Hono c.json() 默认不带 charset,严格/老式客户端
+  // （PowerShell、部分 curl 终端）会按本地编码解 UTF-8 → 中文 mojibake。补上后中文体字节不变、防误判。
+  app.use("*", async (c, next) => {
+    await next()
+    const ct = c.res.headers.get("content-type")
+    if (ct === "application/json") c.res.headers.set("content-type", "application/json; charset=utf-8")
+  })
   // 跨域：白名单数组交给 hono/cors 匹配——命中回显该 Origin，未命中不发 ACAO（不回显任意来源）。env 由 index.ts 注入。
   const allow = deps.webOrigins?.length ? deps.webOrigins : ["http://localhost:3000", "http://localhost:3001"]
   app.use(

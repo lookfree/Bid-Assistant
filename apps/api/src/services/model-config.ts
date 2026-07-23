@@ -233,3 +233,18 @@ export function mergeModelSecrets(incoming: ModelConfig, stored: ModelConfig): M
     }),
   }
 }
+
+/** 配置字典脱敏（spec331 安全红线）：billing_configs 全量 GET 会带出 agent_model 这类含
+ *  models[].apiKey 明文的键（GET /plans/configs 曾裸吐,与 /models 的脱敏不一致 → 泄露第三方密钥）。
+ *  任何值形如模型配置（含 models[] 数组）的键统一过 maskModelConfig,其余键原样返回。 */
+export function maskConfigsForRead(configs: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(configs)) {
+    if (v && typeof v === "object" && Array.isArray((v as { models?: unknown }).models)) {
+      out[k] = maskModelConfig(normalizeModelConfig(v))
+    } else {
+      out[k] = v
+    }
+  }
+  return out
+}

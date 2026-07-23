@@ -76,6 +76,7 @@ export const adminAuditLogs = pgTable(
   (t) => ({
     byOperator: index("admin_audit_logs_operator_idx").on(t.operator),
     byAction: index("admin_audit_logs_action_idx").on(t.action),
+    byCreated: index("admin_audit_logs_created_idx").on(t.createdAt.desc()), // spec331：默认按 created_at desc 分页
   }),
 )
 

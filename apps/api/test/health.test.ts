@@ -8,6 +8,12 @@ describe("GET /healthz", () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ status: "ok" })
   })
+
+  it("spec331：JSON 响应带 charset=utf-8（防客户端按本地编码解 UTF-8 → 中文乱码）", async () => {
+    const app = createApp({ pingDb: async () => true })
+    const res = await app.request("/healthz")
+    expect(res.headers.get("content-type")).toBe("application/json; charset=utf-8")
+  })
 })
 
 describe("CORS 预检覆盖 API 实际方法（跨域部署 web→api.localhost）", () => {

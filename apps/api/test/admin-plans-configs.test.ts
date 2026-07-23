@@ -1,4 +1,5 @@
 import { describe, it, expect, afterAll, setDefaultTimeout } from "bun:test"
+import { randomUUID } from "node:crypto"
 import { eq, inArray } from "drizzle-orm"
 import { Hono } from "hono"
 import { adminRoutes } from "../src/routes/admin"
@@ -163,5 +164,36 @@ describe("spec327 配置写入形状校验（钱相关键白名单）", () => {
     })
     expect(res.status).toBe(200)
     expect(await getConfig<{ anything: unknown[] }>("test_free_key")).toEqual({ anything: [1, "x", null] })
+  })
+
+  it("spec331 安全：GET /configs 脱敏——agent_model.apiKey 明文永不出参,只出 apiKeyHint;其余键原样", async () => {
+    await setConfig("agent_model", {
+      models: [{ id: "m1", provider: "deepseek", model: "deepseek-chat", apiKey: "sk-secret-1234567890", params: {}, enabled: true, test: { status: "tested" } }],
+      chain: ["m1"],
+    })
+    await setConfig("credit_cost.read", 10)
+    const { headers } = await makeAdminSession("ops", regA)
+    const res = await app.request("http://x/admin-api/plans/configs", { headers })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Record<string, unknown>
+    const raw = JSON.stringify(body)
+    expect(raw).not.toContain("sk-secret-1234567890") // 明文密钥绝不出现在响应任何角落
+    const am = body.agent_model as { models: Array<{ apiKey?: string; apiKeyHint?: string }> }
+    expect(am.models[0]?.apiKey).toBeUndefined() // 该字段被删
+    expect(am.models[0]?.apiKeyHint).toContain("****") // 改出打码提示
+    expect(body["credit_cost.read"]).toBe(10) // 普通键原样返回
+    await getDb().delete(billingConfigs).where(eq(billingConfigs.key, "agent_model"))
+  })
+
+  // 注：charset=utf-8 加固在 createApp 的全局 middleware 层,本测试自建 Hono 只挂 adminRoutes 测不到,
+  // 由部署后容器内 curl 实测响应头验证（见 spec331 T4）。
+
+  it("spec331 契约：ledger/:userId/check 传不存在的 id → 404;非 uuid → 404", async () => {
+    const { headers } = await makeAdminSession("ops", regA)
+    const nonexist = await app.request(`http://x/admin-api/ledger/${randomUUID()}/check`, { headers })
+    expect(nonexist.status).toBe(404)
+    expect(((await nonexist.json()) as { error: string }).error).toBe("user_not_found")
+    const badId = await app.request("http://x/admin-api/ledger/not-a-uuid/check", { headers })
+    expect(badId.status).toBe(404)
   })
 })

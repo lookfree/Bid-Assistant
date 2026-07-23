@@ -4,6 +4,7 @@ import { requirePermission } from "../../middleware/admin-auth"
 import { writeAudit } from "../../services/audit"
 import { listPlans, createPlan, updatePlan } from "../../services/admin/admin-plans"
 import { getConfig, getConfigs, setConfig } from "../../services/config"
+import { maskConfigsForRead } from "../../services/model-config"
 import type { AdminUser } from "../../db/schema"
 
 // 套餐&配置页（spec310）：plans 写=plan.write；billing_configs 写=config.write（审计在 route 层显式做前后值）。
@@ -11,7 +12,7 @@ export const plansRouter = new Hono<{ Variables: { admin: AdminUser } }>()
 
 // —— 配置区（同一张 billing_configs；GET 全量 / PUT 单 key）——
 // 注意：/configs 必须在 /:id 之前注册，否则 "configs" 会被当作 plan id 匹配。
-plansRouter.get("/configs", async (c) => c.json(await getConfigs(c.req.query("prefix") || undefined)))
+plansRouter.get("/configs", async (c) => c.json(maskConfigsForRead(await getConfigs(c.req.query("prefix") || undefined)))) // spec331：脱敏,agent_model.apiKey 明文永不出参
 const ConfigBody = z.object({ value: z.unknown() })
 
 // spec327：两个钱相关键加白名单形状校验（其它键保持宽松直存，行为不变）——防运营拼错键名/填坏值
