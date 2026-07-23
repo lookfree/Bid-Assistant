@@ -28,6 +28,9 @@ export function getS3(): S3Client {
 let presignClient: S3Client | undefined
 function getS3Presign(): S3Client {
   const env = getEnv()
+  // 同源代理模式下必须对内部端点签名（nginx 固定转发该 Host）——公网端点签名会 403,
+  // 且 PROXY 与 PUBLIC 两个 env 并存时以代理为准,防配置残留互相打架（2026-07-23 实测）
+  if (process.env.MINIO_PROXY_PREFIX) return getS3()
   const publicEndpoint = env.MINIO_PUBLIC_ENDPOINT ?? env.MINIO_ENDPOINT
   if (publicEndpoint === env.MINIO_ENDPOINT) return getS3()
   if (presignClient) return presignClient
