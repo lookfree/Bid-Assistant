@@ -444,12 +444,12 @@ export default function MembershipPage() {
                         </span>
                         <span className={`shrink-0 rounded-full px-2 py-0.5 font-medium ${st.tone}`}>{st.label}</span>
                       </div>
-                      {iv.status === "issued" && iv.invoiceNo && (
+                      {iv.status === "issued" && (
                         <p className="mt-0.5 text-muted-foreground">
-                          发票号 {iv.invoiceNo}
-                          {iv.fileUrl && (
-                            <a href={iv.fileUrl} target="_blank" rel="noreferrer" className="ml-2 text-primary hover:underline">
-                              下载
+                          {iv.invoiceNo && <>发票号 {iv.invoiceNo}</>}
+                          {iv.downloadUrl && (
+                            <a href={iv.downloadUrl} target="_blank" rel="noreferrer" className="ml-2 text-primary hover:underline">
+                              下载电子发票
                             </a>
                           )}
                         </p>

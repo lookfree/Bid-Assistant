@@ -84,9 +84,9 @@ export interface InvoiceView {
   remark: string | null
   status: "pending" | "issued" | "rejected"
   invoiceNo: string | null
-  fileUrl: string | null
   rejectReason: string | null
   createdAt: string
+  downloadUrl?: string | null // 已开票且运营上传了 PDF 时，后端现签的站内下载链接
 }
 
 export interface CreateInvoicePayload {

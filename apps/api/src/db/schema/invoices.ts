@@ -30,7 +30,8 @@ export const invoiceRequests = pgTable(
     remark: text("remark"),
     status: text("status").$type<InvoiceStatus>().notNull().default("pending"),
     invoiceNo: text("invoice_no"), // 开具后回填
-    fileUrl: text("file_url"), // 电子发票 PDF（可选，MinIO）
+    fileKey: text("file_key"), // 运营上传的电子发票 PDF 的 MinIO 对象 key（下载现签用）
+    fileUrl: text("file_url"), // 备选：运营粘贴的外链（无上传时）
     rejectReason: text("reject_reason"),
     handledBy: text("handled_by"), // admin username（与审计 operator 口径一致，不做 FK）
     handledAt: tz("handled_at"),

@@ -1,9 +1,19 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm"
 import { getDb } from "../db/client"
 import { invoiceRequests, paymentOrders, type InvoiceRequest, type InvoiceStatus, type InvoiceTitleType } from "../db/schema"
+import { randomUUID } from "node:crypto"
 import { pagedResult } from "../lib/pagination"
 import { writeAudit } from "./audit"
-import { getEmailSender, type EmailSender } from "./email-sender"
+import { presignGet, putObject } from "../storage/s3"
+
+const DOWNLOAD_TTL = 3600 // 站内下载现签有效期（列表每次刷新重签，短即可）
+export const MAX_INVOICE_FILE_BYTES = 10 * 1024 * 1024 // 电子发票文件 ≤ 10MB
+const UPLOAD_EXTS: Record<string, string> = { pdf: "application/pdf", ofd: "application/octet-stream", jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png" }
+
+// 站内下载 URL：presignGet 返回 /s3 代理相对路径（C 端同源可直点）。
+async function invoiceDownloadUrl(fileKey: string): Promise<string> {
+  return presignGet(fileKey, DOWNLOAD_TTL, "invoice.pdf")
+}
 
 // 发票申请（spec332）：money-blind——只读订单、快照订单金额，绝不改积分/余额账本。
 export type CreateInvoiceInput = {
@@ -22,6 +32,8 @@ export type InvoiceErrorCode =
   | "invoice_exists"
   | "invoice_not_found"
   | "not_pending"
+  | "unsupported_file"
+  | "file_too_large"
 
 // 业务错误带 code，路由据此映射 HTTP 状态。
 export class InvoiceError extends Error {
@@ -59,11 +71,12 @@ export async function createInvoiceRequest(userId: string, input: CreateInvoiceI
 }
 
 // 本人发票列表（含开票结果/驳回原因，供用户查看状态）；属主隔离：where 带 userId。
+// 已开票且有上传 PDF 的，附现签下载链接（相对 /s3 代理路径，站内同源可直点）。
 export async function listUserInvoices(userId: string, opts: { page?: number; pageSize?: number }) {
   const db = getDb()
   const page = opts.page ?? 1
   const pageSize = opts.pageSize ?? 20
-  return pagedResult(
+  const res = await pagedResult(
     db
       .select()
       .from(invoiceRequests)
@@ -73,6 +86,12 @@ export async function listUserInvoices(userId: string, opts: { page?: number; pa
       .offset((page - 1) * pageSize),
     db.select({ n: sql<number>`count(*)` }).from(invoiceRequests).where(eq(invoiceRequests.userId, userId)),
   )
+  const items = await Promise.all(
+    res.items.map(async (r) =>
+      r.status === "issued" && r.fileKey ? { ...r, downloadUrl: await invoiceDownloadUrl(r.fileKey) } : r,
+    ),
+  )
+  return { items, total: res.total }
 }
 
 // —— 管理端（spec332；invoice.write：superadmin/finance）——
@@ -100,32 +119,37 @@ async function loadPending(id: string): Promise<InvoiceRequest> {
   return row
 }
 
-// 开具：pending→issued，回填发票号（+可选 PDF），落审计，并自动邮件通知用户（阿里云 DirectMail）。
+// 开具：pending→issued，回填发票号 + 上传的电子发票文件 key，落审计。用户在会员中心自行下载。
 export async function issueInvoice(
   id: string,
-  input: { invoiceNo: string; fileUrl?: string },
-  opts: { operator: string; emailSender?: EmailSender },
+  input: { invoiceNo: string; fileKey?: string },
+  opts: { operator: string },
 ): Promise<InvoiceRequest> {
   await loadPending(id)
   const [after] = await getDb()
     .update(invoiceRequests)
-    .set({ status: "issued", invoiceNo: input.invoiceNo.trim(), fileUrl: input.fileUrl?.trim() || null, handledBy: opts.operator, handledAt: new Date() })
+    .set({
+      status: "issued",
+      invoiceNo: input.invoiceNo.trim(),
+      fileKey: input.fileKey?.trim() || null,
+      handledBy: opts.operator,
+      handledAt: new Date(),
+    })
     .where(eq(invoiceRequests.id, id))
     .returning()
   await writeAudit({ operator: opts.operator, action: "invoice.issue", target: `invoice:${id}`, before: { status: "pending" }, after: { status: "issued", invoiceNo: after!.invoiceNo } })
-  // 开具后自动发邮件（best-effort：邮件失败不回滚开票——发票已入库、用户站内也能看到；仅告警日志）。
-  try {
-    await (opts.emailSender ?? getEmailSender()).sendInvoiceIssued({
-      to: after!.email,
-      title: after!.title,
-      invoiceNo: after!.invoiceNo!,
-      amountCents: after!.amountCents,
-      fileUrl: after!.fileUrl,
-    })
-  } catch (e) {
-    console.warn(`[invoice] 开具邮件发送失败 invoice=${id} to=${after!.email}:`, e instanceof Error ? e.message : e)
-  }
   return after!
+}
+
+// 运营上传电子发票文件（invoice.write）：经 API 中转直传 MinIO，返回 key（随开具回填到发票行）。
+export async function uploadInvoiceFile(invoiceId: string, filename: string, bytes: Uint8Array): Promise<{ key: string }> {
+  const ext = filename.split(".").pop()?.toLowerCase() ?? ""
+  const contentType = UPLOAD_EXTS[ext]
+  if (!contentType) throw new InvoiceError("unsupported_file")
+  if (bytes.byteLength > MAX_INVOICE_FILE_BYTES) throw new InvoiceError("file_too_large")
+  const key = `invoices/${invoiceId}/${randomUUID()}.${ext}`
+  await putObject(key, bytes, contentType)
+  return { key }
 }
 
 // 驳回：pending→rejected，记原因，落审计。

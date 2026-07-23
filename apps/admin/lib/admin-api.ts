@@ -15,7 +15,8 @@ export class AdminApiError extends Error {
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
-  headers.set("Content-Type", "application/json")
+  // FormData（文件上传）让浏览器自带 multipart boundary，勿覆盖成 application/json。
+  if (!(init?.body instanceof FormData)) headers.set("Content-Type", "application/json")
   const token = adminTokenStore.get()
   if (token) headers.set("Authorization", `Bearer ${token}`)
   const res = await fetch(`${baseUrl}${path}`, { ...init, headers })
@@ -129,8 +130,14 @@ export const adminApi = {
   invoices: {
     list: (p: { status?: string; userId?: string; page?: number; pageSize?: number } = {}) =>
       req<Paged<ApiInvoice>>(`/invoices${qs(p)}`),
-    handle: (id: string, body: { action: "issue"; invoiceNo: string; fileUrl?: string } | { action: "reject"; reason: string }) =>
+    handle: (id: string, body: { action: "issue"; invoiceNo: string; fileKey?: string } | { action: "reject"; reason: string }) =>
       req<ApiInvoice>(`/invoices/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+    // 上传电子发票文件（multipart，经 API 中转直传 MinIO）；返回对象 key，随开具回填。
+    uploadFile: (id: string, file: File) => {
+      const fd = new FormData()
+      fd.append("file", file)
+      return req<{ key: string }>(`/invoices/${id}/file`, { method: "POST", body: fd })
+    },
   },
 }
 
@@ -145,7 +152,7 @@ export type ApiAdmin = { id: string; username: string; role: string; status: str
 export type ApiAuditLog = { id: string; operator: string; action: string; target: string | null; before: unknown; after: unknown; createdAt: string }
 export type ApiPlan = { id: string; name: string; code: string | null; priceCents: number; billingCycle: string; grantCreditsPerCycle: number; status: string; features: Record<string, unknown>; limits: Record<string, unknown> }
 export type ApiFeedback = { id: string; userId: string; type: "content_error" | "complaint" | "billing" | "suggestion" | "other"; projectId: string | null; content: string; contact: string | null; status: "pending" | "processing" | "resolved"; reply: string | null; handledBy: string | null; handledAt: string | null; createdAt: string; nickname: string | null }
-export type ApiInvoice = { id: string; userId: string; orderId: string; amountCents: number; titleType: "personal" | "enterprise"; title: string; taxNo: string | null; email: string; remark: string | null; status: "pending" | "issued" | "rejected"; invoiceNo: string | null; fileUrl: string | null; rejectReason: string | null; handledBy: string | null; handledAt: string | null; createdAt: string }
+export type ApiInvoice = { id: string; userId: string; orderId: string; amountCents: number; titleType: "personal" | "enterprise"; title: string; taxNo: string | null; email: string; remark: string | null; status: "pending" | "issued" | "rejected"; invoiceNo: string | null; fileKey: string | null; fileUrl: string | null; rejectReason: string | null; handledBy: string | null; handledAt: string | null; createdAt: string }
 
 // 查询串：跳过 undefined/空，encodeURIComponent。
 function qs(p: Record<string, unknown>): string {

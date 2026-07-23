@@ -184,15 +184,36 @@ function InvoiceDialog({
   onSubmit: (id: string, body: Parameters<typeof adminApi.invoices.handle>[1]) => void
 }) {
   const [invoiceNo, setInvoiceNo] = useState("")
-  const [fileUrl, setFileUrl] = useState("")
+  const [file, setFile] = useState<File | null>(null)
   const [reason, setReason] = useState("")
+  const [uploading, setUploading] = useState(false)
 
   // 每次切换到不同申请（或重新打开）时清空表单。
   useEffect(() => {
     setInvoiceNo("")
-    setFileUrl("")
+    setFile(null)
     setReason("")
+    setUploading(false)
   }, [invoice])
+
+  // 开具：先上传发票文件（若选了）拿 key，再提交 issue。上传失败给具体提示、不继续开具。
+  async function submitIssue() {
+    if (!invoice || !invoiceNo.trim() || uploading) return
+    let fileKey: string | undefined
+    if (file) {
+      setUploading(true)
+      try {
+        fileKey = (await adminApi.invoices.uploadFile(invoice.id, file)).key
+      } catch (e) {
+        const code = e instanceof AdminApiError ? e.code : undefined
+        toast.error(code === "unsupported_file" ? "文件格式不支持（仅 PDF/OFD/图片）" : code === "file_too_large" ? "文件过大（≤10MB）" : "上传失败，请重试")
+        setUploading(false)
+        return
+      }
+      setUploading(false)
+    }
+    onSubmit(invoice.id, { action: "issue", invoiceNo: invoiceNo.trim(), fileKey })
+  }
 
   if (!invoice) return null
   const pending = invoice.status === "pending"
@@ -227,8 +248,14 @@ function InvoiceDialog({
                 <Input id="inv-no" value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} maxLength={100} placeholder="线下开具后回填的发票号" />
               </Field>
               <Field>
-                <FieldLabel htmlFor="inv-file">电子发票链接（选填）</FieldLabel>
-                <Input id="inv-file" value={fileUrl} onChange={(e) => setFileUrl(e.target.value)} maxLength={500} placeholder="PDF 下载链接，可留空" />
+                <FieldLabel htmlFor="inv-file">电子发票文件（PDF/OFD/图片，选填，用户会员中心可下载）</FieldLabel>
+                <Input
+                  id="inv-file"
+                  type="file"
+                  accept=".pdf,.ofd,.jpg,.jpeg,.png"
+                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                />
+                {file && <p className="text-xs text-muted-foreground">已选择：{file.name}</p>}
               </Field>
               <Field>
                 <FieldLabel htmlFor="inv-reason">驳回原因（驳回时填写）</FieldLabel>
@@ -249,11 +276,8 @@ function InvoiceDialog({
               >
                 驳回
               </Button>
-              <Button
-                disabled={!invoiceNo.trim()}
-                onClick={() => onSubmit(invoice.id, { action: "issue", invoiceNo: invoiceNo.trim(), fileUrl: fileUrl.trim() || undefined })}
-              >
-                开具
+              <Button disabled={!invoiceNo.trim() || uploading} onClick={() => void submitIssue()}>
+                {uploading ? "上传中…" : "开具"}
               </Button>
             </>
           )}

@@ -3,8 +3,7 @@ import { eq, inArray } from "drizzle-orm"
 import { Hono } from "hono"
 import { randomUUID } from "node:crypto"
 import { adminRoutes } from "../src/routes/admin"
-import { createInvoiceRequest, issueInvoice } from "../src/services/invoices"
-import type { EmailSender, InvoiceEmailData } from "../src/services/email-sender"
+import { createInvoiceRequest } from "../src/services/invoices"
 import { createTestUser, uniquePhone, makeTestOrder, makeAdminSession, TEST_TIMEOUT_MS } from "./repos/helpers"
 import { getDb, closeDb } from "../src/db/client"
 import { users, adminUsers } from "../src/db/schema"
@@ -76,21 +75,29 @@ describe("spec332 发票管理（管理端 · invoice.write）", () => {
     expect(row.rejectReason).toBe("抬头信息有误")
   })
 
-  it("开具时发邮件（DirectMail），带收件人/发票号/金额", async () => {
-    const id = await makeInvoice() // email a@b.com, amount 6600
-    const sent: InvoiceEmailData[] = []
-    const spy: EmailSender = { async sendInvoiceIssued(d) { sent.push(d) } }
-    const row = await issueInvoice(id, { invoiceNo: "INV-MAIL-1" }, { operator: "test", emailSender: spy })
-    expect(row.status).toBe("issued")
-    expect(sent).toHaveLength(1)
-    expect(sent[0]).toMatchObject({ to: "a@b.com", invoiceNo: "INV-MAIL-1", amountCents: 6600 })
+  it("上传发票文件 + 开具回填 fileKey", async () => {
+    const { headers } = await makeAdminSession("finance", regA)
+    const id = await makeInvoice()
+    const fd = new FormData()
+    fd.append("file", new File([new Uint8Array([37, 80, 68, 70])], "invoice.pdf", { type: "application/pdf" })) // %PDF
+    // multipart：只带 Authorization，不能带 JSON 的 content-type（否则丢 boundary）。
+    const up = await app.request(`http://x/admin-api/invoices/${id}/file`, { method: "POST", headers: { Authorization: headers.Authorization! }, body: fd })
+    expect(up.status).toBe(200)
+    const { key } = (await up.json()) as { key: string }
+    expect(key).toContain(`invoices/${id}/`)
+    const res = await app.request(`http://x/admin-api/invoices/${id}`, { method: "PATCH", headers, body: JSON.stringify({ action: "issue", invoiceNo: "INV-F1", fileKey: key }) })
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { fileKey: string }).fileKey).toBe(key)
   })
 
-  it("邮件发送失败不影响开具（best-effort）", async () => {
+  it("上传不支持的文件类型 → 400 unsupported_file", async () => {
+    const { headers } = await makeAdminSession("finance", regA)
     const id = await makeInvoice()
-    const boom: EmailSender = { async sendInvoiceIssued() { throw new Error("smtp down") } }
-    const row = await issueInvoice(id, { invoiceNo: "INV-MAIL-2" }, { operator: "test", emailSender: boom })
-    expect(row.status).toBe("issued") // 开票仍成功，邮件失败只告警
+    const fd = new FormData()
+    fd.append("file", new File([new Uint8Array([1, 2, 3])], "x.exe", { type: "application/octet-stream" }))
+    const up = await app.request(`http://x/admin-api/invoices/${id}/file`, { method: "POST", headers: { Authorization: headers.Authorization! }, body: fd })
+    expect(up.status).toBe(400)
+    expect(((await up.json()) as { error: string }).error).toBe("unsupported_file")
   })
 
   it("不存在的发票 id → 404", async () => {

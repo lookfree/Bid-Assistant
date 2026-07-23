@@ -79,6 +79,11 @@ export async function presignPut(key: string, contentType: string, expiresIn: nu
   )
 }
 
+// 服务端直传：运营上传发票 PDF 经 API 中转（admin 域名无 /s3 代理，避开浏览器跨源）。
+export async function putObject(key: string, body: Uint8Array, contentType: string): Promise<void> {
+  await getS3().send(new PutObjectCommand({ Bucket: bucket(), Key: key, Body: body, ContentType: contentType }))
+}
+
 // 预签名 GET：浏览器凭此直下；downloadName 设置附件名。
 export async function presignGet(key: string, expiresIn: number, downloadName?: string): Promise<string> {
   return toProxyUrl(await getSignedUrl(
