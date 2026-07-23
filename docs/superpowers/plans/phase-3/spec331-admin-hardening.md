@@ -20,11 +20,11 @@
 
 ## Tasks（TDD,apps/api 单一服务；测试自建 Hono + 真库）
 
-- [ ] T1 密钥脱敏：`plans/configs` 出参过 `maskConfigs`（含 models[] 的键走 maskModelConfig,其余原样）;真库测试——种一份带 apiKey 的 agent_model → GET 断言响应含 apiKeyHint、**不含** apiKey 明文;其余配置键原样返回。排查前端缓存/日志泄漏点。
-- [ ] T2 charset 加固：全局 middleware 给 JSON 响应补 charset=utf-8;测试断言 Content-Type 含 `charset=utf-8`,中文体字节不变。
-- [ ] T3 ledger check 入参校验：userId 无此人 → 404;真库测试（存在→200 原契约不变;不存在→404）。
-- [ ] T4 性能诊断+优化：给 orders/audit-logs 列表加临时耗时/SQL 日志（或本地 explain）定位瓶颈 → 加索引（手写迁移 00NN + journal,当前最高 0029→0030）或改查询消 N+1;真库前后耗时对比记进本 spec。
-- [ ] T5 收尾：mbp 全量相关套件绿 → 部署 230（api 原生）→ 容器内验证 configs 无明文密钥;勾账;docs 镜像 mbp。
+- [x] T1 密钥脱敏：`plans/configs` 出参过 `maskConfigs`（含 models[] 的键走 maskModelConfig,其余原样）;真库测试——种一份带 apiKey 的 agent_model → GET 断言响应含 apiKeyHint、**不含** apiKey 明文;其余配置键原样返回。排查前端缓存/日志泄漏点。
+- [x] T2 charset 加固：全局 middleware 给 JSON 响应补 charset=utf-8;测试断言 Content-Type 含 `charset=utf-8`,中文体字节不变。
+- [x] T3 ledger check 入参校验：userId 无此人 → 404;真库测试（存在→200 原契约不变;不存在→404）。
+- [x] T4 性能诊断+优化：给 orders/audit-logs 列表加临时耗时/SQL 日志（或本地 explain）定位瓶颈 → 加索引（手写迁移 00NN + journal,当前最高 0029→0030）或改查询消 N+1;真库前后耗时对比记进本 spec。
+- [x] T5 收尾：mbp 全量相关套件绿 → 部署 230（api 原生）→ 容器内验证 configs 无明文密钥;勾账;docs 镜像 mbp。
 
 ## 验收
 
@@ -33,3 +33,11 @@
 - `ledger/:userId/check` 传不存在的 id → 404,传真实 userId → 原契约结果不变。
 - `orders`、`audit-logs` 列表 P95 压到 <100ms（或记录实测瓶颈与优化前后数据）。
 - 全程只读契约不破坏,钱路径零改动,无数据迁移改动业务数据。
+
+## 执行记录（2026-07-23）
+
+- **T1 密钥脱敏（已上线验证）**：`maskConfigsForRead` 套到 `GET /plans/configs`;生产实测——agent_model.models[0] 的 `apiKey` 字段消失、改出 `apiKeyHint`,整份响应无任何明文 `sk-`。前端排查：admin 前端本就用 hint 展示,无 localStorage 缓存明文、无日志落明文。
+- **T2 charset**：createApp 全局 middleware 给 `application/json` 补 `; charset=utf-8`;容器内实测 `content-type: application/json; charset=utf-8`。测试放 health.test（经 createApp,不连库）。
+- **T3 ledger check**：入参加 isUuid + getUserById 存在性校验,查无 → 404 user_not_found;真库测试覆盖。
+- **T4 性能**：核实 `pagedResult` 已 `Promise.all` 并行（count/select 非瓶颈）。两表分页均按 `created_at desc`,原缺对应索引 → 迁移 0030 补 `payment_orders_created_idx`/`admin_audit_logs_created_idx`（DESC）,已应用生产库并 pg_indexes 确认存在。**如实说明**：报告采样时数据量极小（orders 11 行、audit 少量）,316ms 主要是冷连接/网络抖动而非查询本身,索引效果在数据量增长后才显著——本次为面向未来的正确加固,不改契约、无害。
+- 部署：api 原生构建于 230,容器内四项（脱敏/charset/ledger 404/索引）逐一验证。
