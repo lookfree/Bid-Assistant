@@ -431,6 +431,8 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const userId = c.get("user").id
     const p = await ownedProject(id, userId)
     if (!p) return c.json({ error: "not_found" }, 404)
+    // 审查专用项目不可再投（spec328 修正）：克隆会产出无招标文件的 bid 流水线项目,读标必空跑白扣费
+    if (p.kind === "review") return c.json({ error: "review_not_clonable" }, 400)
     const parsed = cloneBodySchema.safeParse(await c.req.json().catch(() => ({})))
     if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
     const threadId = `proj-${crypto.randomUUID()}`
@@ -470,6 +472,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
           id: p.id,
           name: projectName(p.name, p.tenderFileKey),
           status: p.status,
+          kind: p.kind, // spec328：前端按 kind 路由（审查专用项目进 /risk,不进生成流水线）
           currentStep: p.currentStep,
           // done 表示整本完成（不在 STEP_ORDER 内）→ 进度打满；否则取当前步下标
           stepIndex: p.currentStep === "done" ? totalSteps : Math.max(STEP_ORDER.indexOf(p.currentStep as Step), 0),
@@ -545,11 +548,23 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         (step === "present" && p.currentStep === "done")
     if (!allowed) return c.json({ error: "out_of_order", expected: p.currentStep }, 409)
 
+    // 一项目同一时刻只许一个在途 run（审查修正 2026-07-23）：述标/导出解耦后 present 与 export
+    // 可同时过步序闸,但两个 run 会并发续跑同一 LangGraph 线程（checkpoint 互踩、产物可能丢、双计费）。
+    // 占位唯一索引只按 (project,step) 隔离,这里补项目级检查:其它步在途一律 409。
+    const [busy] = await getDb()
+      .select({ step: projectSteps.step })
+      .from(projectSteps)
+      .where(and(eq(projectSteps.projectId, p.id), eq(projectSteps.status, "running"), ne(projectSteps.step, step)))
+      .limit(1)
+    if (busy) return c.json({ error: "step_already_running", running: busy.step }, 409)
+
     // 多包件招标必须先选包再生成提纲（一包一份投标文件，不支持多包混出一份大纲）：
     // 读标结果有多个包而未选 → 400，不占步位不预扣；前端引导回读标页选包。
     // 只卡 outline：后续步以 outline 为前提（开跑即锁包），单包/无包标书不受影响。
     // SQL 层只取 result->'packages'——大标书 read result 可达 1MB，绝不为门禁整列拖过隧道（slim 教训）。
-    if (step === "outline" && !p.selectedPackage) {
+    // 多包件门禁扩展（审查修正）：review-kind 的对照审查同样必须先选包——不选包会拿全部包的★要求
+    // 对比单包标书,别包要求全被误报「未响应」。选包入口在读标页,与 outline 同一引导。
+    if ((step === "outline" || (step === "review" && p.kind === "review" && p.tenderFileKey)) && !p.selectedPackage) {
       const [read] = await getDb()
         .select({ pkgs: sql<unknown>`${projectSteps.result} -> 'packages'` })
         .from(projectSteps)
@@ -769,6 +784,13 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       return c.json({ error: "agent_failed" }, 502)
     }
 
+    // 意图哨兵（审查修正 2026-07-23）：>20 字的提问会绕过前端拦截,模型被提示词强制 HTML 输出后
+    // 「用 HTML 回答问题」也能过标签校验——提示词已约定提问时只回 NOT_AN_INSTRUCTION 标记,
+    // 命中即全额退款,绝不拿回答覆盖正文。
+    if (html.includes("<!--NOT_AN_INSTRUCTION-->")) {
+      await settleFailed(ref, hold.holdId!).catch(() => {})
+      return c.json({ error: "rewrite_not_instruction" }, 422)
+    }
     // 兜底校验：产出必须是 HTML 片段（至少含一个标签）。模型偶发用纯文字回答（提问式输入等），
     // 存库等于拿闲聊替换用户章节——拒收并全额退款，不让用户为废品买单（前端正则只是引导，钱闸在这）
     if (!/<[a-zA-Z][^>]*>/.test(html)) {
@@ -884,28 +906,43 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
   })
 
   // 删除标书（前端有二次确认）：生成中（有 running 步）的拒删——删了会打断在途 run 且钱已预扣；
-  // 连带清理：steps 随 FK 级联删，上传文件记录按 key 删，MinIO 对象（招标文件 + 导出产物）
-  // best-effort 删（残留只占存储不影响业务）。账本不动：已消费积分不随删除退回。
+  // 连带清理：steps 随 FK 级联删，上传文件记录按 key 删，MinIO 对象 best-effort 删。
+  // 审查修正（2026-07-23）：①招标文件可能被克隆兄弟项目共用（再投场景 clone 原样复用 key）——
+  // 仍被引用的绝不删,否则兄弟项目永久报废;②线下标书 bidFileKey 一并清;③产物按确定性 key
+  // （artifacts/<threadId>/bid.docx|bid.pdf|present.pptx,重渲同 key 覆盖）收集,补齐 pptx/pdf 漏网;
+  // ④running 复查放进事务缩小与「起步」的竞态窗（残余极端交错由 24h 孤儿 hold 清扫兜底）。
+  // 账本不动：已消费积分不随删除退回。
   r.delete("/:id", async (c) => {
     const { id } = c.req.param()
     if (!isUuid(id)) return c.json({ error: "not_found" }, 404)
     const p = await ownedProject(id, getUserId(c))
     if (!p) return c.json({ error: "not_found" }, 404)
-    const [running] = await getDb()
-      .select({ id: projectSteps.id })
-      .from(projectSteps)
-      .where(and(eq(projectSteps.projectId, p.id), eq(projectSteps.status, "running")))
-      .limit(1)
-    if (running) return c.json({ error: "project_running" }, 409)
-    // 待清对象：全部招标文件 + export 步产物（result 即 artifacts 字典 {docx,pdf,pptx}）
-    const keys = new Set<string>(p.tenderFileKeys ?? (p.tenderFileKey ? [p.tenderFileKey] : []))
-    const exportRow = await latestDoneStep(p.id, "export")
-    for (const v of Object.values((exportRow?.result as Record<string, unknown>) ?? {})) {
-      if (typeof v === "string" && v.startsWith("artifacts/")) keys.add(v)
+    const uploads = new Set<string>(p.tenderFileKeys ?? (p.tenderFileKey ? [p.tenderFileKey] : []))
+    if (p.bidFileKey) uploads.add(p.bidFileKey)
+    const artifacts = new Set<string>(["bid.docx", "bid.pdf", "present.pptx"].map((f) => `artifacts/${p.threadId}/${f}`))
+    const deleted = await getDb().transaction(async (tx) => {
+      const [running] = await tx
+        .select({ id: projectSteps.id })
+        .from(projectSteps)
+        .where(and(eq(projectSteps.projectId, p.id), eq(projectSteps.status, "running")))
+        .limit(1)
+      if (running) return false
+      await tx.delete(bidProjects).where(eq(bidProjects.id, p.id))
+      return true
+    })
+    if (!deleted) return c.json({ error: "project_running" }, 409)
+    // 上传文件：仍被其它项目引用（克隆共用/复用同一上传）的保留,只删无人引用的
+    const removable: string[] = []
+    for (const k of uploads) {
+      const [ref] = await getDb()
+        .select({ id: bidProjects.id })
+        .from(bidProjects)
+        .where(sql`${bidProjects.tenderFileKey} = ${k} or ${bidProjects.bidFileKey} = ${k} or ${bidProjects.tenderFileKeys} @> ${JSON.stringify([k])}::jsonb`)
+        .limit(1)
+      if (!ref) removable.push(k)
     }
-    await getDb().delete(bidProjects).where(eq(bidProjects.id, p.id))
-    if (keys.size) await getDb().delete(projectFiles).where(inArray(projectFiles.key, [...keys]))
-    for (const k of keys) await deleteObject(k).catch(() => {})
+    if (removable.length) await getDb().delete(projectFiles).where(inArray(projectFiles.key, removable))
+    await Promise.allSettled([...removable, ...artifacts].map((k) => deleteObject(k)))
     return c.json({ ok: true })
   })
 

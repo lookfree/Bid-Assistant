@@ -217,12 +217,12 @@ describe("/api/projects 按步编排", () => {
       .insert(bidProjects)
       .values({ userId, threadId: `proj-${crypto.randomUUID()}`, currentStep: "content", status: "running" })
       .returning()
+    const before = captured.preDeductSteps.length
     const bad = await app.request(`/api/projects/${p5!.id}/steps/content`, {
       method: "POST", headers: auth(), body: JSON.stringify({ targetChars: 5000 }), // 低于 1 万下限
     })
     expect(bad.status).toBe(400)
-    const before = captured.preDeductSteps.length
-    expect(captured.preDeductSteps.length).toBe(before) // 未预扣
+    expect(captured.preDeductSteps.length).toBe(before) // 未预扣（快照在请求前,断言才有意义）
     const ok = await app.request(`/api/projects/${p5!.id}/steps/content`, {
       method: "POST", headers: auth(), body: JSON.stringify({ targetChars: 120000 }),
     })
@@ -248,6 +248,18 @@ describe("/api/projects 按步编排", () => {
     await ok.text()
     const ri = (captured.createRunOpts?.input as { run_input: { format?: Record<string, unknown> } }).run_input
     expect(ri.format).toEqual({ body_font: "仿宋", margin_cm: { top: 2.2 }, line_spacing: 1.5 })
+  })
+
+  it("项目级并发闸（审查修正）：present 在途时 export 一律 409 step_already_running", async () => {
+    const [p7] = await getDb()
+      .insert(bidProjects)
+      .values({ userId, threadId: `proj-${crypto.randomUUID()}`, currentStep: "present", status: "running" })
+      .returning()
+    await getDb().insert(projectSteps).values({ projectId: p7!.id, step: "present", status: "running" })
+    const res = await app.request(`/api/projects/${p7!.id}/steps/export`, { method: "POST", headers: auth() })
+    expect(res.status).toBe(409)
+    expect(((await res.json()) as { error: string }).error).toBe("step_already_running")
+    await getDb().delete(bidProjects).where(eq(bidProjects.id, p7!.id))
   })
 
   it("再推 read（已不是当前步）→ 409", async () => {
