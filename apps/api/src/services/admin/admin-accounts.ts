@@ -28,17 +28,26 @@ export async function createAdminAccount(input: { username: string; role: AdminR
   return { id: a!.id, username: a!.username, role: a!.role, status: a!.status }
 }
 
-export async function updateAdminAccount(id: string, patch: { role?: AdminRole; status?: "active" | "disabled" }, opts: { operator: string }) {
+export async function updateAdminAccount(
+  id: string,
+  patch: { role?: AdminRole; status?: "active" | "disabled"; password?: string },
+  opts: { operator: string },
+) {
   const db = getDb()
   const [before] = await db.select().from(adminUsers).where(eq(adminUsers.id, id))
   if (!before) throw new Error("运营账号不存在")
-  const [after] = await db.update(adminUsers).set(patch).where(eq(adminUsers.id, id)).returning()
+  // 改密走此处：明文只在服务端哈希入库，审计仅记 passwordReset 标记，绝不落明文/hash。
+  const set: { role?: AdminRole; status?: "active" | "disabled"; passwordHash?: string } = {}
+  if (patch.role !== undefined) set.role = patch.role
+  if (patch.status !== undefined) set.status = patch.status
+  if (patch.password !== undefined) set.passwordHash = await hashPassword(patch.password)
+  const [after] = await db.update(adminUsers).set(set).where(eq(adminUsers.id, id)).returning()
   await writeAudit({
     operator: opts.operator,
     action: "admin.manage",
     target: `admin:${id}`,
     before: { role: before.role, status: before.status },
-    after: { role: after!.role, status: after!.status },
+    after: { role: after!.role, status: after!.status, ...(patch.password !== undefined ? { passwordReset: true } : {}) },
   })
   return { id: after!.id, username: after!.username, role: after!.role, status: after!.status }
 }

@@ -76,6 +76,7 @@ function AccountsTab() {
   const [accounts, setAccounts] = useState<ApiAdmin[]>([])
   const [loading, setLoading] = useState(true)
   const [createOpen, setCreateOpen] = useState(false)
+  const [resetTarget, setResetTarget] = useState<ApiAdmin | null>(null)
 
   async function load() {
     try {
@@ -161,13 +162,18 @@ function AccountsTab() {
                   </Badge>
                 </TableCell>
                 <TableCell className="text-right">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => patch(op.id, { status: op.status === "active" ? "disabled" : "active" })}
-                  >
-                    {op.status === "active" ? "停用" : "启用"}
-                  </Button>
+                  <div className="flex justify-end gap-2">
+                    <Button variant="outline" size="sm" onClick={() => setResetTarget(op)}>
+                      重置密码
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => patch(op.id, { status: op.status === "active" ? "disabled" : "active" })}
+                    >
+                      {op.status === "active" ? "停用" : "启用"}
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
@@ -188,7 +194,57 @@ function AccountsTab() {
         </Table>
       </CardContent>
       {createOpen && <CreateAdminDialog onClose={() => setCreateOpen(false)} onCreated={() => void load()} />}
+      {resetTarget && <ResetPasswordDialog admin={resetTarget} onClose={() => setResetTarget(null)} />}
     </Card>
+  )
+}
+
+/* 重置密码弹窗：超管为任意账号（含自己）设新密码（≥8 位）。走 PUT /admins/:id，
+   服务端只哈希入库、审计记 passwordReset 标记不落明文。重置后该账号需用新密码重新登录。 */
+function ResetPasswordDialog({ admin, onClose }: { admin: ApiAdmin; onClose: () => void }) {
+  const [password, setPassword] = useState("")
+  const [saving, setSaving] = useState(false)
+  const valid = password.length >= 8
+
+  async function submit() {
+    if (!valid || saving) return
+    setSaving(true)
+    try {
+      await adminApi.system.updateAdmin(admin.id, { password })
+      toast.success(`已重置 ${admin.username} 的密码`)
+      onClose()
+    } catch (e) {
+      toast.error(e instanceof AdminApiError && e.status === 403 ? "无权限：需要 admin.manage" : "重置失败，请重试")
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>重置密码 · {admin.username}</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col gap-3 py-1">
+          <p className="text-sm text-muted-foreground">
+            为该账号设置新登录密码。重置后旧密码立即失效，该账号需用新密码重新登录。
+          </p>
+          <label className="flex flex-col gap-1 text-sm">
+            新密码
+            <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="至少 8 位" />
+            {password.length > 0 && password.length < 8 && <span className="text-xs text-destructive">密码至少 8 位</span>}
+          </label>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            取消
+          </Button>
+          <Button onClick={() => void submit()} disabled={!valid || saving}>
+            {saving ? "重置中…" : "确认重置"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

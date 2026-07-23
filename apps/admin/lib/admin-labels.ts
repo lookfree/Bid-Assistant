@@ -49,6 +49,7 @@ const FIELD_LABELS: Record<string, string> = {
   capPerUser: "单用户封顶",
   unlockOn: "解锁方式",
   abandonDays: "注册即弃天数",
+  passwordReset: "重置密码",
 }
 
 export const permLabel = (p: string) => PERM_LABELS[p] ?? p
@@ -62,6 +63,6 @@ export function snapshotRows(snap: unknown): { label: string; value: string }[] 
   if (typeof snap !== "object") return [{ label: "", value: String(snap) }]
   return Object.entries(snap as Record<string, unknown>).map(([k, v]) => ({
     label: fieldLabel(k),
-    value: v == null ? "—" : typeof v === "object" ? JSON.stringify(v) : String(v),
+    value: v == null ? "—" : typeof v === "boolean" ? (v ? "是" : "否") : typeof v === "object" ? JSON.stringify(v) : String(v),
   }))
 }

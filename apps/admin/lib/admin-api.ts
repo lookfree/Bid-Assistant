@@ -83,7 +83,7 @@ export const adminApi = {
     admins: (p: { page?: number; pageSize?: number } = {}) => req<Paged<ApiAdmin>>(`/admins${qs(p)}`),
     createAdmin: (body: { username: string; role: string; password: string }) =>
       req<ApiAdmin>("/admins", { method: "POST", body: JSON.stringify(body) }),
-    updateAdmin: (id: string, patch: { role?: string; status?: string }) =>
+    updateAdmin: (id: string, patch: { role?: string; status?: string; password?: string }) =>
       req<ApiAdmin>(`/admins/${id}`, { method: "PUT", body: JSON.stringify(patch) }),
     auditLogs: (p: { page?: number; pageSize?: number } = {}) => req<Paged<ApiAuditLog>>(`/audit-logs${qs(p)}`),
     rbac: () => req<{ permissions: string[]; roles: Record<string, string[]> }>("/rbac"),

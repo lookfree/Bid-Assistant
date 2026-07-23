@@ -3,6 +3,7 @@ import { eq, inArray } from "drizzle-orm"
 import { Hono } from "hono"
 import { adminRoutes } from "../src/routes/admin"
 import { listAdmins, createAdminAccount, updateAdminAccount, listAuditLogs } from "../src/services/admin/admin-accounts"
+import { loginAdmin } from "../src/services/admin-auth"
 import { getDb, closeDb } from "../src/db/client"
 import { adminUsers } from "../src/db/schema"
 import { makeAdminSession, TEST_TIMEOUT_MS } from "./repos/helpers"
@@ -63,6 +64,27 @@ describe("spec310 系统页", () => {
     const dup = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username: name, role: "ops", password: "pw123456" }) })
     expect(dup.status).toBe(409)
     expect(((await dup.json()) as { error: string }).error).toBe("username_taken")
+  })
+
+  it("重置密码 → 新密码可登录、旧密码失效（PUT /admins/:id password）", async () => {
+    const { headers } = await makeAdminSession("superadmin", regA)
+    const username = `pwd_${Date.now()}`
+    const created = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username, role: "support", password: "oldpass123" }) })
+    const id = ((await created.json()) as { id: string }).id
+    madeAdmins.push(id)
+    const res = await app.request(`http://x/admin-api/admins/${id}`, { method: "PUT", headers, body: JSON.stringify({ password: "newpass456" }) })
+    expect(res.status).toBe(200)
+    expect(await loginAdmin(username, "newpass456")).not.toBeNull()
+    expect(await loginAdmin(username, "oldpass123")).toBeNull()
+  })
+
+  it("重置密码 < 8 位 → 400 invalid_input", async () => {
+    const { headers } = await makeAdminSession("superadmin", regA)
+    const created = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username: `short_${Date.now()}`, role: "support", password: "validpass123" }) })
+    const id = ((await created.json()) as { id: string }).id
+    madeAdmins.push(id)
+    const res = await app.request(`http://x/admin-api/admins/${id}`, { method: "PUT", headers, body: JSON.stringify({ password: "short" }) })
+    expect(res.status).toBe(400)
   })
 
   it("改角色/停用 → 200 且落审计（PUT /admins/:id）", async () => {

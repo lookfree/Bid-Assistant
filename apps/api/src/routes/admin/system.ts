@@ -32,7 +32,11 @@ systemRouter.post("/admins", requirePermission("admin.manage"), async (c) => {
   if (await findAdminByUsername(parsed.data.username)) return c.json({ error: "username_taken" }, 409)
   return c.json(await createAdminAccount(parsed.data, { operator: c.var.admin.username }))
 })
-const UpdateBody = z.object({ role: z.enum(["superadmin", "ops", "finance", "support"]).optional(), status: z.enum(["active", "disabled"]).optional() })
+const UpdateBody = z.object({
+  role: z.enum(["superadmin", "ops", "finance", "support"]).optional(),
+  status: z.enum(["active", "disabled"]).optional(),
+  password: z.string().min(8).optional(), // 重置密码：仅超管（admin.manage），≥8 位
+})
 systemRouter.put("/admins/:id", requirePermission("admin.manage"), async (c) => {
   const parsed = UpdateBody.safeParse(await c.req.json().catch(() => null))
   if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
