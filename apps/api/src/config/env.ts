@@ -40,6 +40,10 @@ const schema = z.object({
   // —— 对象存储（S3 API / MinIO）：文件直传直下，二进制不经过 App ——
   MINIO_ENDPOINT: z.string().url(),
   MINIO_PUBLIC_ENDPOINT: z.string().optional(), // 浏览器可达的 MinIO 地址(预签名用);缺省=MINIO_ENDPOINT
+  // 同源代理模式（多入口部署,2026-07-23）：设置后预签名 URL 改写成相对路径 <prefix>/<bucket>/<key>?签名,
+  // 浏览器经当前入口的 nginx 转发到 MinIO——公网/内网两个入口都天然可用（绝对公网地址内网不可达的修复）。
+  // nginx 须配 location <prefix>/ → proxy_pass MINIO_ENDPOINT 并固定 Host 为 MINIO_ENDPOINT 的 host（签名含 Host）。
+  MINIO_PROXY_PREFIX: z.string().startsWith("/").optional(),
   MINIO_ACCESS_KEY: z.string(),
   MINIO_SECRET_KEY: z.string(),
   MINIO_BUCKET: z.string().default("bidsaas"),

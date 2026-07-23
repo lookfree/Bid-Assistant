@@ -56,16 +56,29 @@ export function bucket(): string {
   return getEnv().MINIO_BUCKET
 }
 
+/** 同源代理改写（MINIO_PROXY_PREFIX 模式）：绝对预签名 URL → 相对路径。签名对 MINIO_ENDPOINT
+ *  的 Host 计算,nginx 在 <prefix>/ 处转发并固定同一 Host,签名仍有效;浏览器走当前入口同源,
+ *  公网/内网都可达。未设前缀原样返回（既有部署零变化）。 */
+export function toProxyUrl(signedUrl: string): string {
+  // 直读 process.env（不走 getEnv 缓存单例）：该键可选、纯字符串,直读让部署改 env 重启即生效,测试也可控
+  const prefix = process.env.MINIO_PROXY_PREFIX
+  if (!prefix || !prefix.startsWith("/")) return signedUrl
+  const u = new URL(signedUrl)
+  return `${prefix}${u.pathname}${u.search}`
+}
+
 // 预签名 PUT：浏览器凭此直传对象到 MinIO（二进制不经过 App）。
-export function presignPut(key: string, contentType: string, expiresIn: number): Promise<string> {
-  return getSignedUrl(getS3Presign(), new PutObjectCommand({ Bucket: bucket(), Key: key, ContentType: contentType }), {
-    expiresIn,
-  })
+export async function presignPut(key: string, contentType: string, expiresIn: number): Promise<string> {
+  return toProxyUrl(
+    await getSignedUrl(getS3Presign(), new PutObjectCommand({ Bucket: bucket(), Key: key, ContentType: contentType }), {
+      expiresIn,
+    }),
+  )
 }
 
 // 预签名 GET：浏览器凭此直下；downloadName 设置附件名。
-export function presignGet(key: string, expiresIn: number, downloadName?: string): Promise<string> {
-  return getSignedUrl(
+export async function presignGet(key: string, expiresIn: number, downloadName?: string): Promise<string> {
+  return toProxyUrl(await getSignedUrl(
     getS3Presign(),
     new GetObjectCommand({
       Bucket: bucket(),
@@ -76,7 +89,7 @@ export function presignGet(key: string, expiresIn: number, downloadName?: string
         : undefined,
     }),
     { expiresIn },
-  )
+  ))
 }
 
 // HEAD 校验对象是否真上传，取回 size/etag。只把“对象不存在(404)”视为 null；
