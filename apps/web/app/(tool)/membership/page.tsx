@@ -4,12 +4,19 @@ import { useState, useEffect, useCallback, useRef } from "react"
 import { copyText } from "@/lib/clipboard"
 import Link from "next/link"
 import { memberTiers, type TierId } from "@/lib/plans"
-import { fetchMembership, fetchOrders, startRecharge, renewMembership } from "@/lib/membership-api"
+import { fetchMembership, fetchOrders, startRecharge, renewMembership, fetchInvoices, createInvoice } from "@/lib/membership-api"
 import { api } from "@/lib/api"
-import type { MembershipOverview, OrderView, LaunchResponse, Payway } from "@/lib/membership-types"
+import type { MembershipOverview, OrderView, LaunchResponse, Payway, InvoiceView, CreateInvoicePayload } from "@/lib/membership-types"
 import { formatPeriodEnd, statusLabel, tierCardState, planPriceYuan, plansByTier } from "@/lib/membership-view"
 import { peekMembershipCache, primeMembershipCache } from "@/lib/use-membership"
 import { Check, X, Coins, Receipt, ArrowRight, Sparkles, Info, Infinity as InfinityIcon, TrendingUp, Copy } from "lucide-react"
+
+// 发票状态展示映射（spec332）
+const INVOICE_STATUS: Record<InvoiceView["status"], { label: string; tone: string }> = {
+  pending: { label: "待开票", tone: "bg-muted text-muted-foreground" },
+  issued: { label: "已开票", tone: "bg-success/10 text-success" },
+  rejected: { label: "已驳回", tone: "bg-destructive/10 text-destructive" },
+}
 
 const ORDER_STATUS: Record<OrderView["status"], { label: string; tone: string }> = {
   paid: { label: "已支付", tone: "bg-success/10 text-success" },
@@ -27,6 +34,8 @@ export default function MembershipPage() {
   // 无缓存（直链进入）才走整页加载态。
   const [overview, setOverview] = useState<MembershipOverview | null>(() => peekMembershipCache())
   const [orders, setOrders] = useState<OrderView[]>([])
+  const [invoices, setInvoices] = useState<InvoiceView[]>([])
+  const [invoiceOpen, setInvoiceOpen] = useState(false)
   const [loading, setLoading] = useState(() => peekMembershipCache() === null)
   const [error, setError] = useState<string | null>(null)
   const [billing, setBilling] = useState<"month" | "year">("month")
@@ -54,6 +63,13 @@ export default function MembershipPage() {
     } catch {
       setOrders([])
     }
+    // 发票（spec332）：次要区块，失败静默降级
+    try {
+      const iv = await fetchInvoices(1, 50)
+      setInvoices(iv.items)
+    } catch {
+      setInvoices([])
+    }
   }, [])
 
   useEffect(() => {
@@ -67,6 +83,10 @@ export default function MembershipPage() {
   const currentTier = memberTiers.find((t) => t.id === currentTierId) ?? memberTiers[0]!
   const sub = overview?.subscription
   const currentIndex = memberTiers.findIndex((t) => t.id === currentTierId)
+  // 可开票订单：已支付且尚无「进行中/已开」发票（驳回的可重新申请）。
+  const eligibleOrders = orders.filter(
+    (o) => o.status === "paid" && !invoices.some((iv) => iv.orderId === o.id && iv.status !== "rejected"),
+  )
 
   async function pay(payway: Payway) {
     if (!pending) return
@@ -398,17 +418,65 @@ export default function MembershipPage() {
           <div className="rounded-2xl gradient-brand-soft border border-primary/15 p-5">
             <p className="text-sm font-semibold text-foreground">开发票</p>
             <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
-              已支付订单均可申请电子发票，开票后发送至你的邮箱。
+              已支付订单可申请电子普通发票，开票后发送至你的邮箱。
             </p>
-            <button className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline">
+            <button
+              type="button"
+              onClick={() => setInvoiceOpen(true)}
+              disabled={eligibleOrders.length === 0}
+              className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline disabled:cursor-not-allowed disabled:text-muted-foreground disabled:no-underline"
+            >
               申请开票
               <ArrowRight className="size-4" />
             </button>
+            {eligibleOrders.length === 0 && (
+              <p className="mt-1 text-xs text-muted-foreground">暂无可开票的已支付订单。</p>
+            )}
+            {invoices.length > 0 && (
+              <ul className="mt-4 flex flex-col gap-2 border-t border-primary/10 pt-3">
+                {invoices.map((iv) => {
+                  const st = INVOICE_STATUS[iv.status]
+                  return (
+                    <li key={iv.id} className="text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate text-muted-foreground">
+                          {iv.title} · ¥{(iv.amountCents / 100).toFixed(2)}
+                        </span>
+                        <span className={`shrink-0 rounded-full px-2 py-0.5 font-medium ${st.tone}`}>{st.label}</span>
+                      </div>
+                      {iv.status === "issued" && iv.invoiceNo && (
+                        <p className="mt-0.5 text-muted-foreground">
+                          发票号 {iv.invoiceNo}
+                          {iv.fileUrl && (
+                            <a href={iv.fileUrl} target="_blank" rel="noreferrer" className="ml-2 text-primary hover:underline">
+                              下载
+                            </a>
+                          )}
+                        </p>
+                      )}
+                      {iv.status === "rejected" && iv.rejectReason && (
+                        <p className="mt-0.5 text-destructive">驳回原因：{iv.rejectReason}</p>
+                      )}
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
           </div>
         </aside>
       </div>
 
       {pending && <PayModal pending={pending} qr={qr} paying={paying} onPay={pay} onClose={closePay} />}
+      {invoiceOpen && (
+        <InvoiceModal
+          orders={eligibleOrders}
+          onClose={() => setInvoiceOpen(false)}
+          onCreated={() => {
+            setInvoiceOpen(false)
+            void load()
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -463,6 +531,103 @@ function PayModal(props: {
         <button onClick={onClose} className="mt-5 w-full rounded-xl border border-border py-2 text-sm text-muted-foreground">
           {qr ? "我已支付 / 关闭" : "取消"}
         </button>
+      </div>
+    </div>
+  )
+}
+
+/** 开发票弹层（spec332）：选已支付订单 + 抬头信息 → 建开票申请。金额取订单快照，前端不传金额。 */
+function InvoiceModal(props: { orders: OrderView[]; onClose: () => void; onCreated: () => void }) {
+  const { orders, onClose, onCreated } = props
+  const [orderId, setOrderId] = useState(orders[0]?.id ?? "")
+  const [titleType, setTitleType] = useState<"personal" | "enterprise">("personal")
+  const [title, setTitle] = useState("")
+  const [taxNo, setTaxNo] = useState("")
+  const [email, setEmail] = useState("")
+  const [remark, setRemark] = useState("")
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const emailOk = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)
+  const valid = orderId && title.trim() && emailOk && (titleType === "personal" || taxNo.trim())
+
+  async function submit() {
+    if (!valid || submitting) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      const payload: CreateInvoicePayload = {
+        orderId,
+        titleType,
+        title: title.trim(),
+        email: email.trim(),
+        taxNo: titleType === "enterprise" ? taxNo.trim() : undefined,
+        remark: remark.trim() || undefined,
+      }
+      await createInvoice(payload)
+      onCreated()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "申请失败，请重试")
+      setSubmitting(false)
+    }
+  }
+
+  const field = "mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="w-full max-w-md rounded-2xl border border-border bg-card p-6" onClick={(e) => e.stopPropagation()}>
+        <p className="text-base font-semibold text-foreground">申请开票</p>
+        <div className="mt-4 flex flex-col gap-3">
+          <label className="text-xs text-muted-foreground">
+            开票订单
+            <select className={field} value={orderId} onChange={(e) => setOrderId(e.target.value)}>
+              {orders.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {ORDER_TYPE[o.type]} · ¥{o.amountYuan} · {formatPeriodEnd(o.createdAt)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="text-xs text-muted-foreground">
+            抬头类型
+            <select className={field} value={titleType} onChange={(e) => setTitleType(e.target.value as "personal" | "enterprise")}>
+              <option value="personal">个人</option>
+              <option value="enterprise">企业</option>
+            </select>
+          </label>
+          <label className="text-xs text-muted-foreground">
+            发票抬头
+            <input className={field} value={title} onChange={(e) => setTitle(e.target.value)} placeholder={titleType === "enterprise" ? "公司全称" : "个人姓名"} />
+          </label>
+          {titleType === "enterprise" && (
+            <label className="text-xs text-muted-foreground">
+              纳税人识别号
+              <input className={field} value={taxNo} onChange={(e) => setTaxNo(e.target.value)} placeholder="企业税号（必填）" />
+            </label>
+          )}
+          <label className="text-xs text-muted-foreground">
+            接收邮箱
+            <input className={field} value={email} onChange={(e) => setEmail(e.target.value)} placeholder="电子发票发送至此邮箱" />
+            {email.length > 0 && !emailOk && <span className="mt-1 block text-destructive">邮箱格式不正确</span>}
+          </label>
+          <label className="text-xs text-muted-foreground">
+            备注（选填）
+            <input className={field} value={remark} onChange={(e) => setRemark(e.target.value)} placeholder="如需注明用途可填写" />
+          </label>
+        </div>
+        {error && <p className="mt-3 text-xs text-destructive">{error}</p>}
+        <div className="mt-5 grid grid-cols-2 gap-3">
+          <button onClick={onClose} className="rounded-xl border border-border py-2 text-sm text-muted-foreground">
+            取消
+          </button>
+          <button
+            onClick={() => void submit()}
+            disabled={!valid || submitting}
+            className="rounded-xl bg-primary py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
+          >
+            {submitting ? "提交中…" : "提交申请"}
+          </button>
+        </div>
       </div>
     </div>
   )

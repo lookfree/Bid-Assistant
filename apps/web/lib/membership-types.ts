@@ -72,6 +72,32 @@ export interface OrderView {
   createdAt: string
 }
 
+// 发票申请（spec332）：与 App 层 invoice_requests 行一一对应（camelCase）。money-blind。
+export interface InvoiceView {
+  id: string
+  orderId: string
+  amountCents: number
+  titleType: "personal" | "enterprise"
+  title: string
+  taxNo: string | null
+  email: string
+  remark: string | null
+  status: "pending" | "issued" | "rejected"
+  invoiceNo: string | null
+  fileUrl: string | null
+  rejectReason: string | null
+  createdAt: string
+}
+
+export interface CreateInvoicePayload {
+  orderId: string
+  titleType: "personal" | "enterprise"
+  title: string
+  taxNo?: string
+  email: string
+  remark?: string
+}
+
 export interface Paged<T> {
   items: T[]
   page: number

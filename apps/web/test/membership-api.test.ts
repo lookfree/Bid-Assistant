@@ -46,6 +46,20 @@ describe("spec308 membership-api 封装", () => {
     expect(JSON.parse(calls[0]!.init!.body as string)).toEqual({ planId: "plan-9", payway: "wechat" })
   })
 
+  it("fetchInvoices 默认页 → GET /api/invoices", async () => {
+    const { calls, api } = recorder()
+    await api.fetchInvoices()
+    expect(calls[0]!.path).toBe("/api/invoices?page=1&pageSize=50")
+  })
+
+  it("createInvoice → POST /api/invoices body 透传（不含金额，服务端快照）", async () => {
+    const { calls, api } = recorder()
+    await api.createInvoice({ orderId: "o1", titleType: "enterprise", title: "某公司", taxNo: "T1", email: "a@b.com" })
+    expect(calls[0]!.path).toBe("/api/invoices")
+    expect(calls[0]!.init?.method).toBe("POST")
+    expect(JSON.parse(calls[0]!.init!.body as string)).toEqual({ orderId: "o1", titleType: "enterprise", title: "某公司", taxNo: "T1", email: "a@b.com" })
+  })
+
   it("请求失败向上抛（401/非2xx 语义由共享 client 决定）", async () => {
     const api = createMembershipApi(async () => {
       throw new Error("boom")
