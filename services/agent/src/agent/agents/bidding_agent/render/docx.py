@@ -51,16 +51,12 @@ def _emit_el(doc: Document, el) -> None:
     elif name == "ul":
         for li in el.find_all("li", recursive=False):
             doc.add_paragraph(li.get_text(strip=True), style="List Bullet")
+    elif name == "ol":
+        # 有序列表（spec329 编辑器可产出）：不接会整段压扁成一行无编号文本
+        for li in el.find_all("li", recursive=False):
+            doc.add_paragraph(li.get_text(strip=True), style="List Number")
     elif name == "table":
-        rows = el.find_all("tr")
-        if rows:
-            # 列数取所有行最大值：模型产出的表格行列可能参差，固定取首行会越界
-            cols = max(len(r.find_all(["td", "th"])) for r in rows)
-            t = doc.add_table(rows=len(rows), cols=cols)
-            t.style = "Table Grid"   # 网格线：偏差表/报价表没有边框不可读（e2e PDF 实测）
-            for i, r in enumerate(rows):
-                for j, c in enumerate(r.find_all(["td", "th"])):
-                    t.rows[i].cells[j].text = c.get_text(strip=True)
+        _emit_table(doc, el)
     elif name == "img":
         # 用户在编辑器插入的图片（data URL 内嵌，spec 无外链图）：解码落图；坏图跳过不阻断整本渲染
         src = el.get("src", "")
@@ -76,6 +72,55 @@ def _emit_el(doc: Document, el) -> None:
         doc.add_paragraph(text)
 
 
+def _emit_table(doc: Document, el) -> None:
+    """HTML 表 → docx 表,支持 colspan/rowspan（spec329 合并单元格,审查修正）：
+    先按占位矩阵展开网格定位（合并格占多个格位）,再用 python-docx cell.merge 合并——
+    旧实现按 td 个数顺位填格,一行里有合并格时后续列整体左移错位。"""
+    rows = el.find_all("tr")
+    if not rows:
+        return
+    grid: list[list[dict | None]] = []  # 每格: {"text":…, "anchor":(r,c)} 或 None
+    for ri, r in enumerate(rows):
+        while len(grid) <= ri:
+            grid.append([])
+        ci = 0
+        for cell in r.find_all(["td", "th"]):
+            while ci < len(grid[ri]) and grid[ri][ci] is not None:
+                ci += 1  # 跳过上方 rowspan 占掉的格位
+            cs = max(1, int(cell.get("colspan") or 1))
+            rs = max(1, int(cell.get("rowspan") or 1))
+            for dr in range(rs):
+                while len(grid) <= ri + dr:
+                    grid.append([])
+                row = grid[ri + dr]
+                while len(row) < ci + cs:
+                    row.append(None)
+                for dc in range(cs):
+                    row[ci + dc] = {"text": cell.get_text(strip=True) if (dr == 0 and dc == 0) else "",
+                                    "anchor": (ri, ci)}
+            ci += cs
+    cols = max(len(r) for r in grid)
+    t = doc.add_table(rows=len(grid), cols=cols)
+    t.style = "Table Grid"   # 网格线：偏差表/报价表没有边框不可读（e2e PDF 实测）
+    merged: set[tuple[int, int]] = set()
+    for ri, row in enumerate(grid):
+        for ci in range(cols):
+            g = row[ci] if ci < len(row) else None
+            if g is None:
+                continue
+            ar, ac = g["anchor"]
+            if (ar, ac) == (ri, ci):
+                cell = t.rows[ri].cells[ci]
+                cell.text = g["text"]
+                # 单元格不吃正文首行缩进（spec330 格式把缩进设在 Normal 上,窄列缩 2 字符换行灾难）
+                cell.paragraphs[0].paragraph_format.first_line_indent = Pt(0)
+            elif (ar, ac) not in merged:
+                t.cell(ar, ac).merge(t.cell(ri, ci))
+                merged.add((ar, ac))
+            else:
+                t.cell(ar, ac).merge(t.cell(ri, ci))
+
+
 def _emit_html(doc: Document, html: str) -> None:
     """HTML 最小映射到 docx。复杂样式（行内富文本等）为后续加固项。"""
     soup = BeautifulSoup(html or "", "html.parser")
@@ -87,6 +132,7 @@ def _cover_line(doc: Document, text: str, size: int) -> None:
     """封面居中一行：统一走 run 设字号，标题行调用方另设加粗。"""
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.first_line_indent = Pt(0)  # 封面居中行不吃 Normal 首行缩进（spec330）
     run = p.add_run(text)
     run.font.size = Pt(size)
 
@@ -163,6 +209,7 @@ def _add_page_number_footer(doc: Document, project_name: str) -> None:
     header_p.text = project_name
     footer_p = section.footer.paragraphs[0]
     footer_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    footer_p.paragraph_format.first_line_indent = Pt(0)  # 页脚页码不吃 Normal 首行缩进（spec330）
     _add_field(footer_p, "PAGE")
 
 
@@ -229,7 +276,8 @@ def _apply_custom_format(doc: Document, fmt: dict) -> None:
     normal.font.name = f["body_font"]
     normal.font.size = Pt(body_pt)
     normal.element.rPr.rFonts.set(qn("w:eastAsia"), f["body_font"])
-    # 首行缩进 N 字符 = N × 字号;行距设在 Normal 段落格式上,全文（含标题继承前的基准）统一
+    # 首行缩进 N 字符 = N × 字号;行距设在 Normal 段落格式上,全文（含标题继承前的基准）统一。
+    # 缩进溢入表格/封面/页脚的问题由各发射点显式置零解决（_emit_table 单元格、_cover_line、页脚）。
     normal.paragraph_format.first_line_indent = Pt(body_pt * int(f["body_indent_chars"]))
     _set_line_spacing(normal.paragraph_format, f["line_spacing"])
     head_pt = _GB_PT.get(f["heading_size"], 14)

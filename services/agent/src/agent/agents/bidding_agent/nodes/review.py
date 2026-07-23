@@ -45,6 +45,10 @@ def make_review_node(ctx):
         # spec328 独立审查:线下标书没有生成链路,chapters 由上传文件确定性解析而来
         if not chapters_src and run_input.get("bid_file_key"):
             chapters_src = await asyncio.to_thread(_parse_bid_chapters, run_input["bid_file_key"])
+            # 审查修正：解析为空（扫描件/图片 PDF 提不出文字）绝不能拿空文档去跑计费审查——
+            # run 直接失败,App 侧 settleFailed 全额退款,错误文案告知原因
+            if not chapters_src:
+                raise RuntimeError("上传的标书未能解析出任何正文（扫描件/图片版暂不支持），请上传可复制文字的 docx/pdf 后重试")
         chapters = {cid: (html[:_CHAPTER_CAP] + "…（截断）" if len(html) > _CHAPTER_CAP else html)
                     for cid, html in chapters_src.items()}
         payload = {"read": slim_read(read_state), "outline": state.get("outline") or {},

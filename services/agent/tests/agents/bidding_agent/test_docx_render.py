@@ -214,3 +214,30 @@ def test_render_docx_without_fmt_keeps_legacy_styles():
     assert normal.font.name == "宋体" and normal.font.size == Pt(12)
     assert normal.paragraph_format.first_line_indent is None       # 旧路径不设缩进
     assert doc.styles["Heading 2"].font.name == "黑体"             # 旧路径标题黑体
+
+
+def test_render_docx_ordered_list_and_merged_cells():
+    """审查修正：<ol> 按编号列表输出;colspan/rowspan 按网格展开+合并,列不错位。"""
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "方案", "group": "tech"}]}
+    html = ('<ol><li>第一步</li><li>第二步</li></ol>'
+            '<table><tr><td colspan="2">合并表头</td><td>C</td></tr>'
+            '<tr><td>a</td><td>b</td><td>c</td></tr></table>')
+    doc = Document(io.BytesIO(render_docx(outline, {"t1": html})))
+    texts = [p.text for p in doc.paragraphs]
+    assert "第一步" in texts and "第二步" in texts
+    tbl = doc.tables[0]
+    assert len(tbl.columns) == 3
+    # 合并表头占前两格（同一合并单元格文本一致）,第三列 C 不左移
+    assert tbl.cell(0, 0).text == "合并表头" and tbl.cell(0, 2).text == "C"
+    assert tbl.cell(1, 0).text == "a" and tbl.cell(1, 2).text == "c"
+
+
+def test_render_docx_fmt_indent_not_bleeding_into_cells():
+    """spec330 审查修正：配置格式时正文缩进不溢入表格单元格。"""
+    from docx.shared import Pt
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "方案", "group": "tech"}]}
+    html = "<p>正文</p><table><tr><td>格</td></tr></table>"
+    doc = Document(io.BytesIO(render_docx(outline, {"t1": html}, fmt={})))
+    assert doc.styles["Normal"].paragraph_format.first_line_indent == Pt(24)  # 正文缩进 2 字符
+    cell_para = doc.tables[0].cell(0, 0).paragraphs[0]
+    assert cell_para.paragraph_format.first_line_indent == Pt(0)              # 单元格显式置零
