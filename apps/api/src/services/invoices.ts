@@ -120,7 +120,7 @@ async function loadPending(id: string): Promise<InvoiceRequest> {
 // 开具：pending→issued，回填发票号 + 上传的电子发票文件 key，落审计。用户在会员中心自行下载。
 export async function issueInvoice(
   id: string,
-  input: { invoiceNo: string; fileKey?: string },
+  input: { invoiceNo: string; fileKey: string }, // 电子发票文件必填（用户凭此下载）
   opts: { operator: string },
 ): Promise<InvoiceRequest> {
   await loadPending(id)
@@ -129,7 +129,7 @@ export async function issueInvoice(
     .set({
       status: "issued",
       invoiceNo: input.invoiceNo.trim(),
-      fileKey: input.fileKey?.trim() || null,
+      fileKey: input.fileKey.trim(),
       handledBy: opts.operator,
       handledAt: new Date(),
     })

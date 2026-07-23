@@ -44,7 +44,7 @@ describe("spec332 发票管理（管理端 · invoice.write）", () => {
     const res = await app.request(`http://x/admin-api/invoices/${id}`, {
       method: "PATCH",
       headers,
-      body: JSON.stringify({ action: "issue", invoiceNo: "INV-001" }),
+      body: JSON.stringify({ action: "issue", invoiceNo: "INV-001", fileKey: "invoices/t/a.pdf" }),
     })
     expect(res.status).toBe(200)
     const row = (await res.json()) as { status: string; invoiceNo: string }
@@ -52,11 +52,18 @@ describe("spec332 发票管理（管理端 · invoice.write）", () => {
     expect(row.invoiceNo).toBe("INV-001")
   })
 
+  it("开具不带电子发票文件 → 400（文件必填）", async () => {
+    const { headers } = await makeAdminSession("finance", regA)
+    const id = await makeInvoice()
+    const res = await app.request(`http://x/admin-api/invoices/${id}`, { method: "PATCH", headers, body: JSON.stringify({ action: "issue", invoiceNo: "INV-NOFILE" }) })
+    expect(res.status).toBe(400)
+  })
+
   it("已开具再开 → 409 not_pending", async () => {
     const { headers } = await makeAdminSession("superadmin", regA)
     const id = await makeInvoice()
-    await app.request(`http://x/admin-api/invoices/${id}`, { method: "PATCH", headers, body: JSON.stringify({ action: "issue", invoiceNo: "INV-002" }) })
-    const again = await app.request(`http://x/admin-api/invoices/${id}`, { method: "PATCH", headers, body: JSON.stringify({ action: "issue", invoiceNo: "INV-003" }) })
+    await app.request(`http://x/admin-api/invoices/${id}`, { method: "PATCH", headers, body: JSON.stringify({ action: "issue", invoiceNo: "INV-002", fileKey: "invoices/t/b.pdf" }) })
+    const again = await app.request(`http://x/admin-api/invoices/${id}`, { method: "PATCH", headers, body: JSON.stringify({ action: "issue", invoiceNo: "INV-003", fileKey: "invoices/t/c.pdf" }) })
     expect(again.status).toBe(409)
     expect(((await again.json()) as { error: string }).error).toBe("not_pending")
   })

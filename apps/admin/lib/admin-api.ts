@@ -130,7 +130,7 @@ export const adminApi = {
   invoices: {
     list: (p: { status?: string; userId?: string; page?: number; pageSize?: number } = {}) =>
       req<Paged<ApiInvoice>>(`/invoices${qs(p)}`),
-    handle: (id: string, body: { action: "issue"; invoiceNo: string; fileKey?: string } | { action: "reject"; reason: string }) =>
+    handle: (id: string, body: { action: "issue"; invoiceNo: string; fileKey: string } | { action: "reject"; reason: string }) =>
       req<ApiInvoice>(`/invoices/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
     // 上传电子发票文件（multipart，经 API 中转直传 MinIO）；返回对象 key，随开具回填。
     uploadFile: (id: string, file: File) => {

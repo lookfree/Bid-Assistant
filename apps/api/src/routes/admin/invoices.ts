@@ -42,7 +42,8 @@ invoicesRouter.post("/:id/file", requirePermission("invoice.write"), async (c) =
 })
 
 const PatchBody = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("issue"), invoiceNo: z.string().min(1).max(100), fileKey: z.string().max(300).optional() }),
+  // 开具必须带电子发票文件（fileKey）——否则用户无从下载，故必填。
+  z.object({ action: z.literal("issue"), invoiceNo: z.string().min(1).max(100), fileKey: z.string().min(1).max(300) }),
   z.object({ action: z.literal("reject"), reason: z.string().min(1).max(500) }),
 ])
 

@@ -198,20 +198,18 @@ function InvoiceDialog({
 
   // 开具：先上传发票文件（若选了）拿 key，再提交 issue。上传失败给具体提示、不继续开具。
   async function submitIssue() {
-    if (!invoice || !invoiceNo.trim() || uploading) return
-    let fileKey: string | undefined
-    if (file) {
-      setUploading(true)
-      try {
-        fileKey = (await adminApi.invoices.uploadFile(invoice.id, file)).key
-      } catch (e) {
-        const code = e instanceof AdminApiError ? e.code : undefined
-        toast.error(code === "unsupported_file" ? "文件格式不支持（仅 PDF/OFD/图片）" : code === "file_too_large" ? "文件过大（≤10MB）" : "上传失败，请重试")
-        setUploading(false)
-        return
-      }
+    if (!invoice || !invoiceNo.trim() || !file || uploading) return
+    setUploading(true)
+    let fileKey: string
+    try {
+      fileKey = (await adminApi.invoices.uploadFile(invoice.id, file)).key
+    } catch (e) {
+      const code = e instanceof AdminApiError ? e.code : undefined
+      toast.error(code === "unsupported_file" ? "文件格式不支持（仅 PDF/OFD/图片）" : code === "file_too_large" ? "文件过大（≤10MB）" : "上传失败，请重试")
       setUploading(false)
+      return
     }
+    setUploading(false)
     onSubmit(invoice.id, { action: "issue", invoiceNo: invoiceNo.trim(), fileKey })
   }
 
@@ -232,7 +230,6 @@ function InvoiceDialog({
           <Info label="抬头类型" value={titleTypeLabel(invoice.titleType)} />
           <Info label="发票抬头" value={invoice.title} />
           {invoice.titleType === "enterprise" && <Info label="税号" value={invoice.taxNo ?? "-"} />}
-          {invoice.email && <Info label="接收邮箱" value={invoice.email} />}
           <Info label="关联订单" value={invoice.orderId.slice(0, 12)} />
           {invoice.remark && <Info label="备注" value={invoice.remark} />}
           {invoice.status === "issued" && <Info label="发票号" value={invoice.invoiceNo ?? "-"} />}
@@ -248,7 +245,7 @@ function InvoiceDialog({
                 <Input id="inv-no" value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} maxLength={100} placeholder="线下开具后回填的发票号" />
               </Field>
               <Field>
-                <FieldLabel htmlFor="inv-file">电子发票文件（PDF/OFD/图片，选填，用户会员中心可下载）</FieldLabel>
+                <FieldLabel htmlFor="inv-file">电子发票文件（PDF/OFD/图片，必填，用户会员中心可下载）</FieldLabel>
                 <Input
                   id="inv-file"
                   type="file"
@@ -276,7 +273,7 @@ function InvoiceDialog({
               >
                 驳回
               </Button>
-              <Button disabled={!invoiceNo.trim() || uploading} onClick={() => void submitIssue()}>
+              <Button disabled={!invoiceNo.trim() || !file || uploading} onClick={() => void submitIssue()}>
                 {uploading ? "上传中…" : "开具"}
               </Button>
             </>
