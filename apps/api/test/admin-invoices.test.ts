@@ -3,7 +3,8 @@ import { eq, inArray } from "drizzle-orm"
 import { Hono } from "hono"
 import { randomUUID } from "node:crypto"
 import { adminRoutes } from "../src/routes/admin"
-import { createInvoiceRequest } from "../src/services/invoices"
+import { createInvoiceRequest, issueInvoice } from "../src/services/invoices"
+import type { EmailSender, InvoiceEmailData } from "../src/services/email-sender"
 import { createTestUser, uniquePhone, makeTestOrder, makeAdminSession, TEST_TIMEOUT_MS } from "./repos/helpers"
 import { getDb, closeDb } from "../src/db/client"
 import { users, adminUsers } from "../src/db/schema"
@@ -73,6 +74,23 @@ describe("spec332 发票管理（管理端 · invoice.write）", () => {
     const row = (await res.json()) as { status: string; rejectReason: string }
     expect(row.status).toBe("rejected")
     expect(row.rejectReason).toBe("抬头信息有误")
+  })
+
+  it("开具时发邮件（DirectMail），带收件人/发票号/金额", async () => {
+    const id = await makeInvoice() // email a@b.com, amount 6600
+    const sent: InvoiceEmailData[] = []
+    const spy: EmailSender = { async sendInvoiceIssued(d) { sent.push(d) } }
+    const row = await issueInvoice(id, { invoiceNo: "INV-MAIL-1" }, { operator: "test", emailSender: spy })
+    expect(row.status).toBe("issued")
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({ to: "a@b.com", invoiceNo: "INV-MAIL-1", amountCents: 6600 })
+  })
+
+  it("邮件发送失败不影响开具（best-effort）", async () => {
+    const id = await makeInvoice()
+    const boom: EmailSender = { async sendInvoiceIssued() { throw new Error("smtp down") } }
+    const row = await issueInvoice(id, { invoiceNo: "INV-MAIL-2" }, { operator: "test", emailSender: boom })
+    expect(row.status).toBe("issued") // 开票仍成功，邮件失败只告警
   })
 
   it("不存在的发票 id → 404", async () => {

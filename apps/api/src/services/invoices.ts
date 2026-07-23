@@ -3,6 +3,7 @@ import { getDb } from "../db/client"
 import { invoiceRequests, paymentOrders, type InvoiceRequest, type InvoiceStatus, type InvoiceTitleType } from "../db/schema"
 import { pagedResult } from "../lib/pagination"
 import { writeAudit } from "./audit"
+import { getEmailSender, type EmailSender } from "./email-sender"
 
 // 发票申请（spec332）：money-blind——只读订单、快照订单金额，绝不改积分/余额账本。
 export type CreateInvoiceInput = {
@@ -99,8 +100,12 @@ async function loadPending(id: string): Promise<InvoiceRequest> {
   return row
 }
 
-// 开具：pending→issued，回填发票号（+可选 PDF），落审计（不落金额/抬头敏感项外的多余信息）。
-export async function issueInvoice(id: string, input: { invoiceNo: string; fileUrl?: string }, opts: { operator: string }): Promise<InvoiceRequest> {
+// 开具：pending→issued，回填发票号（+可选 PDF），落审计，并自动邮件通知用户（阿里云 DirectMail）。
+export async function issueInvoice(
+  id: string,
+  input: { invoiceNo: string; fileUrl?: string },
+  opts: { operator: string; emailSender?: EmailSender },
+): Promise<InvoiceRequest> {
   await loadPending(id)
   const [after] = await getDb()
     .update(invoiceRequests)
@@ -108,6 +113,18 @@ export async function issueInvoice(id: string, input: { invoiceNo: string; fileU
     .where(eq(invoiceRequests.id, id))
     .returning()
   await writeAudit({ operator: opts.operator, action: "invoice.issue", target: `invoice:${id}`, before: { status: "pending" }, after: { status: "issued", invoiceNo: after!.invoiceNo } })
+  // 开具后自动发邮件（best-effort：邮件失败不回滚开票——发票已入库、用户站内也能看到；仅告警日志）。
+  try {
+    await (opts.emailSender ?? getEmailSender()).sendInvoiceIssued({
+      to: after!.email,
+      title: after!.title,
+      invoiceNo: after!.invoiceNo!,
+      amountCents: after!.amountCents,
+      fileUrl: after!.fileUrl,
+    })
+  } catch (e) {
+    console.warn(`[invoice] 开具邮件发送失败 invoice=${id} to=${after!.email}:`, e instanceof Error ? e.message : e)
+  }
   return after!
 }
 

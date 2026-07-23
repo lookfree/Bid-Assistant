@@ -27,6 +27,13 @@ const schema = z.object({
   ALIYUN_SMS_SIGN_NAME: z.string().optional(),
   ALIYUN_SMS_TEMPLATE_CODE: z.string().optional(),
 
+  // —— 阿里云邮件推送 DirectMail（spec332 发票开具通知）：缺凭据自动回退 Fake（不真发）——
+  ALIYUN_DM_ACCESS_KEY_ID: z.string().optional(),
+  ALIYUN_DM_ACCESS_KEY_SECRET: z.string().optional(),
+  ALIYUN_DM_ACCOUNT_NAME: z.string().optional(), // 已验证的发信地址，如 noreply@mail.example.com
+  ALIYUN_DM_FROM_ALIAS: z.string().optional(), // 发信人昵称，如「智启元」
+  ALIYUN_DM_ENDPOINT: z.string().default("dm.aliyuncs.com"),
+
   AUTH_SESSION_TTL_DAYS: z.coerce.number().int().positive().default(7),
 
   // —— 前端跨域白名单（逗号分隔的允许 Origin；CORS 用）——
