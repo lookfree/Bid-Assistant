@@ -168,7 +168,11 @@ export function OrdersClient() {
               className="pl-8"
             />
           </div>
-          <Select value={type} onValueChange={(v) => reset(setType)(v ?? "all")}>
+          <Select
+            value={type}
+            items={{ all: "全部类型", recharge: "积分充值", single: "单笔购买", renew: "自动续费" }}
+            onValueChange={(v) => reset(setType)(v ?? "all")}
+          >
             <SelectTrigger className="w-full sm:w-36">
               <SelectValue placeholder="订单类型" />
             </SelectTrigger>
@@ -179,7 +183,11 @@ export function OrdersClient() {
               <SelectItem value="renew">自动续费</SelectItem>
             </SelectContent>
           </Select>
-          <Select value={statusF} onValueChange={(v) => reset(setStatusF)(v ?? "all")}>
+          <Select
+            value={statusF}
+            items={{ all: "全部状态", paid: "已支付", pending: "待支付", refunded: "已退款", failed: "支付失败", unknown: "结果待核对" }}
+            onValueChange={(v) => reset(setStatusF)(v ?? "all")}
+          >
             <SelectTrigger className="w-full sm:w-32">
               <SelectValue placeholder="支付状态" />
             </SelectTrigger>

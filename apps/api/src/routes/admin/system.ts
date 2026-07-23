@@ -3,6 +3,7 @@ import { z } from "zod"
 import { requirePermission } from "../../middleware/admin-auth"
 import { parsePagination, pagedBody } from "../../lib/pagination"
 import { listAdmins, createAdminAccount, updateAdminAccount, listAuditLogs } from "../../services/admin/admin-accounts"
+import { findAdminByUsername } from "../../repos/admin-users"
 import { ROLE_PERMISSIONS, PERMISSIONS } from "../../services/rbac"
 import type { AdminUser } from "../../db/schema"
 
@@ -27,6 +28,8 @@ const CreateBody = z.object({ username: z.string().min(1), role: z.enum(["supera
 systemRouter.post("/admins", requirePermission("admin.manage"), async (c) => {
   const parsed = CreateBody.safeParse(await c.req.json().catch(() => null))
   if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
+  // 用户名唯一预检 → 干净的 409（否则撞 unique 约束抛 500，前端只能报「创建失败」）
+  if (await findAdminByUsername(parsed.data.username)) return c.json({ error: "username_taken" }, 409)
   return c.json(await createAdminAccount(parsed.data, { operator: c.var.admin.username }))
 })
 const UpdateBody = z.object({ role: z.enum(["superadmin", "ops", "finance", "support"]).optional(), status: z.enum(["active", "disabled"]).optional() })

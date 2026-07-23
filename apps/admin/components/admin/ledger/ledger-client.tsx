@@ -173,6 +173,7 @@ export function LedgerClient() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
             <Select
               value={userId}
+              items={Object.fromEntries(userOptions.map((u) => [u.id, u.name]))}
               onValueChange={(v) => {
                 if (v) setUserId(v)
                 setPage(1)
@@ -191,6 +192,7 @@ export function LedgerClient() {
             </Select>
             <Select
               value={type}
+              items={{ all: "全部类型", grant: "赠送 grant", purchase: "充值 purchase", hold: "预扣 hold", settle: "结算 settle", release: "退还 release", expire: "过期 expire" }}
               onValueChange={(v) => {
                 setType(v ?? "all")
                 setPage(1)

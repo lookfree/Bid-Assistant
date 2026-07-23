@@ -147,7 +147,11 @@ export function UsersClient() {
               className="pl-8"
             />
           </div>
-          <Select value={tier} onValueChange={(v) => resetPage(setTier)(v ?? "all")}>
+          <Select
+            value={tier}
+            items={{ all: "全部档位", free: "免费版", personal: "个人版", pro: "专业版" }}
+            onValueChange={(v) => resetPage(setTier)(v ?? "all")}
+          >
             <SelectTrigger className="w-full sm:w-36">
               <SelectValue placeholder="会员档位" />
             </SelectTrigger>
@@ -158,7 +162,11 @@ export function UsersClient() {
               <SelectItem value="pro">专业版</SelectItem>
             </SelectContent>
           </Select>
-          <Select value={status} onValueChange={(v) => resetPage(setStatus)(v ?? "all")}>
+          <Select
+            value={status}
+            items={{ all: "全部状态", active: "正常", banned: "已封禁" }}
+            onValueChange={(v) => resetPage(setStatus)(v ?? "all")}
+          >
             <SelectTrigger className="w-full sm:w-32">
               <SelectValue placeholder="账号状态" />
             </SelectTrigger>

@@ -53,4 +53,27 @@ describe("spec310 系统页", () => {
     expect(res.status).toBe(200)
     madeAdmins.push(((await res.json()) as { id: string }).id)
   })
+
+  it("重名建账号 → 409 username_taken（前端可给「用户名已存在」）", async () => {
+    const { headers } = await makeAdminSession("superadmin", regA)
+    const name = `dup_${Date.now()}`
+    const first = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username: name, role: "support", password: "pw123456" }) })
+    expect(first.status).toBe(200)
+    madeAdmins.push(((await first.json()) as { id: string }).id)
+    const dup = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username: name, role: "ops", password: "pw123456" }) })
+    expect(dup.status).toBe(409)
+    expect(((await dup.json()) as { error: string }).error).toBe("username_taken")
+  })
+
+  it("改角色/停用 → 200 且落审计（PUT /admins/:id）", async () => {
+    const { headers } = await makeAdminSession("superadmin", regA)
+    const created = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username: `edit_${Date.now()}`, role: "support", password: "pw123456" }) })
+    const id = ((await created.json()) as { id: string }).id
+    madeAdmins.push(id)
+    const res = await app.request(`http://x/admin-api/admins/${id}`, { method: "PUT", headers, body: JSON.stringify({ role: "finance", status: "disabled" }) })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { role: string; status: string }
+    expect(body.role).toBe("finance")
+    expect(body.status).toBe("disabled")
+  })
 })

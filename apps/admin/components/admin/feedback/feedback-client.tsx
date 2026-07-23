@@ -151,7 +151,11 @@ function FeedbackFilterBar({
 }) {
   return (
     <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-      <Select value={status} onValueChange={(v) => onStatusChange(v ?? "all")}>
+      <Select
+        value={status}
+        items={{ all: "全部", pending: "待处理", processing: "处理中", resolved: "已解决" }}
+        onValueChange={(v) => onStatusChange(v ?? "all")}
+      >
         <SelectTrigger className="w-full sm:w-40">
           <SelectValue placeholder="状态筛选" />
         </SelectTrigger>

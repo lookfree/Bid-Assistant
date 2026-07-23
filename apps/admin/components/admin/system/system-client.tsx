@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 import { Search, ShieldCheck } from "lucide-react"
+import { permLabel, actionLabel, snapshotRows } from "@/lib/admin-labels"
 import {
   Card,
   CardContent,
@@ -22,9 +23,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { TablePagination } from "@/components/admin/table-pagination"
-import { adminApi, type ApiAdmin, type ApiAuditLog } from "@/lib/admin-api"
+import { adminApi, AdminApiError, type ApiAdmin, type ApiAuditLog } from "@/lib/admin-api"
 
 // 角色 → 中文标签。真实角色枚举固定为 superadmin/finance/ops/support（apps/api AdminRole）。
 const ROLE_LABEL: Record<string, string> = {
@@ -66,33 +70,48 @@ export function SystemClient() {
   )
 }
 
+const ROLE_ITEMS = { superadmin: "超级管理员", finance: "财务", ops: "运营", support: "客服" }
+
 function AccountsTab() {
   const [accounts, setAccounts] = useState<ApiAdmin[]>([])
   const [loading, setLoading] = useState(true)
+  const [createOpen, setCreateOpen] = useState(false)
 
+  async function load() {
+    try {
+      const res = await adminApi.system.admins({ pageSize: 100 })
+      setAccounts(res.items)
+    } catch {
+      toast.error("加载运营账号失败")
+    } finally {
+      setLoading(false)
+    }
+  }
   useEffect(() => {
-    let alive = true
-    async function load() {
-      try {
-        const res = await adminApi.system.admins({ pageSize: 100 })
-        if (alive) setAccounts(res.items)
-      } catch {
-        if (alive) toast.error("加载运营账号失败")
-      } finally {
-        if (alive) setLoading(false)
-      }
-    }
     void load()
-    return () => {
-      alive = false
-    }
   }, [])
+
+  // 改角色 / 启用停用：调 PUT /admins/:id（后端 admin.manage 把关 + 审计）,成功即更新本行。
+  async function patch(id: string, p: { role?: string; status?: string }) {
+    try {
+      const updated = await adminApi.system.updateAdmin(id, p)
+      setAccounts((prev) => prev.map((a) => (a.id === id ? { ...a, ...updated } : a)))
+      toast.success("已保存")
+    } catch (e) {
+      toast.error(e instanceof AdminApiError && e.status === 403 ? "无权限：需要 admin.manage" : "保存失败，请重试")
+    }
+  }
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>运营账号</CardTitle>
-        <CardDescription>共 {accounts.length} 个内部账号。</CardDescription>
+      <CardHeader className="flex flex-row items-start justify-between gap-3">
+        <div>
+          <CardTitle>运营账号</CardTitle>
+          <CardDescription>共 {accounts.length} 个内部账号。可新增账号、调整角色、启用/停用。</CardDescription>
+        </div>
+        <Button size="sm" onClick={() => setCreateOpen(true)}>
+          新增账号
+        </Button>
       </CardHeader>
       <CardContent>
         <Table>
@@ -102,6 +121,7 @@ function AccountsTab() {
               <TableHead>角色</TableHead>
               <TableHead>创建时间</TableHead>
               <TableHead>状态</TableHead>
+              <TableHead className="text-right">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -114,42 +134,52 @@ function AccountsTab() {
                         {op.username.slice(0, 1).toUpperCase()}
                       </AvatarFallback>
                     </Avatar>
-                    <span className="text-sm font-medium text-foreground">
-                      {op.username}
-                    </span>
+                    <span className="text-sm font-medium text-foreground">{op.username}</span>
                   </div>
                 </TableCell>
                 <TableCell>
-                  <Badge variant="secondary" className="font-normal">
-                    {ROLE_LABEL[op.role] ?? op.role}
-                  </Badge>
+                  <Select value={op.role} items={ROLE_ITEMS} onValueChange={(v) => v && v !== op.role && patch(op.id, { role: v })}>
+                    <SelectTrigger className="h-8 w-28">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(ROLE_ITEMS).map(([v, label]) => (
+                        <SelectItem key={v} value={v}>
+                          {label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </TableCell>
-                <TableCell className="text-sm text-muted-foreground">
-                  {op.createdAt?.slice(0, 10) ?? "-"}
-                </TableCell>
+                <TableCell className="text-sm text-muted-foreground">{op.createdAt?.slice(0, 10) ?? "-"}</TableCell>
                 <TableCell>
                   <Badge
                     variant="outline"
-                    className={
-                      op.status === "active"
-                        ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                        : "border-border bg-muted text-muted-foreground"
-                    }
+                    className={op.status === "active" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-border bg-muted text-muted-foreground"}
                   >
                     {op.status === "active" ? "启用" : "已停用"}
                   </Badge>
+                </TableCell>
+                <TableCell className="text-right">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => patch(op.id, { status: op.status === "active" ? "disabled" : "active" })}
+                  >
+                    {op.status === "active" ? "停用" : "启用"}
+                  </Button>
                 </TableCell>
               </TableRow>
             ))}
             {loading ? (
               <TableRow>
-                <TableCell colSpan={4} className="h-24 text-center text-muted-foreground">
+                <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">
                   加载中…
                 </TableCell>
               </TableRow>
             ) : accounts.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={4} className="h-24 text-center text-muted-foreground">
+                <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">
                   暂无运营账号
                 </TableCell>
               </TableRow>
@@ -157,7 +187,81 @@ function AccountsTab() {
           </TableBody>
         </Table>
       </CardContent>
+      {createOpen && <CreateAdminDialog onClose={() => setCreateOpen(false)} onCreated={() => void load()} />}
     </Card>
+  )
+}
+
+/* 新增运营账号弹窗：用户名 + 角色 + 密码（≥8 位,与后端 CreateBody 一致）。 */
+function CreateAdminDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const [username, setUsername] = useState("")
+  const [role, setRole] = useState("ops")
+  const [password, setPassword] = useState("")
+  const [saving, setSaving] = useState(false)
+
+  const valid = username.trim().length > 0 && password.length >= 8
+  async function submit() {
+    if (!valid || saving) return
+    setSaving(true)
+    try {
+      await adminApi.system.createAdmin({ username: username.trim(), role, password })
+      toast.success("账号已创建")
+      onCreated()
+      onClose()
+    } catch (e) {
+      toast.error(
+        e instanceof AdminApiError && e.status === 403
+          ? "无权限：需要 admin.manage"
+          : e instanceof AdminApiError && e.status === 409
+            ? "用户名已存在"
+            : "创建失败，请重试",
+      )
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>新增运营账号</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col gap-3 py-1">
+          <label className="flex flex-col gap-1 text-sm">
+            用户名
+            <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="登录用户名" />
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            角色
+            <Select value={role} items={ROLE_ITEMS} onValueChange={(v) => v && setRole(v)}>
+              <SelectTrigger className="h-9">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(ROLE_ITEMS).map(([v, label]) => (
+                  <SelectItem key={v} value={v}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            初始密码
+            <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="至少 8 位" />
+            {password.length > 0 && password.length < 8 && <span className="text-xs text-destructive">密码至少 8 位</span>}
+          </label>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            取消
+          </Button>
+          <Button onClick={() => void submit()} disabled={!valid || saving}>
+            {saving ? "创建中…" : "创建账号"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -221,7 +325,8 @@ function RolesTab() {
             {permissions.map((perm) => (
               <TableRow key={perm}>
                 <TableCell className="text-sm font-medium text-foreground">
-                  {perm}
+                  {permLabel(perm)}
+                  <span className="ml-1.5 font-mono text-xs font-normal text-muted-foreground">{perm}</span>
                 </TableCell>
                 {roleKeys.map((r) => {
                   const checked = roles[r]?.includes(perm) ?? false
@@ -337,17 +442,17 @@ function AuditTab() {
                 </TableCell>
                 <TableCell>
                   <Badge variant="secondary" className="font-normal">
-                    {log.action}
+                    {actionLabel(log.action)}
                   </Badge>
                 </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
                   {log.target ?? "-"}
                 </TableCell>
-                <TableCell className="max-w-48 truncate text-xs text-muted-foreground">
-                  {log.before != null ? JSON.stringify(log.before) : "-"}
+                <TableCell className="max-w-56 text-xs text-muted-foreground">
+                  <Snapshot snap={log.before} />
                 </TableCell>
-                <TableCell className="max-w-48 truncate text-xs text-muted-foreground">
-                  {log.after != null ? JSON.stringify(log.after) : "-"}
+                <TableCell className="max-w-56 text-xs text-muted-foreground">
+                  <Snapshot snap={log.after} />
                 </TableCell>
               </TableRow>
             ))}
@@ -375,5 +480,22 @@ function AuditTab() {
         />
       </CardContent>
     </Card>
+  )
+}
+
+/* 审计快照展示（bug）：变更前/后此前直出裸 JSON（像代码,运营看不懂）→ 逐字段「中文名：值」行,
+   标量直显,空则「—」。字段名走 admin-labels 的中文映射。 */
+function Snapshot({ snap }: { snap: unknown }) {
+  const rows = snapshotRows(snap)
+  if (rows.length === 0) return <span>—</span>
+  return (
+    <div className="flex flex-col gap-0.5">
+      {rows.map((r, i) => (
+        <div key={i} className="flex gap-1">
+          {r.label && <span className="shrink-0 text-muted-foreground/70">{r.label}：</span>}
+          <span className="break-all font-medium text-foreground">{r.value}</span>
+        </div>
+      ))}
+    </div>
   )
 }
