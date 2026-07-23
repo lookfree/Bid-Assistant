@@ -80,7 +80,6 @@ export interface InvoiceView {
   titleType: "personal" | "enterprise"
   title: string
   taxNo: string | null
-  email: string
   remark: string | null
   status: "pending" | "issued" | "rejected"
   invoiceNo: string | null
@@ -94,7 +93,6 @@ export interface CreateInvoicePayload {
   titleType: "personal" | "enterprise"
   title: string
   taxNo?: string
-  email: string
   remark?: string
 }
 

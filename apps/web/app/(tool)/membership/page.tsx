@@ -543,13 +543,11 @@ function InvoiceModal(props: { orders: OrderView[]; onClose: () => void; onCreat
   const [titleType, setTitleType] = useState<"personal" | "enterprise">("personal")
   const [title, setTitle] = useState("")
   const [taxNo, setTaxNo] = useState("")
-  const [email, setEmail] = useState("")
   const [remark, setRemark] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const emailOk = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)
-  const valid = orderId && title.trim() && emailOk && (titleType === "personal" || taxNo.trim())
+  const valid = orderId && title.trim() && (titleType === "personal" || taxNo.trim())
 
   async function submit() {
     if (!valid || submitting) return
@@ -560,7 +558,6 @@ function InvoiceModal(props: { orders: OrderView[]; onClose: () => void; onCreat
         orderId,
         titleType,
         title: title.trim(),
-        email: email.trim(),
         taxNo: titleType === "enterprise" ? taxNo.trim() : undefined,
         remark: remark.trim() || undefined,
       }
@@ -605,11 +602,6 @@ function InvoiceModal(props: { orders: OrderView[]; onClose: () => void; onCreat
               <input className={field} value={taxNo} onChange={(e) => setTaxNo(e.target.value)} placeholder="企业税号（必填）" />
             </label>
           )}
-          <label className="text-xs text-muted-foreground">
-            接收邮箱
-            <input className={field} value={email} onChange={(e) => setEmail(e.target.value)} placeholder="电子发票发送至此邮箱" />
-            {email.length > 0 && !emailOk && <span className="mt-1 block text-destructive">邮箱格式不正确</span>}
-          </label>
           <label className="text-xs text-muted-foreground">
             备注（选填）
             <input className={field} value={remark} onChange={(e) => setRemark(e.target.value)} placeholder="如需注明用途可填写" />

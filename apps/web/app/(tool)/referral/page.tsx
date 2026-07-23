@@ -96,7 +96,7 @@ export default function ReferralPage() {
         <ol className="mt-3 flex flex-col gap-2.5 text-sm text-muted-foreground">
           <li>1. 复制上方邀请链接，分享给好友（微信、QQ 均可）。</li>
           <li>2. 好友通过链接注册成为新用户。</li>
-          <li>3. 注册成功后，你和好友都将获得积分奖励，好友充值时你还能再得奖励。</li>
+          <li>3. 好友注册成功后，你和好友都将各获得一次积分奖励。</li>
         </ol>
       </div>
     </div>

@@ -142,7 +142,7 @@ export function InvoicesClient() {
                   <TableCell className="text-sm text-muted-foreground">{inv.handledBy ?? "-"}</TableCell>
                   <TableCell>
                     <Button variant="outline" size="sm" onClick={() => setSelected(inv)}>
-                      {inv.status === "pending" ? "处理" : "查看"}
+                      {inv.status === "pending" ? "开具 / 驳回" : "查看"}
                     </Button>
                   </TableCell>
                 </TableRow>
@@ -232,7 +232,7 @@ function InvoiceDialog({
           <Info label="抬头类型" value={titleTypeLabel(invoice.titleType)} />
           <Info label="发票抬头" value={invoice.title} />
           {invoice.titleType === "enterprise" && <Info label="税号" value={invoice.taxNo ?? "-"} />}
-          <Info label="接收邮箱" value={invoice.email} />
+          {invoice.email && <Info label="接收邮箱" value={invoice.email} />}
           <Info label="关联订单" value={invoice.orderId.slice(0, 12)} />
           {invoice.remark && <Info label="备注" value={invoice.remark} />}
           {invoice.status === "issued" && <Info label="发票号" value={invoice.invoiceNo ?? "-"} />}

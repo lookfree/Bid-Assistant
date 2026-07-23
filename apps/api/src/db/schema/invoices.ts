@@ -26,7 +26,7 @@ export const invoiceRequests = pgTable(
     titleType: text("title_type").$type<InvoiceTitleType>().notNull(),
     title: text("title").notNull(), // 抬头名称
     taxNo: text("tax_no"), // 企业抬头必填（应用层校验）
-    email: text("email").notNull(), // 收票邮箱
+    email: text("email"), // 历史字段：改站内下载后不再收集（可空）
     remark: text("remark"),
     status: text("status").$type<InvoiceStatus>().notNull().default("pending"),
     invoiceNo: text("invoice_no"), // 开具后回填

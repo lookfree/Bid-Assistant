@@ -27,7 +27,7 @@ async function makeInvoice(): Promise<string> {
   const u = await createTestUser(uniquePhone())
   madeUsers.push(u.id)
   const order = await makeTestOrder(u.id, "paid", 6600)
-  const inv = await createInvoiceRequest(u.id, { orderId: order.id, titleType: "personal", title: "测试", email: "a@b.com" })
+  const inv = await createInvoiceRequest(u.id, { orderId: order.id, titleType: "personal", title: "测试" })
   return inv.id
 }
 

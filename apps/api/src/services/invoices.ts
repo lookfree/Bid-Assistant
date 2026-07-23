@@ -21,7 +21,6 @@ export type CreateInvoiceInput = {
   titleType: InvoiceTitleType
   title: string
   taxNo?: string
-  email: string
   remark?: string
 }
 
@@ -63,7 +62,6 @@ export async function createInvoiceRequest(userId: string, input: CreateInvoiceI
       titleType: input.titleType,
       title: input.title.trim(),
       taxNo: input.taxNo?.trim() || null,
-      email: input.email.trim(),
       remark: input.remark?.trim() || null,
     })
     .returning()

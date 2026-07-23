@@ -12,7 +12,6 @@ const CreateBody = z.object({
   titleType: z.enum(["personal", "enterprise"]),
   title: z.string().min(1).max(200),
   taxNo: z.string().max(50).optional(),
-  email: z.string().email().max(200),
   remark: z.string().max(500).optional(),
 })
 

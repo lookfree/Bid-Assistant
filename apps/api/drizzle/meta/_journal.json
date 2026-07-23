@@ -232,6 +232,13 @@
       "when": 1784820169251,
       "tag": "0032_invoice_file_key",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1784822774676,
+      "tag": "0033_invoice_email_nullable",
+      "breakpoints": true
     }
   ]
 }

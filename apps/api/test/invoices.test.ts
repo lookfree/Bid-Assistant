@@ -43,7 +43,7 @@ describe("spec332 发票申请（C 端 · money-blind）", () => {
     const res = await app.request("/api/invoices", {
       method: "POST",
       headers: auth(token),
-      body: JSON.stringify({ orderId: order.id, titleType: "personal", title: "张三", email: "a@b.com", amountCents: 1 }),
+      body: JSON.stringify({ orderId: order.id, titleType: "personal", title: "张三", amountCents: 1 }),
     })
     expect(res.status).toBe(201)
     const row = (await res.json()) as { status: string; amountCents: number }
@@ -54,7 +54,7 @@ describe("spec332 发票申请（C 端 · money-blind）", () => {
   it("非本人订单 → order_not_found", async () => {
     const order = await makeTestOrder(otherUserId, "paid", 5000)
     await expect(
-      createInvoiceRequest(userId, { orderId: order.id, titleType: "personal", title: "x", email: "a@b.com" }),
+      createInvoiceRequest(userId, { orderId: order.id, titleType: "personal", title: "x" }),
     ).rejects.toMatchObject({ code: "order_not_found" })
   })
 
@@ -63,7 +63,7 @@ describe("spec332 发票申请（C 端 · money-blind）", () => {
     const res = await app.request("/api/invoices", {
       method: "POST",
       headers: auth(token),
-      body: JSON.stringify({ orderId: order.id, titleType: "personal", title: "x", email: "a@b.com" }),
+      body: JSON.stringify({ orderId: order.id, titleType: "personal", title: "x" }),
     })
     expect(res.status).toBe(400)
     expect(((await res.json()) as { error: string }).error).toBe("order_not_paid")
@@ -74,7 +74,7 @@ describe("spec332 发票申请（C 端 · money-blind）", () => {
     const res = await app.request("/api/invoices", {
       method: "POST",
       headers: auth(token),
-      body: JSON.stringify({ orderId: order.id, titleType: "enterprise", title: "某公司", email: "a@b.com" }),
+      body: JSON.stringify({ orderId: order.id, titleType: "enterprise", title: "某公司" }),
     })
     expect(res.status).toBe(400)
     expect(((await res.json()) as { error: string }).error).toBe("tax_no_required")
@@ -82,13 +82,13 @@ describe("spec332 发票申请（C 端 · money-blind）", () => {
 
   it("同一订单重复申请 → 409 invoice_exists；驳回后可重申", async () => {
     const order = await makeTestOrder(userId, "paid", 8000)
-    const first = await createInvoiceRequest(userId, { orderId: order.id, titleType: "personal", title: "李四", email: "a@b.com" })
+    const first = await createInvoiceRequest(userId, { orderId: order.id, titleType: "personal", title: "李四" })
     await expect(
-      createInvoiceRequest(userId, { orderId: order.id, titleType: "personal", title: "李四", email: "a@b.com" }),
+      createInvoiceRequest(userId, { orderId: order.id, titleType: "personal", title: "李四" }),
     ).rejects.toMatchObject({ code: "invoice_exists" })
     // 驳回后部分唯一索引释放（不含 rejected）→ 可重新申请
     await getDb().update(invoiceRequests).set({ status: "rejected" }).where(eq(invoiceRequests.id, first.id))
-    const again = await createInvoiceRequest(userId, { orderId: order.id, titleType: "personal", title: "李四", email: "a@b.com" })
+    const again = await createInvoiceRequest(userId, { orderId: order.id, titleType: "personal", title: "李四" })
     expect(again.status).toBe("pending")
   })
 
