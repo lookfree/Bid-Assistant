@@ -382,7 +382,6 @@ function RolesTab() {
               <TableRow key={perm}>
                 <TableCell className="text-sm font-medium text-foreground">
                   {permLabel(perm)}
-                  <span className="ml-1.5 font-mono text-xs font-normal text-muted-foreground">{perm}</span>
                 </TableCell>
                 {roleKeys.map((r) => {
                   const checked = roles[r]?.includes(perm) ?? false
