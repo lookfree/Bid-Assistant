@@ -125,6 +125,13 @@ export const adminApi = {
     handle: (id: string, patch: { status: "processing" | "resolved"; reply?: string }) =>
       req<ApiFeedback>(`/feedback/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   },
+  // 发票管理（spec332）：列表按 status/userId 筛选（invoice.write）；handle 开具/驳回，落审计。
+  invoices: {
+    list: (p: { status?: string; userId?: string; page?: number; pageSize?: number } = {}) =>
+      req<Paged<ApiInvoice>>(`/invoices${qs(p)}`),
+    handle: (id: string, body: { action: "issue"; invoiceNo: string; fileUrl?: string } | { action: "reject"; reason: string }) =>
+      req<ApiInvoice>(`/invoices/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  },
 }
 
 export type Paged<T> = { items: T[]; total: number; page: number; pageSize: number; hasMore: boolean }
@@ -138,6 +145,7 @@ export type ApiAdmin = { id: string; username: string; role: string; status: str
 export type ApiAuditLog = { id: string; operator: string; action: string; target: string | null; before: unknown; after: unknown; createdAt: string }
 export type ApiPlan = { id: string; name: string; code: string | null; priceCents: number; billingCycle: string; grantCreditsPerCycle: number; status: string; features: Record<string, unknown>; limits: Record<string, unknown> }
 export type ApiFeedback = { id: string; userId: string; type: "content_error" | "complaint" | "billing" | "suggestion" | "other"; projectId: string | null; content: string; contact: string | null; status: "pending" | "processing" | "resolved"; reply: string | null; handledBy: string | null; handledAt: string | null; createdAt: string; nickname: string | null }
+export type ApiInvoice = { id: string; userId: string; orderId: string; amountCents: number; titleType: "personal" | "enterprise"; title: string; taxNo: string | null; email: string; remark: string | null; status: "pending" | "issued" | "rejected"; invoiceNo: string | null; fileUrl: string | null; rejectReason: string | null; handledBy: string | null; handledAt: string | null; createdAt: string }
 
 // 查询串：跳过 undefined/空，encodeURIComponent。
 function qs(p: Record<string, unknown>): string {

@@ -17,6 +17,7 @@ export const PERM_LABELS: Record<string, string> = {
   "refund.write": "发起退款",
   "user.read": "查看用户",
   "user.write": "管理用户（封禁/编辑）",
+  "invoice.write": "开具发票",
 }
 
 /** 审计日志「操作」中文名。 */
@@ -33,6 +34,8 @@ export const ACTION_LABELS: Record<string, string> = {
   "refund.failed": "退款失败",
   "refund.write": "发起退款",
   "user.write": "用户管理操作",
+  "invoice.issue": "开具发票",
+  "invoice.reject": "驳回开票",
 }
 
 /** 审计快照里常见字段名 → 中文（before/after 展开时用；未命中回退原键）。 */
@@ -50,6 +53,9 @@ const FIELD_LABELS: Record<string, string> = {
   unlockOn: "解锁方式",
   abandonDays: "注册即弃天数",
   passwordReset: "重置密码",
+  invoiceNo: "发票号",
+  titleType: "抬头类型",
+  taxNo: "税号",
 }
 
 export const permLabel = (p: string) => PERM_LABELS[p] ?? p

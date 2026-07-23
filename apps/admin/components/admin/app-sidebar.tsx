@@ -12,6 +12,7 @@ import {
   Sparkles,
   BrainCircuit,
   MessageSquare,
+  FileText,
 } from "lucide-react"
 
 import { cn } from "@/lib/utils"
@@ -36,6 +37,7 @@ const nav = [
   { title: "套餐与积分口径", url: "/plans", icon: SlidersHorizontal },
   { title: "模型管理", url: "/models", icon: BrainCircuit },
   { title: "反馈工单", url: "/feedback", icon: MessageSquare },
+  { title: "发票管理", url: "/invoices", icon: FileText },
   { title: "系统与权限", url: "/system", icon: ShieldCheck },
 ]
 
