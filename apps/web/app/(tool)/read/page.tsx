@@ -68,6 +68,8 @@ type RealRead = {
   packages?: PackageInfo[]
   /** 多文件读标（spec320）各文件占用的章节区间；单文件项目无该字段 */
   docFiles?: { name: string; secFrom: number; secTo: number }[]
+  /** 读取失败的上传文件（bug YFZQ-4）：加密/损坏文件此前静默丢弃，现显式回传告知 */
+  failedFiles?: { name: string; reason: string }[]
 }
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepPageHeader } from "@/components/tool/step-page-header"
@@ -310,6 +312,26 @@ export default function ReadPage() {
       
       </StepPageHeader>
       <AiNotice />
+
+      {/* 读取失败文件警示（bug YFZQ-4）：加密/损坏文件不再静默丢——明示文件名与原因,提示重传 */}
+      {real?.failedFiles && real.failedFiles.length > 0 && (
+        <div className="mt-5 flex flex-col gap-2 rounded-2xl border border-warning/40 bg-warning/10 p-4">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="size-5 shrink-0 text-warning-foreground" />
+            <p className="text-sm font-semibold text-foreground">
+              有 {real.failedFiles.length} 个文件未能读取,以下解读未包含其内容
+            </p>
+          </div>
+          <ul className="ml-7 flex flex-col gap-1">
+            {real.failedFiles.map((f) => (
+              <li key={f.name} className="text-xs text-muted-foreground">
+                <span className="font-medium text-foreground">{f.name}</span>：{f.reason}
+              </li>
+            ))}
+          </ul>
+          <p className="ml-7 text-xs text-muted-foreground">处理后重新新建标书上传,可让解读覆盖这些文件。</p>
+        </div>
+      )}
 
       {reportState === "ready" && (
         <div className="mt-5 flex flex-col gap-3 rounded-2xl border border-success/30 bg-success/10 p-4 sm:flex-row sm:items-center sm:justify-between">

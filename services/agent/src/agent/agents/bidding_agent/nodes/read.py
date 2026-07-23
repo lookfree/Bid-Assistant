@@ -184,19 +184,32 @@ async def _index_tender(ctx, run_input: dict, clauses: list[dict]) -> None:
         logger.warning("rag index tender failed thread_id=%s", ctx.thread_id, exc_info=True)
 
 
-async def _parse_multi_files(files: list[dict]) -> tuple[list[dict], list[dict]]:
-    """spec320：并发解析多份招标文件；单份失败只 logger.warning 跳过，不阻塞其余文件——
-    成功的文档按 merge_parsed 合并（章节号整体偏移，sec-N-cM 锚点体系不变）。"""
+def _parse_fail_reason(e: Exception) -> str:
+    """解析失败 → 面向用户的可读原因（bug YFZQ-4：失败文件必须显式告知,不能静默丢）。"""
+    msg = str(e).lower()
+    if any(k in msg for k in ("encrypt", "decrypt", "password", "加密", "已被口令")):
+        return "文件已加密/设了打开密码，请去除密码保护后重新上传"
+    if any(k in msg for k in ("unsupported", "不支持")):
+        return "文件格式不支持（仅支持 doc/docx/pdf/xls/xlsx）"
+    return "文件无法解析（可能已损坏、为扫描件或空文件）"
+
+
+async def _parse_multi_files(files: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
+    """spec320：并发解析多份招标文件；单份失败不阻塞其余文件——成功的按 merge_parsed 合并
+    （章节号整体偏移，sec-N-cM 锚点体系不变）。失败文件收集为 [{name, reason}] 显式返回
+    （bug YFZQ-4：加密/损坏文件此前静默跳过、读标只显示成功的,用户无从知晓——现必须回传告知）。"""
     async def _one(f):
         try:
             parsed = await asyncio.to_thread(read_and_parse, f["key"])
-            return f.get("name", f["key"]), parsed
-        except Exception:  # noqa: BLE001 单文件解析失败降级跳过，不崩整个读标
+            return (f.get("name", f["key"]), parsed), None
+        except Exception as e:  # noqa: BLE001 单文件解析失败降级跳过，不崩整个读标,但要记原因
             logger.warning("read_and_parse 失败 key=%s", f.get("key"), exc_info=True)
-            return None
+            return None, {"name": f.get("name", f.get("key", "")), "reason": _parse_fail_reason(e)}
     results = await asyncio.gather(*[_one(f) for f in files])
-    docs = [r for r in results if r is not None]
-    return merge_parsed(docs)
+    docs = [ok for ok, _ in results if ok is not None]
+    failed = [bad for _, bad in results if bad is not None]
+    clauses, file_ranges = merge_parsed(docs)
+    return clauses, file_ranges, failed
 
 
 def _multi_file_prompt(clauses: list[dict], file_ranges: list[dict]) -> str:
@@ -220,12 +233,14 @@ def make_read_node(ctx):
         files = state.get("files") or []
         extra: dict = {}
         if files:
-            clauses, file_ranges = await _parse_multi_files(files)
+            clauses, file_ranges, failed_files = await _parse_multi_files(files)
             # 全部预解析失败的兜底：列出各文件 key，模型才有 key 可调 parse_document 重试
             keys = "、".join(f"{f.get('name', '')}(key={f.get('key', '')})" for f in files)
             user = (_multi_file_prompt(clauses, file_ranges) if clauses
                     else f"多文件招标预解析失败，请逐个调用 parse_document 读标，文件：{keys}")
             extra["doc_files"] = file_ranges
+            if failed_files:  # bug YFZQ-4：读取失败的文件显式回传前端告知,不静默丢
+                extra["failed_files"] = failed_files
         else:
             # boto3/解析皆同步 → 丢线程池。注意：工具兜底走的是同一个 read_and_parse——
             # 只对瞬时错误（存储/网络抖动）算二次机会；文件本身损坏则两路都失败，读标退化为无原文可引。

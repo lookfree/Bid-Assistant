@@ -107,7 +107,7 @@ def test_run1_seeds_files_into_state(submit_gateway, monkeypatch):
 
     async def fake_parse_multi(files):
         seen["files"] = files
-        return ([{"id": "sec-1-c1", "text": "条款"}], [{"name": "a", "sec_from": 1, "sec_to": 1}])
+        return ([{"id": "sec-1-c1", "text": "条款"}], [{"name": "a", "sec_from": 1, "sec_to": 1}], [])
 
     monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
     agent = get_agent("bidding_agent")

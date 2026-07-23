@@ -54,6 +54,24 @@ def test_read_node_multifile_one_failure_still_delivers(monkeypatch, submit_gate
     assert out["read"]["doc_files"] == [{"name": "采购公告.docx", "sec_from": 1, "sec_to": 2}]
     assert out["read"]["doc_sections"] == _DOC1.clauses
     assert out["read"]["risk_summary"] == ["缺 ISO27001 即废标"]
+    # bug YFZQ-4：失败文件必须显式回传（名+原因），不再静默丢
+    assert out["read"]["failed_files"] == [{"name": "损坏文件.pdf", "reason": "文件无法解析（可能已损坏、为扫描件或空文件）"}]
+
+
+def test_read_node_multifile_encrypted_reason(monkeypatch, submit_gateway):
+    """bug YFZQ-4：加密文件给出可读原因（提示去密码）——用户实测第三个加密文件被静默跳过。"""
+    def fake(key):
+        if key == "c/enc.pdf":
+            raise RuntimeError("File has not been decrypted (encrypted)")
+        return _DOC1
+    monkeypatch.setattr(read_mod, "read_and_parse", fake)
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t",
+                     gateway=submit_gateway({"submit_read_result": _READ_ARGS}))
+    state = {"file_key": "a/gonggao.docx",
+             "files": [{"key": "a/gonggao.docx", "name": "公告.docx"},
+                       {"key": "c/enc.pdf", "name": "加密报价.pdf"}]}
+    out = asyncio.run(read_mod.make_read_node(ctx)(state))
+    assert out["read"]["failed_files"] == [{"name": "加密报价.pdf", "reason": "文件已加密/设了打开密码，请去除密码保护后重新上传"}]
 
 
 def test_read_node_multifile_prompt_has_file_list_and_all_clauses(monkeypatch, submit_gateway):
@@ -103,7 +121,7 @@ def test_large_clause_count_triggers_segmented_read(monkeypatch, submit_gateway)
     big = [{"id": f"sec-1-c{i}", "text": f"条款{i}"} for i in range(n)]
 
     async def fake_parse_multi(files):
-        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}]
+        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}], []
 
     monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
     args = {"submit_read_result": {
@@ -139,7 +157,7 @@ def test_segmented_read_runs_rounds_concurrently(monkeypatch, submit_gateway):
     big = [{"id": f"sec-1-c{i}", "text": f"条款{i}"} for i in range(n)]
 
     async def fake_parse_multi(files):
-        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}]
+        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}], []
     monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
 
     inflight = {"now": 0, "peak": 0}
@@ -173,7 +191,7 @@ def test_segmented_read_resumes_from_cache_on_retry(monkeypatch, submit_gateway)
     big = [{"id": f"sec-1-c{i}", "text": f"条款{i}"} for i in range(n)]
 
     async def fake_parse_multi(files):
-        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}]
+        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}], []
     monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
 
     class _FakeRedis:                                # 极简 get/set(str) 假 redis
@@ -225,7 +243,7 @@ def test_segmented_tech_items_packages_forced_empty(monkeypatch, submit_gateway)
     big = [{"id": f"sec-1-c{i}", "text": f"条款{i}"} for i in range(n)]
 
     async def fake_parse_multi(files):
-        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}]
+        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}], []
     monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
 
     # fake 模型每轮都交一个"猜了包件"的技术项(packages=[p1])
@@ -250,7 +268,7 @@ def test_tech_chunk_rounds_carry_only_own_chunk(monkeypatch, submit_gateway):
     big = [{"id": f"sec-1-c{i}", "text": f"条款{i}"} for i in range(n)]
 
     async def fake_parse_multi(files):
-        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}]
+        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}], []
     monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
 
     args = {"submit_read_result": {"categories": [{"key": "overview", "title": "概况", "items": []}]}}
@@ -273,7 +291,7 @@ def test_small_clause_count_single_submission(monkeypatch, submit_gateway):
     import agent.agents.bidding_agent.nodes.read as read_mod
 
     async def fake_parse_multi(files):
-        return [{"id": "sec-1-c1", "text": "条款"}], [{"name": "f", "sec_from": 1, "sec_to": 1}]
+        return [{"id": "sec-1-c1", "text": "条款"}], [{"name": "f", "sec_from": 1, "sec_to": 1}], []
 
     monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
     gw = submit_gateway({"submit_read_result": {"categories": [{"key": "overview", "title": "概况", "items": []}]}})
