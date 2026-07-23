@@ -56,13 +56,24 @@ export const permLabel = (p: string) => PERM_LABELS[p] ?? p
 export const actionLabel = (a: string) => ACTION_LABELS[a] ?? a
 export const fieldLabel = (k: string) => FIELD_LABELS[k] ?? k
 
-/** 审计快照（before/after）→ 可读键值行,替代裸 JSON。返回 [{label, value}]（对象展开逐字段；
- *  标量单行；空/undefined 返回空数组由调用方显示占位）。 */
-export function snapshotRows(snap: unknown): { label: string; value: string }[] {
-  if (snap == null) return []
-  if (typeof snap !== "object") return [{ label: "", value: String(snap) }]
-  return Object.entries(snap as Record<string, unknown>).map(([k, v]) => ({
-    label: fieldLabel(k),
-    value: v == null ? "—" : typeof v === "boolean" ? (v ? "是" : "否") : typeof v === "object" ? JSON.stringify(v) : String(v),
-  }))
+/** 单个快照值 → 展示字符串（null→—；布尔→是/否；对象→JSON；其余 String）。 */
+function fmtVal(v: unknown): string {
+  if (v == null) return "—"
+  if (typeof v === "boolean") return v ? "是" : "否"
+  if (typeof v === "object") return JSON.stringify(v)
+  return String(v)
+}
+
+/** 审计 before/after → 字段级对照行,替代裸 JSON。合并两侧键（标量快照归到「值」行）,
+ *  逐字段给出变更前/后展示值,changed 标记有变化的行（供 UI 高亮前后对照）。 */
+export function diffRows(before: unknown, after: unknown): { key: string; label: string; before: string; after: string; changed: boolean }[] {
+  const toObj = (s: unknown): Record<string, unknown> => (s == null ? {} : typeof s === "object" ? (s as Record<string, unknown>) : { 值: s })
+  const b = toObj(before)
+  const a = toObj(after)
+  const keys = Array.from(new Set([...Object.keys(b), ...Object.keys(a)]))
+  return keys.map((k) => {
+    const bv = k in b ? fmtVal(b[k]) : "—"
+    const av = k in a ? fmtVal(a[k]) : "—"
+    return { key: k, label: fieldLabel(k), before: bv, after: av, changed: bv !== av }
+  })
 }

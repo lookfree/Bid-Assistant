@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 import { Search, ShieldCheck } from "lucide-react"
-import { permLabel, actionLabel, snapshotRows } from "@/lib/admin-labels"
+import { permLabel, actionLabel, diffRows } from "@/lib/admin-labels"
 import {
   Card,
   CardContent,
@@ -419,6 +419,7 @@ function AuditTab() {
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState("")
   const [page, setPage] = useState(1)
+  const [diffLog, setDiffLog] = useState<ApiAuditLog | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -482,8 +483,7 @@ function AuditTab() {
               <TableHead>操作人</TableHead>
               <TableHead>操作</TableHead>
               <TableHead>对象</TableHead>
-              <TableHead>变更前</TableHead>
-              <TableHead>变更后</TableHead>
+              <TableHead className="text-right">变更</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -503,23 +503,22 @@ function AuditTab() {
                 <TableCell className="text-sm text-muted-foreground">
                   {log.target ?? "-"}
                 </TableCell>
-                <TableCell className="max-w-56 text-xs text-muted-foreground">
-                  <Snapshot snap={log.before} />
-                </TableCell>
-                <TableCell className="max-w-56 text-xs text-muted-foreground">
-                  <Snapshot snap={log.after} />
+                <TableCell className="text-right">
+                  <Button variant="ghost" size="sm" className="h-7 text-primary" onClick={() => setDiffLog(log)}>
+                    查看对照
+                  </Button>
                 </TableCell>
               </TableRow>
             ))}
             {loading ? (
               <TableRow>
-                <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+                <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">
                   加载中…
                 </TableCell>
               </TableRow>
             ) : paged.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+                <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">
                   没有匹配的日志记录
                 </TableCell>
               </TableRow>
@@ -534,23 +533,55 @@ function AuditTab() {
           onPageChange={setPage}
         />
       </CardContent>
+      {diffLog && <AuditDiffDialog log={diffLog} onClose={() => setDiffLog(null)} />}
     </Card>
   )
 }
 
-/* 审计快照展示（bug）：变更前/后此前直出裸 JSON（像代码,运营看不懂）→ 逐字段「中文名：值」行,
-   标量直显,空则「—」。字段名走 admin-labels 的中文映射。 */
-function Snapshot({ snap }: { snap: unknown }) {
-  const rows = snapshotRows(snap)
-  if (rows.length === 0) return <span>—</span>
+/* 变更对照弹窗（此前变更前/后两列直出裸 JSON,运营看不懂,不专业）：点「查看对照」在一处弹窗里
+   按「字段 | 变更前 | 变更后」逐字段对照,有变化的行高亮（前删除色、后强调色）,未变化的淡显。 */
+function AuditDiffDialog({ log, onClose }: { log: ApiAuditLog; onClose: () => void }) {
+  const rows = diffRows(log.before, log.after)
   return (
-    <div className="flex flex-col gap-0.5">
-      {rows.map((r, i) => (
-        <div key={i} className="flex gap-1">
-          {r.label && <span className="shrink-0 text-muted-foreground/70">{r.label}：</span>}
-          <span className="break-all font-medium text-foreground">{r.value}</span>
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-xl">
+        <DialogHeader>
+          <DialogTitle>变更对照 · {actionLabel(log.action)}</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          <span>操作人：{log.operator}</span>
+          <span>时间：{log.createdAt}</span>
+          <span>对象：{log.target ?? "-"}</span>
         </div>
-      ))}
-    </div>
+        {rows.length === 0 ? (
+          <p className="py-6 text-center text-sm text-muted-foreground">本次操作无字段级变更记录。</p>
+        ) : (
+          <div className="overflow-hidden rounded-md border border-border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-1/3">字段</TableHead>
+                  <TableHead>变更前</TableHead>
+                  <TableHead>变更后</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((r) => (
+                  <TableRow key={r.key} className={r.changed ? undefined : "opacity-60"}>
+                    <TableCell className="text-sm font-medium text-foreground">{r.label}</TableCell>
+                    <TableCell className={`break-all text-sm ${r.changed ? "text-rose-600 line-through decoration-rose-300" : "text-muted-foreground"}`}>
+                      {r.before}
+                    </TableCell>
+                    <TableCell className={`break-all text-sm ${r.changed ? "font-medium text-emerald-600" : "text-muted-foreground"}`}>
+                      {r.after}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
