@@ -14,6 +14,7 @@ import { systemRouter } from "./system"
 import { diffsRouter } from "./diffs"
 import { modelsRouter } from "./models"
 import { feedbackRouter } from "./feedback"
+import { invoicesRouter } from "./invoices"
 
 // admin-api 路由组（spec309/310）：与 C 端业务路由完全分组隔离，不复用 C 端 authMiddleware。
 // 生产经反代按子域 admin.<域名> 路由到 apps/admin 前端。
@@ -60,6 +61,7 @@ export function adminRoutes(deps: { resolveRefundProvider?: () => RefundProvider
   authed.route("/models", modelsRouter) // 模型库 + 编排链（spec319）
   authed.route("/diffs", diffsRouter) // 对账差异工作台
   authed.route("/feedback", feedbackRouter) // 反馈/投诉处理（spec326）
+  authed.route("/invoices", invoicesRouter) // 发票管理：开具/驳回（spec332）
   authed.route("/", systemRouter) // /admins、/audit-logs
   r.route("/", authed)
 
