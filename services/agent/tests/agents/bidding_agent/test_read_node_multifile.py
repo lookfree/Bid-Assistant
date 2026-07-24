@@ -74,6 +74,21 @@ def test_read_node_multifile_encrypted_reason(monkeypatch, submit_gateway):
     assert out["read"]["failed_files"] == [{"name": "加密报价.pdf", "reason": "文件已加密/设了打开密码，请去除密码保护后重新上传"}]
 
 
+def test_parse_fail_reason_walks_cause_chain():
+    """真因被包一层时（str(顶层) 无关键字），仍要沿 __cause__/__context__ 找到「加密」→给出去密码提示。"""
+    inner = ValueError("the pdf is encrypted with a password")
+    outer = RuntimeError("parse failed")  # 顶层无关键字
+    outer.__cause__ = inner
+    assert "去除密码" in read_mod._parse_fail_reason(outer)
+    try:
+        try:
+            raise ValueError("文档已加密")
+        except ValueError:
+            raise RuntimeError("解析失败")  # 隐式 __context__ 链
+    except RuntimeError as e:
+        assert "去除密码" in read_mod._parse_fail_reason(e)
+
+
 def test_read_node_multifile_prompt_has_file_list_and_all_clauses(monkeypatch, submit_gateway):
     """prompt 需同时包含文件清单（文件N《name》=章节 from..to）与全部文件的条款文本。"""
     by_key = {"a/gonggao.docx": _DOC1, "b/jishu.pdf": _DOC2}

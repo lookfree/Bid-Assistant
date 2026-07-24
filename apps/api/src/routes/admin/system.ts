@@ -2,7 +2,7 @@ import { Hono } from "hono"
 import { z } from "zod"
 import { requirePermission } from "../../middleware/admin-auth"
 import { parsePagination, pagedBody } from "../../lib/pagination"
-import { listAdmins, createAdminAccount, updateAdminAccount, listAuditLogs } from "../../services/admin/admin-accounts"
+import { listAdmins, createAdminAccount, updateAdminAccount, listAuditLogs, AdminAccountError } from "../../services/admin/admin-accounts"
 import { findAdminByUsername } from "../../repos/admin-users"
 import { ROLE_PERMISSIONS, PERMISSIONS } from "../../services/rbac"
 import type { AdminUser } from "../../db/schema"
@@ -45,7 +45,12 @@ const UpdateBody = z.object({
 systemRouter.put("/admins/:id", requirePermission("admin.manage"), async (c) => {
   const parsed = UpdateBody.safeParse(await c.req.json().catch(() => null))
   if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
-  return c.json(await updateAdminAccount(c.req.param("id"), parsed.data, { operator: c.var.admin.username }))
+  try {
+    return c.json(await updateAdminAccount(c.req.param("id"), parsed.data, { operator: c.var.admin.username }))
+  } catch (e) {
+    if (e instanceof AdminAccountError) return c.json({ error: e.code }, e.code === "not_found" ? 404 : 409)
+    throw e
+  }
 })
 
 systemRouter.get("/audit-logs", requirePermission("audit.read"), async (c) => {

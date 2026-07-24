@@ -152,7 +152,7 @@ export type ApiAdmin = { id: string; username: string; role: string; status: str
 export type ApiAuditLog = { id: string; operator: string; action: string; target: string | null; before: unknown; after: unknown; createdAt: string }
 export type ApiPlan = { id: string; name: string; code: string | null; priceCents: number; billingCycle: string; grantCreditsPerCycle: number; status: string; features: Record<string, unknown>; limits: Record<string, unknown> }
 export type ApiFeedback = { id: string; userId: string; type: "content_error" | "complaint" | "billing" | "suggestion" | "other"; projectId: string | null; content: string; contact: string | null; status: "pending" | "processing" | "resolved"; reply: string | null; handledBy: string | null; handledAt: string | null; createdAt: string; nickname: string | null }
-export type ApiInvoice = { id: string; userId: string; orderId: string; amountCents: number; titleType: "personal" | "enterprise"; title: string; taxNo: string | null; email: string | null; remark: string | null; status: "pending" | "issued" | "rejected"; invoiceNo: string | null; fileKey: string | null; fileUrl: string | null; rejectReason: string | null; handledBy: string | null; handledAt: string | null; createdAt: string }
+export type ApiInvoice = { id: string; userId: string; orderId: string; amountCents: number; titleType: "personal" | "enterprise"; title: string; taxNo: string | null; email: string | null; remark: string | null; status: "pending" | "issued" | "rejected"; invoiceNo: string | null; fileKey: string | null; rejectReason: string | null; handledBy: string | null; handledAt: string | null; createdAt: string }
 // email 为历史字段（改站内下载后新申请不再收集，可空）
 
 // 查询串：跳过 undefined/空，encodeURIComponent。

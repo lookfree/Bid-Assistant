@@ -3,7 +3,7 @@ import { z } from "zod"
 import { requirePermission } from "../../middleware/admin-auth"
 import { parsePagination, pagedBody } from "../../lib/pagination"
 import { isUuid } from "../../lib/uuid"
-import { listInvoices, issueInvoice, rejectInvoice, uploadInvoiceFile, InvoiceError } from "../../services/invoices"
+import { listInvoices, issueInvoice, rejectInvoice, uploadInvoiceFile, MAX_INVOICE_FILE_BYTES, InvoiceError } from "../../services/invoices"
 import { INVOICE_STATUSES, type InvoiceStatus, type AdminUser } from "../../db/schema"
 
 // 发票管理页（spec332）：读+写=invoice.write（superadmin/finance）。开具/驳回落审计,仅 pending 可流转。
@@ -18,9 +18,11 @@ invoicesRouter.get("/", requirePermission("invoice.write"), async (c) => {
   }
   const status = c.req.query("status")
   if (status && !(INVOICE_STATUSES as readonly string[]).includes(status)) return c.json({ error: "invalid_input" }, 400)
+  const userId = c.req.query("userId") || undefined
+  if (userId && !isUuid(userId)) return c.json({ error: "invalid_input" }, 400) // 非 uuid 会撞 PG 22P02→500
   const result = await listInvoices({
     status: (status as InvoiceStatus | undefined) || undefined,
-    userId: c.req.query("userId") || undefined,
+    userId,
     page: pg.page,
     pageSize: pg.pageSize,
   })
@@ -33,10 +35,14 @@ invoicesRouter.post("/:id/file", requirePermission("invoice.write"), async (c) =
   if (!isUuid(id)) return c.json({ error: "invoice_not_found" }, 404)
   const file = (await c.req.parseBody()).file
   if (!(file instanceof File)) return c.json({ error: "invalid_input" }, 400)
+  if (file.size > MAX_INVOICE_FILE_BYTES) return c.json({ error: "file_too_large" }, 400) // 读进内存前先按 size 拒，防 OOM
   try {
     return c.json(await uploadInvoiceFile(id, file.name, new Uint8Array(await file.arrayBuffer())))
   } catch (e) {
-    if (e instanceof InvoiceError && (e.code === "unsupported_file" || e.code === "file_too_large")) return c.json({ error: e.code }, 400)
+    if (e instanceof InvoiceError) {
+      const status = e.code === "invoice_not_found" ? 404 : e.code === "not_pending" ? 409 : 400
+      return c.json({ error: e.code }, status)
+    }
     throw e
   }
 })

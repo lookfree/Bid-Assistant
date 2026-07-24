@@ -28,6 +28,13 @@ export async function createAdminAccount(input: { username: string; role: AdminR
   return { id: a!.id, username: a!.username, role: a!.role, status: a!.status }
 }
 
+export type AdminAccountErrorCode = "not_found" | "self_change" | "last_superadmin"
+export class AdminAccountError extends Error {
+  constructor(public code: AdminAccountErrorCode) {
+    super(code)
+  }
+}
+
 export async function updateAdminAccount(
   id: string,
   patch: { role?: AdminRole; status?: "active" | "disabled"; password?: string },
@@ -35,12 +42,27 @@ export async function updateAdminAccount(
 ) {
   const db = getDb()
   const [before] = await db.select().from(adminUsers).where(eq(adminUsers.id, id))
-  if (!before) throw new Error("运营账号不存在")
+  if (!before) throw new AdminAccountError("not_found")
+  // 防锁死：停用或从 superadmin 降级时——不能作用于操作者自己；不能停用/降级最后一个在用超管。
+  const disabling = patch.status === "disabled"
+  const demoting = patch.role !== undefined && patch.role !== "superadmin" && before.role === "superadmin"
+  if (disabling || demoting) {
+    if (before.username === opts.operator) throw new AdminAccountError("self_change")
+    if (before.role === "superadmin") {
+      const [row] = await db
+        .select({ n: sql<number>`count(*)` })
+        .from(adminUsers)
+        .where(and(eq(adminUsers.role, "superadmin"), eq(adminUsers.status, "active")))
+      if (Number(row?.n ?? 0) <= 1) throw new AdminAccountError("last_superadmin")
+    }
+  }
   // 改密走此处：明文只在服务端哈希入库，审计仅记 passwordReset 标记，绝不落明文/hash。
   const set: { role?: AdminRole; status?: "active" | "disabled"; passwordHash?: string } = {}
   if (patch.role !== undefined) set.role = patch.role
   if (patch.status !== undefined) set.status = patch.status
   if (patch.password !== undefined) set.passwordHash = await hashPassword(patch.password)
+  // 空 patch：no-op 返回原值，避免 db.update().set({}) 抛「No values to set」500。
+  if (Object.keys(set).length === 0) return { id: before.id, username: before.username, role: before.role, status: before.status }
   const [after] = await db.update(adminUsers).set(set).where(eq(adminUsers.id, id)).returning()
   await writeAudit({
     operator: opts.operator,

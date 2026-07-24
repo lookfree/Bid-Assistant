@@ -92,11 +92,17 @@ describe("spec332 发票申请（C 端 · money-blind）", () => {
     expect(again.status).toBe("pending")
   })
 
-  it("列表只返回本人发票", async () => {
+  it("列表只返回本人发票，且不泄漏内部字段", async () => {
     const res = await app.request("/api/invoices", { headers: auth(token) })
     expect(res.status).toBe(200)
-    const body = (await res.json()) as { items: { userId: string }[] }
+    const body = (await res.json()) as { items: Record<string, unknown>[] }
     expect(body.items.length).toBeGreaterThan(0)
     expect(body.items.every((i) => i.userId === userId)).toBe(true)
+    // 不得把运营账号名/内部存储 key/邮箱等内部列返回给用户
+    for (const it of body.items) {
+      for (const leak of ["handledBy", "fileKey", "email", "fileUrl", "handledAt"]) {
+        expect(leak in it).toBe(false)
+      }
+    }
   })
 })

@@ -99,7 +99,16 @@ function AccountsTab() {
       setAccounts((prev) => prev.map((a) => (a.id === id ? { ...a, ...updated } : a)))
       toast.success("已保存")
     } catch (e) {
-      toast.error(e instanceof AdminApiError && e.status === 403 ? "无权限：需要 admin.manage" : "保存失败，请重试")
+      const code = e instanceof AdminApiError ? e.code : undefined
+      toast.error(
+        code === "self_change"
+          ? "不能停用或降级你自己的账号"
+          : code === "last_superadmin"
+            ? "不能停用或降级最后一个超级管理员"
+            : e instanceof AdminApiError && e.status === 403
+              ? "无权限：需要 admin.manage"
+              : "保存失败，请重试",
+      )
     }
   }
 

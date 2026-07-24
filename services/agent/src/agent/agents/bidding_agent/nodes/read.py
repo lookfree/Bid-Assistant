@@ -185,8 +185,16 @@ async def _index_tender(ctx, run_input: dict, clauses: list[dict]) -> None:
 
 
 def _parse_fail_reason(e: Exception) -> str:
-    """解析失败 → 面向用户的可读原因（bug YFZQ-4：失败文件必须显式告知,不能静默丢）。"""
-    msg = str(e).lower()
+    """解析失败 → 面向用户的可读原因（bug YFZQ-4：失败文件必须显式告知,不能静默丢）。
+    沿 __cause__/__context__ 链下钻——解析库常把真因包一层,str(顶层) 未必含关键字（本仓韧性铁律）。"""
+    parts: list[str] = []
+    seen: set[int] = set()
+    cur: BaseException | None = e
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        parts.append(str(cur).lower())
+        cur = cur.__cause__ or cur.__context__
+    msg = " ".join(parts)
     if any(k in msg for k in ("encrypt", "decrypt", "password", "加密", "已被口令")):
         return "文件已加密/设了打开密码，请去除密码保护后重新上传"
     if any(k in msg for k in ("unsupported", "不支持")):

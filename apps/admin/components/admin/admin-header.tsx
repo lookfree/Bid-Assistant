@@ -37,9 +37,10 @@ export function AdminHeader() {
 
   // 真实登录管理员（此前 header 写死「顾屿安」假数据）；me 由 RequireAdmin 已校验,这里再取一次展示。
   const [me, setMe] = useState<AdminMe | null>(null)
+  const [meFailed, setMeFailed] = useState(false)
   useEffect(() => {
     let alive = true
-    adminApi.me().then((r) => alive && setMe(r.admin)).catch(() => {})
+    adminApi.me().then((r) => alive && setMe(r.admin)).catch(() => alive && setMeFailed(true))
     return () => {
       alive = false
     }
@@ -64,7 +65,7 @@ export function AdminHeader() {
   }, [open])
 
   const username = me?.username ?? "—"
-  const roleLabel = me ? (ROLE_LABEL[me.role] ?? me.role) : "加载中…"
+  const roleLabel = me ? (ROLE_LABEL[me.role] ?? me.role) : meFailed ? "—" : "加载中…"
   const initial = username.slice(0, 1).toUpperCase()
 
   async function logout() {

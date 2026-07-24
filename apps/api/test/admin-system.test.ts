@@ -1,5 +1,6 @@
 import { describe, it, expect, afterAll, setDefaultTimeout } from "bun:test"
 import { eq, inArray } from "drizzle-orm"
+import { randomUUID } from "node:crypto"
 import { Hono } from "hono"
 import { adminRoutes } from "../src/routes/admin"
 import { listAdmins, createAdminAccount, updateAdminAccount, listAuditLogs } from "../src/services/admin/admin-accounts"
@@ -93,6 +94,28 @@ describe("spec310 系统页", () => {
     expect(digits.status).toBe(400)
     const letters = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username: `weak2_${Date.now()}`, role: "support", password: "abcd1234" }) })
     expect(letters.status).toBe(400)
+  })
+
+  it("超管不能停用自己 → 409 self_change（防锁死）", async () => {
+    const { headers, adminId } = await makeAdminSession("superadmin", regA)
+    const res = await app.request(`http://x/admin-api/admins/${adminId}`, { method: "PUT", headers, body: JSON.stringify({ status: "disabled" }) })
+    expect(res.status).toBe(409)
+    expect(((await res.json()) as { error: string }).error).toBe("self_change")
+  })
+
+  it("空 body PUT → 200 no-op（不再 500）", async () => {
+    const { headers } = await makeAdminSession("superadmin", regA)
+    const created = await app.request("http://x/admin-api/admins", { method: "POST", headers, body: JSON.stringify({ username: `noop_${Date.now()}`, role: "support", password: "Pw12345!" }) })
+    const id = ((await created.json()) as { id: string }).id
+    madeAdmins.push(id)
+    const res = await app.request(`http://x/admin-api/admins/${id}`, { method: "PUT", headers, body: "{}" })
+    expect(res.status).toBe(200)
+  })
+
+  it("改不存在的账号 → 404（不再 500）", async () => {
+    const { headers } = await makeAdminSession("superadmin", regA)
+    const res = await app.request(`http://x/admin-api/admins/${randomUUID()}`, { method: "PUT", headers, body: JSON.stringify({ role: "ops" }) })
+    expect(res.status).toBe(404)
   })
 
   it("改角色/停用 → 200 且落审计（PUT /admins/:id）", async () => {

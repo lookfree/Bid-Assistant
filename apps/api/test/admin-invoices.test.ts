@@ -44,12 +44,24 @@ describe("spec332 发票管理（管理端 · invoice.write）", () => {
     const res = await app.request(`http://x/admin-api/invoices/${id}`, {
       method: "PATCH",
       headers,
-      body: JSON.stringify({ action: "issue", invoiceNo: "INV-001", fileKey: "invoices/t/a.pdf" }),
+      body: JSON.stringify({ action: "issue", invoiceNo: "INV-001", fileKey: `invoices/${id}/a.pdf` }),
     })
     expect(res.status).toBe(200)
     const row = (await res.json()) as { status: string; invoiceNo: string }
     expect(row.status).toBe("issued")
     expect(row.invoiceNo).toBe("INV-001")
+  })
+
+  it("开具 fileKey 前缀不属本发票 → 400 invalid_file", async () => {
+    const { headers } = await makeAdminSession("finance", regA)
+    const id = await makeInvoice()
+    const res = await app.request(`http://x/admin-api/invoices/${id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ action: "issue", invoiceNo: "INV-X", fileKey: `invoices/${randomUUID()}/x.pdf` }),
+    })
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { error: string }).error).toBe("invalid_file")
   })
 
   it("开具不带电子发票文件 → 400（文件必填）", async () => {
@@ -62,8 +74,8 @@ describe("spec332 发票管理（管理端 · invoice.write）", () => {
   it("已开具再开 → 409 not_pending", async () => {
     const { headers } = await makeAdminSession("superadmin", regA)
     const id = await makeInvoice()
-    await app.request(`http://x/admin-api/invoices/${id}`, { method: "PATCH", headers, body: JSON.stringify({ action: "issue", invoiceNo: "INV-002", fileKey: "invoices/t/b.pdf" }) })
-    const again = await app.request(`http://x/admin-api/invoices/${id}`, { method: "PATCH", headers, body: JSON.stringify({ action: "issue", invoiceNo: "INV-003", fileKey: "invoices/t/c.pdf" }) })
+    await app.request(`http://x/admin-api/invoices/${id}`, { method: "PATCH", headers, body: JSON.stringify({ action: "issue", invoiceNo: "INV-002", fileKey: `invoices/${id}/b.pdf` }) })
+    const again = await app.request(`http://x/admin-api/invoices/${id}`, { method: "PATCH", headers, body: JSON.stringify({ action: "issue", invoiceNo: "INV-003", fileKey: `invoices/${id}/c.pdf` }) })
     expect(again.status).toBe(409)
     expect(((await again.json()) as { error: string }).error).toBe("not_pending")
   })

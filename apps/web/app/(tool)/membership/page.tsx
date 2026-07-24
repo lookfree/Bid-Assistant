@@ -56,20 +56,11 @@ export default function MembershipPage() {
     } finally {
       setLoading(false)
     }
-    // 订单是次要区块：单独加载，失败只让订单区降级，不阻塞会员/余额/套餐
-    try {
-      const od = await fetchOrders(1, 20)
-      setOrders(od.items)
-    } catch {
-      setOrders([])
-    }
-    // 发票（spec332）：次要区块，失败静默降级
-    try {
-      const iv = await fetchInvoices(1, 50)
-      setInvoices(iv.items)
-    } catch {
-      setInvoices([])
-    }
+    // 订单/发票是次要区块：并行加载、各自失败降级不阻塞会员主体。
+    // 拉满页（上限 100）——开票资格由 orders×invoices 计算，分页截断会漏掉老订单的可开票判断。
+    const [od, iv] = await Promise.allSettled([fetchOrders(1, 100), fetchInvoices(1, 100)])
+    setOrders(od.status === "fulfilled" ? od.value.items : [])
+    setInvoices(iv.status === "fulfilled" ? iv.value.items : [])
   }, [])
 
   useEffect(() => {
@@ -418,7 +409,7 @@ export default function MembershipPage() {
           <div className="rounded-2xl gradient-brand-soft border border-primary/15 p-5">
             <p className="text-sm font-semibold text-foreground">开发票</p>
             <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
-              已支付订单可申请电子普通发票，开票后发送至你的邮箱。
+              已支付订单可申请电子普通发票，开票后可在此下载。
             </p>
             <button
               type="button"
