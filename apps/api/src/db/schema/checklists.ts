@@ -7,6 +7,9 @@ import { bidProjects } from "./bid-projects"
 export const CHECKLIST_STATUSES = ["pass", "risk", "pending"] as const
 export type ChecklistStatus = (typeof CHECKLIST_STATUSES)[number]
 export type ChecklistItem = { status: ChecklistStatus; owner?: string; note?: string }
+// 定制审核表模板（spec333）：按读标结论生成的分组条目定义（条目为文案字符串）。
+// 与前端 checklistGroups 常量同构：template=null → 前端回落默认 36 条静态表。
+export type ChecklistGroup = { id: string; title: string; items: string[] }
 
 // 终极审核表持久化（spec315b）：userId + 可空 projectId（无项目 = 独立工具的用户级默认行）。
 // items = {"<组id-序号>": {status, owner, note}}。
@@ -21,6 +24,8 @@ export const projectChecklists = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     projectId: uuid("project_id").references(() => bidProjects.id, { onDelete: "cascade" }), // nullable
     items: jsonb("items").$type<Record<string, ChecklistItem>>().notNull().default({}),
+    // 定制审核表模板（spec333，可空）：读标结论模型生成的分组条目；null=前端用默认 36。迁移 0034。
+    template: jsonb("template").$type<ChecklistGroup[]>(),
     createdAt: createdAt(),
     // $onUpdate 只对经 Drizzle 的写入生效；upsert 的 DO UPDATE 分支在路由里显式 set updatedAt
     updatedAt: tz("updated_at")

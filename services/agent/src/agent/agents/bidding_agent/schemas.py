@@ -191,3 +191,15 @@ class SlideNotes(BaseModel):
     notes 必填且 min_length=1：模型整段放弃（提交 {} 缺字段，或 {"notes": []} 空列表）都应触发
     校验失败 → 强制提交重试，而非静默通过让全 deck notes 置空（缺个别页由合并处兜底空串，整段缺失属高危失败）。"""
     notes: list[SlideNote] = Field(min_length=1)
+
+
+class ChecklistGenGroup(BaseModel):
+    """投递前审核表的一个分组。id 不由模型给（路由层按序归一化 A/B/C…，保证 key 干净唯一）。"""
+    title: str                                     # 分组名，如「资格与资质」「实质性响应★项」
+    items: list[str] = Field(min_length=1)         # 该组核对项文案，每条一句、可勾选
+
+
+class ChecklistGen(BaseModel):
+    """依据读标结论生成的定制审核表（spec333）。分组核对项，条目紧扣本招标文件的具体要求。
+    groups min_length=1：模型整段放弃应触发校验失败强制重试，而非静默产空表（空表由 App 层回落默认 36）。"""
+    groups: list[ChecklistGenGroup] = Field(min_length=1)

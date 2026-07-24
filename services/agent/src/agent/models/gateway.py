@@ -226,3 +226,11 @@ def model_override_to_settings(sel: dict | None) -> dict:
             continue
         out[_OVERRIDE_MAP[k]] = v
     return out
+
+
+def build_gateway(override: dict | None) -> ModelGateway:
+    """按 run 携带的模型覆盖（RunModelOverride.model_dump()）造 ModelGateway：有覆盖才 copy settings，
+    否则用 env 默认。per-request 模型选择的统一构造点（chapters.rewrite / generate.checklist 共用）。"""
+    from agent.config import settings
+    upd = model_override_to_settings(override)
+    return ModelGateway(settings.model_copy(update=upd) if upd else settings)

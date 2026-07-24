@@ -56,17 +56,17 @@ describe("GET/PUT /api/checklist 审核表持久化", () => {
   it("① 无行返回空对象（带与不带 projectId 都是 {items:{}}）", async () => {
     const r1 = await getChecklist(tokenA)
     expect(r1.status).toBe(200)
-    expect(await r1.json()).toEqual({ items: {} })
+    expect(await r1.json()).toEqual({ items: {}, template: null })
     const r2 = await getChecklist(tokenA, projectA)
     expect(r2.status).toBe(200)
-    expect(await r2.json()).toEqual({ items: {} })
+    expect(await r2.json()).toEqual({ items: {}, template: null })
   })
 
   it("② PUT upsert 幂等：同 (user, 空 projectId) 反复写只有一行，读到最后一次的值", async () => {
     expect((await putChecklist(tokenA, { items: { "q-1": { status: "pass" } } })).status).toBe(200)
     const items2 = { "q-1": { status: "risk", owner: "张三", note: "缺页" }, "q-2": { status: "pending" } }
     expect((await putChecklist(tokenA, { items: items2 })).status).toBe(200)
-    expect(await (await getChecklist(tokenA)).json()).toEqual({ items: items2 })
+    expect(await (await getChecklist(tokenA)).json()).toEqual({ items: items2, template: null })
     // 库里只有一行：第二次 PUT 命中 NULLS NOT DISTINCT 唯一约束走 DO UPDATE，而非重复插入
     const rows = await getDb()
       .select()
@@ -79,7 +79,7 @@ describe("GET/PUT /api/checklist 审核表持久化", () => {
     const projItems = { "p-1": { status: "pass", owner: "李四" } }
     expect((await putChecklist(tokenA, { projectId: projectA, items: projItems })).status).toBe(200)
     // 项目行读到项目值；用户级默认行（②写入的）不受影响
-    expect(await (await getChecklist(tokenA, projectA)).json()).toEqual({ items: projItems })
+    expect(await (await getChecklist(tokenA, projectA)).json()).toEqual({ items: projItems, template: null })
     const defaultRow = (await (await getChecklist(tokenA)).json()) as { items: Record<string, unknown> }
     expect(defaultRow.items["q-1"]).toEqual({ status: "risk", owner: "张三", note: "缺页" })
     // 两行分立
@@ -88,7 +88,7 @@ describe("GET/PUT /api/checklist 审核表持久化", () => {
   })
 
   it("④ 属主隔离：A 存的 B 读不到；B 读/写 A 的项目 404", async () => {
-    expect(await (await getChecklist(tokenB)).json()).toEqual({ items: {} }) // B 的默认行为空
+    expect(await (await getChecklist(tokenB)).json()).toEqual({ items: {}, template: null }) // B 的默认行为空
     const readTheirs = await getChecklist(tokenB, projectA)
     expect(readTheirs.status).toBe(404) // 他人项目与不存在同语义
     const writeTheirs = await putChecklist(tokenB, { projectId: projectA, items: { "x-1": { status: "pass" } } })
@@ -121,5 +121,41 @@ describe("GET/PUT /api/checklist 审核表持久化", () => {
     // 坏写没有污染数据：上一次成功写入仍在
     const after = (await (await getChecklist(tokenA)).json()) as { items: Record<string, { owner: string }> }
     expect(after.items["q-9"]!.owner.length).toBe(200)
+  })
+})
+
+// spec333 定制审核表 template：GET 返回 template；懒生成经注入 ensureChecklistTemplate（不打真 agent）。
+describe("GET /api/checklist template（spec333 定制审核表）", () => {
+  const GROUPS = [{ id: "A", title: "资格与资质", items: ["具备 ISO27001"] }]
+
+  it("⑦ 有项目且无 template → 懒生成，返回 GROUPS", async () => {
+    const app2 = new Hono()
+    app2.route("/api/checklist", checklistRoutes({ ensureChecklistTemplate: async () => GROUPS }))
+    const [p] = await getDb().insert(bidProjects).values({ userId: userA, threadId: `proj-${crypto.randomUUID()}` }).returning()
+    const r = await app2.request(`/api/checklist?projectId=${p!.id}`, { headers: { Authorization: `Bearer ${tokenA}` } })
+    expect(r.status).toBe(200)
+    expect(await r.json()).toEqual({ items: {}, template: GROUPS })
+  })
+
+  it("⑧ 无 projectId（用户级默认行）→ 不触发生成，template=null", async () => {
+    const app2 = new Hono()
+    app2.route("/api/checklist", checklistRoutes({
+      ensureChecklistTemplate: async () => { throw new Error("不该被调用") },
+    }))
+    const r = await app2.request("/api/checklist", { headers: { Authorization: `Bearer ${tokenA}` } })
+    expect(r.status).toBe(200)
+    expect(((await r.json()) as { template: unknown }).template).toBeNull()
+  })
+
+  it("⑨ 已存 template → 直返，绝不再触发生成", async () => {
+    const [p] = await getDb().insert(bidProjects).values({ userId: userA, threadId: `proj-${crypto.randomUUID()}` }).returning()
+    await getDb().insert(projectChecklists).values({ userId: userA, projectId: p!.id, template: GROUPS })
+    const app2 = new Hono()
+    app2.route("/api/checklist", checklistRoutes({
+      ensureChecklistTemplate: async () => { throw new Error("已有 template 不该再生成") },
+    }))
+    const r = await app2.request(`/api/checklist?projectId=${p!.id}`, { headers: { Authorization: `Bearer ${tokenA}` } })
+    expect(r.status).toBe(200)
+    expect(((await r.json()) as { template: unknown }).template).toEqual(GROUPS)
   })
 })

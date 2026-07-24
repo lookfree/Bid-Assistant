@@ -273,6 +273,18 @@ export async function renderReadReport(payload: Record<string, unknown>): Promis
   return postSync("/render/read-report", payload)
 }
 
+/** 定制审核表生成（spec333）：读标结论 + 后台模型 → 一次 LLM 调用产分组核对项。
+ *  model 有配置才下发（同 createRun/rewrite）；非 2xx（含 502 模型失败）抛 AgentHttpError，
+ *  App 侧 ensureChecklistTemplate best-effort 兜底回落默认 36。groups 已是干净 id（agent 归一化）。 */
+export async function generateChecklist(
+  readResult: Record<string, unknown>,
+  model?: AgentModelSelection,
+): Promise<{ groups: Array<{ id: string; title: string; items: string[] }> }> {
+  const body: Record<string, unknown> = { read_result: readResult }
+  if (model) body.model = model
+  return postSync("/generate/checklist", body)
+}
+
 /** 查 run 终态。对账/自愈的判死依据——错误语义必须分明：
  *  404 = run 确实不存在（返回 status:null，调用方可判死退款）;
  *  其余非 2xx / 超时 = agent 不可达（抛错，调用方按「活」处理绝不误杀）——

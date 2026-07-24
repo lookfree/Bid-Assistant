@@ -10,6 +10,7 @@ import { isUuid } from "../lib/uuid"
 import { toSnake } from "../lib/case"
 import * as billing from "../services/billing-stub"
 import * as client from "../services/agent-client"
+import { ensureChecklistTemplate } from "../services/checklist-template"
 import { presignGet } from "../storage/s3"
 
 // 终极审核表（spec315b 契约 2/4）：状态/责任人/备注按 (userId, projectId) 一行持久化；
@@ -56,6 +57,7 @@ export type ChecklistDeps = {
   renderChecklist: typeof client.renderChecklist
   renderRiskReport: typeof client.renderRiskReport
   renderReadReport: typeof client.renderReadReport
+  ensureChecklistTemplate: typeof ensureChecklistTemplate
   presignGet: typeof presignGet
 }
 
@@ -118,6 +120,7 @@ export function checklistRoutes(deps: Partial<ChecklistDeps> = {}) {
   const renderChecklist = deps.renderChecklist ?? client.renderChecklist
   const renderRiskReport = deps.renderRiskReport ?? client.renderRiskReport
   const renderReadReport = deps.renderReadReport ?? client.renderReadReport
+  const ensureTemplate = deps.ensureChecklistTemplate ?? ensureChecklistTemplate
   const presign = deps.presignGet ?? presignGet
 
   const r = new Hono<{ Variables: { user: User } }>()
@@ -176,7 +179,9 @@ export function checklistRoutes(deps: Partial<ChecklistDeps> = {}) {
     return c.json({ url, filename, format: out.format })
   })
 
-  // 读审核表：?projectId= 可空（空串与缺省同义 = 用户级默认行）；无行返回空对象（前端全 pending 初始态）
+  // 读审核表：?projectId= 可空（空串与缺省同义 = 用户级默认行）；无行返回空对象（前端全 pending 初始态）。
+  // template（spec333）：已存直返；未存且有项目 → 懒生成一次（best-effort，无读标/模型未配置/失败 → null，
+  // 前端回落默认 36）。计费归属读标步，此处绝不扣费。
   r.get("/", async (c) => {
     const userId = getUserId(c)
     const projectId = c.req.query("projectId") || null
@@ -185,7 +190,9 @@ export function checklistRoutes(deps: Partial<ChecklistDeps> = {}) {
       if (!(await ownedProject(projectId, userId))) return c.json({ error: "not_found" }, 404)
     }
     const row = await checklistRow(userId, projectId)
-    return c.json({ items: row?.items ?? {} })
+    let template = row?.template ?? null
+    if (!template && projectId != null) template = await ensureTemplate({ userId, projectId })
+    return c.json({ items: row?.items ?? {}, template })
   })
 
   // 写审核表：upsert 到 (user_id, project_id)——NULLS NOT DISTINCT 唯一约束保证空 projectId 也只有一行

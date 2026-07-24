@@ -12,6 +12,7 @@ import * as billing from "../services/billing-stub"
 import * as client from "../services/agent-client"
 import { healStuckStep, finalizeStepSuccess, STEP_ORDER, type Step } from "../services/step-finalize"
 import { failStepAndRefund } from "../services/stuck-steps"
+import { ensureChecklistTemplate } from "../services/checklist-template"
 import { ragRunInput } from "../services/rag-config"
 import { credentialsRunInput, type CredentialInput } from "../services/credentials"
 import { toCamel, toSnake } from "../lib/case"
@@ -712,6 +713,11 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         // 对账 Cron 抢先收尾:费用以其落库值为准（重新查行,stepRow 是插入时的旧快照）
         const [fresh] = await getDb().select().from(projectSteps).where(eq(projectSteps.id, stepRow.id))
         cost = fresh?.costPoints ?? 0
+      }
+      // 读标成功后顺带生成定制审核表（spec333）：fire-and-forget，绝不阻塞/反噬读标结果交付与计费。
+      // ensureChecklistTemplate 内部全程吞错（失败/无模型 → 前端回落默认 36）；此处再兜一层 catch。
+      if (step === "read") {
+        void ensureChecklistTemplate({ userId: project.userId, projectId: project.id }).catch(() => {})
       }
     }
     // DB 存 snake_case 原样；给前端的经 toCamel 转 camelCase（对齐原型 TS 类型）。

@@ -239,6 +239,13 @@
       "when": 1784822774676,
       "tag": "0033_invoice_email_nullable",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1784822774677,
+      "tag": "0034_checklist_template",
+      "breakpoints": true
     }
   ]
 }

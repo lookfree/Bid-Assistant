@@ -39,6 +39,9 @@ export type CheckStatus = "pass" | "risk" | "pending"
 /** 单项持久化状态，键为 "组id-序号"（如 "A-0"）。 */
 export type ChecklistItemState = { status: CheckStatus; owner: string; note: string }
 
+/** 审核表分组定义（spec333）：与前端默认模板同构；template 由读标结论定制生成，null 则用默认 36。 */
+export type ChecklistGroupDef = { id: string; title: string; items: string[] }
+
 export type ChecklistExportGroup = {
   id: string
   title: string
@@ -51,7 +54,9 @@ export function createRiskApi(request: RequestFn) {
     runDedupe: (body: { fileKeys: string[]; tenderKey?: string; dims: DedupeDim[]; strategy: DedupeStrategy }) =>
       request<DedupeResult>("/api/dedupe", { method: "POST", body: JSON.stringify(body) }),
 
-    getChecklist: (projectId: string | null): Promise<{ items: Record<string, ChecklistItemState> }> =>
+    getChecklist: (
+      projectId: string | null,
+    ): Promise<{ items: Record<string, ChecklistItemState>; template: ChecklistGroupDef[] | null }> =>
       request(`/api/checklist${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
 
     saveChecklist: (projectId: string | null, items: Record<string, ChecklistItemState>): Promise<{ ok: boolean }> =>

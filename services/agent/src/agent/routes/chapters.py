@@ -6,9 +6,8 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from agent.config import settings
 from agent.checkpointer import get_checkpointer
-from agent.models.gateway import ModelGateway, model_override_to_settings
+from agent.models.gateway import build_gateway
 from agent.runtime.registry import get_agent, RunContext
 from agent.routes.runs import RunModelOverride
 from agent.agents.bidding_agent.nodes.content import rewrite_chapter
@@ -25,10 +24,9 @@ class RewriteBody(BaseModel):
     user_id: str | None = None  # 资料库 RAG 属主（spec316 A2）
 
 
-def _make_gateway(model: RunModelOverride | None) -> ModelGateway:
-    """per-request 模型覆盖（沿用 spec311 RunModelOverride）：有 override 才 copy settings。"""
-    override = model_override_to_settings(model.model_dump() if model else None)
-    return ModelGateway(settings.model_copy(update=override) if override else settings)
+def _make_gateway(model: RunModelOverride | None):
+    """per-request 模型覆盖（沿用 spec311 RunModelOverride）：委托统一构造点 build_gateway。"""
+    return build_gateway(model.model_dump() if model else None)
 
 
 @router.post("/agents/{agent_type}/threads/{thread_id}/chapters/rewrite")

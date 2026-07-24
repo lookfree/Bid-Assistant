@@ -3,33 +3,30 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertTriangle,
-  CheckCircle2,
   FileSpreadsheet,
   FileType2,
   FileText as FileDoc,
   HelpCircle,
   ListChecks,
   Loader2,
-  X,
 } from "lucide-react"
 import Link from "next/link"
 import { CreditEstimate } from "@/components/credit-estimate"
 import { ApiError } from "@/lib/api-client"
-import { libraryMatch } from "@/lib/library"
 import { creditCostValue } from "@/lib/membership-view"
 import { currentProjectId, triggerDownload } from "@/lib/project"
-import { useLibrary } from "@/lib/use-library"
 import { useMembership } from "@/lib/use-membership"
 import {
   exportChecklist,
   getChecklist,
   saveChecklist,
+  type ChecklistGroupDef,
   type ChecklistItemState,
   type CheckStatus,
 } from "@/lib/risk-api"
 
-/* ---------------- 终极审核表（投递前清单）模板 ---------------- */
-const checklistGroups: { id: string; title: string; items: string[] }[] = [
+/* ---------------- 默认终极审核表（无招标文件 / 定制未生成时回落，spec333）---------------- */
+const DEFAULT_GROUPS: ChecklistGroupDef[] = [
   {
     id: "A",
     title: "资格与资质",
@@ -151,6 +148,7 @@ function useChecklistPersistence(initialProjectId: string | null) {
   const [statusMap, setStatusMap] = useState<Record<string, CheckStatus>>({})
   const [ownerMap, setOwnerMap] = useState<Record<string, string>>({})
   const [noteMap, setNoteMap] = useState<Record<string, string>>({})
+  const [template, setTemplate] = useState<ChecklistGroupDef[] | null>(null) // spec333 定制审核表；null=用默认 36
   const [saveState, setSaveState] = useState<SaveState>("idle")
   const loadedRef = useRef(false) // 回填完成前不触发保存
   const skipSaveRef = useRef(false) // 回填本身引起的 map 变化不回写
@@ -160,7 +158,7 @@ function useChecklistPersistence(initialProjectId: string | null) {
     let alive = true
     loadedRef.current = false
     getChecklist(projectId)
-      .then(({ items }) => {
+      .then(({ items, template: tpl }) => {
         if (!alive) return
         const s: Record<string, CheckStatus> = {}
         const o: Record<string, string> = {}
@@ -174,6 +172,7 @@ function useChecklistPersistence(initialProjectId: string | null) {
         setStatusMap(s)
         setOwnerMap(o)
         setNoteMap(n)
+        setTemplate(tpl && tpl.length ? tpl : null) // 有定制模板用它，否则回落默认 36
       })
       .catch((e: unknown) => {
         // 项目不存在/非本人 → 降级用户级默认行重载；其余失败按空白表处理，编辑仍可回写
@@ -203,20 +202,20 @@ function useChecklistPersistence(initialProjectId: string | null) {
     }, 800)
   }, [statusMap, ownerMap, noteMap, projectId])
 
-  return { projectId, statusMap, setStatusMap, ownerMap, setOwnerMap, noteMap, setNoteMap, saveState }
+  return { projectId, statusMap, setStatusMap, ownerMap, setOwnerMap, noteMap, setNoteMap, template, saveState }
 }
 
 /* ============== 终极审核表 tab ============== */
 export function Checklist() {
-  /* 真实积分余额（导出预估用）与真实资料库条目（「资料库已具备」联动判定用） */
+  /* 真实积分余额（导出预估用）；审核表条目按招标文件定制（spec333），无则回落默认 36。 */
   const { overview, balance, reload } = useMembership()
-  const { items: libItems } = useLibrary()
   const exportCost = creditCostValue(overview, "export", 20)
   const [initialProjectId] = useState<string | null>(() => currentProjectId())
-  const { projectId, statusMap, setStatusMap, ownerMap, setOwnerMap, noteMap, setNoteMap, saveState } =
+  const { projectId, statusMap, setStatusMap, ownerMap, setOwnerMap, noteMap, setNoteMap, template, saveState } =
     useChecklistPersistence(initialProjectId)
 
-  const allKeys = useMemo(() => checklistGroups.flatMap((g) => g.items.map((_, i) => `${g.id}-${i}`)), [])
+  const groups = template ?? DEFAULT_GROUPS
+  const allKeys = useMemo(() => groups.flatMap((g) => g.items.map((_, i) => `${g.id}-${i}`)), [groups])
   const total = allKeys.length
   const passedCount = allKeys.filter((k) => statusMap[k] === "pass").length
   const riskCount = allKeys.filter((k) => statusMap[k] === "risk").length
@@ -235,11 +234,10 @@ export function Checklist() {
         pendingCount={pendingCount}
         saveState={saveState}
       />
-      {checklistGroups.map((g) => (
+      {groups.map((g) => (
         <GroupSection
           key={g.id}
           group={g}
-          libItems={libItems}
           statusMap={statusMap}
           ownerMap={ownerMap}
           noteMap={noteMap}
@@ -252,10 +250,10 @@ export function Checklist() {
         cost={exportCost}
         balance={balance}
         projectId={projectId}
+        groups={groups}
         statusMap={statusMap}
         ownerMap={ownerMap}
         noteMap={noteMap}
-        libItems={libItems}
         onExported={reload}
       />
     </div>
@@ -333,7 +331,6 @@ function ChecklistHeader({
 /* ---------------- 分组清单 ---------------- */
 function GroupSection({
   group,
-  libItems,
   statusMap,
   ownerMap,
   noteMap,
@@ -341,8 +338,7 @@ function GroupSection({
   onOwner,
   onNote,
 }: {
-  group: (typeof checklistGroups)[number]
-  libItems: Parameters<typeof libraryMatch>[1]
+  group: ChecklistGroupDef
   statusMap: Record<string, CheckStatus>
   ownerMap: Record<string, string>
   noteMap: Record<string, string>
@@ -370,7 +366,6 @@ function GroupSection({
               status={statusMap[key] ?? "pending"}
               owner={ownerMap[key] ?? ""}
               note={noteMap[key] ?? ""}
-              lib={libraryMatch(item, libItems)}
               onStatus={onStatus}
               onOwner={onOwner}
               onNote={onNote}
@@ -382,14 +377,13 @@ function GroupSection({
   )
 }
 
-/** 单条检查项：状态三态按钮 + 责任人/备注输入 + 资料库联动徽标。 */
+/** 单条检查项：状态三态按钮 + 责任人/备注输入。 */
 function ChecklistItemRow({
   itemKey,
   text,
   status,
   owner,
   note,
-  lib,
   onStatus,
   onOwner,
   onNote,
@@ -399,7 +393,6 @@ function ChecklistItemRow({
   status: CheckStatus
   owner: string
   note: string
-  lib: ReturnType<typeof libraryMatch>
   onStatus: (key: string, s: CheckStatus) => void
   onOwner: (key: string, v: string) => void
   onNote: (key: string, v: string) => void
@@ -410,21 +403,6 @@ function ChecklistItemRow({
         <span className={`mt-1.5 size-2 shrink-0 rounded-full ${statusMeta[status].dot}`} />
         <div className="min-w-0">
           <span className="text-sm leading-relaxed text-foreground">{text}</span>
-          {lib &&
-            (lib.has ? (
-              <span className="ml-2 inline-flex items-center gap-1 rounded-md bg-success/10 px-1.5 py-0.5 align-middle text-[11px] font-medium text-success">
-                <CheckCircle2 className="size-3" />
-                资料库已具备 · {lib.label}
-              </span>
-            ) : (
-              <Link
-                href="/library"
-                className="ml-2 inline-flex items-center gap-1 rounded-md bg-destructive/10 px-1.5 py-0.5 align-middle text-[11px] font-medium text-destructive transition-opacity hover:opacity-80"
-              >
-                <X className="size-3" />
-                资料库缺失 · 去补充
-              </Link>
-            ))}
         </div>
       </div>
 
@@ -461,25 +439,24 @@ function ChecklistItemRow({
 
 /* ---------------- 导出区 ---------------- */
 
-/** 前端模板 + 当前状态合成导出 groups；libraryHit 用现有 libraryMatch 结果。 */
+/** 当前模板（定制 or 默认）+ 状态合成导出 groups。libraryHit 恒空（本模块已去资料库联动）。 */
 function buildExportGroups(
+  groups: ChecklistGroupDef[],
   statusMap: Record<string, CheckStatus>,
   ownerMap: Record<string, string>,
   noteMap: Record<string, string>,
-  libItems: Parameters<typeof libraryMatch>[1],
 ) {
-  return checklistGroups.map((g) => ({
+  return groups.map((g) => ({
     id: g.id,
     title: g.title,
     items: g.items.map((text, i) => {
       const key = `${g.id}-${i}`
-      const lib = libraryMatch(text, libItems)
       return {
         text,
         status: statusMap[key] ?? ("pending" as CheckStatus),
         owner: ownerMap[key] ?? "",
         note: noteMap[key] ?? "",
-        libraryHit: lib ? `${lib.has ? "已具备" : "缺失"} · ${lib.label}` : null,
+        libraryHit: null,
       }
     }),
   }))
@@ -489,19 +466,19 @@ function ExportPanel({
   cost,
   balance,
   projectId,
+  groups,
   statusMap,
   ownerMap,
   noteMap,
-  libItems,
   onExported,
 }: {
   cost: number
   balance: number
   projectId: string | null
+  groups: ChecklistGroupDef[]
   statusMap: Record<string, CheckStatus>
   ownerMap: Record<string, string>
   noteMap: Record<string, string>
-  libItems: Parameters<typeof libraryMatch>[1]
   onExported: () => void
 }) {
   const [open, setOpen] = useState(false)
@@ -518,7 +495,7 @@ function ExportPanel({
       const { url } = await exportChecklist({
         ...(projectId ? { projectId } : {}),
         title: "投递前终极审核表",
-        groups: buildExportGroups(statusMap, ownerMap, noteMap, libItems),
+        groups: buildExportGroups(groups, statusMap, ownerMap, noteMap),
       })
       // 付费产物的交付以下方「下载 Word」链接为准；triggerDownload（隐藏 <a> 点击）不开新
       // 标签页、await 之后也不被弹窗拦截（预签名已带 attachment 下载名）。
