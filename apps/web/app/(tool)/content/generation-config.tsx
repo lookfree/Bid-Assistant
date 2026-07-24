@@ -92,7 +92,7 @@ export function GenerationConfigDialog({
           )}
         </label>
         <p className="mt-1.5 text-xs text-muted-foreground">
-          本标书共 {chapterCount} 章,推荐 {fmtChars(Math.round((chapterCount * 2000) / 1000) * 1000)}~{fmtChars(suggestedTarget(chapterCount))} 字;字数按章节权重分配,AI 内容优先、不注水
+          本标书共 {chapterCount} 章,推荐 {fmtChars(Math.round((chapterCount * 2000) / 1000) * 1000)}~{fmtChars(suggestedTarget(chapterCount))} 字。此为目标参考:字数向技术标正文倾斜分配(商务标多为投标函/报价/偏离表等表单声明,篇幅短、不注水凑数),实际以内容质量为准
         </p>
 
         <button onClick={() => setFmtOpen((v) => !v)} className="mt-4 text-xs font-medium text-primary hover:underline">

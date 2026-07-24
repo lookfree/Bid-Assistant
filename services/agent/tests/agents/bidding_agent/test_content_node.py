@@ -344,23 +344,45 @@ def test_content_node_no_form_chapter_no_template_block(monkeypatch):
     assert "技术要求原文" not in captured["user"]   # 非格式章不回捞原文
 
 
-def test_length_plan_block_budgets_by_weight():
-    """spec330：target_chars → 按章节子项权重拆各章字数预算;未配置返回空串（行为不变）。"""
-    from agent.agents.bidding_agent.nodes.content import _length_plan_block
+def _budgets_from_block(block: str) -> dict:
+    import re
+    return {m.group(1): int(m.group(2)) for m in re.finditer(r"- (\w+)「[^」]*」目标约 (\d+) 字", block)}
+
+
+def test_length_plan_block_group_weighted():
+    """spec330 修正：组级加权——技术标组占大头(~80%)、商务标组占小头(~20%)，组内再按子项权重分。
+    商务标是表单/声明(近定长)，不该分到与技术标相当的字数（此前平均摊导致总量远低于目标）。"""
+    from agent.agents.bidding_agent.nodes.content import _length_plan_block, _TECH_SHARE
     outline = {"chapters": [
-        {"id": "t1", "title": "项目理解", "items": [{}, {}, {}]},   # 权重 4
-        {"id": "t2", "title": "实施方案", "items": [{}] * 7},        # 权重 8
-        {"id": "b1", "title": "报价说明", "items": []},              # 权重 1
+        {"id": "t1", "title": "项目理解", "group": "tech", "items": [{}, {}, {}]},   # tech 权重 4
+        {"id": "t2", "title": "实施方案", "group": "tech", "items": [{}] * 7},        # tech 权重 8
+        {"id": "b1", "title": "报价说明", "group": "business", "items": []},          # biz 权重 1
+        {"id": "b2", "title": "投标函",   "group": "business", "items": [{}]},        # biz 权重 2
     ]}
     block = _length_plan_block({"target_chars": 130000}, outline)
     assert "全书目标约 130000 字" in block
-    assert "t1「项目理解」" in block and "t2「实施方案」" in block
-    # 权重大的章预算更高
-    import re
-    budgets = {m.group(1): int(m.group(2)) for m in re.finditer(r"- (\w+)「[^」]*」目标约 (\d+) 字", block)}
-    assert budgets["t2"] > budgets["t1"] > budgets["b1"]
-    assert abs(sum(budgets.values()) - 130000) < 130000 * 0.05  # 预算总和≈目标
+    budgets = _budgets_from_block(block)
+    tech_sum, biz_sum = budgets["t1"] + budgets["t2"], budgets["b1"] + budgets["b2"]
+    # 组级：技术标 ~80% / 商务标 ~20%（百字取整有小误差）
+    assert abs(tech_sum - 130000 * _TECH_SHARE) < 130000 * 0.03
+    assert abs(biz_sum - 130000 * (1 - _TECH_SHARE)) < 130000 * 0.03
+    # 商务标整组也拿不到技术标任一大章那么多（防回退到平均摊）
+    assert biz_sum < budgets["t2"]
+    # 组内仍按子项权重：t2>t1、b2>b1
+    assert budgets["t2"] > budgets["t1"] and budgets["b2"] > budgets["b1"]
+    assert abs(sum(budgets.values()) - 130000) < 130000 * 0.05
     # 未配置/坏值 → 空串
     assert _length_plan_block({}, outline) == ""
     assert _length_plan_block({"target_chars": 0}, outline) == ""
     assert _length_plan_block({"target_chars": "1万"}, outline) == ""
+
+
+def test_length_plan_block_single_group_gets_full_budget():
+    """只有技术标(或只有商务标)时，该组独占全部预算——独立审查等单组场景不被砍到 80%。"""
+    from agent.agents.bidding_agent.nodes.content import _length_plan_block
+    outline = {"chapters": [
+        {"id": "t1", "title": "方案", "group": "tech", "items": [{}, {}]},
+        {"id": "t2", "title": "实施", "group": "tech", "items": [{}] * 5},
+    ]}
+    budgets = _budgets_from_block(_length_plan_block({"target_chars": 100000}, outline))
+    assert abs(sum(budgets.values()) - 100000) < 100000 * 0.05  # 单组独占全部

@@ -162,22 +162,43 @@ def _template_block(read: dict, outline: dict) -> str:
     return TEMPLATE_GUIDE + "\n" + "\n\n".join(parts)
 
 
+# 组级篇幅加权（spec330 修正）：技术标是实质性方案正文（长文主体），商务标多为投标函/报价表/
+# 偏离表/承诺函等表单声明（近定长、天然短）。按平均权重分会把接近一半预算摊给商务标——那份填不满、
+# 技术标又被压小，总量远低于目标。故预算向技术标倾斜：技术标组占大头、商务标组占小头。
+_TECH_SHARE = 0.8
+
+
+def _chapter_budgets(chapters: list[dict], target: int) -> list[str]:
+    """组级加权拆各章字数预算：技术标组占 _TECH_SHARE、商务标组占其余，组内再按子项权重分。
+    仅一组有章（另一组为空，如独立审查单组）→ 该组独占全部预算。百字取整、单章下限 300，原章序输出。"""
+    tech = [c for c in chapters if c.get("group") == "tech"]
+    biz = [c for c in chapters if c.get("group") != "tech"]  # 非 tech 一律归商务侧（含未标组）
+    both = bool(tech) and bool(biz)
+    budgets: dict[str, int] = {}
+    for chs, share in ((tech, _TECH_SHARE if both else 1.0), (biz, 1 - _TECH_SHARE if both else 1.0)):
+        if not chs:
+            continue
+        g_target = target * share
+        weights = [max(1, len(c.get("items") or []) + 1) for c in chs]
+        total_w = sum(weights)
+        for c, w in zip(chs, weights):
+            budgets[c.get("id")] = max(300, round(g_target * w / total_w / 100) * 100)
+    return [f"- {c.get('id')}「{c.get('title', '')}」目标约 {budgets.get(c.get('id'), 300)} 字" for c in chapters]
+
+
 def _length_plan_block(run_input: dict, outline: dict) -> str:
-    """【篇幅规划】（spec330）：用户在生成配置里选了目标总字数 → 按章节权重（子项数为代理权重,
-    子项多的章通常评分占比高）拆成各章字数预算,随规划轮下发。未配置返回空串（行为与今天逐字节一致）。"""
+    """【篇幅规划】（spec330）：用户选了目标总字数 → 组级加权拆各章预算（技术标大头/商务标小头），
+    随规划轮下发，并强引导写手写足达标（但绝不注水）。未配置返回空串（行为与今天逐字节一致）。"""
     target = run_input.get("target_chars")
     chapters = outline.get("chapters") or []
     if not isinstance(target, int) or target <= 0 or not chapters:
         return ""
-    weights = [max(1, len(c.get("items") or []) + 1) for c in chapters]
-    total_w = sum(weights)
-    lines = []
-    for c, w in zip(chapters, weights):
-        budget = max(300, round(target * w / total_w / 100) * 100)  # 百字取整,单章下限 300
-        lines.append(f"- {c.get('id')}「{c.get('title', '')}」目标约 {budget} 字")
-    return ("【篇幅规划】全书目标约 " + f"{target} 字。各章目标字数（按章节权重分配,允许 ±20%）：\n"
+    lines = _chapter_budgets(chapters, target)
+    return ("【篇幅规划】全书目标约 " + f"{target} 字（技术标为方案正文主体、商务标多为表单/声明，"
+            "预算已向技术标倾斜）。各章目标字数（允许 ±20%）：\n"
             + "\n".join(lines)
-            + "\n主笔派发每章任务时必须把该章目标字数写进指令；写手按目标组织篇幅,内容优先,严禁为凑字数堆套话。")
+            + "\n主笔派发每章任务时**必须**把该章目标字数写进指令；写手按目标组织篇幅、尽量写足达标，"
+            "把方法论/步骤/案例/指标/保障展开写实写透——但内容优先，严禁为凑字数堆套话/复读/注水（宁可略欠，绝不掺水）。")
 
 
 def _deviation_items_block(read: dict) -> str:
