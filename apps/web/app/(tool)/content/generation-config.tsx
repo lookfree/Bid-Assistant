@@ -1,8 +1,10 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Sparkles } from "lucide-react"
 import { estimatePages, fmtChars } from "@/lib/doc-stats"
+import { useOtherStepResult } from "@/lib/use-step"
+import type { ProjectInfo } from "@/lib/project"
 import {
   DEFAULT_FORMAT,
   FONT_OPTIONS,
@@ -10,6 +12,7 @@ import {
   TARGET_MAX,
   TARGET_MIN,
   loadGenConfig,
+  parseBudgetYuan,
   sanitizeFormat,
   saveGenConfig,
   suggestedTarget,
@@ -20,16 +23,31 @@ import {
 export function GenerationConfigDialog({
   chapterCount,
   costText,
+  projectId,
+  info,
   onConfirm,
   onClose,
 }: {
   chapterCount: number
   costText: string
+  projectId: string | null
+  info: ProjectInfo | null
   onConfirm: (cfg: { targetChars: number; format: DocFormat }) => void
   onClose: () => void
 }) {
-  // localStorage 只在挂载时读一次（懒初始化）;拖滑杆的每次重渲不再重复 JSON.parse
-  const [target, setTarget] = useState<number>(() => loadGenConfig().targetChars ?? suggestedTarget(chapterCount))
+  // 读标预算懒拉：弹层挂载=用户打开配置时才拉，不在 content 首屏拽 ~1MB 读标结果。
+  const { data: readMeta } = useOtherStepResult<{ projectMeta?: { budget?: string } }>(projectId, info, "read")
+  const budget = readMeta?.projectMeta?.budget
+  const budgetYuan = parseBudgetYuan(budget)
+  const suggested = suggestedTarget(chapterCount, budget)
+  // localStorage 只在挂载时读一次（存过偏好则优先，且预算到达也不覆盖用户偏好）
+  const savedTarget = useRef<number | undefined>(loadGenConfig().targetChars).current
+  const [target, setTarget] = useState<number>(() => savedTarget ?? suggested)
+  const touched = useRef(false) // 用户是否手动改过——避免预算异步到达后覆盖用户已调的值
+  // 预算异步到达后，用户没存过偏好、也没手动改过 → 用预算推荐值刷新初始（否则停在章数推荐）。
+  useEffect(() => {
+    if (savedTarget == null && !touched.current) setTarget(suggested)
+  }, [suggested, savedTarget])
   const [custom, setCustom] = useState(false)
   // 自定义输入用「原始字符串」状态：受控值若绑夹位后的数字,逐位输入会被强改（审查实测 15000 打成 100005）
   const [customText, setCustomText] = useState("")
@@ -59,7 +77,10 @@ export function GenerationConfigDialog({
             step={5000}
             value={clamped}
             disabled={custom}
-            onChange={(e) => setTarget(Number(e.target.value))}
+            onChange={(e) => {
+              touched.current = true
+              setTarget(Number(e.target.value))
+            }}
             className="h-1.5 flex-1 accent-primary"
           />
           <span className="shrink-0 text-sm text-muted-foreground">
@@ -71,6 +92,7 @@ export function GenerationConfigDialog({
             type="checkbox"
             checked={custom}
             onChange={(e) => {
+              touched.current = true
               setCustom(e.target.checked)
               if (e.target.checked) setCustomText(String(target))
             }}
@@ -92,7 +114,10 @@ export function GenerationConfigDialog({
           )}
         </label>
         <p className="mt-1.5 text-xs text-muted-foreground">
-          本标书共 {chapterCount} 章,推荐 {fmtChars(Math.round((chapterCount * 2000) / 1000) * 1000)}~{fmtChars(suggestedTarget(chapterCount))} 字。此为目标参考:字数向技术标正文倾斜分配(商务标多为投标函/报价/偏离表等表单声明,篇幅短、不注水凑数),实际以内容质量为准
+          {budgetYuan != null
+            ? `按招标预算约 ${(budgetYuan / 10000).toLocaleString("zh-CN", { maximumFractionDigits: 0 })} 万元估算(约 1 万元/页 · 每页约 600 字 · 下限约 80 页),推荐 ${fmtChars(suggested)} 字`
+            : `本标书共 ${chapterCount} 章,推荐 ${fmtChars(Math.round((chapterCount * 2000) / 1000) * 1000)}~${fmtChars(suggestedTarget(chapterCount))} 字`}
+          。此为目标参考:字数向技术标正文倾斜分配(商务标多为投标函/报价/偏离表等表单声明,篇幅短、不注水凑数),实际以内容质量为准,可拖动调整
         </p>
 
         <button onClick={() => setFmtOpen((v) => !v)} className="mt-4 text-xs font-medium text-primary hover:underline">

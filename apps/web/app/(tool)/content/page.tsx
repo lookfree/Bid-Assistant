@@ -797,6 +797,8 @@ export default function ContentPage() {
       {genConfigOpen && (
         <GenerationConfigDialog
           chapterCount={[...data.tech, ...data.business].length || 10}
+          projectId={projectId}
+          info={info}
           costText={`短章 ${contentShortCost} 积分/章、长章 ${contentLongCost} 积分/章,按实际产出分档结算`}
           onConfirm={({ targetChars }) => {
             setGenConfigOpen(false)

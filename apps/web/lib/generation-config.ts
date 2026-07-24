@@ -28,9 +28,35 @@ export const DEFAULT_FORMAT: Required<Omit<DocFormat, "margin_cm">> & { margin_c
 export const TARGET_MIN = 10_000
 export const TARGET_MAX = 500_000
 
-/** 推荐目标字数：章节数 × 3000,夹在滑杆范围内。 */
-export function suggestedTarget(chapterCount: number): number {
-  return Math.min(TARGET_MAX, Math.max(TARGET_MIN, chapterCount * 3000))
+// 初始字数经验换算（用户口径）：招标预算「一般一万元一页」，且非线性有下限——40万项目也要 70~80 页、
+// 几百万起要几百页，故 页数 = max(下限, 预算万元数)；每页约 600 字（与 doc-stats CHARS_PER_PAGE 一致）。
+const YUAN_PER_PAGE = 10_000
+const PAGE_FLOOR = 80
+const CHARS_PER_PAGE = 600
+
+/** 解析招标预算自由文本 → 元；无法可靠解析返回 null（回退章数推荐，不瞎猜量级）。
+ *  支持「600万」「¥6,000,000元」「1.2亿」「6,000,000」：去千分位/空白，识别万/亿单位；
+ *  无单位且数字 ≥1万按元，过小/无数字 → null。 */
+export function parseBudgetYuan(text: string | null | undefined): number | null {
+  if (!text) return null
+  const m = text.replace(/[,，\s]/g, "").match(/\d+(?:\.\d+)?/)
+  if (!m) return null
+  const n = Number(m[0])
+  if (!Number.isFinite(n) || n <= 0) return null
+  if (/亿/.test(text)) return n * 1e8
+  if (/万/.test(text)) return n * 1e4
+  return n >= 10_000 ? n : null
+}
+
+/** 初始推荐目标字数：优先按招标预算（一万元一页、下限约 80 页、每页 600 字）；预算不可解析时回退
+ *  章节数 × 3000。夹在滑杆范围内（1万~50万）。budgetText 缺省 = 无预算信号。 */
+export function suggestedTarget(chapterCount: number, budgetText?: string | null): number {
+  const yuan = parseBudgetYuan(budgetText)
+  const raw =
+    yuan != null
+      ? Math.max(PAGE_FLOOR, Math.round(yuan / YUAN_PER_PAGE)) * CHARS_PER_PAGE
+      : chapterCount * 3000
+  return Math.min(TARGET_MAX, Math.max(TARGET_MIN, raw))
 }
 
 // 字体/字号可选值：唯一权威在服务端 zod 白名单,此处为同步副本（勿单侧增删——只加这边会让
