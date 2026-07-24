@@ -162,15 +162,44 @@ def _template_block(read: dict, outline: dict) -> str:
     return TEMPLATE_GUIDE + "\n" + "\n\n".join(parts)
 
 
-# 组级篇幅加权（spec330 修正）：技术标是实质性方案正文（长文主体），商务标多为投标函/报价表/
-# 偏离表/承诺函等表单声明（近定长、天然短）。按平均权重分会把接近一半预算摊给商务标——那份填不满、
-# 技术标又被压小，总量远低于目标。故预算向技术标倾斜：技术标组占大头、商务标组占小头。
+# 篇幅权重信号（spec330 方案3）：投标里最硬的「重要度」是招标评分办法——分在哪，字就该堆在哪。
+# 故各章字数预算按「映射到该章的评分分值之和」加权（分高的方案章多写、概述/术语少写）。
+# 「投标报价」类评分排除：报价是数字/表格非正文，按分值给它大预算会填不满——报价章只拿基线。
+# 无可用评分信号时回退组级加权（技术标 _TECH_SHARE / 商务标其余）。
 _TECH_SHARE = 0.8
+_PRICE_CATEGORY = "投标报价"
 
 
-def _chapter_budgets(chapters: list[dict], target: int) -> list[str]:
-    """组级加权拆各章字数预算：技术标组占 _TECH_SHARE、商务标组占其余，组内再按子项权重分。
-    仅一组有章（另一组为空，如独立审查单组）→ 该组独占全部预算。百字取整、单章下限 300，原章序输出。"""
+def _scores_per_chapter(chapters: list[dict], scoring: list[dict]) -> dict[str, float]:
+    """非报价类评分分值按 chapter_id（回退 clause_ids 重叠）累加到各章。返回 {chapter_id: 分值和}。"""
+    ids = {c.get("id") for c in chapters}
+    clause_to_ch: dict[str, str] = {}
+    for c in chapters:
+        for it in (c.get("items") or []):
+            for cid in (it.get("clause_ids") or []):
+                clause_to_ch.setdefault(cid, c.get("id"))
+    out: dict[str, float] = {}
+    for r in scoring:
+        if r.get("category") == _PRICE_CATEGORY:
+            continue
+        ch = r.get("chapter_id")
+        if ch not in ids:  # chapter_id 缺失/不匹配 → 按条款重叠回退定位
+            ch = next((clause_to_ch[cid] for cid in (r.get("clause_ids") or []) if cid in clause_to_ch), None)
+        if ch in ids:
+            out[ch] = out.get(ch, 0.0) + float(r.get("score") or 0)
+    return out
+
+
+def _scoring_weighted_budgets(chapters: list[dict], target: int, score_by_ch: dict[str, float]) -> dict[str, int]:
+    """评分权重版：各章权重 = 基线 + 该章非报价评分分值和；基线≈平均分 1/3（无评分章的下限，避免被饿死）。"""
+    base = sum(score_by_ch.values()) / (len(chapters) * 3)
+    weights = {c.get("id"): base + score_by_ch.get(c.get("id"), 0.0) for c in chapters}
+    total_w = sum(weights.values()) or 1
+    return {cid: max(300, round(target * w / total_w / 100) * 100) for cid, w in weights.items()}
+
+
+def _group_weighted_budgets(chapters: list[dict], target: int) -> dict[str, int]:
+    """回退：无可用评分信号时，技术标组占 _TECH_SHARE / 商务标组占其余，组内按子项权重分。单组则独占。"""
     tech = [c for c in chapters if c.get("group") == "tech"]
     biz = [c for c in chapters if c.get("group") != "tech"]  # 非 tech 一律归商务侧（含未标组）
     both = bool(tech) and bool(biz)
@@ -178,27 +207,36 @@ def _chapter_budgets(chapters: list[dict], target: int) -> list[str]:
     for chs, share in ((tech, _TECH_SHARE if both else 1.0), (biz, 1 - _TECH_SHARE if both else 1.0)):
         if not chs:
             continue
-        g_target = target * share
         weights = [max(1, len(c.get("items") or []) + 1) for c in chs]
         total_w = sum(weights)
         for c, w in zip(chs, weights):
-            budgets[c.get("id")] = max(300, round(g_target * w / total_w / 100) * 100)
+            budgets[c.get("id")] = max(300, round(target * share * w / total_w / 100) * 100)
+    return budgets
+
+
+def _chapter_budgets(chapters: list[dict], target: int, scoring: list[dict] | None) -> list[str]:
+    """各章字数「建议」预算：优先按评分分值加权（分在哪字在哪）；无可用评分信号回退组级+子项权重。
+    百字取整、单章下限 300，原章序输出。总量精确≈target,交主笔按各章实质内容量再微调。"""
+    score_by_ch = _scores_per_chapter(chapters, scoring or [])
+    budgets = (_scoring_weighted_budgets(chapters, target, score_by_ch)
+               if sum(score_by_ch.values()) > 0 else _group_weighted_budgets(chapters, target))
     return [f"- {c.get('id')}「{c.get('title', '')}」目标约 {budgets.get(c.get('id'), 300)} 字" for c in chapters]
 
 
-def _length_plan_block(run_input: dict, outline: dict) -> str:
-    """【篇幅规划】（spec330）：用户选了目标总字数 → 组级加权拆各章预算（技术标大头/商务标小头），
-    随规划轮下发，并强引导写手写足达标（但绝不注水）。未配置返回空串（行为与今天逐字节一致）。"""
+def _length_plan_block(run_input: dict, outline: dict, scoring: list[dict] | None = None) -> str:
+    """【篇幅规划】（spec330 方案3）：用户选了目标总字数 → 按评分分值加权给各章「建议」预算，随规划轮
+    下发；主笔把总目标视作硬目标，在建议上按各章实质内容量微调后派工。未配置返回空串（行为不变）。"""
     target = run_input.get("target_chars")
     chapters = outline.get("chapters") or []
     if not isinstance(target, int) or target <= 0 or not chapters:
         return ""
-    lines = _chapter_budgets(chapters, target)
-    return ("【篇幅规划】全书目标约 " + f"{target} 字（技术标为方案正文主体、商务标多为表单/声明，"
-            "预算已向技术标倾斜）。各章目标字数（允许 ±20%）：\n"
+    lines = _chapter_budgets(chapters, target, scoring)
+    return ("【篇幅规划】全书目标约 " + f"{target} 字（硬目标）。下列各章目标是**按招标评分分值加权的建议**"
+            "（评分高的方案章多、概述/表单/报价章少）：\n"
             + "\n".join(lines)
-            + "\n主笔派发每章任务时**必须**把该章目标字数写进指令；写手按目标组织篇幅、尽量写足达标，"
-            "把方法论/步骤/案例/指标/保障展开写实写透——但内容优先，严禁为凑字数堆套话/复读/注水（宁可略欠，绝不掺水）。")
+            + "\n主笔：以此为起点,再结合各章**实质内容量**上下微调（能写实的方案章可加、概述/程序性章减），"
+            "保持各章之和≈全书目标,并把每章目标字数写进子写手指令；写手尽量写足达标,把方法论/步骤/案例/"
+            "指标/保障展开写实写透——但内容优先,严禁为凑字数堆套话/复读/注水（宁可略欠,绝不掺水）。")
 
 
 def _deviation_items_block(read: dict) -> str:
@@ -268,7 +306,7 @@ def make_content_node(ctx):
         deviation = _deviation_items_block(read) if _has_deviation_chapters(outline, structure) else ""
         # 招标自带格式模板（响应函/证明/一览表等）：抠原文随规划轮下发，对应章沿用模板不得自创格式
         template = _template_block(read, outline)
-        length_plan = _length_plan_block(state.get("run_input") or {}, outline)  # spec330 目标字数
+        length_plan = _length_plan_block(state.get("run_input") or {}, outline, read.get("scoring") or [])  # spec330 目标字数（评分加权）
         ref = await _content_reference_block(ctx, state)
         mid_parts = [p for p in (length_plan, deviation, template, ref) if p]
         mid = ("\n\n".join(mid_parts) + "\n\n") if mid_parts else ""

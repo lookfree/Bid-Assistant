@@ -349,9 +349,28 @@ def _budgets_from_block(block: str) -> dict:
     return {m.group(1): int(m.group(2)) for m in re.finditer(r"- (\w+)「[^」]*」目标约 (\d+) 字", block)}
 
 
-def test_length_plan_block_group_weighted():
-    """spec330 修正：组级加权——技术标组占大头(~80%)、商务标组占小头(~20%)，组内再按子项权重分。
-    商务标是表单/声明(近定长)，不该分到与技术标相当的字数（此前平均摊导致总量远低于目标）。"""
+def test_length_plan_block_scoring_weighted():
+    """spec330 方案3：按招标评分分值加权——高分方案章拿大头，「投标报价」类评分排除（报价章只拿基线），
+    无评分章拿基线。评分点经 chapter_id（或 clause_ids 回退）映射到章。"""
+    from agent.agents.bidding_agent.nodes.content import _length_plan_block
+    outline = {"chapters": [
+        {"id": "t1", "title": "项目理解", "group": "tech", "items": [{"clause_ids": ["c1"]}]},
+        {"id": "t2", "title": "技术方案", "group": "tech", "items": [{"clause_ids": ["c2"]}]},
+        {"id": "b1", "title": "投标报价", "group": "business", "items": [{"clause_ids": ["c3"]}]},
+    ]}
+    scoring = [
+        {"id": "s1", "category": "技术方案", "name": "方案", "score": 60, "chapter_id": "t2"},
+        {"id": "s2", "category": "技术方案", "name": "理解", "score": 10, "clause_ids": ["c1"]},  # 无 chapter_id → clause 回退到 t1
+        {"id": "s3", "category": "投标报价", "name": "报价", "score": 30, "chapter_id": "b1"},   # 报价类排除
+    ]
+    budgets = _budgets_from_block(_length_plan_block({"target_chars": 100000}, outline, scoring))
+    assert budgets["t2"] > budgets["t1"] > budgets["b1"]        # 分越高字越多
+    assert budgets["b1"] < budgets["t1"]                        # 报价 30 分被排除,没把 b1 抬起来
+    assert abs(sum(budgets.values()) - 100000) < 100000 * 0.05  # 总量≈目标
+
+
+def test_length_plan_block_group_weighted_fallback_no_scoring():
+    """无可用评分信号 → 回退组级加权：技术标组 ~80% / 商务标组 ~20%，组内按子项权重分。"""
     from agent.agents.bidding_agent.nodes.content import _length_plan_block, _TECH_SHARE
     outline = {"chapters": [
         {"id": "t1", "title": "项目理解", "group": "tech", "items": [{}, {}, {}]},   # tech 权重 4
