@@ -287,6 +287,11 @@ export default function OutlinePage() {
       </div>
     )
 
+  // 章节编号当前模式（派生自实际编号，不引入独立状态）：商务标首章编号 == 技术标章数+1 → 全文连续，
+  // 否则分组各自。点「全文连续/分组各自」renumber 改 no 后本值自动重算 → 高亮跟随，永不与实际编号脱节。
+  const numberMode: "continuous" | "grouped" =
+    techChapters.length > 0 && businessChapters[0]?.no === chapterNo(techChapters.length + 1) ? "continuous" : "grouped"
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
       <FlowNav current="outline" info={info} />
@@ -384,15 +389,25 @@ export default function OutlinePage() {
                 章节编号
                 <button
                   onClick={() => renumber("continuous")}
+                  aria-pressed={numberMode === "continuous"}
                   title="技术标→商务标全文从第一章连续编号（部分标书要求）；改完点「保存提纲」生效"
-                  className="rounded-md border border-border bg-card px-2 py-1 font-medium text-foreground transition-colors hover:bg-muted"
+                  className={`rounded-md px-2 py-1 font-medium transition-colors ${
+                    numberMode === "continuous"
+                      ? "gradient-brand text-white"
+                      : "border border-border bg-card text-foreground hover:bg-muted"
+                  }`}
                 >
                   全文连续
                 </button>
                 <button
                   onClick={() => renumber("grouped")}
+                  aria-pressed={numberMode === "grouped"}
                   title="技术标 / 商务标各自从第一章编号；改完点「保存提纲」生效"
-                  className="rounded-md border border-border bg-card px-2 py-1 font-medium text-foreground transition-colors hover:bg-muted"
+                  className={`rounded-md px-2 py-1 font-medium transition-colors ${
+                    numberMode === "grouped"
+                      ? "gradient-brand text-white"
+                      : "border border-border bg-card text-foreground hover:bg-muted"
+                  }`}
                 >
                   分组各自
                 </button>
