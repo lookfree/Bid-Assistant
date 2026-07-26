@@ -26,18 +26,16 @@ export type FinalizeBilling = {
   settleContent: typeof billing.settleContent
 }
 
-/** content 步产出各章正文的最大字数（剥 HTML 标签后）——决定 content_short/long 分档。
- *  agent 的 _RESULT_KEY['content']='chapters'，故 run.result 即 { <章id>: html }。 */
-export function maxChapterChars(result: unknown): number {
+/** content 步本次产出的正文总字数（剥 HTML 标签后各章求和）——决定落到哪个计费档。
+ *  agent 的 _RESULT_KEY['content']='chapters'，故 run.result 即 { <章id>: html }。
+ *  口径是「整本标书的总字数」，不是最长一章：一次 run 写完全部章节、只计一次费。 */
+export function totalChapterChars(result: unknown): number {
   if (!result || typeof result !== "object") return 0
-  let max = 0
+  let total = 0
   for (const v of Object.values(result as Record<string, unknown>)) {
-    if (typeof v === "string") {
-      const len = v.replace(/<[^>]+>/g, "").length
-      if (len > max) max = len
-    }
+    if (typeof v === "string") total += v.replace(/<[^>]+>/g, "").length
   }
-  return max
+  return total
 }
 
 /** agent 长期不可达时的最终兜底判死线（与账本孤儿 hold 清扫同一 24h 视界）。 */
@@ -59,7 +57,7 @@ async function settleAndAdvance(opts: {
   let cost = 0
   if (opts.hold) {
     cost = opts.step === "content"
-      ? await b.settleContent(opts.stepId, opts.hold.holdId, opts.hold.heldAmount, maxChapterChars(opts.result))
+      ? await b.settleContent(opts.stepId, opts.hold.holdId, opts.hold.heldAmount, totalChapterChars(opts.result))
       : await b.settle(opts.stepId, opts.hold.holdId, opts.hold.heldAmount)
   }
   await getDb().update(projectSteps).set({ costPoints: cost }).where(eq(projectSteps.id, opts.stepId))
