@@ -13,7 +13,7 @@ export function ReviewEntry({ onBack }: { onBack?: () => void } = {}) {
     <StandaloneBidEntry
       onBack={onBack}
       backLabel="← 返回当前项目的审查"
-      noTenderHref="/risk"
+      noTenderHref="/risk?view=project"
       pickTitle="审查我的标书"
       pickDesc="选择已生成正文的项目，进入废标体检"
       emptyHint="暂无已生成正文的标书，可先上传线下标书审查"

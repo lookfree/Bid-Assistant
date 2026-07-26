@@ -31,7 +31,7 @@ export type StandaloneBidEntryProps = {
  *  ① 选择「我的标书」里符合条件的项目直接操作（走既有流程）；
  *  ② 上传线下标书（bidOnly=false 时可附招标文件先读标；bidOnly=true 只传标书直接操作）。 */
 export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
-  const { onBack, backLabel, pickTitle, pickDesc, emptyHint, isSelectable, readyLabel } = props
+  const { onBack, backLabel, noTenderHref, pickTitle, pickDesc, emptyHint, isSelectable, readyLabel } = props
   const [projects, setProjects] = useState<ProjectListItem[]>([])
   const [loadingList, setLoadingList] = useState(true)
 
@@ -75,7 +75,9 @@ export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
                   key={p.id}
                   onClick={() => {
                     setCurrentProjectId(p.id)
-                    window.location.reload() // 切当前项目后整页按既有流程重载
+                    // 切当前项目后进入本工具工作视图（原 reload 同址）：审查页默认已改为独立入口，
+                    // reload 回 /risk 会再落回入口，故统一走 noTenderHref（risk 带 ?view=project 直连该项目审查）。
+                    window.location.href = noTenderHref
                   }}
                   className="flex w-full items-center justify-between rounded-xl border border-border px-3 py-2.5 text-left transition-colors hover:border-primary/40"
                 >

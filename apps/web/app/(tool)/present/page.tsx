@@ -66,9 +66,12 @@ export default function PresentPage() {
   const presentCost = creditCostValue(overview, "present", 80)
   /* 资料库数据提升到页面级：LibraryPicker / TemplatePicker 共用同一份，避免同页重复拉取 */
   const { items: libItems, loading: libLoading, error: libError, reload: reloadLibrary } = useLibrary()
-  /* 挂着项目也要能直达独立述标入口（同 risk 页 EntryBar 的理由：述标是独立能力，不该只在
-     无项目/未生成时才可发现）；用户手动切过来后可再切回当前项目。 */
-  const [showEntry, setShowEntry] = useState(false)
+  /* 述标默认统一进入独立入口（同 risk 页废标审查：不默认衔接当前项目已生成的标书，先让用户选/传）。
+     ?view=project = 用户已在入口显式选「当前项目直连述标」（入口内返回/选项目/传标书后跳这里）。
+     本组件在 RequireAuth 之后才客户端挂载，惰性读 URL 参数无 SSR 水合问题。 */
+  const [enterProject] = useState(
+    () => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("view") === "project",
+  )
 
   /* 配置 */
   const [duration, setDuration] = useState<Duration>(15)
@@ -347,14 +350,17 @@ export default function PresentPage() {
     })()
   }
 
-  // 无进行中项目 / 用户手动切到独立入口：述标是独立能力（spec328+），不强制先在库内建标书——
-  // 直接给「述标我的标书 / 上传线下标书」入口（同 risk 页 ReviewEntry 一致的处理）。
-  if (!projectId || showEntry)
+  // 述标默认独立入口（spec328+）：不默认衔接当前项目已生成的标书——直接给「述标我的标书 / 上传线下标书」
+  // 入口；「返回当前项目的述标」仅在当前项目确可述标时给出（info 到位且无前序缺口，review-kind 由
+  // stepPrereq 特判放行）——否则不给，避免对未就绪项目给一个点了会空转回入口的死链（跳转带 ?view=project）。
+  if (!enterProject || !projectId)
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
         <FlowNav current="present" info={info} />
         <StepPageHeader icon={Presentation} title="述标演示" desc="一键把标书提炼成述标/答辩 PPT，含演讲备注与预计问答" />
-        <PresentEntry onBack={projectId ? () => setShowEntry(false) : undefined} />
+        <PresentEntry
+          onBack={projectId && info && !stepPrereq(info, "present") ? () => { window.location.href = "/present?view=project" } : undefined}
+        />
       </div>
     )
 
@@ -462,7 +468,7 @@ export default function PresentPage() {
             </div>
           )}
         </StepPageHeader>
-        <PresentEntryBar onOpen={() => setShowEntry(true)} />
+        <PresentEntryBar onOpen={() => { window.location.href = "/present" }} />
         {deckReady && <AiNotice />}
 
         {/* 导出菜单 */}

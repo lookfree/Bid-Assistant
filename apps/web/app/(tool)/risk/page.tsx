@@ -77,15 +77,25 @@ export default function ReviewPage() {
 
 /* ============== 废标风险审查 ============== */
 function RejectReview() {
-  // review 步产 RiskReport（计费步）：绝不自动触发，一律用户显式点击「开始废标体检」才跑
+  // review 步产 RiskReport（计费步）：绝不自动触发，一律用户显式点击「开始废标体检」才跑。
+  // 默认统一进入独立审查入口（选已生成项目 / 上传线下标书），不默认衔接当前项目已生成的标书；
+  // ?view=project = 用户已在入口显式选「当前项目直连审查」（入口内返回/选项目/传标书后跳这里）。
+  // 本组件在 RequireAuth 之后才客户端挂载，惰性读 URL 参数无 SSR 水合问题。
+  const [enterProject] = useState(
+    () => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("view") === "project",
+  )
   const { projectId, info, data: real, dataLoading, running, phase, error, errorAction, start } = useStep<RealRisk>("review")
   const { overview: membershipOverview } = useMembership()
   const reviewCost = creditCostValue(membershipOverview, "review", 60)
-  // 挂着项目也要能直达独立审查入口（用户反馈：只有查重 tab 见得到上传,被误解为仅查重支持传标书）
-  const [showEntry, setShowEntry] = useState(false)
 
-  // 无当前项目：独立审查入口（spec328）——选已有标书或上传线下标书;有项目时可手动切过来
-  if (!projectId || showEntry) return <ReviewEntry onBack={projectId ? () => setShowEntry(false) : undefined} />
+  // 默认独立审查入口；「返回当前项目的审查」仅在当前项目确可审查时给出（info 到位且无前序缺口）——
+  // 否则不给，避免对未生成正文的在途项目给一个点了会空转回入口的死链（整页跳转带 ?view=project）。
+  if (!enterProject || !projectId)
+    return (
+      <ReviewEntry
+        onBack={projectId && info && !stepPrereq(info, "review") ? () => { window.location.href = "/risk?view=project" } : undefined}
+      />
+    )
 
   // 项目状态/审查报告加载中：数据未就绪绝不裸露「开始废标体检」计费按钮
   if (!info || dataLoading) return <StepPlaceholder text={dataLoading ? "正在加载审查报告…" : "正在加载项目…"} delayMs={250} />
@@ -119,7 +129,7 @@ function RejectReview() {
     if (stepPrereq(info, "review")) return <ReviewEntry />
     return (
       <div className="flex flex-col gap-3">
-      <EntryBar onOpen={() => setShowEntry(true)} />
+      <EntryBar onOpen={() => { window.location.href = "/risk" }} />
       <div className="rounded-2xl border border-border bg-card">
         <StepRunCta
           title="废标风险审查"
@@ -136,7 +146,7 @@ function RejectReview() {
   const { score, overview, riskItems, passed } = deriveRisk(real)
   return (
     <div className="flex flex-col gap-6">
-        <EntryBar onOpen={() => setShowEntry(true)} />
+        <EntryBar onOpen={() => { window.location.href = "/risk" }} />
         <AiNotice />
         {/* 健康分 */}
         <div className="flex flex-col items-center gap-5 rounded-3xl border border-border bg-card p-8 sm:flex-row sm:gap-8">
