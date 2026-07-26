@@ -423,22 +423,13 @@ export default function UploadPage() {
           </p>
         </div>
 
-        {/* 提示卡片 */}
-        <div className="mt-5 grid gap-3 sm:grid-cols-2">
-          <div className="flex items-start gap-3 rounded-2xl border border-border bg-background p-4">
-            <Sparkles className="mt-0.5 size-4 shrink-0 text-primary" />
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              <span className="font-medium text-foreground">新用户免费体验：</span>
-              注册赠 200 积分，可自由用于读标 / 提纲 / 生成 / 导出；积分用尽后再充值或开通会员。
-            </p>
-          </div>
-          <div className="flex items-start gap-3 rounded-2xl border border-border bg-background p-4">
-            <ShieldCheck className="mt-0.5 size-4 shrink-0 text-success" />
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              <span className="font-medium text-foreground">数据安全：</span>
-              文件全程加密传输与存储，仅你本人可见。
-            </p>
-          </div>
+        {/* 数据安全提示卡片 */}
+        <div className="mt-5 flex items-start gap-3 rounded-2xl border border-border bg-background p-4">
+          <ShieldCheck className="mt-0.5 size-4 shrink-0 text-success" />
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            <span className="font-medium text-foreground">数据安全：</span>
+            文件全程加密传输与存储，仅你本人可见。
+          </p>
         </div>
       </section>
     </div>
