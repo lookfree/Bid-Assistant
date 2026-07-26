@@ -1,13 +1,11 @@
-import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout, spyOn } from "bun:test"
+import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bun:test"
 import { and, eq } from "drizzle-orm"
 import { Hono } from "hono"
 import { projectRoutes, buildStateOverrides, type ProjectDeps } from "../src/routes/projects"
 import { loginWithPhone } from "../src/services/auth"
 import { getDb, closeDb } from "../src/db/client"
-import { users, bidProjects, projectSteps, projectFiles, libraryItems, billingConfigs } from "../src/db/schema"
-import { getConfig, setConfig } from "../src/services/config"
-import { CONTENT_TIERS_KEY } from "../src/services/content-pricing"
-import * as billing from "../src/services/billing-stub"
+import { users, bidProjects, projectSteps, projectFiles, libraryItems } from "../src/db/schema"
+import { ContentTiersConfigError, holdAmountFor, type ContentTier } from "../src/services/content-pricing"
 import { uniquePhone, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连真库
@@ -41,6 +39,16 @@ let runStep = "" // createRun 时记下本 run 的步，getRun 按步返回对�
 let overridesBoom = false // 置 true 让 buildStateOverrides 抛错（模拟 DB 抖动）
 let noModel = false // 置 true 让 getAgentModel 返回 undefined（模拟运营后台未配置模型）
 
+// content 步预扣额（计费阶梯）也走注入，绝不读写共享的 billing_configs：本文件断言的是**路由编排**，
+// 而 credit_cost.content_tiers 是全环境共享的运营计费口径——为了造一个「非法阶梯」去写真库，会让
+// 该窗口内所有真实用户的标书生成 400，且要靠一整套快照/还原兜底才不留错价。注入即彻底消除这个暴露。
+const TEST_TIERS: ContentTier[] = [
+  { maxChars: 50_000, cost: 40 },
+  { maxChars: null, cost: 260 },
+]
+// none=阶梯正常；config=配置态错误（缺失/非法，路由应转 400）；infra=基建故障（DB 抖动，路由应原样上抛 5xx）
+let holdAmountFault: "none" | "config" | "infra" = "none"
+
 const mockDeps: Partial<ProjectDeps> = {
   buildStateOverrides: async (projectId, step) => {
     if (overridesBoom) throw new Error("db jitter")
@@ -61,6 +69,12 @@ const mockDeps: Partial<ProjectDeps> = {
   settleContent: async (_ref: string, _holdId: string, heldAmount: number) => heldAmount, // content 步按篇幅结算，mock 全额
   settleFailed: async (ref: string) => {
     captured.releasedRefs.push(ref)
+  },
+  // 与真实 resolveStepHoldAmount 同语义：content 取阶梯最大价，其余步 undefined（走 credit_cost.<step>）。
+  resolveStepHoldAmount: async (step: string) => {
+    if (holdAmountFault === "infra") throw new Error("db jitter")
+    if (holdAmountFault === "config") throw new ContentTiersConfigError("计费阶梯必须有且只有一个顶档（maxChars=null）")
+    return step === "content" ? holdAmountFor(TEST_TIERS) : undefined
   },
   createRun: async (opts) => {
     captured.createRunOpts = opts
@@ -88,24 +102,7 @@ const mockDeps: Partial<ProjectDeps> = {
 const app = new Hono()
 app.route("/api/projects", projectRoutes(mockDeps))
 
-// 下面的阶梯用例会改共享 billing_configs 的 credit_cost.content_tiers。实测 bun 1.3.14：用例体
-// 超时会被直接放弃，**它的 finally 不会执行**（afterAll 仍会执行）——所以还原绝不能只挂在用例内的
-// finally 上（一次公网慢往返就足以把三档梯子留在共享库里静默错价）。故：快照在 beforeAll 取、
-// afterAll 兜底还原，用例内的 finally 只作「跑得顺利时尽早还原」的快路径。
-let tiersBackup: unknown
-let tiersSnapshotDone = false // 快照没取到就绝不驱动还原，更不许据此删键
-let ladderSpy: { mockRestore(): void } | undefined // 同理，spy 也要有 afterAll 兜底还原
-
-/** 还原阶梯口径：原本有值写回原值，原本不存在则删掉（不写编造值）。幂等，可重复调用。 */
-async function restoreContentTiers(): Promise<void> {
-  if (!tiersSnapshotDone) return
-  if (tiersBackup !== undefined) await setConfig(CONTENT_TIERS_KEY, tiersBackup)
-  else await getDb().delete(billingConfigs).where(eq(billingConfigs.key, CONTENT_TIERS_KEY))
-}
-
 beforeAll(async () => {
-  tiersBackup = await getConfig(CONTENT_TIERS_KEY)
-  tiersSnapshotDone = true // 读到了（含「本来就没有」＝undefined）才允许还原
   const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
   token = r.token
   userId = r.user.id
@@ -122,16 +119,9 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  ladderSpy?.mockRestore() // 用例体超时时它的 finally 没跑，spy 可能还挂着
-  let restoreErr: unknown
-  try {
-    await restoreContentTiers() // 兜底还原共享计费口径（用例内 finally 超时不执行）
-  } catch (e) {
-    restoreErr = e
-  }
+  holdAmountFault = "none" // 用例体超时时它的 finally 不会执行，开关必须在此兜底复位
   await getDb().delete(users).where(eq(users.id, userId)) // 项目/步随 user 级联删
   await closeDb()
-  if (restoreErr) throw restoreErr // 还原失败必须炸出来：共享库可能还留着测试阶梯
 })
 
 const auth = () => ({ Authorization: `Bearer ${token}`, "content-type": "application/json" })
@@ -609,9 +599,8 @@ describe("GET /:id/steps/:step/events 进度事件流", () => {
       .values({ userId, threadId: `proj-${crypto.randomUUID()}`, currentStep: "content", status: "running", name: "notiers" })
       .returning()
     const before = captured.preDeductSteps.length
-    // 快照已在 beforeAll 取好；这里的 finally 只是快路径，真正的兜底在 afterAll（见文件顶部注释）。
     try {
-      await setConfig(CONTENT_TIERS_KEY, [{ maxChars: 50_000, cost: 40 }]) // 缺顶档 = 非法阶梯
+      holdAmountFault = "config" // 缺顶档一类的非法/缺失阶梯
       const bad = await app.request(`/api/projects/${proj!.id}/steps/content`, { method: "POST", headers: auth() })
       expect(bad.status).toBe(400)
       expect(((await bad.json()) as { error: string }).error).toBe("content_tiers_not_configured")
@@ -620,14 +609,14 @@ describe("GET /:id/steps/:step/events 进度事件流", () => {
       expect(slots.length).toBe(0) // 未占步位（校验前置于 acquireStepSlot）
 
       // 合法阶梯：预扣额 = 各档最大价（260），且账本 op 为 content（不再是 content_long）
-      await setConfig(CONTENT_TIERS_KEY, [{ maxChars: 50_000, cost: 40 }, { maxChars: null, cost: 260 }])
+      holdAmountFault = "none"
       const ok = await app.request(`/api/projects/${proj!.id}/steps/content`, { method: "POST", headers: auth() })
       expect(ok.status).toBe(200)
       await ok.text()
       expect(captured.preDeductSteps.at(-1)).toBe("content")
       expect(captured.preDeductAmounts.at(-1)).toBe(260)
     } finally {
-      await restoreContentTiers()
+      holdAmountFault = "none"
     }
   })
 
@@ -639,9 +628,7 @@ describe("GET /:id/steps/:step/events 进度事件流", () => {
     const before = captured.preDeductSteps.length
     // 阶梯读取抛「非 ContentTiersConfigError」= DB 抖动一类基建故障：路由必须原样上抛成 5xx，
     // 而不是报成「去配阶梯」的 400（后者会把排障引向根本没坏的配置）。
-    ladderSpy = spyOn(billing, "resolveStepHoldAmount").mockImplementation(async () => {
-      throw new Error("db jitter")
-    })
+    holdAmountFault = "infra"
     try {
       const res = await app.request(`/api/projects/${proj!.id}/steps/content`, { method: "POST", headers: auth() })
       expect(res.status).toBeGreaterThanOrEqual(500)
@@ -649,8 +636,7 @@ describe("GET /:id/steps/:step/events 进度事件流", () => {
       const slots = await getDb().select().from(projectSteps).where(eq(projectSteps.projectId, proj!.id))
       expect(slots.length).toBe(0) // 未占步位（上抛点仍在 acquireStepSlot 之前）
     } finally {
-      ladderSpy.mockRestore()
-      ladderSpy = undefined
+      holdAmountFault = "none"
     }
   })
 })

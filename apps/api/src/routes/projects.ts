@@ -175,6 +175,7 @@ export type ProjectDeps = {
   settle: typeof billing.settle
   settleContent: typeof billing.settleContent
   settleFailed: typeof billing.settleFailed
+  resolveStepHoldAmount: typeof billing.resolveStepHoldAmount
   buildStateOverrides: typeof buildStateOverrides
   createRun: typeof client.createRun
   relayStream: typeof client.relayStream
@@ -292,6 +293,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
   const settle = deps.settle ?? billing.settle
   const settleContent = deps.settleContent ?? billing.settleContent
   const settleFailed = deps.settleFailed ?? billing.settleFailed
+  const resolveStepHoldAmount = deps.resolveStepHoldAmount ?? billing.resolveStepHoldAmount
   const stateOverrides = deps.buildStateOverrides ?? buildStateOverrides
   const createRun = deps.createRun ?? client.createRun
   const relayStream = deps.relayStream ?? client.relayStream
@@ -619,7 +621,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     // 误导排障。两条路径都在占步位/预扣之前，「不占步位不预扣」的性质对二者同等成立。
     let holdAmount: number | undefined
     try {
-      holdAmount = await billing.resolveStepHoldAmount(step)
+      holdAmount = await resolveStepHoldAmount(step)
     } catch (e) {
       if (!(e instanceof ContentTiersConfigError)) throw e
       return c.json({ error: "content_tiers_not_configured" }, 400)
