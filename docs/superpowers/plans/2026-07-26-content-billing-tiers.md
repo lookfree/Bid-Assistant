@@ -1105,7 +1105,21 @@ Expected: PASS
 
 并在该文件顶部 import 增加 `import { tiersCostText } from "@/lib/content-tiers"`。
 
-- [ ] **Step 7: 类型检查与全量前端测试**
+- [ ] **Step 7: 补 `content_tiers_not_configured` 的用户可读文案（Task 3 审查转入）**
+
+Task 3 新增了 400 错误码 `content_tiers_not_configured`（阶梯未配置时拒跑）。`apps/web/lib/use-step.ts` 里
+已对 `model_not_configured` / `package_required` 做了特判，本码却会落到通用的「生成失败，请重试」——
+而它恰恰会在「部署顺序错了、键还没种」时触发，通用文案会让人误以为是系统故障。
+
+在 `apps/web/lib/use-step.ts` 中与既有 `model_not_configured` 特判**并列**增加一条（沿用同一写法与语气）：
+
+```ts
+  if (code === "content_tiers_not_configured") return "标书生成的积分口径尚未配置，请联系运营在后台设置后重试"
+```
+
+（具体变量名/分支形式以该文件现有 `model_not_configured` 那一行为准，保持一致；不要新造错误处理机制。）
+
+- [ ] **Step 8: 类型检查与全量前端测试**
 
 Run: `cd apps/web && node_modules/.bin/tsc --noEmit && bun test test/`
 Expected: 类型无错误 + 全部测试通过
