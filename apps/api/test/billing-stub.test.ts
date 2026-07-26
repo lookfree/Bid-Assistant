@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bu
 import { eq } from "drizzle-orm"
 import { preDeduct, settle, settleFailed, settleContent, resolveStepHoldAmount } from "../src/services/billing-stub"
 import { grant, getBalance } from "../src/services/credits"
-import { getConfig, seedConfigs, setConfig } from "../src/services/config"
+import { getConfigs, seedConfigs, setConfig } from "../src/services/config"
 import { getDb, closeDb } from "../src/db/client"
 import { billingConfigs, users } from "../src/db/schema"
 import { createTestUser, TEST_TIMEOUT_MS } from "./repos/helpers"
@@ -51,9 +51,13 @@ async function restoreConfigs(): Promise<void> {
 beforeAll(async () => {
   // 快照必须取在 seedConfigs 之前：种子会补建缺失键，之后再读就分不清「本来就有」与「种子刚建」，
   // 还原时会把测试自己造出来的键当既有值留下。
+  // 一次 SELECT 取全表，不逐键往返：真库在公网隧道后面，串行远程往返会把 beforeAll 拖进
+  // TEST_TIMEOUT_MS（超时则一个用例都跑不到）。
+  const all = await getConfigs()
   for (const key of MUTATED_CONFIG_KEYS) {
-    const v = await getConfig(key)
-    if (v !== undefined) configBackup.set(key, v)
+    // 存在性用 hasOwn 判定，不能用 `v !== undefined`：值合法地存成 JSON null 时，
+    // 后者会把它误判成「本来就不存在」，还原时直接 DELETE 掉真实配置。
+    if (Object.hasOwn(all, key)) configBackup.set(key, all[key])
   }
   snapshotComplete = true // 只有整套读完才允许还原——半套快照去还原＝按半套信息删键
   await seedConfigs()

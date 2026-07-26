@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bun:test"
-import { eq } from "drizzle-orm"
+import { eq, inArray } from "drizzle-orm"
 import { getDb, closeDb } from "../src/db/client"
 import { billingConfigs } from "../src/db/schema"
 import { getConfig, getConfigs, seedConfigs, setConfig } from "../src/services/config"
@@ -25,23 +25,29 @@ const SEED_KEYS: string[] = [
 const configBackup = new Map<string, unknown>() // 未收录的键 = 本文件跑之前就不存在
 let snapshotComplete = false // 快照整套取全才置真，见 restoreConfigs 的第 ① 条
 
-/** 取快照：必须跑在任何 delete/seed 之前，否则分不清「本来就有」与「测试自己造出来的」。 */
+/** 取快照：必须跑在任何 delete/seed 之前，否则分不清「本来就有」与「测试自己造出来的」。
+ *  **一次 SELECT 取全表，绝不逐键往返**：真库在公网隧道后面，种子键有 15+ 个，串行 15+ 次
+ *  远程往返在链路稍差时就能在任何一个用例体开跑之前吃满 TEST_TIMEOUT_MS（实测 20s 超时、
+ *  0 个用例执行）——快照越慢，「守护共享计费口径」这件事本身越容易把整套测试卡死。 */
 async function snapshotSeedKeys(): Promise<void> {
+  const all = await getConfigs() // 无前缀 = 全表，单次查询
   for (const key of SEED_KEYS) {
-    const v = await getConfig(key)
-    if (v !== undefined) configBackup.set(key, v)
+    // 存在性用 hasOwn 判定，不能用 `v !== undefined`：某个键的值合法地存成 JSON null 时，
+    // 后者会把它误判成「本来就不存在」，还原时直接 DELETE 掉真实配置。
+    if (Object.hasOwn(all, key)) configBackup.set(key, all[key])
   }
   snapshotComplete = true // 只有整套读完才允许还原——半套快照去还原＝按半套信息删键
 }
 
+/** 清键：同样一次往返（`IN (...)`），理由同 snapshotSeedKeys——beforeAll 里每多一次远程往返，
+ *  整套测试就更接近「一个用例都没跑就超时」。 */
 async function wipeSeedKeys(): Promise<void> {
-  for (const key of SEED_KEYS) {
-    await getDb().delete(billingConfigs).where(eq(billingConfigs.key, key))
-  }
-  // 历史遗留孤儿键：口径从 content 拆成 content_short/long 后 content 不再入种子，
-  // 但 seedConfigs 只增不删，旧环境仍残留 credit_cost.content——避免污染断言，先清掉。
-  // （该键今天已无任何读取方，清掉即彻底作废，故不进快照。）
-  await getDb().delete(billingConfigs).where(eq(billingConfigs.key, "credit_cost.content"))
+  // 历史遗留孤儿键 credit_cost.content：口径从 content 拆成 content_short/long 后它不再入种子，
+  // 但 seedConfigs 只增不删，旧环境仍残留——避免污染断言，一并清掉。
+  // （该键今天已无任何读取方，清掉即彻底作废，故不进快照、也不还原。）
+  await getDb()
+    .delete(billingConfigs)
+    .where(inArray(billingConfigs.key, [...SEED_KEYS, "credit_cost.content"]))
 }
 
 /** 还原配置快照：原本有值的写回原值；原本不存在的删掉（绝不用种子默认值顶替——那正是本次要堵的
