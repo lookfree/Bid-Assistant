@@ -138,15 +138,17 @@ export function GenerationConfigDialog({
           <FormatPanel fmt={fmt} setF={setF} setMargin={setMargin} onReset={() => setFmt({ ...DEFAULT_FORMAT })} />
         )}
 
-        <div className="mt-5 flex items-center justify-between gap-3 border-t border-border pt-4">
-          <span className="text-xs text-muted-foreground">{costText}</span>
-          <div className="flex gap-2">
-            <button onClick={onClose} className="rounded-xl border border-border px-4 py-2 text-sm text-foreground transition-colors hover:bg-muted">
+        {/* 说明一行、按钮一行：阶梯计费文案较长,与按钮同排会把按钮挤成竖排单字。
+            whitespace-nowrap 兜底,窄屏下按钮文字也不再逐字折行。 */}
+        <div className="mt-5 flex flex-col gap-3 border-t border-border pt-4">
+          <span className="text-xs leading-relaxed text-muted-foreground">{costText}</span>
+          <div className="flex justify-end gap-2">
+            <button onClick={onClose} className="shrink-0 whitespace-nowrap rounded-xl border border-border px-4 py-2 text-sm text-foreground transition-colors hover:bg-muted">
               取消
             </button>
             <button
               onClick={confirm}
-              className="inline-flex items-center gap-1.5 rounded-xl gradient-brand px-5 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl gradient-brand px-5 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90"
             >
               <Sparkles className="size-4" />
               开始生成
