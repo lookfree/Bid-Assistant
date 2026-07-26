@@ -48,6 +48,23 @@ export function parseBudgetYuan(text: string | null | undefined): number | null 
   return n >= 10_000 ? n : null
 }
 
+/** 多包件招标的字数基准（spec324）：一次只投一个包,标书篇幅应按「选中那个包」的限价估算,
+ *  而非全招标总预算（projectMeta.budget＝各包之和）——否则选 98 万的包却按 279 万推荐,字数虚高。
+ *  返回 {budget, fromPackage} 一处定夺（fromPackage 供文案区分「本包/招标」预算,勿在调用方另判一次,
+ *  两处规则会漂移）。选中包限价「可解析」才用它；多包件下不可解析（面议/空）宁可回落章数推荐,
+ *  也不拿各包之和的总预算估单包；单包/未选/陈旧 id 回落招标总预算。 */
+export function budgetForSizing(
+  tenderBudget: string | null | undefined,
+  packages: { id: string; budget: string }[] | null | undefined,
+  selectedPackageId: string | null | undefined,
+): { budget: string | null | undefined; fromPackage: boolean } {
+  const pkg = selectedPackageId ? packages?.find((p) => p.id === selectedPackageId) : undefined
+  if (pkg && parseBudgetYuan(pkg.budget) != null) return { budget: pkg.budget, fromPackage: true }
+  // 认得出是哪个包、但它的限价不可用 → 多包件时总预算必虚高,给 null 让上层回落章数推荐
+  if (pkg && (packages?.length ?? 0) > 1) return { budget: null, fromPackage: false }
+  return { budget: tenderBudget, fromPackage: false }
+}
+
 /** 初始推荐目标字数：优先按招标预算（一万元一页、下限约 80 页、每页 600 字）；预算不可解析时回退
  *  章节数 × 3000。夹在滑杆范围内（1万~50万）。budgetText 缺省 = 无预算信号。 */
 export function suggestedTarget(chapterCount: number, budgetText?: string | null): number {

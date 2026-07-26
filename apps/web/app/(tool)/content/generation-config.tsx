@@ -5,12 +5,14 @@ import { Sparkles } from "lucide-react"
 import { estimatePages, fmtChars } from "@/lib/doc-stats"
 import { useOtherStepResult } from "@/lib/use-step"
 import type { ProjectInfo } from "@/lib/project"
+import type { PackageInfo } from "@/lib/bid-types"
 import {
   DEFAULT_FORMAT,
   FONT_OPTIONS,
   SIZE_OPTIONS,
   TARGET_MAX,
   TARGET_MIN,
+  budgetForSizing,
   loadGenConfig,
   parseBudgetYuan,
   sanitizeFormat,
@@ -36,8 +38,15 @@ export function GenerationConfigDialog({
   onClose: () => void
 }) {
   // 读标预算懒拉：弹层挂载=用户打开配置时才拉，不在 content 首屏拽 ~1MB 读标结果。
-  const { data: readMeta } = useOtherStepResult<{ projectMeta?: { budget?: string } }>(projectId, info, "read")
-  const budget = readMeta?.projectMeta?.budget
+  const { data: readMeta } = useOtherStepResult<{ projectMeta?: { budget?: string }; packages?: PackageInfo[] }>(projectId, info, "read")
+  // 多包件招标一次只投一个包：字数按「选中那个包」的限价估算，而非全招标总预算（各包之和）。
+  // budget 与 fromPackage 同源于 budgetForSizing（文案与取值绝不各判一次，防漂移）。
+  const selectedPkgId = info?.project.selectedPackage?.id ?? null
+  const { budget, fromPackage: usingPkgBudget } = budgetForSizing(
+    readMeta?.projectMeta?.budget,
+    readMeta?.packages,
+    selectedPkgId,
+  )
   const budgetYuan = parseBudgetYuan(budget)
   const suggested = suggestedTarget(chapterCount, budget)
   // localStorage 只在挂载时读一次（存过偏好则优先，且预算到达也不覆盖用户偏好）
@@ -115,7 +124,7 @@ export function GenerationConfigDialog({
         </label>
         <p className="mt-1.5 text-xs text-muted-foreground">
           {budgetYuan != null
-            ? `按招标预算约 ${(budgetYuan / 10000).toLocaleString("zh-CN", { maximumFractionDigits: 0 })} 万元估算(约 1 万元/页 · 每页约 600 字 · 下限约 80 页),推荐 ${fmtChars(suggested)} 字`
+            ? `按${usingPkgBudget ? "本包" : "招标"}预算约 ${(budgetYuan / 10000).toLocaleString("zh-CN", { maximumFractionDigits: 0 })} 万元估算(约 1 万元/页 · 每页约 600 字 · 下限约 80 页),推荐 ${fmtChars(suggested)} 字`
             : `本标书共 ${chapterCount} 章,推荐 ${fmtChars(Math.round((chapterCount * 2000) / 1000) * 1000)}~${fmtChars(suggestedTarget(chapterCount))} 字`}
           。此为目标参考:字数向技术标正文倾斜分配(商务标多为投标函/报价/偏离表等表单声明,篇幅短、不注水凑数),实际以内容质量为准,可拖动调整
         </p>
