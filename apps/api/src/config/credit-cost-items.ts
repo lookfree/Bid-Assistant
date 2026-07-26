@@ -13,7 +13,7 @@ export const CREDIT_COST_ITEMS = [
 
 export type CreditCostItem = { key: string; feature: string; desc: string; value: number; cost: string }
 
-/** 拼装 9 项的实时口径：值取 billing_configs 的 credit_cost.<key>，缺省回落 default。 */
+/** 拼装 7 项的实时口径：值取 billing_configs 的 credit_cost.<key>，缺省回落 default。 */
 export function buildCreditCosts(configs: Record<string, unknown>): CreditCostItem[] {
   return CREDIT_COST_ITEMS.map((i) => {
     const v = configs[`credit_cost.${i.key}`]

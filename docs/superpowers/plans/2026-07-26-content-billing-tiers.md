@@ -1154,14 +1154,62 @@ Expected: `RUNNING_COUNT 0`。非 0 则等待或用 `stuck-steps.ts` 的 `failSt
 本次改动涉及 api（钱）+ admin + web，**不涉及 agent、不涉及 DB 迁移**（`billing_configs` 是既有表）。
 
 **⚠️ 关键：`seedConfigs()` 不在服务启动时自动跑**（实测校正：它只由 `bun run db:seed` 触发）。因此新键
-**不会**随发版自动出现，而 `content` 步一旦读不到阶梯就 **400 `content_tiers_not_configured` 拒跑**。部署顺序必须是：
+**不会**随发版自动出现，而 `content` 步一旦读不到阶梯就 **400 `content_tiers_not_configured` 拒跑**
+（已在途、尚未结算的 content 步也会因 `settleContent → contentTiers()` 抛错而无法收尾，hold 冻结）。
 
-1. **先种键**：在目标环境执行 `docker exec bid-api-1 bun run db:seed`（幂等，`onConflictDoNothing`，不覆盖运营已调值）；
-   或由运营先在后台「积分消耗口径」保存一次阶梯。
-2. **验证键已存在**：查 `billing_configs` 中 `credit_cost.content_tiers` 非空，再继续。
-3. **然后发 api**，最后发 admin / web（前端读到的 `contentTiers` 才非空）。
+**种子必须由「新代码」执行。** `credit_cost.content_tiers` 是本分支才加进 `BILLING_SEED` 的：
+对着**正在运行的旧容器**执行 `docker exec bid-api-1 bun run db:seed` 跑的是旧镜像里的旧种子表，
+新键根本不在其中——命令会正常退出、日志一片祥和，但键**没有**被写入（静默 no-op）。
+同理，「让运营先在后台保存一次阶梯」也不成立：阶梯编辑器在 `apps/admin`，而 admin 是最后才发的。
 
-顺序颠倒的后果是「新 api 已上线但键没种」→ 用户点生成直接报错。发版前务必按上面 1→2→3 走。
+#### A. docker compose 环境（`deploy/deploy.sh` 已是正确顺序，照跑即可）
+
+`deploy/deploy.sh` 的既有次序本身就满足要求——**先 build 新镜像，再用新镜像的一次性容器跑 migrate/seed，最后 `up -d`**：
+
+```bash
+docker compose --env-file .env.deploy.local build                       # 1) 先出新镜像
+docker compose --env-file .env.deploy.local run --rm api bun run db:migrate
+docker compose --env-file .env.deploy.local run --rm api bun run db:seed  # 2) 新代码的种子表，含 content_tiers
+docker compose --env-file .env.deploy.local up -d                        # 3) 再滚服务
+```
+
+即：目标机上直接 `./deploy/deploy.sh` 即可，**不要**手动改成 `docker exec` 到运行中的容器。
+`run --rm` 起的是**新构建镜像**的一次性容器，种子表是新的；`docker exec` 进的是**旧镜像**的运行中容器，种子表是旧的。
+`db:seed` 幂等（`onConflictDoNothing`），不覆盖运营已调值，可每次部署都跑。
+
+#### B. 230 客户环境（原生构建，非 compose）
+
+源码靠 `scp` 同步、api 在机器上原生跑，因此次序是「**同步源码 → 用新代码种键 → 再重启 api**」：
+
+1. 同步本次改动到 `~/bid/app`（含 `apps/api/src/config/billing-seed.ts`）；
+2. **在新代码上种键**（进程还没重启也没关系，`db:seed` 是独立一次性命令，读的是磁盘上的新源码）：
+   `cd ~/bid/app/apps/api && bun run db:seed`
+3. 再重启 api 进程；最后发 admin / web。
+
+若 `db:seed` 因任何原因跑不了（依赖没装、脚本报错），用 SQL 直接补键兜底（同样幂等，不覆盖已有值）：
+
+```sql
+INSERT INTO billing_configs (key, value) VALUES (
+  'credit_cost.content_tiers',
+  '[{"maxChars":50000,"cost":40},{"maxChars":150000,"cost":80},{"maxChars":300000,"cost":150},{"maxChars":null,"cost":260}]'::jsonb
+) ON CONFLICT (key) DO NOTHING;
+```
+
+（`billing_configs` 列为 `key text PK` / `value jsonb` / `updated_at`（有默认值，无需显式给）；
+`ON CONFLICT DO NOTHING` 保证不覆盖运营已调值。）
+
+#### C. 验证（不可跳过）
+
+种完键、**在放流量之前**确认：
+
+```sql
+SELECT value FROM billing_configs WHERE key = 'credit_cost.content_tiers';
+```
+
+Expected: 返回一行、数组非空、且**恰有一档 `maxChars` 为 `null`**（缺顶档 = 非法阶梯，后端一样 400）。
+键确认存在后再发 api，最后发 admin / web（前端读到的 `contentTiers` 才非空）。
+
+顺序颠倒的后果是「新 api 已上线但键没种」→ 用户点生成直接报错、在途 content 步的 hold 冻结。
 
 ---
 
