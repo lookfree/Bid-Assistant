@@ -4,6 +4,7 @@ import { plans, subscriptions } from "../db/schema"
 import { getBalance } from "./credits"
 import { getConfig, getConfigs, pickNonNegative } from "./config"
 import { buildCreditCosts, type CreditCostItem } from "../config/credit-cost-items"
+import { parseContentTiers, CONTENT_TIERS_KEY, type ContentTier } from "./content-pricing"
 import { centsToYuan } from "../lib/money"
 
 // 会员中心聚合（spec308，架构 §5.3）：当前订阅 + 积分余额 + 套餐列表 + 渐进式展示（当前档+下一档）。
@@ -47,7 +48,8 @@ export interface MembershipOverview {
   balance: number
   plans: PlanView[]
   rechargePacks: RechargePackView[] // 充值包目录（服务端定价为准；前端按 id 下单，消除前后端 id 不一致）
-  creditCosts: CreditCostItem[] // 积分消耗口径 9 项（credit_cost.* 实时值，运营后台可改）
+  creditCosts: CreditCostItem[] // 积分消耗口径 7 项（credit_cost.* 实时值，运营后台可改）
+  contentTiers: ContentTier[] // 标书生成计费阶梯（按产出总字数落档，运营后台可增删）；配置非法时为空数组
   signupGrantCredits: number // 注册赠送积分（signup_grant_credits 实时值，运营后台可改；前端展示读此值不写死）
   progressive: { current: PlanView | null; next: PlanView | null }
 }
@@ -130,6 +132,14 @@ export async function getMembershipOverview(userId: string): Promise<MembershipO
     getConfig("signup_grant_credits"),
   ])
   const creditCosts = buildCreditCosts(costCfg)
+  // 展示路径对坏配置容错：非法阶梯返回空数组，由前端显示「未配置」而非编造价格；
+  // 真正的拒跑发生在生成路径（resolveStepHoldAmount 抛错 → 400）。
+  let contentTiers: ContentTier[] = []
+  try {
+    contentTiers = parseContentTiers(costCfg[CONTENT_TIERS_KEY])
+  } catch {
+    contentTiers = []
+  }
   const rechargePacks = (packsCfg ?? []).map((p) => ({
     id: p.id,
     credits: p.credits,
@@ -143,7 +153,7 @@ export async function getMembershipOverview(userId: string): Promise<MembershipO
   const next = nextTier ? (byTier.get(nextTier) ?? null) : null
 
   return {
-    subscription, balance, plans: list, rechargePacks, creditCosts,
+    subscription, balance, plans: list, rechargePacks, creditCosts, contentTiers,
     signupGrantCredits: pickNonNegative(signupGrant, 200),
     progressive: { current, next },
   }

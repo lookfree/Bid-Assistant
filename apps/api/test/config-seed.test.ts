@@ -4,6 +4,7 @@ import { getDb, closeDb } from "../src/db/client"
 import { billingConfigs } from "../src/db/schema"
 import { getConfig, getConfigs, seedConfigs, setConfig } from "../src/services/config"
 import { BILLING_SEED } from "../src/config/billing-seed"
+import { CREDIT_COST_ITEMS } from "../src/config/credit-cost-items"
 import { TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS)
@@ -15,7 +16,7 @@ async function wipeSeedKeys() {
     await getDb().delete(billingConfigs).where(sql`${billingConfigs.key} = ${key}`)
   }
   // 历史遗留孤儿键：口径从 content 拆成 content_short/long 后 content 不再入种子，
-  // 但 seedConfigs 只增不删，旧环境仍残留 credit_cost.content——本套按精确条数断言，先清掉。
+  // 但 seedConfigs 只增不删，旧环境仍残留 credit_cost.content——避免污染断言，先清掉。
   await getDb().delete(billingConfigs).where(sql`${billingConfigs.key} = 'credit_cost.content'`)
 }
 
@@ -37,11 +38,11 @@ describe("spec301 配置服务", () => {
     expect(poll?.windowMinutes).toBe(6) // 收钱吧官方轮询窗口
   })
 
-  it("getConfigs 前缀过滤：credit_cost.* 九项口径齐全", async () => {
+  it("getConfigs 前缀过滤：credit_cost.* 各项口径齐全（含计费阶梯）", async () => {
     const costs = await getConfigs("credit_cost.")
-    expect(Object.keys(costs)).toHaveLength(9)
-    expect(costs["credit_cost.content_short"]).toBe(40)
-    expect(costs["credit_cost.content_long"]).toBe(80)
+    for (const i of CREDIT_COST_ITEMS) expect(costs[`credit_cost.${i.key}`]).toBe(i.default)
+    // 标书生成不在扁平口径里，走阶梯键（数组）
+    expect(Array.isArray(costs["credit_cost.content_tiers"])).toBe(true)
   })
 
   it("seedConfigs 不覆盖已存在的 key（运营改过的值保持）", async () => {
