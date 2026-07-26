@@ -249,7 +249,14 @@ export function PlansClient() {
       ])
       setSavedCosts(costs)
       setSavedPlanForms(planForms)
-      if (tiersChanged) setSavedTiers(sortTiers(tiers!))
+      // 落库的是 sortTiers(tiers)：同步把排序结果写回 tiers 本身（不只是 savedTiers），否则
+      // "+ 增加一档"追加在末尾（顶档之后）导致 tiers 顺序 ≠ savedTiers 顺序——内容相同但
+      // JSON.stringify 比较因顺序不同恒为 true，dirty 永远清不掉、每次保存都重复 PUT 同一份阶梯。
+      if (tiersChanged) {
+        const sorted = sortTiers(tiers!)
+        setTiers(sorted)
+        setSavedTiers(sorted)
+      }
       toast.success("配置已保存并生效", {
         description: "套餐档位与积分口径已更新，新规则即时对所有用户生效。",
       })
@@ -438,47 +445,54 @@ export function PlansClient() {
                 ) : (
                   <div className="mt-3 flex flex-col gap-2">
                     {tiers.map((t, i) => (
-                      <div key={i} className="flex items-center gap-2">
-                        <span className="text-sm text-muted-foreground">总字数 ≤</span>
-                        {t.maxChars === null ? (
-                          <span className="w-32 text-sm font-medium text-foreground">不限（顶档）</span>
-                        ) : (
+                      <div key={i} className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm text-muted-foreground">总字数 ≤</span>
+                          {t.maxChars === null ? (
+                            <span className="w-32 text-sm font-medium text-foreground">不限（顶档）</span>
+                          ) : (
+                            <Input
+                              type="number"
+                              className="h-9 w-32 text-right"
+                              value={t.maxChars}
+                              onChange={(e) =>
+                                setTiers((prev) =>
+                                  (prev ?? []).map((x, j) =>
+                                    j === i ? { ...x, maxChars: Math.trunc(Number(e.target.value)) || 0 } : x,
+                                  ),
+                                )
+                              }
+                            />
+                          )}
+                          <span className="text-sm text-muted-foreground">字 →</span>
                           <Input
                             type="number"
-                            className="h-9 w-32 text-right"
-                            value={t.maxChars}
+                            className="h-9 w-24 text-right"
+                            value={t.cost}
                             onChange={(e) =>
                               setTiers((prev) =>
                                 (prev ?? []).map((x, j) =>
-                                  j === i ? { ...x, maxChars: Math.trunc(Number(e.target.value)) || 0 } : x,
+                                  j === i ? { ...x, cost: Math.trunc(Number(e.target.value)) || 0 } : x,
                                 ),
                               )
                             }
                           />
-                        )}
-                        <span className="text-sm text-muted-foreground">字 →</span>
-                        <Input
-                          type="number"
-                          className="h-9 w-24 text-right"
-                          value={t.cost}
-                          onChange={(e) =>
-                            setTiers((prev) =>
-                              (prev ?? []).map((x, j) =>
-                                j === i ? { ...x, cost: Math.trunc(Number(e.target.value)) || 0 } : x,
-                              ),
-                            )
-                          }
-                        />
-                        <span className="text-sm text-muted-foreground">积分</span>
-                        {t.maxChars !== null && (
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setTiers((prev) => (prev ?? []).filter((_, j) => j !== i))}
-                          >
-                            删除
-                          </Button>
+                          <span className="text-sm text-muted-foreground">积分</span>
+                          {t.maxChars !== null && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setTiers((prev) => (prev ?? []).filter((_, j) => j !== i))}
+                            >
+                              删除
+                            </Button>
+                          )}
+                        </div>
+                        {/* 清空 cost 输入框与显式填 0 在数值上无法区分（都存成合法的 0=免费档）；
+                           这里只做提示不拦截保存，避免误清空静默落库成免费档却无人察觉。 */}
+                        {t.cost === 0 && (
+                          <p className="text-xs text-amber-600">该档积分为 0，请确认并非误清空</p>
                         )}
                       </div>
                     ))}
