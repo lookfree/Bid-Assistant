@@ -68,6 +68,11 @@ describe("costForChars 落档（边界：等于阈值落较低档）", () => {
     expect(costForChars(tiers, 300_001)).toBe(260) // 超顶 → 顶档
     expect(costForChars(tiers, 10_000_000)).toBe(260)
   })
+
+  it("tiers 无顶档（违反 parseContentTiers 输出前提）→ 抛错，不静默返回末档价", () => {
+    const noTop: ContentTier[] = [{ maxChars: 50_000, cost: 40 }]
+    expect(() => costForChars(noTop, 100_000)).toThrow()
+  })
 })
 
 describe("holdAmountFor 预扣额", () => {

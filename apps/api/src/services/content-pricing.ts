@@ -34,10 +34,13 @@ export function parseContentTiers(raw: unknown): ContentTier[] {
   return [...bounded, tops[0]!]
 }
 
-/** 按总字数落档（纯函数）：升序取第一个满足 总字数 ≤ maxChars 的档，顶档兜底。 */
+/** 按总字数落档（纯函数）：升序取第一个满足 总字数 ≤ maxChars 的档，顶档兜底。
+ *  前提：tiers 必须是 parseContentTiers 的输出（已保证有且只有一个顶档）。若循环走到
+ *  末尾仍未命中，说明调用方传入的 tiers 没有顶档——这是违反前提的编程错误，必须报错，
+ *  不能静默返回末档价格（那会在坏输入下悄悄算错钱，正是「缺口径即失败」要防的事故）。 */
 export function costForChars(tiers: ContentTier[], totalChars: number): number {
   for (const t of tiers) if (t.maxChars === null || totalChars <= t.maxChars) return t.cost
-  return tiers[tiers.length - 1]!.cost
+  throw new Error("计费阶梯缺少顶档（maxChars=null），无法为该字数落档")
 }
 
 /** 预扣金额（纯函数）：取各档最大价。结算只多退不少补，取最大值可保证
