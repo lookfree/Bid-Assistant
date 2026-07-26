@@ -249,13 +249,16 @@ export function PlansClient() {
       ])
       setSavedCosts(costs)
       setSavedPlanForms(planForms)
-      // 落库的是 sortTiers(tiers)：同步把排序结果写回 tiers 本身（不只是 savedTiers），否则
-      // "+ 增加一档"追加在末尾（顶档之后）导致 tiers 顺序 ≠ savedTiers 顺序——内容相同但
-      // JSON.stringify 比较因顺序不同恒为 true，dirty 永远清不掉、每次保存都重复 PUT 同一份阶梯。
+      // savedTiers 用本次 save() 发起时的闭包快照落定——它就是刚 PUT 落库的那份，与
+      // costs/planForms 只回写 savedX、绝不碰 live 状态的既有写法一致。
+      // tiers 本身改用函数式更新读"此刻"的最新值再排序，而不是直接 setTiers(sorted)
+      // 覆盖闭包快照：保存过程中若用户又编辑了阶梯（Input 并未因 saving 禁用），闭包里的
+      // tiers 早已过期，直接覆盖会把这期间的编辑静默丢弃、还顺带把 dirty 清成 false 让人
+      // 察觉不到丢失。函数式更新只对"当下"的数组重排显示顺序，绝不用旧快照吞掉新编辑；
+      // 新编辑内容与刚落库的 savedTiers 不同时，dirty 会正确保持 true。
       if (tiersChanged) {
-        const sorted = sortTiers(tiers!)
-        setTiers(sorted)
-        setSavedTiers(sorted)
+        setSavedTiers(sortTiers(tiers!))
+        setTiers((prev) => (prev ? sortTiers(prev) : prev))
       }
       toast.success("配置已保存并生效", {
         description: "套餐档位与积分口径已更新，新规则即时对所有用户生效。",
