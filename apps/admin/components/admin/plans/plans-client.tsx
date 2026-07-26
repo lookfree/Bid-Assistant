@@ -35,12 +35,11 @@ function UnsavedDot() {
 }
 
 // 积分口径的 6 项真实能力（后端 config key = credit_cost.<op>），种子默认各 10 积分。
-// 积分口径 9 项以 C 端 membership「积分消耗说明」为准（key 对齐后端 credit_cost.<key>）。
+// 积分口径 7 项以 C 端 membership「积分消耗说明」为准（key 对齐后端 credit_cost.<key>）；
+// 标书生成不在此列——它走下方的按字数分档阶梯（credit_cost.content_tiers）。
 const CREDIT_COST_OPS: { key: string; label: string; desc: string }[] = [
   { key: "read", label: "招标解读", desc: "识别评分点与关键条款" },
   { key: "outline", label: "提纲生成", desc: "技术标 + 商务标大纲" },
-  { key: "content_short", label: "标书生成（短篇）", desc: "单章 ≤ 2000 字" },
-  { key: "content_long", label: "标书生成（长篇）", desc: "单章 > 2000 字" },
   { key: "rewrite", label: "逐章重写 / 改写", desc: "针对单章润色重写" },
   { key: "review", label: "废标风险审查", desc: "全文风险体检 + 整改建议" },
   { key: "dedupe", label: "标书查重", desc: "多维指纹比对" },
@@ -56,6 +55,35 @@ const BILLING_CYCLE_LABELS: Record<string, string> = {
 }
 
 type CreditCosts = Record<string, number>
+
+/** 标书生成计费阶梯；maxChars=null 为顶档（无上限，不可删）。 */
+type ContentTier = { maxChars: number | null; cost: number }
+
+// 仅在 credit_cost.content_tiers 配置缺失/为空时兜底展示，绝不代替真实加载值（数字一律来自后端配置）。
+const DEFAULT_TIERS: ContentTier[] = [
+  { maxChars: 50_000, cost: 40 },
+  { maxChars: 150_000, cost: 80 },
+  { maxChars: 300_000, cost: 150 },
+  { maxChars: null, cost: 260 },
+]
+
+/** 阶梯合法性（与后端 parseContentTiers 同规则）：非法时就地报错、不发请求。 */
+function tiersError(tiers: ContentTier[]): string | null {
+  if (tiers.length === 0) return "至少要有一档"
+  if (tiers.some((t) => !Number.isInteger(t.cost) || t.cost < 0)) return "积分必须是 ≥0 的整数"
+  if (tiers.some((t) => t.maxChars !== null && (!Number.isInteger(t.maxChars) || t.maxChars <= 0)))
+    return "字数上限必须是正整数"
+  if (tiers.filter((t) => t.maxChars === null).length !== 1) return "必须有且只有一个顶档"
+  const b = tiers.filter((t) => t.maxChars !== null).map((t) => t.maxChars as number)
+  if (new Set(b).size !== b.length) return "字数上限不可重复"
+  return null
+}
+
+/** 提交前规范化：按字数上限升序，顶档置于末位（与后端返回顺序一致）。 */
+function sortTiers(tiers: ContentTier[]): ContentTier[] {
+  const bounded = tiers.filter((t) => t.maxChars !== null).sort((a, b) => (a.maxChars as number) - (b.maxChars as number))
+  return [...bounded, ...tiers.filter((t) => t.maxChars === null)]
+}
 
 // 套餐表单行：价格用元展示编辑，提交时才 ×100 转分（Math.round，绝不存浮点分）。
 type PlanForm = {
@@ -105,6 +133,9 @@ export function PlansClient() {
   // 积分口径 costs：null 表示尚未加载完成（避免加载前误判 dirty）。
   const [costs, setCosts] = useState<CreditCosts | null>(null)
   const [savedCosts, setSavedCosts] = useState<CreditCosts | null>(null)
+  // 标书生成计费阶梯：null 同样表示尚未加载完成（与 costs 同一套 dirty 判定习惯）。
+  const [tiers, setTiers] = useState<ContentTier[] | null>(null)
+  const [savedTiers, setSavedTiers] = useState<ContentTier[] | null>(null)
   const [planForms, setPlanForms] = useState<PlanForm[]>([])
   const [savedPlanForms, setSavedPlanForms] = useState<PlanForm[]>([])
   const [loading, setLoading] = useState(true)
@@ -127,6 +158,11 @@ export function PlansClient() {
       const c = toCreditCosts(configs)
       setCosts(c)
       setSavedCosts(c)
+      // 阶梯配置缺失/为空时兜底为 DEFAULT_TIERS，仅用于此种兜底场景，不覆盖真实加载值。
+      const rawTiers = configs["credit_cost.content_tiers"]
+      const loadedTiers = Array.isArray(rawTiers) && rawTiers.length > 0 ? (rawTiers as ContentTier[]) : DEFAULT_TIERS
+      setTiers(loadedTiers)
+      setSavedTiers(loadedTiers)
       const pf = toPlanForms(apiPlans)
       setPlanForms(pf)
       setSavedPlanForms(pf)
@@ -149,7 +185,11 @@ export function PlansClient() {
     costs !== null &&
     savedCosts !== null &&
     (JSON.stringify(costs) !== JSON.stringify(savedCosts) ||
-      JSON.stringify(planForms) !== JSON.stringify(savedPlanForms))
+      JSON.stringify(planForms) !== JSON.stringify(savedPlanForms) ||
+      JSON.stringify(tiers) !== JSON.stringify(savedTiers))
+
+  // 阶梯校验错误（与后端 parseContentTiers 同规则）：非法时禁用保存按钮，而非等后端 400 才发现。
+  const tiersErr = tiers ? tiersError(tiers) : null
 
   function updateCost(key: string, raw: string) {
     setCosts((prev) => {
@@ -177,6 +217,11 @@ export function PlansClient() {
 
   async function save() {
     if (!costs || !savedCosts) return
+    // 阶梯校验兜底：正常情况下保存按钮已因 tiersErr 禁用，这里防御性拦截一次，避免坏值发到后端 400。
+    if (tiersErr) {
+      toast.error(`计费阶梯不合法：${tiersErr}`)
+      return
+    }
     setSaving(true)
     try {
       const changedCostOps = CREDIT_COST_OPS.filter(({ key }) => costs[key] !== savedCosts[key])
@@ -189,6 +234,7 @@ export function PlansClient() {
           JSON.stringify(s.features) !== JSON.stringify(p.features)
         )
       })
+      const tiersChanged = tiers && JSON.stringify(tiers) !== JSON.stringify(savedTiers)
       await Promise.all([
         ...changedCostOps.map(({ key }) => adminApi.plans.setConfig(`credit_cost.${key}`, costs[key])),
         ...changedPlans.map((p) =>
@@ -199,9 +245,11 @@ export function PlansClient() {
             features: p.features,
           }),
         ),
+        ...(tiersChanged ? [adminApi.plans.setConfig("credit_cost.content_tiers", sortTiers(tiers!))] : []),
       ])
       setSavedCosts(costs)
       setSavedPlanForms(planForms)
+      if (tiersChanged) setSavedTiers(sortTiers(tiers!))
       toast.success("配置已保存并生效", {
         description: "套餐档位与积分口径已更新，新规则即时对所有用户生效。",
       })
@@ -260,7 +308,7 @@ export function PlansClient() {
               <RotateCcw data-icon="inline-start" />
               还原
             </Button>
-            <Button size="sm" onClick={save} disabled={disableActions}>
+            <Button size="sm" onClick={save} disabled={disableActions || !!tiersErr}>
               <Save data-icon="inline-start" />
               保存并生效
             </Button>
@@ -365,6 +413,79 @@ export function PlansClient() {
                   ))}
                 </div>
               )}
+
+              {/* 标书生成按产出总字数分档计费（credit_cost.content_tiers），顶档（maxChars=null）不可删。 */}
+              <div className="mt-6 border-t pt-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex flex-col">
+                    <span className="text-sm font-medium text-foreground">标书生成（按产出总字数分档）</span>
+                    <span className="text-xs text-muted-foreground">
+                      一次生成整本标书计一次费；按实际产出的正文总字数落档（总字数 ≤ 上限即取该档）
+                    </span>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={loading || !tiers}
+                    onClick={() => setTiers((prev) => [...(prev ?? []), { maxChars: 10_000, cost: 10 }])}
+                  >
+                    + 增加一档
+                  </Button>
+                </div>
+                {loading || !tiers ? (
+                  <p className="mt-3 text-sm text-muted-foreground">加载中…</p>
+                ) : (
+                  <div className="mt-3 flex flex-col gap-2">
+                    {tiers.map((t, i) => (
+                      <div key={i} className="flex items-center gap-2">
+                        <span className="text-sm text-muted-foreground">总字数 ≤</span>
+                        {t.maxChars === null ? (
+                          <span className="w-32 text-sm font-medium text-foreground">不限（顶档）</span>
+                        ) : (
+                          <Input
+                            type="number"
+                            className="h-9 w-32 text-right"
+                            value={t.maxChars}
+                            onChange={(e) =>
+                              setTiers((prev) =>
+                                (prev ?? []).map((x, j) =>
+                                  j === i ? { ...x, maxChars: Math.trunc(Number(e.target.value)) || 0 } : x,
+                                ),
+                              )
+                            }
+                          />
+                        )}
+                        <span className="text-sm text-muted-foreground">字 →</span>
+                        <Input
+                          type="number"
+                          className="h-9 w-24 text-right"
+                          value={t.cost}
+                          onChange={(e) =>
+                            setTiers((prev) =>
+                              (prev ?? []).map((x, j) =>
+                                j === i ? { ...x, cost: Math.trunc(Number(e.target.value)) || 0 } : x,
+                              ),
+                            )
+                          }
+                        />
+                        <span className="text-sm text-muted-foreground">积分</span>
+                        {t.maxChars !== null && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setTiers((prev) => (prev ?? []).filter((_, j) => j !== i))}
+                          >
+                            删除
+                          </Button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {tiersErr && <p className="mt-2 text-xs text-destructive">{tiersErr}</p>}
+              </div>
             </CardContent>
           </Card>
 
