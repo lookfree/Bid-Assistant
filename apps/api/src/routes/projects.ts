@@ -612,6 +612,15 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const model = await resolveModel()
     if (!model) return c.json({ error: "model_not_configured" }, 400)
 
+    // content 计费阶梯同样「未配置即拒」，且必须在占步位/预扣之前——与上面 model_not_configured 一致：
+    // 不占步位、不预扣、不静默按某个默认价扣费。
+    let holdAmount: number | undefined
+    try {
+      holdAmount = await billing.resolveStepHoldAmount(step)
+    } catch {
+      return c.json({ error: "content_tiers_not_configured" }, 400)
+    }
+
     // 先落「running 占位行」再计费/建 run：部分唯一索引 (project_id, step) WHERE status='running'
     // 在 DB 层原子挡掉并发双击（第二个请求这里冲突 → 惰性自愈失败才 409，不会双建 run/双计费）。
     const s = await acquireStepSlot(p.id, step)
@@ -619,9 +628,9 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     if (!s) return c.json({ error: "step_already_running" }, 409)
 
     // 真账本预扣（spec302）：ref=占位行 id（该次步进的稳定标识，幂等键随之稳定）。
-    // 按真实配置键扣费：content 步预扣按上档 content_long（结算再落篇幅档），其余步用同名 credit_cost.<step>。
+    // 按真实配置键扣费：content 步预扣按计费阶梯最大价（结算再按产出总字数落档），其余步用同名 credit_cost.<step>。
     // 余额不足 → 释放占位行，402。
-    const hold = await preDeduct(userId, billing.holdOpForStep(step), s.id)
+    const hold = await preDeduct(userId, step, s.id, holdAmount)
     if (!hold.ok) {
       await getDb().update(projectSteps).set({ status: "failed" }).where(eq(projectSteps.id, s.id))
       return c.json({ error: "insufficient" }, 402)

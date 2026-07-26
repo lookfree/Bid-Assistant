@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bun:test"
 import { eq } from "drizzle-orm"
-import { preDeduct, settle, settleFailed, settleContent, holdOpForStep } from "../src/services/billing-stub"
+import { preDeduct, settle, settleFailed, settleContent, resolveStepHoldAmount } from "../src/services/billing-stub"
 import { grant, getBalance } from "../src/services/credits"
 import { seedConfigs, setConfig } from "../src/services/config"
 import { getDb, closeDb } from "../src/db/client"
@@ -57,20 +57,27 @@ describe("billing-stub → 真账本门面（spec302）", () => {
     }
   })
 
-  it("content 步按篇幅分档：预扣上档 content_long(80)，短篇结算 content_short(40)、长篇足额(80)", async () => {
-    expect(holdOpForStep("content")).toBe("content_long") // 预扣按上档，防结算少补扣穿
-    expect(holdOpForStep("read")).toBe("read") // 其余步用同名真实配置键
-    await grant(userId, 200, { idempotencyKey: `gc-${userId}` })
+  it("content 步按产出总字数分档：预扣阶梯最大价，落档后多退", async () => {
+    await setConfig("credit_cost.content_tiers", [
+      { maxChars: 50_000, cost: 40 },
+      { maxChars: 150_000, cost: 80 },
+      { maxChars: null, cost: 260 },
+    ])
+    expect(await resolveStepHoldAmount("content")).toBe(260) // 预扣取最大价，防结算少补扣穿
+    expect(await resolveStepHoldAmount("read")).toBeUndefined() // 其余步按 credit_cost.<step>
+    await grant(userId, 600, { idempotencyKey: `gc-${userId}` })
 
-    // 短篇：任一章 ≤ 2000 字 → 结算落 content_short(40)，退差额 40
-    const rS = await preDeduct(userId, holdOpForStep("content"), `refc1-${userId}`)
-    expect(rS.hold).toBe(80)
-    const costS = await settleContent(`refc1-${userId}`, rS.holdId!, rS.hold, 1500)
-    expect(costS).toBe(40)
+    // 低档：总字数 3 万 → 结算 40，退 220
+    const rS = await preDeduct(userId, "content", `refc1-${userId}`, 260)
+    expect(rS.hold).toBe(260)
+    expect(await settleContent(`refc1-${userId}`, rS.holdId!, rS.hold, 30_000)).toBe(40)
 
-    // 长篇：某章 > 2000 字 → 足额结算 content_long(80)，不退
-    const rL = await preDeduct(userId, holdOpForStep("content"), `refc2-${userId}`)
-    const costL = await settleContent(`refc2-${userId}`, rL.holdId!, rL.hold, 3000)
-    expect(costL).toBe(80)
+    // 顶档：总字数 40 万 → 足额 260
+    const rL = await preDeduct(userId, "content", `refc2-${userId}`, 260)
+    expect(await settleContent(`refc2-${userId}`, rL.holdId!, rL.hold, 400_000)).toBe(260)
+
+    // 兼容：预扣额小于落档价（发版时的在途 run）→ 钳到预扣额，不扣穿
+    const rOld = await preDeduct(userId, "content", `refc3-${userId}`, 80)
+    expect(await settleContent(`refc3-${userId}`, rOld.holdId!, rOld.hold, 400_000)).toBe(80)
   })
 })

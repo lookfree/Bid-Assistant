@@ -92,18 +92,26 @@ export async function adminAdjust(userId: string, amount: number, opts: { ref?: 
   })
 }
 
-/** 预扣：N = credit_cost.<op> 配置。事务内锁 credit_balances 用户行作串行化点，
+/** 预扣：N = 显式 opts.amount，否则 credit_cost.<op> 配置。事务内锁 credit_balances 用户行作串行化点，
  *  校验余额≥N 后写 hold(-N)。余额不足抛 InsufficientCreditsError。
  *  为什么锁用户行而非流水行：新用户首扣时 credit_transactions 无行可锁（谓词锁缺口），
  *  并发首扣会各自读到余额再一起插 hold → 超扣；先 upsert 兜底建行保证有行可锁。 */
 export async function hold(
   userId: string,
   op: string,
-  opts: { ref?: string; idempotencyKey: string },
+  opts: { ref?: string; idempotencyKey: string; amount?: number },
 ): Promise<{ holdId: string; amount: number }> {
-  const configured = await getConfig<number>(`credit_cost.${op}`)
-  if (configured == null) throw new Error(`未配置操作积分口径 credit_cost.${op}`) // 静默免费是资损，缺口径即失败
-  const n = Number(configured)
+  // amount 显式给出 = 调用方（content 阶梯定价）已从运营配置解析出金额，此处不再查 credit_cost.<op>；
+  // 其余步骤仍按配置键取值，「缺口径即失败」的不变量不破。
+  let n: number
+  if (opts.amount !== undefined) {
+    if (!Number.isInteger(opts.amount) || opts.amount < 0) throw new Error(`预扣金额非法：${opts.amount}`)
+    n = opts.amount
+  } else {
+    const configured = await getConfig<number>(`credit_cost.${op}`)
+    if (configured == null) throw new Error(`未配置操作积分口径 credit_cost.${op}`) // 静默免费是资损，缺口径即失败
+    n = Number(configured)
+  }
   return await getDb().transaction(async (tx) => {
     // —— 并发超扣串行化点：先锁该用户在 credit_balances 的行 ——
     // （幂等检查放锁内：同幂等键并发请求在此排队，第二个进来时能看到第一个已插的行，
