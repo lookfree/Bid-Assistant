@@ -8,6 +8,14 @@ const creditCostSeed = Object.fromEntries(CREDIT_COST_ITEMS.map((i) => [`credit_
 
 export const BILLING_SEED: Record<string, unknown> = {
   ...creditCostSeed,
+  // 标书生成计费阶梯：按本次产出的正文总字数落档；maxChars=null 为顶档（无上限）。
+  // 运营后台可增删档位；种子只在键缺失时写入（onConflictDoNothing），绝不覆盖运营已调的值。
+  "credit_cost.content_tiers": [
+    { maxChars: 50_000, cost: 40 },
+    { maxChars: 150_000, cost: 80 },
+    { maxChars: 300_000, cost: 150 },
+    { maxChars: null, cost: 260 },
+  ],
   // 充值包（金额分 → 到账积分）；每项带稳定 id；到账以 pack.credits 为准（含赠送），
   // credit_rate 仅用于无包任意金额充值（正向换算）
   recharge_packs: [
