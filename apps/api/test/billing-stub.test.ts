@@ -2,16 +2,41 @@ import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bu
 import { eq } from "drizzle-orm"
 import { preDeduct, settle, settleFailed, settleContent, resolveStepHoldAmount } from "../src/services/billing-stub"
 import { grant, getBalance } from "../src/services/credits"
-import { seedConfigs, setConfig } from "../src/services/config"
+import { getConfig, seedConfigs, setConfig } from "../src/services/config"
 import { getDb, closeDb } from "../src/db/client"
-import { users } from "../src/db/schema"
+import { billingConfigs, users } from "../src/db/schema"
 import { createTestUser, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连真库
 
 let userId = ""
 
+// 本文件为钉死断言口径改写了 billing_configs 的这几个键——billing_configs 是全环境共享的
+// 运营计费口径，测试跑完必须原样还原：留下测试值就是错价事故（content_tiers 尤甚，测试阶梯
+// 比运营阶梯少一档，发版后会按缺档的梯子收钱）。
+const MUTATED_CONFIG_KEYS = [
+  "credit_cost.read",
+  "credit_cost.content_short",
+  "credit_cost.content_long",
+  "credit_cost.content_tiers",
+] as const
+const configBackup = new Map<string, unknown>() // 未收录的键 = 本文件跑之前就不存在
+
+/** 还原配置快照：原本有值的写回原值；原本不存在的删掉（绝不用编造值/种子值顶替）。 */
+async function restoreConfigs(): Promise<void> {
+  for (const key of MUTATED_CONFIG_KEYS) {
+    if (configBackup.has(key)) await setConfig(key, configBackup.get(key))
+    else await getDb().delete(billingConfigs).where(eq(billingConfigs.key, key))
+  }
+}
+
 beforeAll(async () => {
+  // 快照必须取在 seedConfigs 之前：种子会补建缺失键，之后再读就分不清「本来就有」与「种子刚建」，
+  // 还原时会把测试自己造出来的键当既有值留下。
+  for (const key of MUTATED_CONFIG_KEYS) {
+    const v = await getConfig(key)
+    if (v !== undefined) configBackup.set(key, v)
+  }
   await seedConfigs()
   // seedConfigs 不覆盖已存在键，旧环境值不会被刷成新默认；本套断言依赖的口径显式钉死，与环境/文件顺序解耦。
   await setConfig("credit_cost.read", 20)
@@ -21,9 +46,15 @@ beforeAll(async () => {
   userId = u.id
 })
 
+// afterAll 无论断言成败/超时都会执行，所以还原不会被失败用例吞掉；
+// try/finally 保证还原自身出错也不会漏掉清用户与关连接（否则进程挂在连接池上）。
 afterAll(async () => {
-  await getDb().delete(users).where(eq(users.id, userId))
-  await closeDb()
+  try {
+    await restoreConfigs()
+  } finally {
+    await getDb().delete(users).where(eq(users.id, userId))
+    await closeDb()
+  }
 })
 
 describe("billing-stub → 真账本门面（spec302）", () => {
