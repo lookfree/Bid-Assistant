@@ -1177,14 +1177,20 @@ docker compose --env-file .env.deploy.local up -d                        # 3) �
 `run --rm` 起的是**新构建镜像**的一次性容器，种子表是新的；`docker exec` 进的是**旧镜像**的运行中容器，种子表是旧的。
 `db:seed` 幂等（`onConflictDoNothing`），不覆盖运营已调值，可每次部署都跑。
 
-#### B. 230 客户环境（原生构建，非 compose）
+#### B. 230 客户环境（**镜像在 230 上构建**，api 仍跑在容器里）
 
-源码靠 `scp` 同步、api 在机器上原生跑，因此次序是「**同步源码 → 用新代码种键 → 再重启 api**」：
+⚠️ 「230 原生构建」指的是**镜像在 230 本机 build**（能直连 PyPI/npm），**不是** api 进程裸跑在宿主机上——
+api 实际运行在容器 `bid-api-1` 中（compose 文件 `~/bid/app/deploy/docker-compose.cust.yml`，不在本仓库内）。
+宿主机上既没有 bun 也没有 `.env.bidsaas.local`，所以**不要**在 230 宿主机上直接 `bun run db:seed`。
 
-1. 同步本次改动到 `~/bid/app`（含 `apps/api/src/config/billing-seed.ts`）；
-2. **在新代码上种键**（进程还没重启也没关系，`db:seed` 是独立一次性命令，读的是磁盘上的新源码）：
-   `cd ~/bid/app/apps/api && bun run db:seed`
-3. 再重启 api 进程；最后发 admin / web。
+同样必须「用**新**镜像种键」，`docker exec` 打的是**正在跑的旧容器**（旧 `BILLING_SEED` 里没有新键）＝静默空转：
+
+1. 同步本次改动到 `~/bid/app`（含 `apps/api/src/config/billing-seed.ts`；若 `bun.lock` 或任一 workspace 的 `package.json` 变动，一并同步）；
+2. **用新源码构建 api 镜像**：`$DC build api`；
+3. **从新镜像一次性种键**：`$DC run --rm api bun run db:seed`；
+4. `$DC up -d api`；最后发 admin / web。
+
+（`$DC` = 该机上的 compose 调用，如 `docker compose -f ~/bid/app/deploy/docker-compose.cust.yml`。）
 
 若 `db:seed` 因任何原因跑不了（依赖没装、脚本报错），用 SQL 直接补键兜底（同样幂等，不覆盖已有值）：
 
