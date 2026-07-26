@@ -17,7 +17,7 @@ const ConfigBody = z.object({ value: z.unknown() })
 
 // spec327：两个钱相关键加白名单形状校验（其它键保持宽松直存，行为不变）——防运营拼错键名/填坏值
 // 静默进库、在发奖路径才炸。未命中此表的键沿用原逻辑，不做形状校验。
-const CONFIG_SCHEMAS: Record<string, z.ZodTypeAny> = {
+export const CONFIG_SCHEMAS: Record<string, z.ZodTypeAny> = {
   referral_rules: z
     .object({
       inviterReward: z.number().int().nonnegative(),
@@ -34,6 +34,23 @@ const CONFIG_SCHEMAS: Record<string, z.ZodTypeAny> = {
   reward_expire_days: z.number().int().nonnegative(),
   signup_grant_credits: z.number().int().nonnegative(), // 注册赠送积分（0=不送）
   grant_expire_days: z.number().int().nonnegative(), // 赠送积分有效期天数（0=不过期）
+  // 标书生成计费阶梯：规则与 services/content-pricing.ts 的 parseContentTiers 等价，
+  // 坏配置绝不落库（落库后生成路径会直接 400 拒跑，运营还以为改成功了）。
+  "credit_cost.content_tiers": z
+    .array(
+      z
+        .object({
+          maxChars: z.number().int().positive().nullable(), // null = 顶档
+          cost: z.number().int().nonnegative(),
+        })
+        .strict(),
+    )
+    .min(1)
+    .refine((v) => v.filter((t) => t.maxChars === null).length === 1, { message: "need_exactly_one_top_tier" })
+    .refine((v) => {
+      const b = v.filter((t) => t.maxChars !== null).map((t) => t.maxChars as number)
+      return new Set(b).size === b.length
+    }, { message: "duplicate_max_chars" }),
 }
 
 plansRouter.put("/configs/:key", requirePermission("config.write"), async (c) => {
