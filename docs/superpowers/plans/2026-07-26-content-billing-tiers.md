@@ -1137,7 +1137,17 @@ Expected: `RUNNING_COUNT 0`。非 0 则等待或用 `stuck-steps.ts` 的 `failSt
 
 - [ ] **Step 3: 部署顺序**
 
-本次改动涉及 api（钱）+ admin + web，**不涉及 agent、不涉及 DB 迁移**（`billing_configs` 是既有表）。部署顺序：**api 先于前端**（新键由 api 启动时 `seedConfigs()` 种入，前端读到的 `contentTiers` 才非空）。
+本次改动涉及 api（钱）+ admin + web，**不涉及 agent、不涉及 DB 迁移**（`billing_configs` 是既有表）。
+
+**⚠️ 关键：`seedConfigs()` 不在服务启动时自动跑**（实测校正：它只由 `bun run db:seed` 触发）。因此新键
+**不会**随发版自动出现，而 `content` 步一旦读不到阶梯就 **400 `content_tiers_not_configured` 拒跑**。部署顺序必须是：
+
+1. **先种键**：在目标环境执行 `docker exec bid-api-1 bun run db:seed`（幂等，`onConflictDoNothing`，不覆盖运营已调值）；
+   或由运营先在后台「积分消耗口径」保存一次阶梯。
+2. **验证键已存在**：查 `billing_configs` 中 `credit_cost.content_tiers` 非空，再继续。
+3. **然后发 api**，最后发 admin / web（前端读到的 `contentTiers` 才非空）。
+
+顺序颠倒的后果是「新 api 已上线但键没种」→ 用户点生成直接报错。发版前务必按上面 1→2→3 走。
 
 ---
 
