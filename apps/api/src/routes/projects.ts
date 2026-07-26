@@ -9,6 +9,7 @@ import { authMiddleware } from "../middleware/auth"
 import { getUserId } from "../lib/auth-user"
 import { isUuid } from "../lib/uuid"
 import * as billing from "../services/billing-stub"
+import { ContentTiersConfigError } from "../services/content-pricing"
 import * as client from "../services/agent-client"
 import { healStuckStep, finalizeStepSuccess, STEP_ORDER, type Step } from "../services/step-finalize"
 import { failStepAndRefund } from "../services/stuck-steps"
@@ -614,10 +615,13 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
 
     // content 计费阶梯同样「未配置即拒」，且必须在占步位/预扣之前——与上面 model_not_configured 一致：
     // 不占步位、不预扣、不静默按某个默认价扣费。
+    // 只有「配置态」错误（缺失/非法）转 400；DB 抖动等基建故障原样上抛成 5xx，不伪装成「去配阶梯」
+    // 误导排障。两条路径都在占步位/预扣之前，「不占步位不预扣」的性质对二者同等成立。
     let holdAmount: number | undefined
     try {
       holdAmount = await billing.resolveStepHoldAmount(step)
-    } catch {
+    } catch (e) {
+      if (!(e instanceof ContentTiersConfigError)) throw e
       return c.json({ error: "content_tiers_not_configured" }, 400)
     }
 

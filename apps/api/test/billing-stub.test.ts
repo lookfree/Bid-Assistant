@@ -14,19 +14,31 @@ let userId = ""
 // 本文件为钉死断言口径改写了 billing_configs 的这几个键——billing_configs 是全环境共享的
 // 运营计费口径，测试跑完必须原样还原：留下测试值就是错价事故（content_tiers 尤甚，测试阶梯
 // 比运营阶梯少一档，发版后会按缺档的梯子收钱）。
+// 还原次序即风险次序：content_tiers 排第一——它留成测试阶梯（比运营阶梯少一档）是长期静默错价，
+// 比后面几个标量键严重得多，绝不能因为前面某个键还原失败而轮不到它。
 const MUTATED_CONFIG_KEYS = [
+  "credit_cost.content_tiers",
   "credit_cost.read",
   "credit_cost.content_short",
   "credit_cost.content_long",
-  "credit_cost.content_tiers",
 ] as const
 const configBackup = new Map<string, unknown>() // 未收录的键 = 本文件跑之前就不存在
+let snapshotComplete = false // 快照整套取全才置真，见 restoreConfigs 的第 ① 条
 
-/** 还原配置快照：原本有值的写回原值；原本不存在的删掉（绝不用编造值/种子值顶替）。 */
+/** 还原配置快照：原本有值的写回原值；原本不存在的删掉（绝不用编造值/种子值顶替）。
+ *  ① 快照不完整就整体放弃还原：beforeAll 抛错/超时时 bun 照样跑 afterAll，此时 Map 里可能只有
+ *     半套键——把「还没来得及快照」误判成「本来就不存在」会 DELETE 掉共享库里真实的计费口径
+ *     （标书生成全员 400、read 口径没了还会在占位之后抛 500 leak 步位），比不还原严重得多。
+ *  ② 逐键各自 try/catch：一个键还原失败不许连累后面的键（尤其不许跳过 content_tiers）。 */
 async function restoreConfigs(): Promise<void> {
+  if (!snapshotComplete) return
   for (const key of MUTATED_CONFIG_KEYS) {
-    if (configBackup.has(key)) await setConfig(key, configBackup.get(key))
-    else await getDb().delete(billingConfigs).where(eq(billingConfigs.key, key))
+    try {
+      if (configBackup.has(key)) await setConfig(key, configBackup.get(key))
+      else await getDb().delete(billingConfigs).where(eq(billingConfigs.key, key))
+    } catch (e) {
+      console.error(`[billing-stub.test] 还原共享配置 ${key} 失败（需人工核对）:`, e)
+    }
   }
 }
 
@@ -37,6 +49,7 @@ beforeAll(async () => {
     const v = await getConfig(key)
     if (v !== undefined) configBackup.set(key, v)
   }
+  snapshotComplete = true // 只有整套读完才允许还原——半套快照去还原＝按半套信息删键
   await seedConfigs()
   // seedConfigs 不覆盖已存在键，旧环境值不会被刷成新默认；本套断言依赖的口径显式钉死，与环境/文件顺序解耦。
   await setConfig("credit_cost.read", 20)

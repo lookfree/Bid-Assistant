@@ -4,7 +4,9 @@ import { Hono } from "hono"
 import { projectRoutes, buildStateOverrides, type ProjectDeps } from "../src/routes/projects"
 import { loginWithPhone } from "../src/services/auth"
 import { getDb, closeDb } from "../src/db/client"
-import { users, bidProjects, projectSteps, projectFiles, libraryItems } from "../src/db/schema"
+import { users, bidProjects, projectSteps, projectFiles, libraryItems, billingConfigs } from "../src/db/schema"
+import { getConfig, setConfig } from "../src/services/config"
+import { CONTENT_TIERS_KEY } from "../src/services/content-pricing"
 import { uniquePhone, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连真库
@@ -14,11 +16,12 @@ let userId = ""
 let capturedRunId = ""
 const captured: {
   preDeductSteps: string[]
+  preDeductAmounts: Array<number | undefined> // 第 4 参（content 走阶梯金额，其余步 undefined）
   preDeductUserId?: string
   createRunOpts?: Parameters<ProjectDeps["createRun"]>[0]
   settleArgs?: { ref: string; holdId: string; actualCost: number }
   releasedRefs: string[]
-} = { preDeductSteps: [], releasedRefs: [] }
+} = { preDeductSteps: [], preDeductAmounts: [], releasedRefs: [] }
 
 // 各步 agent result（snake 原样）：read 带 doc_sections（spec315a 契约 4）；content 即 chapters 字典；present 即 deck。
 // content 的章 id 故意带下划线（LLM 自由字符串）：验证全链路不做大小写转换（ch_1 不许变形成 ch1）。
@@ -42,9 +45,12 @@ const mockDeps: Partial<ProjectDeps> = {
     if (overridesBoom) throw new Error("db jitter")
     return buildStateOverrides(projectId, step)
   },
-  preDeduct: async (userId: string, op: string, _ref: string) => {
+  // 签名与真 preDeduct 对齐到 4 参：少传第 4 参（content 阶梯金额）时断言才拿得到 undefined，
+  // 否则路由把金额丢了测试也发现不了。
+  preDeduct: async (userId: string, op: string, _ref: string, amount?: number) => {
     captured.preDeductUserId = userId
     captured.preDeductSteps.push(op)
+    captured.preDeductAmounts.push(amount)
     return { ok: true, holdId: `hold-${op}`, hold: 10 }
   },
   settle: async (ref: string, holdId: string, actualCost: number) => {
@@ -569,5 +575,35 @@ describe("GET /:id/steps/:step/events 进度事件流", () => {
     expect(captured.preDeductSteps.length).toBe(before) // 未预扣
     const slots = await getDb().select().from(projectSteps).where(eq(projectSteps.projectId, proj!.id))
     expect(slots.length).toBe(0) // 未占步位
+  })
+
+  it("计费阶梯非法 → content 步 400 content_tiers_not_configured，不预扣不占步位；合法则按阶梯最大价预扣", async () => {
+    const [proj] = await getDb()
+      .insert(bidProjects)
+      .values({ userId, threadId: `proj-${crypto.randomUUID()}`, currentStep: "content", status: "running", name: "notiers" })
+      .returning()
+    const before = captured.preDeductSteps.length
+    // 共享库口径：先读快照再改（读失败就直接抛，此刻尚未写库、无可还原），finally 必还原原值/原缺席态。
+    const prev = await getConfig(CONTENT_TIERS_KEY)
+    try {
+      await setConfig(CONTENT_TIERS_KEY, [{ maxChars: 50_000, cost: 40 }]) // 缺顶档 = 非法阶梯
+      const bad = await app.request(`/api/projects/${proj!.id}/steps/content`, { method: "POST", headers: auth() })
+      expect(bad.status).toBe(400)
+      expect(((await bad.json()) as { error: string }).error).toBe("content_tiers_not_configured")
+      expect(captured.preDeductSteps.length).toBe(before) // 未预扣
+      const slots = await getDb().select().from(projectSteps).where(eq(projectSteps.projectId, proj!.id))
+      expect(slots.length).toBe(0) // 未占步位（校验前置于 acquireStepSlot）
+
+      // 合法阶梯：预扣额 = 各档最大价（260），且账本 op 为 content（不再是 content_long）
+      await setConfig(CONTENT_TIERS_KEY, [{ maxChars: 50_000, cost: 40 }, { maxChars: null, cost: 260 }])
+      const ok = await app.request(`/api/projects/${proj!.id}/steps/content`, { method: "POST", headers: auth() })
+      expect(ok.status).toBe(200)
+      await ok.text()
+      expect(captured.preDeductSteps.at(-1)).toBe("content")
+      expect(captured.preDeductAmounts.at(-1)).toBe(260)
+    } finally {
+      if (prev !== undefined) await setConfig(CONTENT_TIERS_KEY, prev)
+      else await getDb().delete(billingConfigs).where(eq(billingConfigs.key, CONTENT_TIERS_KEY))
+    }
   })
 })

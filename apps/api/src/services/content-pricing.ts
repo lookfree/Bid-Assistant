@@ -55,7 +55,18 @@ export function settleAmountFor(tiers: ContentTier[], totalChars: number, heldAm
   return Math.min(costForChars(tiers, totalChars), heldAmount)
 }
 
-/** 读取运营配置的阶梯（IO）：缺失/非法一律抛错，由调用方转 400 拒跑。 */
+/** 阶梯「配置态」错误：口径缺失或非法，运营去后台改配置即可恢复。与基建故障（DB 连接重置/
+ *  查询超时）严格分开——调用方只把这一类转 400 content_tiers_not_configured，基建故障照抛成
+ *  5xx。否则一次数据库抖动会被报成「去配阶梯」，把排障引向根本没坏的配置。 */
+export class ContentTiersConfigError extends Error {}
+
+/** 读取运营配置的阶梯（IO）：缺失/非法一律抛 ContentTiersConfigError，由调用方转 400 拒跑；
+ *  getConfig 自身的基建故障原样上抛，不伪装成配置问题。 */
 export async function contentTiers(): Promise<ContentTier[]> {
-  return parseContentTiers(await getConfig(CONTENT_TIERS_KEY))
+  const raw = await getConfig(CONTENT_TIERS_KEY) // 基建故障（连接重置/超时）在此原样上抛
+  try {
+    return parseContentTiers(raw)
+  } catch (e) {
+    throw new ContentTiersConfigError(e instanceof Error ? e.message : String(e), { cause: e })
+  }
 }
