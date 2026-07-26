@@ -1124,10 +1124,10 @@ Task 3 新增了 400 错误码 `content_tiers_not_configured`（阶梯未配置�
 Run: `cd apps/web && node_modules/.bin/tsc --noEmit && bun test test/`
 Expected: 类型无错误 + 全部测试通过
 
-- [ ] **Step 8: 提交**
+- [ ] **Step 9: 提交**
 
 ```bash
-git add apps/web/lib/content-tiers.ts apps/web/test/content-tiers.test.ts "apps/web/app/(tool)/content/page.tsx" "apps/web/app/(tool)/membership/page.tsx"
+git add apps/web/lib/content-tiers.ts apps/web/test/content-tiers.test.ts "apps/web/app/(tool)/content/page.tsx" "apps/web/app/(tool)/membership/page.tsx" apps/web/lib/use-step.ts
 git commit -m "feat(web): render content billing from the live tier ladder"
 ```
 
