@@ -14,6 +14,7 @@ import {
   TARGET_MIN,
   budgetForSizing,
   loadGenConfig,
+  storedTargetFor,
   parseBudgetYuan,
   sanitizeFormat,
   saveGenConfig,
@@ -49,8 +50,9 @@ export function GenerationConfigDialog({
   )
   const budgetYuan = parseBudgetYuan(budget)
   const suggested = suggestedTarget(chapterCount, budget)
-  // localStorage 只在挂载时读一次（存过偏好则优先，且预算到达也不覆盖用户偏好）
-  const savedTarget = useRef<number | undefined>(loadGenConfig().targetChars).current
+  // 只在挂载时读一次，且**仅取本项目**存过的值：目标字数由该项目/包件的预算规模决定，
+  // 跨项目复用会让新项目沿用上个大项目的字数（滑杆 25.5万 vs 说明「推荐 5.9万」自相矛盾）。
+  const savedTarget = useRef<number | undefined>(storedTargetFor(projectId)).current
   const [target, setTarget] = useState<number>(() => savedTarget ?? suggested)
   const touched = useRef(false) // 用户是否手动改过——避免预算异步到达后覆盖用户已调的值
   // 预算异步到达后，用户没存过偏好、也没手动改过 → 用预算推荐值刷新初始（否则停在章数推荐）。
@@ -67,7 +69,7 @@ export function GenerationConfigDialog({
   const clamped = Math.min(TARGET_MAX, Math.max(TARGET_MIN, Math.round(raw) || TARGET_MIN))
   function confirm() {
     const clean = sanitizeFormat(fmt) // 确认时消毒（夹边距/回落非法枚举）,坏值绝不进 localStorage
-    saveGenConfig({ targetChars: clamped, format: clean })
+    saveGenConfig({ targetChars: clamped, format: clean }, projectId) // 字数记到本项目名下
     onConfirm({ targetChars: clamped, format: clean })
   }
   const setF = (patch: Partial<DocFormat>) => setFmt((p) => ({ ...p, ...patch }))

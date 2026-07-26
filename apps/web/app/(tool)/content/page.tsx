@@ -50,7 +50,7 @@ import { RichEditor } from "./rich-editor"
 import type { Editor as TiptapEditor } from "@tiptap/react"
 import { imageFileToDataUrl } from "@/lib/image-insert"
 import { GenerationConfigDialog } from "./generation-config"
-import { loadGenConfig } from "@/lib/generation-config"
+import { storedTargetFor } from "@/lib/generation-config"
 
 // agent content 步结果（camelCase）：{chapterId: bodyHtml}；章结构取 outline 步结果
 type RealChapters = Record<string, string>
@@ -161,7 +161,7 @@ export default function ContentPage() {
   /** 起跑正文生成：显式给参数用之;缺省（含失败重试路径）回读用户存过的目标字数——
    *  否则重试的付费 run 会静默丢掉篇幅配置（审查修正 2026-07-23）。 */
   function startContent(body?: { targetChars?: number }) {
-    const target = body?.targetChars ?? loadGenConfig().targetChars
+    const target = body?.targetChars ?? storedTargetFor(projectId)
     return start(target ? { targetChars: target } : undefined)
   }
 

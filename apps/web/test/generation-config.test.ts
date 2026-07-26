@@ -1,5 +1,55 @@
-import { describe, it, expect } from "bun:test"
-import { budgetForSizing, parseBudgetYuan, suggestedTarget, TARGET_MIN, TARGET_MAX } from "../lib/generation-config"
+import { describe, it, expect, beforeEach } from "bun:test"
+import {
+  budgetForSizing,
+  parseBudgetYuan,
+  saveGenConfig,
+  storedTargetFor,
+  suggestedTarget,
+  TARGET_MIN,
+  TARGET_MAX,
+} from "../lib/generation-config"
+
+// bun test 无 DOM：给 window/localStorage 打最小内存垫片（generation-config 直接用全局，
+// 改成注入属于超范围重构，故只在测试侧补齐）。
+const mem = new Map<string, string>()
+const shim = {
+  getItem: (k: string) => mem.get(k) ?? null,
+  setItem: (k: string, v: string) => void mem.set(k, v),
+  removeItem: (k: string) => void mem.delete(k),
+  clear: () => mem.clear(),
+}
+;(globalThis as unknown as { window: unknown }).window = globalThis
+;(globalThis as unknown as { localStorage: typeof shim }).localStorage = shim
+
+describe("目标字数按项目隔离 storedTargetFor", () => {
+  beforeEach(() => localStorage.clear())
+
+  it("同一项目 → 记住上次选的（重试/重开弹层要用）", () => {
+    saveGenConfig({ targetChars: 255_000, format: {} }, "proj-A")
+    expect(storedTargetFor("proj-A")).toBe(255_000)
+  })
+
+  it("换项目/换包件 → 不返回上个项目的值（否则 98万的包会沿用 425万的项目字数）", () => {
+    saveGenConfig({ targetChars: 255_000, format: {} }, "proj-A")
+    expect(storedTargetFor("proj-B")).toBeUndefined()
+  })
+
+  it("无项目 id（未挂项目）→ 不复用任何历史值", () => {
+    saveGenConfig({ targetChars: 255_000, format: {} }, "proj-A")
+    expect(storedTargetFor(null)).toBeUndefined()
+  })
+
+  it("旧版本残留（存过 targetChars 但没有项目归属）→ 不复用，回落推荐值", () => {
+    localStorage.setItem("bid.genConfig", JSON.stringify({ targetChars: 255_000 }))
+    expect(storedTargetFor("proj-A")).toBeUndefined()
+  })
+
+  it("格式偏好是用户级的，换项目也保留（与字数相反）", () => {
+    saveGenConfig({ targetChars: 255_000, format: { body_font: "楷体" } }, "proj-A")
+    const raw = JSON.parse(localStorage.getItem("bid.genConfig")!)
+    expect(raw.format.body_font).toBe("楷体")
+  })
+})
 
 describe("多包件字数基准 budgetForSizing", () => {
   const pkgs = [

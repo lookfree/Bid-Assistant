@@ -83,17 +83,34 @@ export const SIZE_OPTIONS = ["三号", "四号", "小四", "五号"] as const
 
 const KEY = "bid.genConfig"
 
-export function loadGenConfig(): Partial<GenerationConfig> {
+/** 存储形状：format 是**用户级**偏好（字体/页边距，换项目照用）；targetChars 则**按项目归属**，
+ *  用 targetProjectId 标记它属于哪个项目——目标字数由该项目/包件的预算规模决定，不是用户偏好。 */
+type StoredGenConfig = Partial<GenerationConfig> & { targetProjectId?: string | null }
+
+export function loadGenConfig(): StoredGenConfig {
   if (typeof window === "undefined") return {}
   try {
-    return JSON.parse(localStorage.getItem(KEY) ?? "{}") as Partial<GenerationConfig>
+    return JSON.parse(localStorage.getItem(KEY) ?? "{}") as StoredGenConfig
   } catch {
     return {}
   }
 }
 
-export function saveGenConfig(cfg: GenerationConfig): void {
-  if (typeof window !== "undefined") localStorage.setItem(KEY, JSON.stringify(cfg))
+/** 存生成配置。projectId 标记 targetChars 的归属；不传（无项目）则该值对任何项目都不再复用。 */
+export function saveGenConfig(cfg: GenerationConfig, projectId?: string | null): void {
+  if (typeof window === "undefined") return
+  localStorage.setItem(KEY, JSON.stringify({ ...cfg, targetProjectId: projectId ?? null }))
+}
+
+/** 取「本项目」上次选定的目标字数：仅当存的就是这个项目才返回。
+ *  跨项目复用是错的——曾导致选了 98 万的包，滑杆却停在上个 425 万项目的 25.5万字，
+ *  而下方说明文字同时写着「推荐 5.9万字」，两个数字自相矛盾。
+ *  旧版本残留（有 targetChars 但无 targetProjectId）一律不复用，回落到按预算的推荐值。 */
+export function storedTargetFor(projectId: string | null | undefined): number | undefined {
+  if (!projectId) return undefined
+  const c = loadGenConfig()
+  if (c.targetProjectId !== projectId) return undefined
+  return typeof c.targetChars === "number" && Number.isFinite(c.targetChars) ? c.targetChars : undefined
 }
 
 const clampMargin = (v: unknown, dflt: number) =>
