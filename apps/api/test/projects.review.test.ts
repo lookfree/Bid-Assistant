@@ -17,9 +17,10 @@ setDefaultTimeout(TEST_TIMEOUT_MS) // 连真库（跑法：./test-on-mbp.sh test
 const STEP_RESULTS: Record<string, unknown> = {
   read: { categories: [], doc_sections: [{ id: "sec-1-c1", text: "须提供 ISO27001" }] },
   review: { score: 80, high: 0, mid: 1, passed: 3, items: [], passed_items: ["报价未超限"] },
+  present: { title: "述标", duration: 15, template: "gov", slides: [{ id: "s-1", title: "封面" }], qa: [] },
 }
 let runStep = ""
-const captured: { runInput?: Record<string, unknown> } = {}
+const captured: { runInput?: Record<string, unknown>; threadId?: string } = {}
 
 const mockDeps: Partial<ProjectDeps> = {
   preDeduct: async (_u, op) => ({ ok: true, holdId: `hold-${op}-${crypto.randomUUID()}`, hold: 10 }),
@@ -30,6 +31,7 @@ const mockDeps: Partial<ProjectDeps> = {
     const input = opts.input as { step: string; run_input?: Record<string, unknown> }
     runStep = input.step
     captured.runInput = input.run_input
+    captured.threadId = opts.threadId
     return { run_id: crypto.randomUUID() }
   },
   relayStream: async function* () {
@@ -80,13 +82,14 @@ describe("spec328 独立审查项目", () => {
     expect(p!.kind).toBe("review")
     expect(p!.currentStep).toBe("review")
     expect(p!.status).toBe("running")
-    expect(p!.name).toContain("（审查）")
+    expect(p!.name).toContain("（线下标书）")
 
     const run = await post(`/${id}/steps/review`, {})
     expect(run.status).toBe(200)
     await run.text() // 排干 SSE，等收尾完成
     expect(captured.runInput?.bid_file_key).toBe(BID_KEY) // 线下标书 key 随 run 下发
     const [after] = await getDb().select().from(bidProjects).where(eq(bidProjects.id, id))
+    expect(captured.threadId).toBe(after!.threadId) // review 走项目主线程（只有 present 才隔离到专属线程）
     expect(after!.currentStep).toBe("done")
     expect(after!.status).toBe("done")
   })
@@ -117,5 +120,68 @@ describe("spec328 独立审查项目", () => {
     expect((await post(`/${id}/steps/outline`, {})).status).toBe(409)
     expect((await post(`/${id}/steps/export`, {})).status).toBe(409)
     expect((await post("/review", { bidFileKey: "uploads/nobody/else.docx" })).status).toBe(400)
+  })
+})
+
+// 独立述标（本次新增，与独立审查同一 kind='review' 机制）：述标是独立能力，
+// 不依赖是否跑过 review、不依赖是否有招标文件——用户想述标就述标；export 仍拒绝（无意义）。
+describe("spec328+ 独立审查项目：述标独立于审查（用户想述标就述标）", () => {
+  it("不带招标文件、review 从未跑过（currentStep 仍是 review）→ present 直接可跑，不占用 currentStep", async () => {
+    const res = await post("/review", { bidFileKey: BID_KEY })
+    const { id } = (await res.json()) as { id: string }
+    const [before] = await getDb().select().from(bidProjects).where(eq(bidProjects.id, id))
+    expect(before!.currentStep).toBe("review") // 尚未跑 review
+
+    const run = await post(`/${id}/steps/present`, {})
+    expect(run.status).toBe(200)
+    await run.text()
+    expect(captured.runInput?.bid_file_key).toBe(BID_KEY) // 线下标书 key 随 present run 下发
+    // 关键：述标跑在**专属新线程**（p.threadId-present-<slotId>），绝不与审查/读标共用主线程——
+    // 否则 checkpoint 冻结成 export，后续步会误跑 export（评审 D，实测复现）。
+    const [proj] = await getDb().select().from(bidProjects).where(eq(bidProjects.id, id))
+    expect(captured.threadId).toStartWith(`${proj!.threadId}-present-`)
+    expect(captured.threadId).not.toBe(proj!.threadId)
+
+    // present 是审查专用项目的側支——不推进/不改动其 read→review→done 的既有步序状态
+    expect(proj!.currentStep).toBe("review")
+    expect(proj!.status).toBe("running")
+  })
+
+  it("review 已完成（currentStep=done）→ present 仍可补跑，不回退 currentStep", async () => {
+    const res = await post("/review", { bidFileKey: BID_KEY })
+    const { id } = (await res.json()) as { id: string }
+    await (await post(`/${id}/steps/review`, {})).text()
+    const [afterReview] = await getDb().select().from(bidProjects).where(eq(bidProjects.id, id))
+    expect(afterReview!.currentStep).toBe("done")
+
+    const run = await post(`/${id}/steps/present`, {})
+    expect(run.status).toBe(200)
+    await run.text()
+    const [afterPresent] = await getDb().select().from(bidProjects).where(eq(bidProjects.id, id))
+    expect(afterPresent!.currentStep).toBe("done") // 不回退
+  })
+
+  it("带招标文件、read 还没跑（draft/currentStep=read）→ present 也直接可跑", async () => {
+    const res = await post("/review", { bidFileKey: BID_KEY, tenderFileKey: TENDER_KEY })
+    const { id } = (await res.json()) as { id: string }
+    const [before] = await getDb().select().from(bidProjects).where(eq(bidProjects.id, id))
+    expect(before!.status).toBe("draft")
+    expect(before!.currentStep).toBe("read")
+
+    const run = await post(`/${id}/steps/present`, {})
+    expect(run.status).toBe(200)
+    await run.text()
+    expect(captured.runInput?.bid_file_key).toBe(BID_KEY)
+    // 仍保持 draft/read：用户随后仍可正常走 read → review
+    const [after] = await getDb().select().from(bidProjects).where(eq(bidProjects.id, id))
+    expect(after!.status).toBe("draft")
+    expect(after!.currentStep).toBe("read")
+  })
+
+  it("export 对 review-kind 仍一律 409（present 放开不误放 export）", async () => {
+    const res = await post("/review", { bidFileKey: BID_KEY })
+    const { id } = (await res.json()) as { id: string }
+    await (await post(`/${id}/steps/present`, {})).text()
+    expect((await post(`/${id}/steps/export`, {})).status).toBe(409)
   })
 })

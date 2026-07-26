@@ -357,7 +357,8 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         bidFileKey,
         tenderFileKey: tenderFileKey ?? null,
         tenderFileKeys: tenderFileKey ? [tenderFileKey] : null,
-        name: `${(filenameByKey.get(bidFileKey) ?? "线下标书").replace(/\.[a-zA-Z0-9]+$/, "")}（审查）`,
+        // 中性后缀「（线下标书）」：这类项目现在既可审查也可述标，不再专属「（审查）」。
+        name: `${(filenameByKey.get(bidFileKey) ?? "线下标书").replace(/\.[a-zA-Z0-9]+$/, "")}（线下标书）`,
         // 带招标文件走 draft→read（读标计费后自动接 review）;不带直接站上 review 步
         status: tenderFileKey ? "draft" : "running",
         currentStep: tenderFileKey ? "read" : "review",
@@ -539,14 +540,20 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     //   ① export 在 present/done 时均可跑——present 时=跳过述标直出文件；done 时=重渲重出
     //     （渲染器升级/模板调整后,已完成项目才能重新出文件,否则只会一直下载旧产物）；
     //   ② present 在 done 后可补跑（先导出后补述标,补完重导出可带 PPT）。
-    // spec328 审查专用项目：只有 read（带招标文件对照）与 review 两步,生成/述标/导出一律拒绝
-    if (p.kind === "review" && step !== "read" && step !== "review")
+    // spec328 审查专用项目：read/review 走既定流程；present 独立于审查报告——有线下标书就能随时
+    // 述标（用户口径「想述标就述标」），任何 currentStep/status 下都放行、不占 currentStep（agent 侧
+    // present 节点用 bid_file_key 确定性解析出正文，且跑在独立线程——见上方 createRun 注释）；export
+    // 对 review-kind 无意义（无 content 步正文，述标节点直接产 pptx，不走 export 渲染）一律拒绝。
+    // 该规则是唯一真相 presentIndependent，下面三处判定统一引用，避免各写各的后漂移不一致（评审 altitude）。
+    const presentIndependent = step === "present" && p.kind === "review"
+    if (p.kind === "review" && step !== "read" && step !== "review" && !presentIndependent)
       return c.json({ error: "out_of_order", expected: p.currentStep }, 409)
-    const allowed = p.status === "draft"
-      ? step === "read"
-      : step === p.currentStep ||
-        (step === "export" && (p.currentStep === "present" || p.currentStep === "done")) ||
-        (step === "present" && p.currentStep === "done")
+    const allowed = presentIndependent
+      || (p.status === "draft"
+        ? step === "read"
+        : step === p.currentStep ||
+          (step === "export" && (p.currentStep === "present" || p.currentStep === "done")) ||
+          (step === "present" && p.currentStep === "done"))
     if (!allowed) return c.json({ error: "out_of_order", expected: p.currentStep }, 409)
 
     // 一项目同一时刻只许一个在途 run（审查修正 2026-07-23）：述标/导出解耦后 present 与 export
@@ -591,8 +598,8 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         rag: await ragRunInput(),
         ...(step !== "read" && p.selectedPackage ? { package: p.selectedPackage } : {}),
         ...(step === "export" ? await exportCredentials(userId) : {}),
-        // spec328：线下标书审查——review 节点用该 key 确定性解析出 chapters（无 LLM 不计费）
-        ...(step === "review" && p.bidFileKey ? { bid_file_key: p.bidFileKey } : {}),
+        // spec328：线下标书审查/述标——review/present 节点用该 key 确定性解析出 chapters（无 LLM 不计费）
+        ...((step === "review" || step === "present") && p.bidFileKey ? { bid_file_key: p.bidFileKey } : {}),
         // spec330 生成配置：目标字数（规划轮拆各章预算）/ 输出格式（docx 渲染）
         ...(step === "content" && gen.targetChars ? { target_chars: gen.targetChars } : {}),
         ...(step === "export" && gen.format ? { format: gen.format } : {}),
@@ -621,7 +628,13 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     }
     let run_id: string
     try {
-      ;({ run_id } = await createRun({ agentType: "bidding_agent", threadId: p.threadId, input, model, userId }))
+      // review-kind 独立述标跑在**专属新线程**上（每次 run 一条，用步位行 id 派生）：绝不与读标/审查
+      // 共用 p.threadId 那条 LangGraph 线程。共用会致命——present 跑完 langgraph 把 checkpoint 的 next
+      // 冻结成 export（present→export 静态出边），之后 read/review/重跑 present 续跑时路由不再重算，会误
+      // 跑 export 节点、拿空 outline 渲空 docx 当作那步结果、污染 currentStep 并扣费（实测复现）。
+      // present 自包含（run_input.bid_file_key 确定性解析出正文），无需线程续状态，新线程即可、且互不污染。
+      const runThreadId = p.kind === "review" && step === "present" ? `${p.threadId}-present-${s.id}` : p.threadId
+      ;({ run_id } = await createRun({ agentType: "bidding_agent", threadId: runThreadId, input, model, userId }))
       await getDb().update(projectSteps).set({ runId: run_id }).where(eq(projectSteps.id, s.id))
     } catch (e) {
       // agent 服务不可达等：释放占位行为 failed，可立即重试

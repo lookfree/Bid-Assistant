@@ -2,15 +2,30 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 from agent.parsing import storage_read
+from agent.parsing.service import read_and_parse
 from agent.parsing.storage_read import storage      # spec106 MinIO 单例
 from agent.runtime.progress import publish_phase     # 各节点推阶段事件（read/outline/review/present 共用）
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["publish_phase", "upload_artifact", "fetch_master_bytes", "package_scope",
-           "filter_read_by_package", "slim_read"]
+           "filter_read_by_package", "slim_read", "parse_bid_chapters"]
+
+
+def parse_bid_chapters(key: str) -> dict[str, str]:
+    """线下标书 → chapters（spec328 独立审查 / 独立述标共用）：确定性解析,按节聚合成 {sec-N: html}。
+    无 LLM、不计费;解析失败抛错由节点层转 run 失败（App 侧退款）。review/present 两节点共用——
+    没有 state['chapters']（没跑过 content）时,靠 run_input.bid_file_key 兜底解析出正文。"""
+    parsed = read_and_parse(key)
+    by_sec: dict[str, list[str]] = {}
+    for c in parsed.clauses:
+        m = re.match(r"^(sec-\d+)-", c.get("id") or "")
+        if m:
+            by_sec.setdefault(m.group(1), []).append(c.get("text") or "")
+    return {sec: "".join(f"<p>{t}</p>" for t in texts if t) for sec, texts in by_sec.items()}
 
 
 async def upload_artifact(ctx, filename: str, data: bytes, content_type: str) -> str:

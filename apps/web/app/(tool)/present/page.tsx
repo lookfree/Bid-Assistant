@@ -16,13 +16,13 @@ import {
   X,
   ChevronRight,
   History,
+  UploadCloud,
 } from "lucide-react"
 import { usePaywall } from "@/components/paywall"
 import { CreditEstimate } from "@/components/credit-estimate"
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepPageHeader } from "@/components/tool/step-page-header"
 import { StepBanner } from "@/components/tool/step-banner"
-import { NoProjectGuide } from "@/components/tool/no-project-guide"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
@@ -48,6 +48,7 @@ import { AiPanel } from "./ai-panel"
 import { EmptyState, DURATIONS, type Duration } from "./empty-state"
 import { TemplatePicker } from "./template-picker"
 import { SlidePreview } from "./slide-preview"
+import { PresentEntry } from "./present-entry"
 
 // agent DeckSpec（camelCase）：slides/qa 与原型 Slide/QA 同构
 type RealDeck = { title: string; duration: number; template: string; slides: Slide[]; qa: { q: string; a: string }[] }
@@ -65,6 +66,9 @@ export default function PresentPage() {
   const presentCost = creditCostValue(overview, "present", 80)
   /* 资料库数据提升到页面级：LibraryPicker / TemplatePicker 共用同一份，避免同页重复拉取 */
   const { items: libItems, loading: libLoading, error: libError, reload: reloadLibrary } = useLibrary()
+  /* 挂着项目也要能直达独立述标入口（同 risk 页 EntryBar 的理由：述标是独立能力，不该只在
+     无项目/未生成时才可发现）；用户手动切过来后可再切回当前项目。 */
+  const [showEntry, setShowEntry] = useState(false)
 
   /* 配置 */
   const [duration, setDuration] = useState<Duration>(15)
@@ -343,14 +347,14 @@ export default function PresentPage() {
     })()
   }
 
-  // 无进行中项目：只引导上传，不渲染任何示例内容
-  if (!projectId)
+  // 无进行中项目 / 用户手动切到独立入口：述标是独立能力（spec328+），不强制先在库内建标书——
+  // 直接给「述标我的标书 / 上传线下标书」入口（同 risk 页 ReviewEntry 一致的处理）。
+  if (!projectId || showEntry)
     return (
-      <div className="flex h-[calc(100vh-4rem)] flex-col">
-        <div className="shrink-0 px-4 pt-4 sm:px-6">
-          <FlowNav current="present" info={info} />
-        </div>
-        <NoProjectGuide />
+      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
+        <FlowNav current="present" info={info} />
+        <StepPageHeader icon={Presentation} title="述标演示" desc="一键把标书提炼成述标/答辩 PPT，含演讲备注与预计问答" />
+        <PresentEntry onBack={projectId ? () => setShowEntry(false) : undefined} />
       </div>
     )
 
@@ -364,8 +368,16 @@ export default function PresentPage() {
       </div>
     )
 
-  // 前序步未完成：不给生成入口（点了也必 409），引导先补齐
-  const prereq = !realDeck ? stepPrereq(info, "present") : null
+  // 前序步未完成：不再引导「前往标书生成」——述标是独立能力，直接给独立操作入口
+  // （选已生成正文的项目，或上传线下标书；同 risk 页对废标风险审查 tab 的处理）。
+  if (!realDeck && stepPrereq(info, "present"))
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
+        <FlowNav current="present" info={info} />
+        <StepPageHeader icon={Presentation} title="述标演示" desc="一键把标书提炼成述标/答辩 PPT，含演讲备注与预计问答" />
+        <PresentEntry />
+      </div>
+    )
 
   return (
     <div className="flex h-[calc(100vh-4rem)] flex-col">
@@ -450,6 +462,7 @@ export default function PresentPage() {
             </div>
           )}
         </StepPageHeader>
+        <PresentEntryBar onOpen={() => setShowEntry(true)} />
         {deckReady && <AiNotice />}
 
         {/* 导出菜单 */}
@@ -493,27 +506,20 @@ export default function PresentPage() {
         {membershipError && <p className="mt-2 text-xs font-medium text-destructive">{membershipError}</p>}
       </div>
 
-      {/* 主体：前序未完成 → 引导；未生成 → 显式生成入口（明示消耗）；已生成 → 编辑器 */}
+      {/* 主体：未生成 → 显式生成入口（明示消耗）；已生成 → 编辑器（前序未完成已在上方独立入口拦截） */}
       {!deckReady ? (
-        prereq ? (
-          <StepPlaceholder
-            text={`请先完成前序步骤：${prereq.label}，再生成述标演示`}
-            action={{ href: prereq.href, label: `前往${prereq.label}` }}
-          />
-        ) : (
-          <EmptyState
-            duration={duration}
-            onDuration={changeDuration}
-            cost={presentCost}
-            balance={balance}
-            balanceLoading={membershipLoading}
-            generating={stepRunning}
-            onGenerate={runGenerate}
-            styleName={style.name}
-            refPpt={refPpt}
-            onOpenTemplates={() => setTplOpen(true)}
-          />
-        )
+        <EmptyState
+          duration={duration}
+          onDuration={changeDuration}
+          cost={presentCost}
+          balance={balance}
+          balanceLoading={membershipLoading}
+          generating={stepRunning}
+          onGenerate={runGenerate}
+          styleName={style.name}
+          refPpt={refPpt}
+          onOpenTemplates={() => setTplOpen(true)}
+        />
       ) : (
         <div className="flex min-h-0 flex-1">
           {/* 左栏 · 幻灯片列表 */}
@@ -701,6 +707,22 @@ export default function PresentPage() {
           ensureMember={ensureMember}
         />
       )}
+    </div>
+  )
+}
+
+/* 独立述标入口条：挂着项目时也能一键切到「述标其它标书/上传线下标书」（同 risk 页 EntryBar 一致的理由：
+   防止用户以为述标只能对当前项目跑）。 */
+function PresentEntryBar({ onOpen }: { onOpen: () => void }) {
+  return (
+    <div className="mt-2 flex justify-end">
+      <button
+        onClick={onOpen}
+        className="inline-flex items-center gap-1.5 rounded-xl border border-primary/30 gradient-brand-soft px-4 py-2 text-sm font-semibold text-primary transition-opacity hover:opacity-90"
+      >
+        <UploadCloud className="size-4" />
+        述标其它标书 / 上传线下标书 →
+      </button>
     </div>
   )
 }

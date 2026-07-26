@@ -15,16 +15,23 @@ def _requested_step(state) -> str | None:
     return (state.get("run_input") or {}).get("step")
 
 
+_STANDALONE_STEPS = ("review", "present")  # spec328 独立入口：可绕过流水线直达的节点
+
+
+def _route_by_step(state, default: str) -> str:
+    """spec328 独立入口路由：run_input.step 显式请求 review/present 时直达该节点（线下标书的 chapters
+    由目标节点用 bid_file_key 确定性解析，无需先跑生成链）；否则走 default（既有流水线）。
+    _route_entry（新线程，default=read）与 _route_after_read（读标后，default=outline）共用。"""
+    step = _requested_step(state)
+    return step if step in _STANDALONE_STEPS else default
+
+
 def _route_entry(state):
-    """新线程入口（spec328 独立审查）：不带招标文件的线下标书审查直接进 review
-    （read 为空 → 通用自查模式）；缺省从 read 起,与既有流水线一致。"""
-    return "review" if _requested_step(state) == "review" else "read"
+    return _route_by_step(state, "read")
 
 
 def _route_after_read(state):
-    """read 后路由（spec328 对照审查）：审查专用项目读标完成后直达 review,
-    跳过 outline/content（外部标书的 chapters 由 review 节点确定性解析,无需生成）。"""
-    return "review" if _requested_step(state) == "review" else "outline"
+    return _route_by_step(state, "outline")
 
 
 def _route_after_review(state):
@@ -50,8 +57,8 @@ def build_bidding_workflow(ctx):
     g.add_node("review", make_review_node(ctx))
     g.add_node("present", make_present_node(ctx))
     g.add_node("export", make_export_node(ctx))
-    g.add_conditional_edges(START, _route_entry, {"read": "read", "review": "review"})
-    g.add_conditional_edges("read", _route_after_read, {"outline": "outline", "review": "review"})
+    g.add_conditional_edges(START, _route_entry, {"read": "read", "review": "review", "present": "present"})
+    g.add_conditional_edges("read", _route_after_read, {"outline": "outline", "review": "review", "present": "present"})
     g.add_edge("outline", "content")
     g.add_edge("content", "review")
     g.add_conditional_edges("review", _route_after_review, {"present": "present", "export": "export"})

@@ -230,3 +230,93 @@ def test_present_without_enterprise_template_key_unchanged(monkeypatch, submit_g
     out = asyncio.run(make_present_node(ctx)({"chapters": {}, "read": {}}))
     assert captured["master_bytes"] is None
     assert out["deck"]["enterprise_template_id"] is None
+
+
+def test_present_parses_external_bid_when_no_chapters(monkeypatch, submit_gateway):
+    """独立述标（spec328，与 review 节点共用 parse_bid_chapters）：chapters 空 + run_input.bid_file_key
+    → 确定性解析上传标书成章，述标不依赖是否有招标文件（read 为空也能出 PPT）。"""
+    import agent.agents.bidding_agent.nodes.common as common_mod2
+
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+
+    class _Parsed:
+        clauses = [
+            {"id": "sec-1-c1", "text": "运维保障方案正文"},
+            {"id": "sec-2-c1", "text": "报价合计 100 万元"},
+        ]
+    monkeypatch.setattr(common_mod2, "read_and_parse", lambda key: _Parsed())
+
+    gw = _CapGateway(_DRAFT_ARGS)
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-1", gateway=gw)
+    out = asyncio.run(make_present_node(ctx)(
+        {"read": {}, "run_input": {"bid_file_key": "uploads/u/bid.docx"}}))
+    assert out["artifacts"]["pptx"] == "artifacts/proj-1/present.pptx"  # 解析出的章成功走完两段提交产出 PPT
+    user_msg = gw.msgs[0][1].content
+    assert "运维保障方案正文" in user_msg and "报价合计 100 万元" in user_msg
+
+
+def test_present_external_bid_parse_empty_fails_loud(monkeypatch, submit_gateway):
+    """解析为空（扫描件/图片版）→ 抛错而非拿空文档产假 PPT，run 落 failed 可重试（同 review 节点口径）。"""
+    import agent.agents.bidding_agent.nodes.common as common_mod2
+
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+
+    class _EmptyParsed:
+        clauses = []
+    monkeypatch.setattr(common_mod2, "read_and_parse", lambda key: _EmptyParsed())
+
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-1",
+                     gateway=submit_gateway({"submit_deck_draft": _DRAFT_ARGS,
+                                             "submit_slide_notes": _NOTES_ARGS}))
+    with pytest.raises(RuntimeError, match="扫描件"):
+        asyncio.run(make_present_node(ctx)(
+            {"read": {}, "run_input": {"bid_file_key": "uploads/u/scan.pdf"}}))
+
+
+def test_present_filters_read_by_selected_package(monkeypatch):
+    """spec324：选包时述标只喂该包评分点，别包的评分/要求过滤掉（此前 present 未过滤，多包件会串包）。"""
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+    read = {"scoring": [
+        {"name": "本包技术方案", "score": 40, "packages": ["p1"]},
+        {"name": "别包运维", "score": 30, "packages": ["p2"]},
+        {"name": "全包通用报价", "score": 10, "packages": []},
+    ]}
+    gw = _CapGateway(_DRAFT_ARGS)
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-1", gateway=gw)
+    asyncio.run(make_present_node(ctx)(
+        {"chapters": {"t1": "<p>正文</p>"}, "read": read,
+         "run_input": {"package": {"id": "p1", "name": "实网攻防"}}}))
+    user = gw.msgs[0][1].content  # 骨架段用户消息
+    assert "本包技术方案" in user and "全包通用报价" in user  # 该包 + 全包通用项保留
+    assert "别包运维" not in user  # 别包专属评分被过滤
+
+
+def test_present_prefers_existing_chapters_over_bid_file_key(monkeypatch, submit_gateway):
+    """已有 chapters（正常生成链路，如 bid-kind 项目）时，即便 run_input 意外带 bid_file_key
+    也不触发解析——chapters 非空即不进入 spec328 兜底分支，行为与今天一致。"""
+    import agent.agents.bidding_agent.nodes.common as common_mod2
+
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+
+    def _boom(key):
+        raise AssertionError("chapters 非空时不该调用解析")
+    monkeypatch.setattr(common_mod2, "read_and_parse", _boom)
+
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-1",
+                     gateway=submit_gateway({"submit_deck_draft": _DRAFT_ARGS,
+                                             "submit_slide_notes": _NOTES_ARGS}))
+    out = asyncio.run(make_present_node(ctx)(
+        {"chapters": {"t1": "<p>正文</p>"}, "read": {}, "run_input": {"bid_file_key": "uploads/u/bid.docx"}}))
+    assert out["artifacts"]["pptx"] == "artifacts/proj-1/present.pptx"

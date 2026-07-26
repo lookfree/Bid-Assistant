@@ -35,8 +35,11 @@ const STEP_PAGE: Record<string, { href: string; label: string }> = {
   present: { href: "/present", label: "述标演示" },
 }
 
-/** step 的未完成前序步（按项目 currentStep 判断）：返回该前序步的页面入口；无前序缺口返回 null。 */
+/** step 的未完成前序步（按项目 currentStep 判断）：返回该前序步的页面入口；无前序缺口返回 null。
+ *  spec328+ 独立述标：审查专用项目（kind=review）的 present 不受线性步序约束——有线下标书就能随时
+ *  述标，不依赖 review 是否已跑（与后端 routes/projects.ts 的步序闸对齐，见「审查专用项目」注释）。 */
 export function stepPrereq(info: ProjectInfo | null, step: StepName): { href: string; label: string } | null {
+  if (step === "present" && info?.project.kind === "review") return null
   const cur = info?.project.currentStep
   if (!cur) return null
   const curIdx = STEP_ORDER.indexOf(cur as StepName)

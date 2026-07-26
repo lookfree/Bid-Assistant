@@ -1,8 +1,11 @@
 from __future__ import annotations
+import asyncio
 import json
 import re
 from agent.framework.create_agent import run_submit_agent
-from agent.agents.bidding_agent.nodes.common import slim_read, upload_artifact, fetch_master_bytes, publish_phase
+from agent.agents.bidding_agent.nodes.common import (
+    slim_read, upload_artifact, fetch_master_bytes, filter_read_by_package, parse_bid_chapters, publish_phase,
+)
 from agent.agents.bidding_agent.schemas import DeckDraft, DeckSpec, Slide, SlideNotes
 from agent.agents.bidding_agent.prompts.present import PRESENT_SKELETON_PROMPT, PRESENT_NOTES_PROMPT
 from agent.agents.bidding_agent.render.pptx import render_pptx
@@ -39,7 +42,10 @@ def make_present_node(ctx):
     企业母版：run_input['enterprise_template_key'] 若给出（App 侧按 enterprise_template_id 解析出的
     MinIO key），预取字节传给 render_pptx 套用客户自有 .pptx/.potx 主题/母版/logo；缺失或取不到、
     或母版本身渲染失败都会静默回退今天的空白设计，不影响述标产出。key 本身无条件写回
-    deck.enterprise_template_id（与本轮母版是否取成功无关），export 重渲时按它重新取一次母版。"""
+    deck.enterprise_template_id（与本轮母版是否取成功无关），export 重渲时按它重新取一次母版。
+    独立述标（线下标书，与 review 节点同一 spec328 机制）：chapters 为空 + run_input.bid_file_key
+    存在 → 确定性解析上传标书成章（无 LLM、不计费），述标不依赖是否跑过审查/是否有招标文件——
+    用户想述标就述标；解析失败（扫描件/图片版）直接失败让 run 可重试，绝不拿空文档产假 PPT。"""
     async def present_node(state):
         run_input = state.get("run_input") or {}
         duration = run_input.get("duration")
@@ -48,8 +54,16 @@ def make_present_node(ctx):
         template = template if template in ("blue", "tech", "gov") else None
         enterprise_key = run_input.get("enterprise_template_key")
         master_bytes = await fetch_master_bytes(enterprise_key)
-        chapters = {cid: _plain(html) for cid, html in (state.get("chapters") or {}).items()}
-        payload = {"chapters": chapters, "read": slim_read(state.get("read") or {}),
+        chapters_src = state.get("chapters") or {}
+        if not chapters_src and run_input.get("bid_file_key"):
+            chapters_src = await asyncio.to_thread(parse_bid_chapters, run_input["bid_file_key"])
+            if not chapters_src:
+                raise RuntimeError("上传的标书未能解析出任何正文（扫描件/图片版暂不支持），请上传可复制文字的 docx/pdf 后重试")
+        chapters = {cid: _plain(html) for cid, html in chapters_src.items()}
+        # 选包时读标收窄到该包（spec324，与 review/outline 一致）：述标只按该包评分点组织，不把别包的
+        # 评分/要求混进 PPT。未选包（单包/缺省/review-kind 独立线程无 read）→ 原样，行为不变。
+        read_state = filter_read_by_package(state.get("read") or {}, run_input)
+        payload = {"chapters": chapters, "read": slim_read(read_state),
                    "duration": duration}
         user = f"标书与评分点：\n{json.dumps(payload, ensure_ascii=False)}\n时长 {duration} 分钟，请产 DeckDraft 骨架。"
         if template:

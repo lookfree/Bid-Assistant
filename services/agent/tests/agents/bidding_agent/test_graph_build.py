@@ -60,9 +60,24 @@ def test_route_entry_and_after_read_for_standalone_review():
     assert _route_after_read({}) == "outline"
 
 
+def test_route_entry_and_after_read_for_standalone_present():
+    """独立述标（线下标书，与独立审查同一机制）：新线程 step=present 直接进 present（无招标文件也能
+    述标）；read 后 step=present 同样跳过 outline/content 直达 present（有招标文件先读标再述标）。"""
+    from agent.agents.bidding_agent.graph import _route_entry, _route_after_read
+    assert _route_entry({"run_input": {"step": "present"}}) == "present"
+    assert _route_after_read({"run_input": {"step": "present"}}) == "present"
+
+
 def test_graph_has_standalone_review_edges():
     g = build_bidding_workflow(_FakeCtx())
     edges = {(e.source, e.target) for e in g.get_graph().edges}
     assert ("__start__", "review") in edges  # 无招标文件直接审查
     assert ("read", "review") in edges       # 对照审查跳过提纲/正文
     assert ("read", "outline") in edges      # 缺省流水线不变
+
+
+def test_graph_has_standalone_present_edges():
+    g = build_bidding_workflow(_FakeCtx())
+    edges = {(e.source, e.target) for e in g.get_graph().edges}
+    assert ("__start__", "present") in edges  # 无招标文件直接述标（线下标书）
+    assert ("read", "present") in edges       # 有招标文件先读标，读完直达述标（跳过提纲/正文/审查）

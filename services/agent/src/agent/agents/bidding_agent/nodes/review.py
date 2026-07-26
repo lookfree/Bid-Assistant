@@ -1,27 +1,13 @@
 from __future__ import annotations
 import asyncio
 import json
-import re
 from agent.framework.create_agent import run_submit_agent
-from agent.parsing.service import read_and_parse
-from agent.agents.bidding_agent.nodes.common import slim_read, filter_read_by_package, publish_phase
+from agent.agents.bidding_agent.nodes.common import slim_read, filter_read_by_package, parse_bid_chapters, publish_phase
 from agent.agents.bidding_agent.schemas import RiskReport
 from agent.agents.bidding_agent.prompts.review import REVIEW_SYSTEM_PROMPT
 
 
 _CHAPTER_CAP = 4000  # 每章喂给审查模型的正文上限（合规要点集中在前部；整本不截会顶穿上下文窗）
-
-
-def _parse_bid_chapters(key: str) -> dict[str, str]:
-    """线下标书 → chapters（spec328 独立审查）：确定性解析,按节聚合成 {sec-N: html}。
-    无 LLM、不计费;解析失败抛错由节点层转 run 失败（App 侧退款）。"""
-    parsed = read_and_parse(key)
-    by_sec: dict[str, list[str]] = {}
-    for c in parsed.clauses:
-        m = re.match(r"^(sec-\d+)-", c.get("id") or "")
-        if m:
-            by_sec.setdefault(m.group(1), []).append(c.get("text") or "")
-    return {sec: "".join(f"<p>{t}</p>" for t in texts if t) for sec, texts in by_sec.items()}
 
 
 # 通用自查（未提供招标文件）的口径说明:必须明示局限,防用户把自查结果当成对照审查结论
@@ -44,7 +30,7 @@ def make_review_node(ctx):
         chapters_src = state.get("chapters") or {}
         # spec328 独立审查:线下标书没有生成链路,chapters 由上传文件确定性解析而来
         if not chapters_src and run_input.get("bid_file_key"):
-            chapters_src = await asyncio.to_thread(_parse_bid_chapters, run_input["bid_file_key"])
+            chapters_src = await asyncio.to_thread(parse_bid_chapters, run_input["bid_file_key"])
             # 审查修正：解析为空（扫描件/图片 PDF 提不出文字）绝不能拿空文档去跑计费审查——
             # run 直接失败,App 侧 settleFailed 全额退款,错误文案告知原因
             if not chapters_src:
