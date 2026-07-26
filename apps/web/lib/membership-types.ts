@@ -1,4 +1,5 @@
 import type { TierId, Feature } from "./plans"
+import type { ContentTier } from "./content-tiers"
 
 // 会员中心后端出参类型（spec308，与 App 层 GET /api/membership 等一一对应，camelCase）。
 // 复用 plans.ts 的 TierId/Feature，避免重复定义档位枚举与权益项形状。
@@ -50,6 +51,7 @@ export interface MembershipOverview {
   plans: PlanView[]
   rechargePacks: RechargePackView[] // 充值包目录（服务端定价为准；前端按 id 下单）
   creditCosts: CreditCostView[] // 积分消耗口径 9 项（运营后台可配，实时）
+  contentTiers: ContentTier[] // 标书生成计费阶梯（按产出总字数落档，运营后台可增删）；配置非法/未配置时为空数组
   signupGrantCredits: number // 注册赠送积分（运营后台可配，实时；展示读此值不写死）
   progressive: { current: PlanView | null; next: PlanView | null }
 }

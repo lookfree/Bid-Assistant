@@ -9,6 +9,7 @@ import { api } from "@/lib/api"
 import type { MembershipOverview, OrderView, LaunchResponse, Payway, InvoiceView, CreateInvoicePayload } from "@/lib/membership-types"
 import { formatPeriodEnd, statusLabel, tierCardState, planPriceYuan, plansByTier } from "@/lib/membership-view"
 import { peekMembershipCache, primeMembershipCache } from "@/lib/use-membership"
+import { tiersCostText } from "@/lib/content-tiers"
 import { Check, X, Coins, Receipt, ArrowRight, Sparkles, Info, Infinity as InfinityIcon, TrendingUp, Copy } from "lucide-react"
 
 // 发票状态展示映射（spec332）
@@ -361,6 +362,19 @@ export default function MembershipPage() {
               </span>
             </li>
           ))}
+          {(overview?.contentTiers ?? []).length > 0 && (
+            <div className="flex items-center justify-between py-2">
+              <div className="flex flex-col">
+                <span className="text-sm font-medium text-foreground">标书生成</span>
+                <span className="text-xs text-muted-foreground">
+                  整本按产出总字数分档，一次生成计一次费
+                </span>
+              </div>
+              <span className="text-sm text-muted-foreground">
+                {tiersCostText(overview!.contentTiers)}
+              </span>
+            </div>
+          )}
         </ul>
       </section>
 

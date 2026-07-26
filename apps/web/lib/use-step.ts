@@ -239,12 +239,15 @@ export function useStep<T>(step: StepName) {
         setErrorStatus(status)
         setErrorCode(code ?? null)
         // 模型未配置（运营后台未编排主/降级模型）：C 端用户无法自助解决，明确提示联系管理员；
+        // content_tiers_not_configured（标书生成计费阶梯未配置/非法）：同样是部署顺序问题，非系统故障；
         // package_required（多包招标未选包）：硬门禁——必须回读标页选包后才能生成大纲
         setError(code === "model_not_configured"
           ? "系统尚未配置生成模型，请联系管理员在运营后台完成模型编排"
-          : code === "package_required"
-            ? "本项目为多包件招标，请先在「招标解读」页选择投标包件，再生成大纲"
-            : stepErrorMessage(status))
+          : code === "content_tiers_not_configured"
+            ? "标书生成的积分口径尚未配置，请联系运营在后台设置后重试"
+            : code === "package_required"
+              ? "本项目为多包件招标，请先在「招标解读」页选择投标包件，再生成大纲"
+              : stepErrorMessage(status))
         return null
       } finally {
         inFlight.current = false

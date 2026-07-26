@@ -29,6 +29,7 @@ import { LibraryPicker } from "@/components/tool/library-picker"
 import { useEscapeClose } from "@/hooks/use-escape-close"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
+import { tiersCostText } from "@/lib/content-tiers"
 import { useLibrary } from "@/lib/use-library"
 import { type LibraryItem } from "@/lib/library"
 import { deriveHealthReport } from "@/lib/risk-derive"
@@ -101,8 +102,10 @@ export default function ContentPage() {
   /* 计费口径：优先后端实时配置（运营可改），缺省回落默认值 */
   const reviewCost = creditCostValue(overview, "review", 60)
   const rewriteCost = creditCostValue(overview, "rewrite", 25)
-  const contentShortCost = creditCostValue(overview, "content_short", 40)
-  const contentLongCost = creditCostValue(overview, "content_long", 80)
+  /* 标书生成计费阶梯（按产出总字数分档，运营后台可增删）；文案与实际扣减同源，前端不写死 */
+  const contentCostText = tiersCostText(overview?.contentTiers ?? [])
+  /* 阶梯是否已配置：为空 = 未配置/配置非法，后端会 400 拒跑——付费生成入口须提前锁死，不让用户白点 */
+  const tiersConfigured = (overview?.contentTiers ?? []).length > 0
   const exportCost = creditCostValue(overview, "export", 20) // 后台实时口径,勿用静态副本(与实际扣减一致)
   /* 余额是否足够支付本次导出消耗（仅影响导出付费墙，不影响整改建议解锁） */
   const canAfford = balance >= exportCost
@@ -452,16 +455,17 @@ export default function ContentPage() {
           <div>
             <p className="text-sm font-semibold text-foreground">投标正文尚未生成</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              AI 按提纲逐章撰写（短章 {contentShortCost} 积分/章、长章 {contentLongCost} 积分/章），生成后可在线编辑
+              AI 按提纲逐章撰写（{contentCostText}），生成后可在线编辑
             </p>
           </div>
           <button
             onClick={() => setGenConfigOpen(true)}
-            disabled={membershipLoading}
+            disabled={membershipLoading || !tiersConfigured}
+            title={!membershipLoading && !tiersConfigured ? "计费阶梯未配置，请联系运营在后台设置后重试" : undefined}
             className="inline-flex shrink-0 items-center gap-2 rounded-xl gradient-brand px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
           >
             <Sparkles className="size-4" />
-            生成投标正文（{contentShortCost} 积分/章起）
+            生成投标正文（{contentCostText}）
           </button>
         </div>
       )}
@@ -796,7 +800,7 @@ export default function ContentPage() {
           chapterCount={[...data.tech, ...data.business].length || 10}
           projectId={projectId}
           info={info}
-          costText={`短章 ${contentShortCost} 积分/章、长章 ${contentLongCost} 积分/章,按实际产出分档结算`}
+          costText={contentCostText}
           onConfirm={({ targetChars }) => {
             setGenConfigOpen(false)
             void startContent({ targetChars }) // format 不随本请求走:存 localStorage,导出时由 use-export 读取下发
