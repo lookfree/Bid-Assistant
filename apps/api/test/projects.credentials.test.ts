@@ -29,6 +29,10 @@ let runStep = ""
 let lastRunInput: Record<string, unknown> = {}
 
 const mockDeps: Partial<ProjectDeps> = {
+  // 必须注入：否则 content 步会去读共享库的 credit_cost.content_tiers，本文件既不种键也不还原，
+  // 在没种过该键的库上会 400 content_tiers_not_configured，测试挂在与本文件无关的原因上。
+  // 语义同真实实现：content 返回阶梯最大价，其余步 undefined（走 credit_cost.<step>）。
+  resolveStepHoldAmount: async (step: string) => (step === "content" ? 260 : undefined),
   preDeduct: async () => ({ ok: true, holdId: "hold-x", hold: 10 }),
   settle: async (_ref, _holdId, actualCost) => actualCost,
   settleContent: async (_ref, _holdId, heldAmount) => heldAmount,

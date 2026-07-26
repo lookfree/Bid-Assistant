@@ -45,14 +45,23 @@ bun run typecheck    # tsc（先跑，快）
 bun run admin:bootstrap  # 建首个 superadmin（env: ADMIN_BOOTSTRAP_USERNAME/PASSWORD）
 ```
 
-## 测试与迁移（连真库 → 必经 mbp 隧道）
+## 测试与迁移（连真库 → 必经 SSH 隧道）
 
-集成测试连远程真实 PG/Redis/MinIO，**在 mbp 上经 SSH 隧道跑**（本机走 VPN 到国内阿里云丢包，直连会随机超时）：
+集成测试连远程真实 PG/Redis/MinIO，**必须经 SSH 隧道**，别本机直连：直连时 MinIO 9000 被安全组拦
+（7 个文件/存储用例以 `Unable to connect` 假失败，门禁失真），且链路抖动会随机超时。
+
+**默认用本地隧道**（不依赖 mbp——mbp 会休眠掉线，2026-07-27 曾整夜不可达）：
 
 ```bash
-./test-on-mbp.sh                                   # 全量（合并门禁）
-./test-on-mbp.sh test/services/xxx.test.ts …       # 单/多文件
+./test-local.sh                                    # 全量（合并门禁）
+./test-local.sh test/services/xxx.test.ts …        # 单/多文件
 ```
+
+它在本机起监督式隧道（15432/16379/19000 → 阿里云，断了 2 秒重生），并把 `TEST_TIMEOUT_MS` 放宽到
+60s——本机链路比 mbp 慢一个量级（实测 `select 1` 最慢 2.3s），沿用 20s 会让重活用例假失败。
+
+`./test-on-mbp.sh` 等价、隧道起点在 mbp，mbp 在线时更快，可作备选。两者写的是**同一个** `bidsaas` 库。
+两个脚本都 gitignore（含 `root@` SSH 目标，仓库可能公开）。
 
 新迁移经隧道应用（同步 apps/api 到 mbp → 建隧道 → `drizzle-kit migrate` 用 127.0.0.1:15432）：见 `test-on-mbp.sh` 里的隧道命令，或手动 `ssh mbp` 里 export 改写后的 DATABASE_URL 再 `bun run drizzle-kit migrate`。**别从本机直连远程 PG 跑迁移。**
 

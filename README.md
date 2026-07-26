@@ -51,12 +51,15 @@ bun run typecheck  # 全包类型检查
 bun run format     # prettier
 ```
 
-App API 集成测试连远程真实 PG/Redis/MinIO，**在 mbp 上经 SSH 隧道跑**（本机直连丢包）：
+App API 集成测试连远程真实 PG/Redis/MinIO，**必须经 SSH 隧道**（直连时 MinIO 9000 被安全组拦、链路抖动会随机超时）：
 
 ```bash
-./test-on-mbp.sh                                   # 全量
-./test-on-mbp.sh test/services/membership.test.ts  # 单文件
+./test-local.sh                                    # 全量（默认，本机起隧道）
+./test-local.sh test/services/membership.test.ts   # 单文件
+./test-on-mbp.sh                                   # 等价备选，隧道起点在 mbp
 ```
+
+两个脚本都 gitignore（含 `root@` SSH 目标），首次使用见 `.claude/skills/api-service/SKILL.md`。
 
 智能体服务：`cd services/agent && uv run pytest`（单测 `uv run pytest tests/path::test_name -q`）。
 

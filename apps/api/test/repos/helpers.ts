@@ -8,7 +8,10 @@ import { users, plans, subscriptions, paymentOrders, type User, type AdminRole }
 import { eq } from "drizzle-orm"
 
 // 集成测试连远程 bidsaas（公网往返较慢），统一放宽默认超时（各测试文件 setDefaultTimeout 用）。
-export const TEST_TIMEOUT_MS = 20000
+// 可用 TEST_TIMEOUT_MS 环境变量按链路调：mbp 在国内、往返快，20s 够用；本机（新加坡）经隧道到
+// 国内阿里云实测 `select 1` 最慢 2.3s，重活用例（多次账本往返 / 六步串跑）会撞 20s 而假失败，
+// test-local.sh 因此把它调到 60s。调的是**等待上限**不是断言，不会放过真的慢查询回归。
+export const TEST_TIMEOUT_MS = Number(process.env.TEST_TIMEOUT_MS) || 20000
 
 // 每次调用生成一个唯一手机号，避免跨运行/跨用例撞 UNIQUE(provider,identifier)。
 export const uniquePhone = () => `+8613${Date.now().toString().slice(-9)}`

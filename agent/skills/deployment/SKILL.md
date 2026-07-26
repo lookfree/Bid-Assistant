@@ -41,12 +41,21 @@ description: 部署/运维/联调本系统时使用——服务器 60.205.160.74
 
 本机（新加坡 Mac Mini）走公司 VPN 连国内阿里云到 PG 会**间歇丢包**（TCP 通、CONNECT_TIMEOUT 随机超时）——不是代码问题。阿里云安全组按源 IP 白名单放行 5432/9000，且 mbp 出口 IP 会漂移。**所以统一经 mbp 建 SSH 隧道**（`15432→5432 / 16379→6379 / 19000→9000`）访问，不追着 IP 改安全组。
 
+**隧道起点可以是本机,不必依赖 mbp**——mbp 会休眠掉线（2026-07-27 曾整夜不可达,Tailscale 显示 `tx N rx 0`,
+230/231 随之完全不可达）。本机自己 `ssh root@60.205.160.74` 建同样的隧道即可,故**默认用本地版**：
+
 ```bash
-./test-on-mbp.sh                          # apps/api 全量集成测试（合并门禁）
-./test-on-mbp.sh test/xxx.test.ts …       # 单/多文件
+./test-local.sh                           # apps/api 全量集成测试（合并门禁,本机起隧道）
+./test-local.sh test/xxx.test.ts …        # 单/多文件
+./test-on-mbp.sh                          # 等价备选,隧道起点在 mbp（在线时更快）
 ```
 
-`test-on-mbp.sh` 会：rsync apps/api + env 到 `mbp:~/bidtest` → 确保隧道存活 → `bun install` → 经隧道 `bun test`（export 改写 DATABASE_URL 把 `60.205.160.74:5432` 换成 `127.0.0.1:15432`）。
+`test-local.sh` 会：起本机监督式隧道（断了 2 秒重生）→ export 改写 DATABASE_URL/REDIS/MINIO 指向隧道口
+→ `bun test`。它还把 `TEST_TIMEOUT_MS` 放宽到 60s：本机链路比 mbp 慢一个量级（实测 `select 1` 最慢 2.3s）,
+沿用 20s 会让重活用例假失败。`test-on-mbp.sh` 则多一步 rsync 到 `mbp:~/bidtest` 再在那边跑。
+两者写的是**同一个** `bidsaas` 库；两个脚本都 gitignore（含 `root@` SSH 目标,仓库可能公开）。
+
+⚠️ **别本机直连**（不走隧道）：MinIO 9000 被安全组拦,7 个文件/存储用例会以 `Unable to connect` 假失败,门禁失真。
 
 **新迁移**同法经隧道应用：同步 apps/api → 建隧道 → `ssh mbp` 里 export 改写后的 DATABASE_URL → `bun run drizzle-kit migrate`。**别从本机直连远程 PG。** 迁移**手写**（drizzle snapshot 停在 ~0017，`db:generate` 会污染），手动 append `drizzle/meta/_journal.json`。
 

@@ -16,7 +16,7 @@
 
 - **钱只在 App API 动**：余额 = Σ append-only `credit_transactions`；每笔带幂等键；金额整数分禁浮点；智能体只上报用量。
 - **和钱相关的要严谨**：并发串行化（行锁）、幂等、封顶、退款歧义转 pending、审计留痕。
-- **集成测试连真库 → 必经 `./test-on-mbp.sh`（mbp SSH 隧道）**，别本机直连远程 PG。
+- **集成测试连真库 → 必经 SSH 隧道**：默认 `./test-local.sh`（本机起隧道,不依赖会休眠的 mbp）,`./test-on-mbp.sh` 等价备选。别不走隧道直连——MinIO 9000 被安全组拦,文件类用例会假失败。
 - **迁移手写 + 手动 append journal**（drizzle snapshot 停在 ~0017，`db:generate` 会污染）。
 - **迭代节奏**：实现（TDD）→ `/code-review`（全修）→ `/simplify` → mbp/tsc 全绿 → 合并 main + 推送。
 - **提交规范**：英文 Conventional Commits、账号 `lookfree`、**不加 Co-Authored-By**。

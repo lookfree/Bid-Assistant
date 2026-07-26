@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bun:test"
 import { eq } from "drizzle-orm"
 import { preDeduct, settle, settleFailed, settleContent, resolveStepHoldAmount } from "../src/services/billing-stub"
+import { contentTiers, ContentTiersConfigError } from "../src/services/content-pricing"
 import { grant, getBalance } from "../src/services/credits"
 import { getConfigs, seedConfigs, setConfig } from "../src/services/config"
 import { getDb, closeDb } from "../src/db/client"
@@ -133,5 +134,24 @@ describe("billing-stub → 真账本门面（spec302）", () => {
     // 兼容：预扣额小于落档价（发版时的在途 run）→ 钳到预扣额，不扣穿
     const rOld = await preDeduct(userId, "content", `refc3-${userId}`, 80)
     expect(await settleContent(`refc3-${userId}`, rOld.holdId!, rOld.hold, 400_000)).toBe(80)
+  })
+
+  // 路由把 ContentTiersConfigError 转 400、其余照抛 5xx（projects.ts 的 catch）。那里的用例注入的是
+  // 手搓的 ContentTiersConfigError，只证明了 instanceof 分支；这里补另一半——真·坏配置确实会被
+  // contentTiers() 包成这个类型。少了这条，有人把 contentTiers() 简化成裸 parse，缺阶梯就会变成
+  // 5xx（C 端丢掉「联系运营配阶梯」的引导、值班去查根本没坏的基建），而全部测试照样绿。
+  it("真·坏阶梯 → contentTiers/resolveStepHoldAmount 抛 ContentTiersConfigError（配置态，非基建故障）", async () => {
+    const bad: [string, unknown][] = [
+      ["缺顶档", [{ maxChars: 50_000, cost: 40 }]],
+      ["空数组", []],
+      ["非数组", { maxChars: null, cost: 40 }],
+      ["cost 非整数", [{ maxChars: null, cost: 1.5 }]],
+      ["多个顶档", [{ maxChars: null, cost: 40 }, { maxChars: null, cost: 80 }]],
+    ]
+    for (const [label, value] of bad) {
+      await setConfig("credit_cost.content_tiers", value)
+      expect(contentTiers(), label).rejects.toBeInstanceOf(ContentTiersConfigError)
+      expect(resolveStepHoldAmount("content"), label).rejects.toBeInstanceOf(ContentTiersConfigError)
+    }
   })
 })
