@@ -34,7 +34,6 @@ function UnsavedDot() {
   return <span className="size-1.5 rounded-full bg-amber-500" title="有未保存的更改" />
 }
 
-// 积分口径的 6 项真实能力（后端 config key = credit_cost.<op>），种子默认各 10 积分。
 // 积分口径 7 项以 C 端 membership「积分消耗说明」为准（key 对齐后端 credit_cost.<key>）；
 // 标书生成不在此列——它走下方的按字数分档阶梯（credit_cost.content_tiers）。
 const CREDIT_COST_OPS: { key: string; label: string; desc: string }[] = [
@@ -59,7 +58,8 @@ type CreditCosts = Record<string, number>
 /** 标书生成计费阶梯；maxChars=null 为顶档（无上限，不可删）。 */
 type ContentTier = { maxChars: number | null; cost: number }
 
-// 仅在 credit_cost.content_tiers 配置缺失/为空时兜底展示，绝不代替真实加载值（数字一律来自后端配置）。
+// 仅在 credit_cost.content_tiers 缺失/为空时，作为**待保存的草稿**预填编辑区（savedTiers 同时置空 →
+// 页面 dirty、显示「尚未配置」、点保存才真落库）。绝不代替真实加载值，也绝不冒充已生效配置。
 const DEFAULT_TIERS: ContentTier[] = [
   { maxChars: 50_000, cost: 40 },
   { maxChars: 150_000, cost: 80 },
@@ -158,11 +158,13 @@ export function PlansClient() {
       const c = toCreditCosts(configs)
       setCosts(c)
       setSavedCosts(c)
-      // 阶梯配置缺失/为空时兜底为 DEFAULT_TIERS，仅用于此种兜底场景，不覆盖真实加载值。
+      // 阶梯键缺失/为空：编辑区预填 DEFAULT_TIERS 草稿，但 savedTiers 置**空数组**表示「库里尚未配置」。
+      // 绝不能把草稿同时写进 savedTiers——那样 dirty=false、保存按钮禁用、tiersChanged 也恒 false，
+      // 运营看到一份完整梯子却根本存不进去，而后端此时会 400 拒跑标书生成（部署后的自救路径就断了）。
       const rawTiers = configs["credit_cost.content_tiers"]
-      const loadedTiers = Array.isArray(rawTiers) && rawTiers.length > 0 ? (rawTiers as ContentTier[]) : DEFAULT_TIERS
-      setTiers(loadedTiers)
-      setSavedTiers(loadedTiers)
+      const hasTiers = Array.isArray(rawTiers) && rawTiers.length > 0
+      setTiers(hasTiers ? (rawTiers as ContentTier[]) : DEFAULT_TIERS)
+      setSavedTiers(hasTiers ? (rawTiers as ContentTier[]) : [])
       const pf = toPlanForms(apiPlans)
       setPlanForms(pf)
       setSavedPlanForms(pf)
@@ -190,6 +192,8 @@ export function PlansClient() {
 
   // 阶梯校验错误（与后端 parseContentTiers 同规则）：非法时禁用保存按钮，而非等后端 400 才发现。
   const tiersErr = tiers ? tiersError(tiers) : null
+  // 库里尚未配置阶梯（键缺失/为空）：下方展示的是待保存草稿，必须明示，否则会被当成已生效价目。
+  const tiersUnconfigured = savedTiers !== null && savedTiers.length === 0
 
   function updateCost(key: string, raw: string) {
     setCosts((prev) => {
@@ -432,13 +436,26 @@ export function PlansClient() {
                     <span className="text-xs text-muted-foreground">
                       一次生成整本标书计一次费；按实际产出的正文总字数落档（总字数 ≤ 上限即取该档）
                     </span>
+                    {!loading && tiersUnconfigured && (
+                      <span className="mt-1 text-xs text-amber-600">
+                        尚未配置：下方是待保存的默认草稿，未落库；点「保存并生效」后标书生成才可用
+                      </span>
+                    )}
                   </div>
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
                     disabled={loading || !tiers}
-                    onClick={() => setTiers((prev) => [...(prev ?? []), { maxChars: 10_000, cost: 10 }])}
+                    onClick={() =>
+                      setTiers((prev) => {
+                        const cur = prev ?? []
+                        // 缺顶档时「增加一档」先补顶档：否则阶梯永久非法、保存被禁用，运营在后台
+                        // 毫无自救手段（顶档只能靠直接改库补），而标书生成同时是 400 拒跑状态。
+                        const needsTop = !cur.some((t) => t.maxChars === null)
+                        return [...cur, needsTop ? { maxChars: null, cost: 10 } : { maxChars: 10_000, cost: 10 }]
+                      })
+                    }
                   >
                     + 增加一档
                   </Button>
@@ -481,7 +498,9 @@ export function PlansClient() {
                             }
                           />
                           <span className="text-sm text-muted-foreground">积分</span>
-                          {t.maxChars !== null && (
+                          {/* 唯一的那个顶档不可删（删了阶梯就非法）；但若库里被写进多个顶档，
+                             这些行必须可删，否则同样卡成「非法且无法修复」。 */}
+                          {!(t.maxChars === null && tiers.filter((x) => x.maxChars === null).length === 1) && (
                             <Button
                               type="button"
                               variant="ghost"
