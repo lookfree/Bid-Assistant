@@ -15,6 +15,11 @@ describe("fmtTierChars", () => {
     expect(fmtTierChars(12_000)).toBe("1.2万")
     expect(fmtTierChars(8_000)).toBe("8000")
   })
+  it("小数位向下取整：绝不把阈值说得比实际覆盖范围大", () => {
+    expect(fmtTierChars(50_500)).toBe("5万") // 不是 5.1万——50900 字其实已落下一档
+    expect(fmtTierChars(12_999)).toBe("1.2万")
+    expect(fmtTierChars(129_999)).toBe("12.9万")
+  })
 })
 
 describe("tiersCostText", () => {

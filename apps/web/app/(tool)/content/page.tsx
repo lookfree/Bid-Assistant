@@ -102,10 +102,23 @@ export default function ContentPage() {
   /* 计费口径：优先后端实时配置（运营可改），缺省回落默认值 */
   const reviewCost = creditCostValue(overview, "review", 60)
   const rewriteCost = creditCostValue(overview, "rewrite", 25)
-  /* 标书生成计费阶梯（按产出总字数分档，运营后台可增删）；文案与实际扣减同源，前端不写死 */
-  const contentCostText = tiersCostText(overview?.contentTiers ?? [])
-  /* 阶梯是否已配置：为空 = 未配置/配置非法，后端会 400 拒跑——付费生成入口须提前锁死，不让用户白点 */
-  const tiersConfigured = (overview?.contentTiers ?? []).length > 0
+  /* 标书生成计费阶梯（按产出总字数分档，运营后台可增删）；文案与实际扣减同源，前端不写死。
+     三态严格区分：加载中 / 拉取失败 ≠ 运营未配置——把一次网络抖动说成「请联系运营」会把用户和
+     客服一起引到错误方向。只有 overview 确实到手、阶梯仍为空，才判定为未配置。 */
+  const tiersLoaded = !membershipLoading && !!overview
+  const contentCostText = membershipLoading
+    ? "计费口径加载中…"
+    : !overview
+      ? "计费口径加载失败，请刷新重试"
+      : tiersCostText(overview.contentTiers ?? [])
+  /* 阶梯已确认配置：为空 = 未配置/配置非法，后端会 400 拒跑。加载中/失败一律按未确认处理，
+     付费生成入口保持锁死（铁律：非确认态绝不亮计费按钮），但提示文案分开给。 */
+  const tiersConfigured = tiersLoaded && (overview!.contentTiers ?? []).length > 0
+  const contentCtaBlockedReason = tiersConfigured
+    ? undefined
+    : !tiersLoaded
+      ? "计费口径尚未加载完成，请稍候或刷新重试"
+      : "计费阶梯未配置，请联系运营在后台设置后重试"
   const exportCost = creditCostValue(overview, "export", 20) // 后台实时口径,勿用静态副本(与实际扣减一致)
   /* 余额是否足够支付本次导出消耗（仅影响导出付费墙，不影响整改建议解锁） */
   const canAfford = balance >= exportCost
@@ -460,12 +473,12 @@ export default function ContentPage() {
           </div>
           <button
             onClick={() => setGenConfigOpen(true)}
-            disabled={membershipLoading || !tiersConfigured}
-            title={!membershipLoading && !tiersConfigured ? "计费阶梯未配置，请联系运营在后台设置后重试" : undefined}
+            disabled={!tiersConfigured}
+            title={contentCtaBlockedReason}
             className="inline-flex shrink-0 items-center gap-2 rounded-xl gradient-brand px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
           >
             <Sparkles className="size-4" />
-            生成投标正文（{contentCostText}）
+            生成投标正文
           </button>
         </div>
       )}
