@@ -17,7 +17,6 @@ import { StepPageHeader } from "@/components/tool/step-page-header"
 import { ReviewEntry } from "./review-entry"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { StepRunCta } from "@/components/tool/step-run-cta"
-import { StepPrereqGuide } from "@/components/tool/step-prereq-guide"
 import { AiNotice } from "@/components/tool/ai-notice"
 import { deriveRisk, type RealRisk } from "@/lib/risk-derive"
 import { stepPrereq, useStep } from "@/lib/use-step"
@@ -112,24 +111,23 @@ function RejectReview() {
     )
   }
 
-  // 该步未跑：前序未完成先引导补齐；已就绪给显式体检按钮（明示消耗）
+  // 该步未跑：
+  // - 前序（标书生成）未完成 → 不再引导「前往标书生成」，直接给独立审查入口：标书审查是独立能力，
+  //   上传线下标书 / 选已有标书即可审查，不强制先在库内生成。
+  // - 前序已就绪 → 给显式体检按钮（明示消耗）+ 顶部独立审查入口条。
   if (!real) {
-    const prereq = stepPrereq(info, "review")
+    if (stepPrereq(info, "review")) return <ReviewEntry />
     return (
       <div className="flex flex-col gap-3">
       <EntryBar onOpen={() => setShowEntry(true)} />
       <div className="rounded-2xl border border-border bg-card">
-        {prereq ? (
-          <StepPrereqGuide prereq={prereq} currentDesc="废标体检需要逐条比对招标要求与已生成的标书内容" />
-        ) : (
-          <StepRunCta
-            title="废标风险审查"
-            desc="AI 逐条比对招标要求与标书内容，生成健康分、风险项与整改建议"
-            costText={`消耗 ${reviewCost} 积分`}
-            actionLabel="开始废标体检"
-            onRun={() => void start()}
-          />
-        )}
+        <StepRunCta
+          title="废标风险审查"
+          desc="AI 逐条比对招标要求与标书内容，生成健康分、风险项与整改建议"
+          costText={`消耗 ${reviewCost} 积分`}
+          actionLabel="开始废标体检"
+          onRun={() => void start()}
+        />
       </div>
       </div>
     )
