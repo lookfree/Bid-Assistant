@@ -58,6 +58,7 @@
   - `parseContentTiers(raw: unknown): ContentTier[]`（纯函数，非法抛错，返回升序且顶档在末位）
   - `costForChars(tiers: ContentTier[], totalChars: number): number`（纯函数）
   - `holdAmountFor(tiers: ContentTier[]): number`（纯函数）
+  - `settleAmountFor(tiers: ContentTier[], totalChars: number, heldAmount: number): number`（纯函数，含防扣穿 clamp）
   - `contentTiers(): Promise<ContentTier[]>`（IO，读配置 + 校验）
 
 - [ ] **Step 1: 写失败测试**
@@ -66,7 +67,13 @@
 
 ```ts
 import { describe, it, expect } from "bun:test"
-import { costForChars, holdAmountFor, parseContentTiers, type ContentTier } from "../../src/services/content-pricing"
+import {
+  costForChars,
+  holdAmountFor,
+  parseContentTiers,
+  settleAmountFor,
+  type ContentTier,
+} from "../../src/services/content-pricing"
 
 const OK = [
   { maxChars: 50_000, cost: 40 },
@@ -140,6 +147,16 @@ describe("holdAmountFor 预扣额", () => {
     expect(holdAmountFor(weird)).toBe(400)
   })
 })
+
+describe("settleAmountFor 结算额（落档价钳到预扣额）", () => {
+  const tiers = parseContentTiers(OK)
+  it("落档价低于预扣额 → 按落档价（多退）", () => {
+    expect(settleAmountFor(tiers, 30_000, 260)).toBe(40)
+  })
+  it("落档价高于预扣额 → 钳到预扣额（绝不少补扣穿）", () => {
+    expect(settleAmountFor(tiers, 400_000, 80)).toBe(80)
+  })
+})
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -198,6 +215,12 @@ export function costForChars(tiers: ContentTier[], totalChars: number): number {
  *  即使运营误配（中间档比顶档贵）也不会把结算算成少补而扣穿余额。 */
 export function holdAmountFor(tiers: ContentTier[]): number {
   return Math.max(...tiers.map((t) => t.cost))
+}
+
+/** 结算金额（纯函数）：落档价钳到 ≤ 预扣额。这道 clamp 是防扣穿的最后一闸，
+ *  也保证发版时「按旧价预扣的在途 run」能安全收尾（结算不会超过它已冻结的额度）。 */
+export function settleAmountFor(tiers: ContentTier[], totalChars: number, heldAmount: number): number {
+  return Math.min(costForChars(tiers, totalChars), heldAmount)
 }
 
 /** 读取运营配置的阶梯（IO）：缺失/非法一律抛错，由调用方转 400 拒跑。 */
@@ -339,11 +362,12 @@ git commit -m "feat(billing): bill content on total produced chars, not longest 
 
 - [ ] **Step 1: 写失败测试（结算的钳制与落档）**
 
-创建 `apps/api/test/services/content-settle.test.ts`（注入假账本，只验计费口径，不连库）：
+创建 `apps/api/test/services/content-settle.test.ts`。**测的是生产函数 `settleAmountFor`（Task 1 已导出），
+不在测试里另写一份同样的算术**——否则测试只是在验证它自己。
 
 ```ts
 import { describe, it, expect } from "bun:test"
-import { costForChars, holdAmountFor, parseContentTiers } from "../../src/services/content-pricing"
+import { holdAmountFor, parseContentTiers, settleAmountFor } from "../../src/services/content-pricing"
 
 const TIERS = parseContentTiers([
   { maxChars: 50_000, cost: 40 },
@@ -351,33 +375,32 @@ const TIERS = parseContentTiers([
   { maxChars: null, cost: 260 },
 ])
 
-/** settleContent 的核心算术：min(落档价, 预扣额)。此处直接验算术，
- *  账本落库由既有 credits 测试覆盖。 */
-function settleAmount(totalChars: number, heldAmount: number): number {
-  return Math.min(costForChars(TIERS, totalChars), heldAmount)
-}
-
-describe("content 结算口径", () => {
+describe("content 结算口径 settleAmountFor", () => {
   it("按总字数落档后多退", () => {
     const held = holdAmountFor(TIERS) // 260
-    expect(settleAmount(30_000, held)).toBe(40)
-    expect(settleAmount(120_000, held)).toBe(80)
-    expect(settleAmount(400_000, held)).toBe(260)
+    expect(settleAmountFor(TIERS, 30_000, held)).toBe(40)
+    expect(settleAmountFor(TIERS, 120_000, held)).toBe(80)
+    expect(settleAmountFor(TIERS, 400_000, held)).toBe(260)
   })
 
   it("落档价高于预扣额时钳到预扣额（绝不少补扣穿）", () => {
-    // 发版兼容场景：在途 run 是按旧 content_long=80 预扣的，新顶档 260
-    expect(settleAmount(400_000, 80)).toBe(80)
-    expect(settleAmount(120_000, 80)).toBe(80)
-    expect(settleAmount(30_000, 80)).toBe(40) // 低于预扣额时正常多退
+    // 发版兼容场景：在途 run 是按旧 content_long=80 预扣的，而新顶档是 260
+    expect(settleAmountFor(TIERS, 400_000, 80)).toBe(80)
+    expect(settleAmountFor(TIERS, 120_000, 80)).toBe(80)
+    expect(settleAmountFor(TIERS, 30_000, 80)).toBe(40) // 落档价低于预扣额时正常多退
+  })
+
+  it("预扣额为 0（异常兜底）时结算也为 0，不会变成负数补扣", () => {
+    expect(settleAmountFor(TIERS, 400_000, 0)).toBe(0)
   })
 })
 ```
 
-- [ ] **Step 2: 运行测试确认通过（纯算术，应直接绿）**
+- [ ] **Step 2: 运行测试确认失败**
 
 Run: `cd apps/api && bun test test/services/content-settle.test.ts`
-Expected: PASS（本步用于锁死口径；实现改动在后续步骤，回归时此测试守门）
+Expected: 若 Task 1 已导出 `settleAmountFor` 则 PASS；若报 `settleAmountFor is not a function`，说明 Task 1
+的 Step 3 漏了该函数，**回到 Task 1 补齐后再继续**（不要在本测试里自行实现算术绕过）。
 
 - [ ] **Step 3: `hold()` 支持显式金额**
 
@@ -412,7 +435,7 @@ export async function hold(
 ① 顶部 import 增加：
 
 ```ts
-import { contentTiers, costForChars, holdAmountFor } from "./content-pricing"
+import { contentTiers, holdAmountFor, settleAmountFor } from "./content-pricing"
 ```
 
 ② **删除** `CONTENT_LONG_CHAR_THRESHOLD` 常量与 `holdOpForStep` 函数（含其注释），替换为：
@@ -440,7 +463,7 @@ export async function settleContent(
   heldAmount: number,
   totalChars: number,
 ): Promise<number> {
-  const cost = Math.min(costForChars(await contentTiers(), totalChars), heldAmount)
+  const cost = settleAmountFor(await contentTiers(), totalChars, heldAmount)
   await ledgerSettle(holdId, cost, { idempotencyKey: `settle:${ref}` })
   return cost
 }
