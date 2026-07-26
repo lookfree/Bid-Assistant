@@ -43,7 +43,7 @@ export const memberTiers: MemberTier[] = [
     yearSave: 0,
     icon: Gift,
     features: [
-      { text: "注册赠 200 积分（一次性）", included: true },
+      { text: "注册即赠体验积分（一次性）", included: true },
       { text: "积分可自由用于读标 / 提纲 / 生成 / 导出等任意操作", included: true },
       { text: "完整体验 读标 → 提纲 → 标书生成", included: true },
       { text: "导出 Word / PDF 消耗积分", included: true },
@@ -92,29 +92,9 @@ export const memberTiers: MemberTier[] = [
   },
 ]
 
-/* -------------------------------------------------------------------------- */
-/*  积分消耗表（按篇幅 · 字数 · 功能分档）                                       */
-/* -------------------------------------------------------------------------- */
-
-export interface CreditCost {
-  feature: string
-  desc: string
-  cost: string
-  /** 单次消耗积分数值，供 CreditEstimate 估算使用 */
-  value: number
-}
-
-export const creditCosts: CreditCost[] = [
-  { feature: "招标解读", desc: "识别评分点与关键条款", cost: "20 积分 / 份", value: 20 },
-  { feature: "提纲生成", desc: "技术标 + 商务标大纲", cost: "30 积分 / 份", value: 30 },
-  { feature: "标书生成（短篇）", desc: "单章 ≤ 2000 字", cost: "40 积分 / 章", value: 40 },
-  { feature: "标书生成（长篇）", desc: "单章 > 2000 字", cost: "80 积分 / 章", value: 80 },
-  { feature: "逐章重写 / 改写", desc: "针对单章润色重写", cost: "25 积分 / 次", value: 25 },
-  { feature: "废标风险审查", desc: "全文风险体检 + 整改建议", cost: "60 积分 / 次", value: 60 },
-  { feature: "标书查重", desc: "多维指纹比对", cost: "100 积分 / 次", value: 100 },
-  { feature: "述标演示生成", desc: "标书提炼为述标/答辩 PPT", cost: "80 积分 / 次", value: 80 },
-  { feature: "导出 Word / PDF", desc: "整本投标文件导出", cost: "20 积分 / 次", value: 20 },
-]
+// 注：积分消耗口径的唯一真相是后端 billing_configs（运营可改），前端一律经 overview.creditCosts /
+// creditCostValue(overview, key, fallback) 取实时值。此前这里有一份静态副本，会与后台配置漂移
+// （导致"显示 20、实际扣 21"），已删除——切勿再引入静态积分口径表。
 
 /* -------------------------------------------------------------------------- */
 /*  单独积分充值包（C 端主力）                                                  */

@@ -1,6 +1,7 @@
 import Link from "next/link"
 import { HeroMock } from "@/components/hero-mock"
 import { HomeAuthNav } from "@/components/home-auth-nav"
+import { SignupGrantCredits } from "@/components/signup-grant-credits"
 import {
   Sparkles,
   ArrowRight,
@@ -58,7 +59,8 @@ const audiences = [
   { icon: Users, title: "中小投标团队", desc: "多项目并行推进，资料库统一沉淀，模板与业绩全程复用。" },
 ]
 
-const trustPoints = ["注册赠 200 积分体验全流程", "数据全程加密", "积分按需充值或开通会员"]
+// 注：注册赠送积分数走 <SignupGrantCredits/> 实时值，故不写进这个静态串数组（见下方列表首项）。
+const trustPoints = ["数据全程加密", "积分按需充值或开通会员"]
 
 export default function HomePage() {
   return (
@@ -104,7 +106,7 @@ export default function HomePage() {
               </Link>
             </div>
             <p className="mt-4 text-xs text-muted-foreground">
-              注册即送 200 积分，可完整体验全流程 · 数据全程加密 · 即开即用
+              注册即送 <SignupGrantCredits /> 积分，可完整体验全流程 · 数据全程加密 · 即开即用
             </p>
           </div>
 
@@ -197,7 +199,7 @@ export default function HomePage() {
             现在就上传招标文件，免费体验完整流程
           </h2>
           <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-white/85 text-pretty">
-            注册赠 200 积分即可跑通读标到述标的全流程，积分按需充值或开通会员，用多少买多少。
+            注册赠 <SignupGrantCredits /> 积分即可跑通读标到述标的全流程，积分按需充值或开通会员，用多少买多少。
           </p>
           <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
             <Link
@@ -209,6 +211,10 @@ export default function HomePage() {
             </Link>
           </div>
           <ul className="mx-auto mt-8 flex max-w-xl flex-wrap items-center justify-center gap-x-5 gap-y-2">
+            <li className="flex items-center gap-1.5 text-xs text-white/85">
+              <CheckCircle2 className="size-3.5" />
+              注册赠 <SignupGrantCredits /> 积分体验全流程
+            </li>
             {trustPoints.map((t) => (
               <li key={t} className="flex items-center gap-1.5 text-xs text-white/85">
                 <CheckCircle2 className="size-3.5" />

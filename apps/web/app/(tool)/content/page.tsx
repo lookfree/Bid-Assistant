@@ -27,7 +27,6 @@ import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { StepPrereqGuide } from "@/components/tool/step-prereq-guide"
 import { LibraryPicker } from "@/components/tool/library-picker"
 import { useEscapeClose } from "@/hooks/use-escape-close"
-import { creditCosts } from "@/lib/plans"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import { useLibrary } from "@/lib/use-library"
@@ -63,9 +62,6 @@ const bidTabs: { id: BidType; name: string; icon: React.ElementType }[] = [
   { id: "business", name: "商务标", icon: Briefcase },
   { id: "full", name: "标书全文", icon: Layers },
 ]
-
-/** 导出单次消耗积分（取自积分消耗表） */
-const EXPORT_COST = creditCosts.find((c) => c.feature.startsWith("导出"))?.value ?? 20
 
 export default function ContentPage() {
   const [bidType, setBidType] = useState<BidType>("tech")
@@ -107,8 +103,9 @@ export default function ContentPage() {
   const rewriteCost = creditCostValue(overview, "rewrite", 25)
   const contentShortCost = creditCostValue(overview, "content_short", 40)
   const contentLongCost = creditCostValue(overview, "content_long", 80)
+  const exportCost = creditCostValue(overview, "export", 20) // 后台实时口径,勿用静态副本(与实际扣减一致)
   /* 余额是否足够支付本次导出消耗（仅影响导出付费墙，不影响整改建议解锁） */
-  const canAfford = balance >= EXPORT_COST
+  const canAfford = balance >= exportCost
   /* 资料库数据提升到页面级：LibraryPicker 弹层复用，避免每次打开全量重拉 */
   const { items: libItems, loading: libLoading, error: libError } = useLibrary()
 
@@ -733,7 +730,7 @@ export default function ContentPage() {
               <ExportMenu
                 scope={exportScope}
                 format={exportFormat}
-                cost={EXPORT_COST}
+                cost={exportCost}
                 balance={balance}
                 pdfUnavailable={pdfUnavailable}
                 onScope={setExportScope}

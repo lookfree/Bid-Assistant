@@ -50,6 +50,7 @@ export interface MembershipOverview {
   plans: PlanView[]
   rechargePacks: RechargePackView[] // 充值包目录（服务端定价为准；前端按 id 下单）
   creditCosts: CreditCostView[] // 积分消耗口径 9 项（运营后台可配，实时）
+  signupGrantCredits: number // 注册赠送积分（运营后台可配，实时；展示读此值不写死）
   progressive: { current: PlanView | null; next: PlanView | null }
 }
 

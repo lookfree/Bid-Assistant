@@ -149,7 +149,9 @@ export default function MembershipPage() {
           <div>
             <p className="text-xs text-muted-foreground">{currentTierId === "free" ? "注册赠送额度" : "每月额度"}</p>
             <p className="mt-0.5 text-lg font-semibold text-foreground">
-              {currentTier.credits.toLocaleString()} <span className="text-xs font-normal text-muted-foreground">积分</span>
+              {/* 免费档展示后台实时注册赠送积分（运营可改），非会员档展示套餐月额度 */}
+              {(currentTierId === "free" ? (overview?.signupGrantCredits ?? currentTier.credits) : currentTier.credits).toLocaleString()}{" "}
+              <span className="text-xs font-normal text-muted-foreground">积分</span>
             </p>
           </div>
           {sub && sub.status !== "none" && sub.currentPeriodEnd && (

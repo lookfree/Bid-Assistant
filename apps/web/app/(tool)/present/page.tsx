@@ -24,7 +24,6 @@ import { StepPageHeader } from "@/components/tool/step-page-header"
 import { StepBanner } from "@/components/tool/step-banner"
 import { NoProjectGuide } from "@/components/tool/no-project-guide"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
-import { creditCosts } from "@/lib/plans"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import { useLibrary } from "@/lib/use-library"
@@ -53,15 +52,15 @@ import { SlidePreview } from "./slide-preview"
 // agent DeckSpec（camelCase）：slides/qa 与原型 Slide/QA 同构
 type RealDeck = { title: string; duration: number; template: string; slides: Slide[]; qa: { q: string; a: string }[] }
 
-const EXPORT_COST = creditCosts.find((c) => c.feature.startsWith("导出"))?.value ?? 20
-
 export default function PresentPage() {
   const { openPaywall } = usePaywall()
   const router = useRouter()
 
   /* 真实积分余额与会员身份（GET /api/membership；仅 active 订阅算会员权益） */
   const { overview, balance, isMember, loading: membershipLoading, error: membershipError } = useMembership()
-  const canAfford = balance >= EXPORT_COST
+  /* 计费口径一律取后端实时配置（运营可改），勿用静态副本——否则显示与实际扣减不一致 */
+  const exportCost = creditCostValue(overview, "export", 20)
+  const canAfford = balance >= exportCost
   /* 述标生成计费口径（优先后端实时配置） */
   const presentCost = creditCostValue(overview, "present", 80)
   /* 资料库数据提升到页面级：LibraryPicker / TemplatePicker 共用同一份，避免同页重复拉取 */
@@ -457,7 +456,7 @@ export default function PresentPage() {
         {exportOpen && canAfford && (
           <div className="mt-3 rounded-xl border border-border bg-background p-3">
             <CreditEstimate
-              cost={EXPORT_COST}
+              cost={exportCost}
               balance={balance}
               showSupportable={false}
               actionLabel="确认导出"
