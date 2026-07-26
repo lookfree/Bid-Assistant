@@ -363,7 +363,7 @@ export default function MembershipPage() {
             </li>
           ))}
           {(overview?.contentTiers ?? []).length > 0 && (
-            <div className="flex items-center justify-between py-2">
+            <li className="flex items-center justify-between gap-3 px-5 py-3">
               <div className="flex flex-col">
                 <span className="text-sm font-medium text-foreground">标书生成</span>
                 <span className="text-xs text-muted-foreground">
@@ -373,7 +373,7 @@ export default function MembershipPage() {
               <span className="text-sm text-muted-foreground">
                 {tiersCostText(overview!.contentTiers)}
               </span>
-            </div>
+            </li>
           )}
         </ul>
       </section>
