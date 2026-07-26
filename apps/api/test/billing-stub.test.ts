@@ -29,17 +29,23 @@ let snapshotComplete = false // 快照整套取全才置真，见 restoreConfigs
  *  ① 快照不完整就整体放弃还原：beforeAll 抛错/超时时 bun 照样跑 afterAll，此时 Map 里可能只有
  *     半套键——把「还没来得及快照」误判成「本来就不存在」会 DELETE 掉共享库里真实的计费口径
  *     （标书生成全员 400、read 口径没了还会在占位之后抛 500 leak 步位），比不还原严重得多。
- *  ② 逐键各自 try/catch：一个键还原失败不许连累后面的键（尤其不许跳过 content_tiers）。 */
+ *  ② 逐键各自 try/catch：一个键还原失败不许连累后面的键（尤其不许跳过 content_tiers）。
+ *  ③ 但失败必须响：错误收集完在循环后聚合抛出——吞成日志会让「共享库还留着测试口径」
+ *     以整轮绿色收场，正是这次要堵的那种静默。 */
 async function restoreConfigs(): Promise<void> {
   if (!snapshotComplete) return
+  const failedKeys: string[] = []
+  const errors: unknown[] = []
   for (const key of MUTATED_CONFIG_KEYS) {
     try {
       if (configBackup.has(key)) await setConfig(key, configBackup.get(key))
       else await getDb().delete(billingConfigs).where(eq(billingConfigs.key, key))
     } catch (e) {
-      console.error(`[billing-stub.test] 还原共享配置 ${key} 失败（需人工核对）:`, e)
+      failedKeys.push(key)
+      errors.push(e)
     }
   }
+  if (failedKeys.length) throw new AggregateError(errors, `还原共享配置失败（需人工核对）：${failedKeys.join(", ")}`)
 }
 
 beforeAll(async () => {

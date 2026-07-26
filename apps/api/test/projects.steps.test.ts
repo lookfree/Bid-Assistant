@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bun:test"
+import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout, spyOn } from "bun:test"
 import { and, eq } from "drizzle-orm"
 import { Hono } from "hono"
 import { projectRoutes, buildStateOverrides, type ProjectDeps } from "../src/routes/projects"
@@ -7,6 +7,7 @@ import { getDb, closeDb } from "../src/db/client"
 import { users, bidProjects, projectSteps, projectFiles, libraryItems, billingConfigs } from "../src/db/schema"
 import { getConfig, setConfig } from "../src/services/config"
 import { CONTENT_TIERS_KEY } from "../src/services/content-pricing"
+import * as billing from "../src/services/billing-stub"
 import { uniquePhone, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连真库
@@ -87,7 +88,24 @@ const mockDeps: Partial<ProjectDeps> = {
 const app = new Hono()
 app.route("/api/projects", projectRoutes(mockDeps))
 
+// 下面的阶梯用例会改共享 billing_configs 的 credit_cost.content_tiers。实测 bun 1.3.14：用例体
+// 超时会被直接放弃，**它的 finally 不会执行**（afterAll 仍会执行）——所以还原绝不能只挂在用例内的
+// finally 上（一次公网慢往返就足以把三档梯子留在共享库里静默错价）。故：快照在 beforeAll 取、
+// afterAll 兜底还原，用例内的 finally 只作「跑得顺利时尽早还原」的快路径。
+let tiersBackup: unknown
+let tiersSnapshotDone = false // 快照没取到就绝不驱动还原，更不许据此删键
+let ladderSpy: { mockRestore(): void } | undefined // 同理，spy 也要有 afterAll 兜底还原
+
+/** 还原阶梯口径：原本有值写回原值，原本不存在则删掉（不写编造值）。幂等，可重复调用。 */
+async function restoreContentTiers(): Promise<void> {
+  if (!tiersSnapshotDone) return
+  if (tiersBackup !== undefined) await setConfig(CONTENT_TIERS_KEY, tiersBackup)
+  else await getDb().delete(billingConfigs).where(eq(billingConfigs.key, CONTENT_TIERS_KEY))
+}
+
 beforeAll(async () => {
+  tiersBackup = await getConfig(CONTENT_TIERS_KEY)
+  tiersSnapshotDone = true // 读到了（含「本来就没有」＝undefined）才允许还原
   const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
   token = r.token
   userId = r.user.id
@@ -104,8 +122,16 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  ladderSpy?.mockRestore() // 用例体超时时它的 finally 没跑，spy 可能还挂着
+  let restoreErr: unknown
+  try {
+    await restoreContentTiers() // 兜底还原共享计费口径（用例内 finally 超时不执行）
+  } catch (e) {
+    restoreErr = e
+  }
   await getDb().delete(users).where(eq(users.id, userId)) // 项目/步随 user 级联删
   await closeDb()
+  if (restoreErr) throw restoreErr // 还原失败必须炸出来：共享库可能还留着测试阶梯
 })
 
 const auth = () => ({ Authorization: `Bearer ${token}`, "content-type": "application/json" })
@@ -583,8 +609,7 @@ describe("GET /:id/steps/:step/events 进度事件流", () => {
       .values({ userId, threadId: `proj-${crypto.randomUUID()}`, currentStep: "content", status: "running", name: "notiers" })
       .returning()
     const before = captured.preDeductSteps.length
-    // 共享库口径：先读快照再改（读失败就直接抛，此刻尚未写库、无可还原），finally 必还原原值/原缺席态。
-    const prev = await getConfig(CONTENT_TIERS_KEY)
+    // 快照已在 beforeAll 取好；这里的 finally 只是快路径，真正的兜底在 afterAll（见文件顶部注释）。
     try {
       await setConfig(CONTENT_TIERS_KEY, [{ maxChars: 50_000, cost: 40 }]) // 缺顶档 = 非法阶梯
       const bad = await app.request(`/api/projects/${proj!.id}/steps/content`, { method: "POST", headers: auth() })
@@ -602,8 +627,30 @@ describe("GET /:id/steps/:step/events 进度事件流", () => {
       expect(captured.preDeductSteps.at(-1)).toBe("content")
       expect(captured.preDeductAmounts.at(-1)).toBe(260)
     } finally {
-      if (prev !== undefined) await setConfig(CONTENT_TIERS_KEY, prev)
-      else await getDb().delete(billingConfigs).where(eq(billingConfigs.key, CONTENT_TIERS_KEY))
+      await restoreContentTiers()
+    }
+  })
+
+  it("阶梯读取遇基建故障 → 5xx（不是 400 误导排障），同样不占步位不预扣", async () => {
+    const [proj] = await getDb()
+      .insert(bidProjects)
+      .values({ userId, threadId: `proj-${crypto.randomUUID()}`, currentStep: "content", status: "running", name: "tiersboom" })
+      .returning()
+    const before = captured.preDeductSteps.length
+    // 阶梯读取抛「非 ContentTiersConfigError」= DB 抖动一类基建故障：路由必须原样上抛成 5xx，
+    // 而不是报成「去配阶梯」的 400（后者会把排障引向根本没坏的配置）。
+    ladderSpy = spyOn(billing, "resolveStepHoldAmount").mockImplementation(async () => {
+      throw new Error("db jitter")
+    })
+    try {
+      const res = await app.request(`/api/projects/${proj!.id}/steps/content`, { method: "POST", headers: auth() })
+      expect(res.status).toBeGreaterThanOrEqual(500)
+      expect(captured.preDeductSteps.length).toBe(before) // 未预扣
+      const slots = await getDb().select().from(projectSteps).where(eq(projectSteps.projectId, proj!.id))
+      expect(slots.length).toBe(0) // 未占步位（上抛点仍在 acquireStepSlot 之前）
+    } finally {
+      ladderSpy.mockRestore()
+      ladderSpy = undefined
     }
   })
 })
