@@ -34,9 +34,10 @@ import { useLibrary } from "@/lib/use-library"
 import { type LibraryItem } from "@/lib/library"
 import { deriveHealthReport } from "@/lib/risk-derive"
 import { stepPrereq, useOtherStepResult, useStep } from "@/lib/use-step"
+import { normalizeChapterHtml } from "@/lib/chapter-normalize"
 import { useExport } from "./use-export"
 import { AiNotice } from "@/components/tool/ai-notice"
-import { patchErrorMessage, patchStep, triggerDownload } from "@/lib/project"
+import { triggerDownload } from "@/lib/project"
 import { exportRiskReport } from "@/lib/risk-api"
 import { ChatPanel } from "./chat-panel"
 import { EditorToolbar } from "./editor-toolbar"
@@ -45,10 +46,10 @@ import { CheckConfirm, CheckSummary, ExportConfirm } from "./check-dialogs"
 import { ExportMenu, type BidType } from "./export-menu"
 import { ReportDialog } from "./report-dialog"
 import { useHealthCheck } from "./use-health-check"
+import { useChapterEdits } from "./use-chapter-edits"
 import { libraryItemHtml } from "./use-editor-insert"
 import { RichEditor } from "./rich-editor"
 import type { Editor as TiptapEditor } from "@tiptap/react"
-import { imageFileToDataUrl } from "@/lib/image-insert"
 import { GenerationConfigDialog } from "./generation-config"
 import { storedTargetFor } from "@/lib/generation-config"
 
@@ -68,6 +69,8 @@ export default function ContentPage() {
   const [bidType, setBidType] = useState<BidType>("tech")
   // 章节树：从空开始，由 outline/content 结果构建
   const [data, setData] = useState<Record<Group, Chapter[]>>({ tech: [], business: [] })
+  // 组顺序跟随提纲 chapters 数组顺序（提纲页可设商务标在前）：全文视图/导出目录一致
+  const [bizFirst, setBizFirst] = useState(false)
 
   // outline 树 + content 各章 HTML → 构建章节树；计费步绝不自动触发，生成一律走显式按钮
   const { projectId, info, data: realBodies, dataLoading, running, progress, error, errorAction, start } = useStep<RealChapters>("content")
@@ -86,6 +89,7 @@ export default function ContentPage() {
         .filter((c) => c.group === g)
         .map((c) => ({ id: c.id, no: c.no, title: c.title, sourced: c.sourced, html: realBodies?.[c.id] ?? "" }))
     setData({ tech: build("tech"), business: build("business") })
+    setBizFirst(ol.chapters[0]?.group === "business")
     setActiveId((prev) => (ol.chapters.some((c) => c.id === prev) ? prev : (ol.chapters[0]?.id ?? "")))
   }, [realBodies, outlineResult])
   const [activeId, setActiveId] = useState<string>("t1")
@@ -165,26 +169,32 @@ export default function ContentPage() {
     return start(target ? { targetChars: target } : undefined)
   }
 
-  // 当前 tab 对应的章节列表（全文为技术标 + 商务标合并）
-  const list: Chapter[] = bidType === "full" ? [...data.tech, ...data.business] : data[bidType]
+  // 当前 tab 对应的章节列表（全文按提纲组顺序合并，商务标在前时商务组先行）
+  const fullList = (): Chapter[] => (bizFirst ? [...data.business, ...data.tech] : [...data.tech, ...data.business])
+  const list: Chapter[] = bidType === "full" ? fullList() : data[bidType]
   const active = list.find((c) => c.id === activeId) ?? list[0]
   const generatedCount = list.filter((c) => c.html.trim()).length
   // 本章字数只在 html 变化时重算（正则扫大章节不便宜，页面因保存态/余额刷新频繁重渲染）
   const activeChars = useMemo(() => countChars(active?.html ?? ""), [active?.html])
 
-  // 目录分组（全文模式下展示技术标 / 商务标分组标题）
+  // 目录分组（全文模式下展示技术标 / 商务标分组标题，顺序跟随提纲组顺序）
   const groups: { label: string; items: Chapter[] }[] =
     bidType === "full"
-      ? [
-          { label: "技术标", items: data.tech },
-          { label: "商务标", items: data.business },
-        ]
+      ? (bizFirst
+          ? [
+              { label: "商务标", items: data.business },
+              { label: "技术标", items: data.tech },
+            ]
+          : [
+              { label: "技术标", items: data.tech },
+              { label: "商务标", items: data.business },
+            ])
       : [{ label: "", items: data[bidType] }]
 
   function switchBid(id: BidType) {
     saveEditor()
     setBidType(id)
-    const newList = id === "full" ? [...data.tech, ...data.business] : data[id]
+    const newList = id === "full" ? fullList() : data[id]
     setActiveId(newList[0]?.id ?? "")
   }
 
@@ -193,110 +203,19 @@ export default function ContentPage() {
     setActiveId(id)
   }
 
-  /* 编辑持久化状态（真实项目失焦自动全量回写 content 步结果） */
-  const [contentSaveState, setContentSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle")
-  const [contentSaveError, setContentSaveError] = useState<string>("")
+  /* 章节编辑/保存/撤销/插入（拆到 use-chapter-edits.ts，800 行规则） */
+  const {
+    contentSaveState, contentSaveError,
+    saveEditor, undoChapter, applyRewrite, insertAtCaret,
+    imageInputRef, openImagePicker, onImageChosen,
+  } = useChapterEdits({ isReal, projectId, data, setData, editor, active, bumpEpoch: () => setEditorEpoch((e) => e + 1) })
 
-  /** 把某章正文替换进两组数据（按 id 定位，不依赖 id 前缀约定） */
-  function withChapterHtml(prev: Record<Group, Chapter[]>, chapterId: string, html: string) {
-    const replace = (list: Chapter[]) => list.map((c) => (c.id === chapterId ? { ...c, html } : c))
-    return { tech: replace(prev.tech), business: replace(prev.business) }
-  }
-
-  /** 真实项目：把当前全部章节正文（{chapterId: html}）整份回写 content 步结果 */
-  function persistContent(next: Record<Group, Chapter[]>) {
-    if (!isReal || !projectId) return
-    const result: Record<string, string> = {}
-    for (const c of [...next.tech, ...next.business]) result[c.id] = c.html
-    setContentSaveState("saving")
-    patchStep(projectId, "content", result)
-      .then(() => setContentSaveState("saved"))
-      .catch((e: unknown) => {
-        // 404 = 该步无真实 done 结果（step_not_done），精确提示
-        setContentSaveError(patchErrorMessage(e))
-        setContentSaveState("error")
-      })
-  }
-
-  /* 章节级撤销栈（误删文字可回撤，生产反馈）：浏览器原生撤销栈在每次失焦保存（innerHTML 重设）后
-     即被清空靠不住。这里每次保存/AI 改写覆盖前，把被覆盖的版本压入本章快照栈（每章封顶 20）。 */
-  const historyRef = useRef<Record<string, string[]>>({})
-  function pushHistory(chapterId: string, html: string) {
-    const stack = (historyRef.current[chapterId] ??= [])
-    stack.push(html)
-    if (stack.length > 20) stack.shift()
-  }
-
-  /** 撤销（两档）：先走 TipTap 原生撤销（编辑中的细粒度回退）；原生栈见底后从章节快照栈
-   *  弹出上一保存版恢复并持久化（跨保存/AI 改写的粗粒度回退,经 epoch 重挂,撤销栈干净重置）。 */
-  function undoChapter() {
-    if (!editor) return
-    if (editor.can().undo()) {
-      editor.chain().focus().undo().run()
-      return
-    }
-    const prev = historyRef.current[active.id]?.pop()
-    if (prev === undefined) return
-    const next = withChapterHtml(data, active.id, prev)
-    setData(next)
-    persistContent(next)
-    setEditorEpoch((e) => e + 1)
-  }
-
-  /** 失焦保存（RichEditor onBlur 吐 HTML）：无变化不回写;被覆盖版本入撤销栈。 */
-  function saveEditor(html?: string) {
-    const cur = html ?? editor?.getHTML()
-    if (cur === undefined) return
-    if (cur === active.html && contentSaveState !== "error") return
-    if (cur !== active.html) pushHistory(active.id, active.html)
-    const next = withChapterHtml(data, active.id, cur)
-    setData(next)
-    persistContent(next)
-  }
-
-  /** 单章改写完成：替换该章正文（后端已把改写结果合入 content 步结果，无需再回写）。
-   *  改写覆盖前旧版入撤销栈——AI 改写不满意也能一键回退。 */
-  function applyRewrite(chapterId: string, html: string) {
-    setData((prev) => {
-      const old = [...prev.tech, ...prev.business].find((c) => c.id === chapterId)?.html
-      if (old !== undefined && old !== html) pushHistory(chapterId, old)
-      return withChapterHtml(prev, chapterId, html)
-    })
-    setEditorEpoch((e) => e + 1) // 改写替换经重挂生效（见 RichEditor 文档注释）
-  }
-
-  /* 插入内容：TipTap 失焦仍保留文档内选区,insertContent 落在光标处;
-     用户从未点过正文时选区停在文首（会插到视口外顶端,生产实测投诉）→ 追加到末尾并滚到位 */
-  function insertAtCaret(html: string) {
-    if (!editor) return
-    const neverFocused = !editor.view.hasFocus() && editor.state.selection.from <= 1
-    const chain = editor.chain()
-    ;(neverFocused ? chain.focus("end") : chain.focus()).insertContent(html).scrollIntoView().run()
-    saveEditor()
-  }
   function openLibrary() {
     setLibraryOpen(true)
   }
   function insertFromLibrary(item: LibraryItem) {
     insertAtCaret(libraryItemHtml(item))
     setLibraryOpen(false)
-  }
-
-  /* 插入图片：选本地图 → 压缩 data URL 内嵌（原是写死占位图） */
-  const imageInputRef = useRef<HTMLInputElement>(null)
-  function openImagePicker() {
-    imageInputRef.current?.click()
-  }
-  async function onImageChosen(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    e.target.value = "" // 允许连续选同一文件
-    if (!file || !file.type.startsWith("image/")) return
-    try {
-      const dataUrl = await imageFileToDataUrl(file)
-      insertAtCaret(`<img src="${dataUrl}" alt="插图" class="my-3 rounded-lg border border-border max-w-full" />`)
-    } catch {
-      window.alert("图片读取失败，请换一张（支持 JPG/PNG 等常见格式）")
-    }
   }
 
   /* 点击「一键废标体检」按钮：真实项目首次体检先显式确认计费；已有结果开合摘要弹层 */
@@ -555,7 +474,10 @@ export default function ContentPage() {
           {active.html.trim() ? (
             <RichEditor
               key={`${active.id}:${editorEpoch}`}
-              html={stripDocumentShell(active.html)}
+              /* 装载时与提纲对齐（剥内嵌旧章标题/编号跟随章号，与导出同规则）：只影响用户
+                 打开的这一章，编辑保存后自然收敛——绝不在建树时改写未打开章（整份回写会把
+                 未经用户过目的改动落库，评审 F5） */
+              html={normalizeChapterHtml(stripDocumentShell(active.html), active.no, active.title)}
               scrollRef={editorScrollRef}
               onBlurSave={saveEditor}
               onEditor={setEditor}
@@ -615,7 +537,7 @@ export default function ContentPage() {
         {/* 右：AI 对话（真实项目走单章改写通道） */}
         {chatOpen && (
           <ChatPanel
-            chapters={[...data.tech, ...data.business].map((c) => ({ id: c.id, no: c.no, title: c.title }))}
+            chapters={fullList().map((c) => ({ id: c.id, no: c.no, title: c.title }))}
             activeId={active.id}
             projectId={projectId}
             contentReady={isReal}
