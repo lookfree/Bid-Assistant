@@ -11,6 +11,8 @@ import {
   Sparkles,
   CheckCircle2,
   ArrowRight,
+  ChevronUp,
+  ChevronDown,
   Pencil,
   Trash2,
   Plus,
@@ -33,9 +35,11 @@ import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import { patchErrorMessage, patchStep } from "@/lib/project"
 import { clauseLocationIn, groupDocSections, type DocSentence } from "@/lib/doc-sections"
+import { applyNumbering, chapterNo, deriveNumberMode, moveChapter, type NumberMode } from "@/lib/outline-edit"
 
-// agent Outline（camelCase）：chapters[{id,no,title,group,sourced,items[{id,label,clauseIds,isNew}]}]
-type RealOutline = { chapters: (BidChapter & { group: "tech" | "business" })[] }
+// agent Outline（camelCase）：chapters[{id,no,title,group,sourced,structureRef?,items[{id,label,clauseIds,isNew}]}]
+type RealChapter = BidChapter & { group: "tech" | "business"; structureRef?: string | null }
+type RealOutline = { chapters: RealChapter[] }
 
 /* ---------------- 提纲数据（取自全流程共享数据源） ---------------- */
 type Chapter = {
@@ -44,15 +48,18 @@ type Chapter = {
   title: string
   /** 是否能在招标文件中索引到来源（保存回写 Outline 契约需要） */
   sourced: boolean
+  /** 对应投标文件构成项 id（spec321/322 偏离表与格式模板按它匹配）——编辑保存必须透传，丢了匹配会退化 */
+  structureRef?: string | null
   items: OutlineItem[]
 }
 
-const toOutline = (list: BidChapter[]): Chapter[] =>
-  list.map(({ id, no, title, sourced, items }) => ({
+const toOutline = (list: RealChapter[]): Chapter[] =>
+  list.map(({ id, no, title, sourced, structureRef, items }) => ({
     id,
     no,
     title,
     sourced,
+    structureRef,
     items: items.map((it) => ({ ...it })),
   }))
 
@@ -66,17 +73,6 @@ const tabs: { id: TabId; name: string; icon: React.ElementType }[] = [
 
 let idCounter = 0
 const genId = () => `gen-${Date.now()}-${idCounter++}`
-
-/** 序号 n → 「第X章」（中文数字，1..99 覆盖实际章数）。一键重排/新增章节共用。 */
-const CN_DIGITS = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"]
-function chapterNo(n: number): string {
-  const cn =
-    n <= 9 ? CN_DIGITS[n]
-    : n === 10 ? "十"
-    : n < 20 ? `十${CN_DIGITS[n % 10]}`
-    : `${CN_DIGITS[Math.floor(n / 10)]}十${n % 10 ? CN_DIGITS[n % 10] : ""}`
-  return `第${cn}章`
-}
 
 export default function OutlinePage() {
   // 计费步绝不自动触发：该步未跑时停在显式生成入口，用户点击才跑
@@ -108,10 +104,14 @@ export default function OutlinePage() {
   // 提纲树：从空开始，outline 结果到位后覆盖
   const [techChapters, setTechChapters] = useState<Chapter[]>([])
   const [businessChapters, setBusinessChapters] = useState<Chapter[]>([])
+  // 组顺序（用户需求：部分标书要求商务标在前）：chapters 数组顺序是唯一真相——保存/导出/
+  // 正文页都按它走；这里从已存结果的首章分组还原，切换后点「保存提纲」持久化。
+  const [bizFirst, setBizFirst] = useState(false)
   useEffect(() => {
     if (!real) return
     setTechChapters(toOutline(real.chapters.filter((c) => c.group === "tech")))
     setBusinessChapters(toOutline(real.chapters.filter((c) => c.group === "business")))
+    setBizFirst(real.chapters[0]?.group === "business")
   }, [real])
 
   // 提纲编辑保存：把当前树序列化回 Outline 形状整份回写（仅该步有真实 done 结果时按钮才出现）
@@ -127,6 +127,7 @@ export default function OutlinePage() {
         title: ch.title,
         group,
         sourced: ch.sourced,
+        structureRef: ch.structureRef ?? null,
         items: ch.items.map((it) => ({
           id: it.id,
           label: it.label,
@@ -135,9 +136,11 @@ export default function OutlinePage() {
         })),
       }))
     try {
-      await patchStep(projectId, "outline", {
-        chapters: [...serialize(techChapters, "tech"), ...serialize(businessChapters, "business")],
-      })
+      // 数组顺序即成书顺序（导出/正文页跟随）：按当前组顺序拼接
+      const parts = bizFirst
+        ? [...serialize(businessChapters, "business"), ...serialize(techChapters, "tech")]
+        : [...serialize(techChapters, "tech"), ...serialize(businessChapters, "business")]
+      await patchStep(projectId, "outline", { chapters: parts })
       setSaveState("saved")
       setTimeout(() => setSaveState((s) => (s === "saved" ? "idle" : s)), 2500)
     } catch (e) {
@@ -152,16 +155,20 @@ export default function OutlinePage() {
   const [editingChapter, setEditingChapter] = useState<string | null>(null)
   const [draft, setDraft] = useState("")
 
+  // 组显示顺序（全文视图/编号/保存共用）
+  const groupSeq: { label: string; kind: "tech" | "business"; chapters: Chapter[] }[] = [
+    { label: "技术标", kind: "tech", chapters: techChapters },
+    { label: "商务标", kind: "business", chapters: businessChapters },
+  ]
+  if (bizFirst) groupSeq.reverse()
+
   // 当前标签对应的分组
   const groups: { label: string; kind: "tech" | "business"; chapters: Chapter[] }[] =
     activeTab === "tech"
       ? [{ label: "技术标", kind: "tech", chapters: techChapters }]
       : activeTab === "business"
         ? [{ label: "商务标", kind: "business", chapters: businessChapters }]
-        : [
-            { label: "技术标", kind: "tech", chapters: techChapters },
-            { label: "商务标", kind: "business", chapters: businessChapters },
-          ]
+        : groupSeq
 
   const allItems = groups.flatMap((g) => g.chapters).flatMap((c) => c.items)
   const indexedCount = allItems.filter((i) => i.clauseIds && i.clauseIds.length > 0).length
@@ -247,25 +254,54 @@ export default function OutlinePage() {
     setNoDraft("")
   }
 
+  /** 结构变化（增/删/移动/换组顺序）后的统一落地：原编号严格符合某模式（连续/分组）就按该模式
+   *  自动重排（章号 + 子项层级编号一起跟随，中间插入才不会出现两个"第五章"）；用户自定义过
+   *  编号（custom）则一律不动。只改本地状态，点「保存提纲」持久化。 */
+  function commitStructure(next: { tech: Chapter[]; business: Chapter[] }, nextBizFirst = bizFirst) {
+    const order: ("tech" | "business")[] = nextBizFirst ? ["business", "tech"] : ["tech", "business"]
+    const prevOrder: ("tech" | "business")[] = bizFirst ? ["business", "tech"] : ["tech", "business"]
+    const cur = { tech: techChapters, business: businessChapters }
+    const mode = deriveNumberMode(prevOrder.map((g) => cur[g]))
+    if (mode !== "custom") {
+      const renumbered = applyNumbering(order.map((g) => next[g]), mode)
+      next = { ...next, [order[0]!]: renumbered[0]!, [order[1]!]: renumbered[1]! }
+    }
+    setBizFirst(nextBizFirst)
+    setTechChapters(next.tech)
+    setBusinessChapters(next.business)
+  }
+
   function deleteChapter(kind: "tech" | "business", chapterId: string) {
-    setter(kind)((prev) => prev.filter((ch) => ch.id !== chapterId))
+    const cur = { tech: techChapters, business: businessChapters }
+    commitStructure({ ...cur, [kind]: cur[kind].filter((ch) => ch.id !== chapterId) })
   }
 
   function addChapter(kind: "tech" | "business") {
-    setter(kind)((prev) => {
-      const newId = genId()
-      return [...prev, { id: newId, no: chapterNo(prev.length + 1), title: "新增章节", sourced: false, items: [] }]
-    })
+    const cur = { tech: techChapters, business: businessChapters }
+    const added = { id: genId(), no: chapterNo(cur[kind].length + 1), title: "新增章节", sourced: false, items: [] }
+    commitStructure({ ...cur, [kind]: [...cur[kind], added] })
+  }
+
+  /** 组内上移/下移章节（用户需求：可在任意两章之间插入/调整顺序） */
+  function moveChapterIn(kind: "tech" | "business", chapterId: string, dir: -1 | 1) {
+    const cur = { tech: techChapters, business: businessChapters }
+    commitStructure({ ...cur, [kind]: moveChapter(cur[kind], chapterId, dir) })
+  }
+
+  /** 组顺序切换（用户需求：部分标书要求商务标在前）；连续编号跟随新顺序重排 */
+  function setGroupOrder(nextBizFirst: boolean) {
+    if (nextBizFirst === bizFirst) return
+    commitStructure({ tech: techChapters, business: businessChapters }, nextBizFirst)
   }
 
   /** 一键重排章节编号（用户需求：部分标书要求全文从第一章顺到底，而默认技术/商务各自从第一章起）。
-   *  continuous=技术标→商务标全文连续；grouped=两组各自从第一章。只改本地状态，点「保存提纲」持久化。 */
-  function renumber(mode: "continuous" | "grouped") {
-    const techLen = techChapters.length
-    setTechChapters((prev) => prev.map((ch, i) => ({ ...ch, no: chapterNo(i + 1) })))
-    setBusinessChapters((prev) =>
-      prev.map((ch, i) => ({ ...ch, no: chapterNo((mode === "continuous" ? techLen : 0) + i + 1) })),
-    )
+   *  continuous=按当前组顺序全文连续；grouped=两组各自从第一章。子项层级编号首段一起跟随。 */
+  function renumber(mode: NumberMode) {
+    const order: ("tech" | "business")[] = bizFirst ? ["business", "tech"] : ["tech", "business"]
+    const cur = { tech: techChapters, business: businessChapters }
+    const renumbered = applyNumbering(order.map((g) => cur[g]), mode)
+    setTechChapters(renumbered[order.indexOf("tech")]!)
+    setBusinessChapters(renumbered[order.indexOf("business")]!)
   }
 
   // 无进行中项目：只引导上传，不渲染任何示例内容
@@ -287,10 +323,9 @@ export default function OutlinePage() {
       </div>
     )
 
-  // 章节编号当前模式（派生自实际编号，不引入独立状态）：商务标首章编号 == 技术标章数+1 → 全文连续，
-  // 否则分组各自。点「全文连续/分组各自」renumber 改 no 后本值自动重算 → 高亮跟随，永不与实际编号脱节。
-  const numberMode: "continuous" | "grouped" =
-    techChapters.length > 0 && businessChapters[0]?.no === chapterNo(techChapters.length + 1) ? "continuous" : "grouped"
+  // 章节编号当前模式（派生自实际编号，不引入独立状态）：严格匹配连续/分组序列才算，
+  // 否则视为用户自定义（custom，两个按钮都不高亮、结构变化不自动改写编号）。
+  const numberMode = deriveNumberMode((bizFirst ? [businessChapters, techChapters] : [techChapters, businessChapters]))
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
@@ -383,34 +418,62 @@ export default function OutlinePage() {
                 </button>
               )
             })}
-            {/* 一键重排章节编号（改完点「保存提纲」持久化）：部分标书要求全文从第一章顺到底 */}
+            {/* 组顺序 + 一键重排章节编号（改完点「保存提纲」持久化） */}
             {real && (
-              <span className="ml-auto inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                章节编号
-                <button
-                  onClick={() => renumber("continuous")}
-                  aria-pressed={numberMode === "continuous"}
-                  title="技术标→商务标全文从第一章连续编号（部分标书要求）；改完点「保存提纲」生效"
-                  className={`rounded-md px-2 py-1 font-medium transition-colors ${
-                    numberMode === "continuous"
-                      ? "gradient-brand text-white"
-                      : "border border-border bg-card text-foreground hover:bg-muted"
-                  }`}
-                >
-                  全文连续
-                </button>
-                <button
-                  onClick={() => renumber("grouped")}
-                  aria-pressed={numberMode === "grouped"}
-                  title="技术标 / 商务标各自从第一章编号；改完点「保存提纲」生效"
-                  className={`rounded-md px-2 py-1 font-medium transition-colors ${
-                    numberMode === "grouped"
-                      ? "gradient-brand text-white"
-                      : "border border-border bg-card text-foreground hover:bg-muted"
-                  }`}
-                >
-                  分组各自
-                </button>
+              <span className="ml-auto inline-flex flex-wrap items-center gap-3">
+                {/* 组顺序切换（部分标书要求商务标在前）：数组顺序即成书顺序，导出/正文页跟随 */}
+                {techChapters.length > 0 && businessChapters.length > 0 && (
+                  <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                    组顺序
+                    <button
+                      onClick={() => setGroupOrder(false)}
+                      aria-pressed={!bizFirst}
+                      title="技术标在前、商务标在后；改完点「保存提纲」生效"
+                      className={`rounded-md px-2 py-1 font-medium transition-colors ${
+                        !bizFirst ? "gradient-brand text-white" : "border border-border bg-card text-foreground hover:bg-muted"
+                      }`}
+                    >
+                      技术标在前
+                    </button>
+                    <button
+                      onClick={() => setGroupOrder(true)}
+                      aria-pressed={bizFirst}
+                      title="商务标在前、技术标在后（部分标书要求）；改完点「保存提纲」生效"
+                      className={`rounded-md px-2 py-1 font-medium transition-colors ${
+                        bizFirst ? "gradient-brand text-white" : "border border-border bg-card text-foreground hover:bg-muted"
+                      }`}
+                    >
+                      商务标在前
+                    </button>
+                  </span>
+                )}
+                <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                  章节编号
+                  <button
+                    onClick={() => renumber("continuous")}
+                    aria-pressed={numberMode === "continuous"}
+                    title="按当前组顺序全文从第一章连续编号（部分标书要求）；改完点「保存提纲」生效"
+                    className={`rounded-md px-2 py-1 font-medium transition-colors ${
+                      numberMode === "continuous"
+                        ? "gradient-brand text-white"
+                        : "border border-border bg-card text-foreground hover:bg-muted"
+                    }`}
+                  >
+                    全文连续
+                  </button>
+                  <button
+                    onClick={() => renumber("grouped")}
+                    aria-pressed={numberMode === "grouped"}
+                    title="技术标 / 商务标各自从第一章编号；改完点「保存提纲」生效"
+                    className={`rounded-md px-2 py-1 font-medium transition-colors ${
+                      numberMode === "grouped"
+                        ? "gradient-brand text-white"
+                        : "border border-border bg-card text-foreground hover:bg-muted"
+                    }`}
+                  >
+                    分组各自
+                  </button>
+                </span>
               </span>
             )}
           </div>
@@ -446,7 +509,7 @@ export default function OutlinePage() {
                     </div>
                   )}
                   <div className="flex flex-col gap-2">
-                    {group.chapters.map((chapter) => (
+                    {group.chapters.map((chapter, chapterIdx) => (
                       <div key={chapter.id} className="rounded-xl border border-border bg-background p-3">
                         {/* 章节标题行 */}
                         {editingChapter === chapter.id ? (
@@ -492,6 +555,23 @@ export default function OutlinePage() {
                             <span className="text-xs font-medium text-primary">{chapter.no}</span>
                             <h3 className="text-sm font-semibold text-foreground">{chapter.title}</h3>
                             <div className="ml-auto flex items-center gap-0.5">
+                              {/* 组内上移/下移（在任意两章之间插入=新增后上移到位）；编号按当前模式自动跟随 */}
+                              <button
+                                onClick={() => moveChapterIn(group.kind, chapter.id, -1)}
+                                disabled={chapterIdx === 0}
+                                className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+                                aria-label="上移章节"
+                              >
+                                <ChevronUp className="size-3.5" />
+                              </button>
+                              <button
+                                onClick={() => moveChapterIn(group.kind, chapter.id, 1)}
+                                disabled={chapterIdx === group.chapters.length - 1}
+                                className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+                                aria-label="下移章节"
+                              >
+                                <ChevronDown className="size-3.5" />
+                              </button>
                               <button
                                 onClick={() => startEditChapter(chapter)}
                                 className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
