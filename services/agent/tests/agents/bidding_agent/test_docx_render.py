@@ -241,3 +241,19 @@ def test_render_docx_fmt_indent_not_bleeding_into_cells():
     assert doc.styles["Normal"].paragraph_format.first_line_indent == Pt(24)  # 正文缩进 2 字符
     cell_para = doc.tables[0].cell(0, 0).paragraphs[0]
     assert cell_para.paragraph_format.first_line_indent == Pt(0)              # 单元格显式置零
+
+
+def test_render_docx_follows_edited_outline_numbering():
+    """230 生产实测：正文内嵌生成时的旧章标题（第一章…）与旧层级编号；用户把商务标重排为
+    全文连续（第七章）后导出，标题/编号必须按提纲现值出——旧章标题剥掉、小节编号首段跟随。"""
+    outline = {"chapters": [
+        {"id": "b1", "no": "第七章", "title": "变更申请基本信息", "group": "business"},
+    ]}
+    chapters = {"b1": "<h1>第一章 变更申请基本信息</h1><h2>1.1 项目名称与申请单号</h2>"
+                      "<h3>1.1.1 项目名称</h3><p>正文</p>"}
+    doc = Document(io.BytesIO(render_docx(outline, chapters)))
+    texts = [p.text for p in doc.paragraphs]
+    assert "第七章 变更申请基本信息（商务标）" in texts   # 章标题唯一来源=提纲
+    assert "第一章 变更申请基本信息" not in texts          # 内嵌旧章标题被剥
+    assert "7.1 项目名称与申请单号" in texts               # 层级编号跟随当前章号
+    assert "7.1.1 项目名称" in texts

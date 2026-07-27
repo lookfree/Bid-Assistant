@@ -3,7 +3,7 @@ import base64
 import io
 from bs4 import BeautifulSoup
 from docx import Document
-from agent.agents.bidding_agent.render.sanitize import strip_document_shell
+from agent.agents.bidding_agent.render.sanitize import normalize_chapter_html, strip_document_shell
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -312,8 +312,10 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
     for ch in outline.get("chapters", []):
         group = "技术标" if ch.get("group") == "tech" else "商务标"
         doc.add_heading(f"{ch.get('no', '')} {ch.get('title', '')}（{group}）", level=1)
-        # 防御清洗：库存章节可能带完整文档壳（<head><style>...），不剥会把样式文本吐进正文
+        # 防御清洗：库存章节可能带完整文档壳（<head><style>...），不剥会把样式文本吐进正文；
+        # 再与提纲对齐（剥内嵌旧章标题 + 小节编号跟随当前章号）——标书必须按用户设置后的提纲出
         body = strip_document_shell(chapters.get(ch.get("id", ""), ""))
+        body = normalize_chapter_html(body, ch.get("no", ""), ch.get("title", ""))
         if body:
             _emit_html(doc, body)
         else:

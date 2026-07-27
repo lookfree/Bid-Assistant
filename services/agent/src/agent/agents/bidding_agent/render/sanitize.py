@@ -24,6 +24,112 @@ def strip_document_shell(html: str) -> str:
     return out.strip()
 
 
+_CN_DIGIT = {"零": 0, "〇": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+
+
+def _cn_to_int(s: str) -> int | None:
+    """中文数字（1..99）→ 整数：十=10、十二=12、二十一=21。解析不了返回 None。"""
+    if not s:
+        return None
+    if s.isdigit():
+        return int(s)
+    if "十" in s:
+        tens_s, _, units_s = s.partition("十")
+        tens = _CN_DIGIT.get(tens_s, None) if tens_s else 1
+        units = _CN_DIGIT.get(units_s, None) if units_s else 0
+        if tens is None or units is None:
+            return None
+        return tens * 10 + units
+    return _CN_DIGIT.get(s)
+
+
+_NO_FORMS = re.compile(r"^\s*(?:第\s*([0-9〇零一二三四五六七八九十]{1,3})\s*章|([0-9]{1,2})|([〇零一二三四五六七八九十]{1,3})[、.．])\s*$")
+
+
+def chapter_ordinal(no: str) -> int | None:
+    """章序号文本 → 阿拉伯数（第七章/第7章/7/七、→ 7）。自定义序号（附录A 等）返回 None，
+    调用方据此跳过编号改写（宁不动勿改错）。"""
+    m = _NO_FORMS.match(no or "")
+    if not m:
+        return None
+    return _cn_to_int(m.group(1) or m.group(2) or m.group(3))
+
+
+# 首个元素若是 h1/h2 章级标题则剥掉：章标题（章号+章名）由提纲统一渲染，正文内嵌的是
+# 生成时旧值——用户改标题/重排编号后导出会"旧章标题又冒出来"（230 生产实测）。
+_LEAD_HEADING = re.compile(r"^\s*<h([12])[^>]*>(.*?)</h\1>\s*", re.I | re.S)
+_TAGS = re.compile(r"<[^>]+>")
+_WS = re.compile(r"\s+")
+# 章级编号形态：第X章 强信号；裸数字（非 N.M）/中文数字顿号 是弱信号（需下级标题佐证）
+_STRONG_NO = re.compile(r"^第\s*[0-9〇零一二三四五六七八九十百]{1,3}\s*章")
+_WEAK_NO = re.compile(r"^(?:[0-9]{1,2}(?![.．]?[0-9])[、.．\s]|[〇零一二三四五六七八九十]{1,3}[、.．])")
+_HIER_PREFIX = re.compile(r"^[0-9]{1,2}[.．][0-9]")   # N.M 开头 = 子项级标题，绝不当章标题剥
+_NO_PREFIX = re.compile(r"^(?:第\s*[0-9〇零一二三四五六七八九十百]{1,3}\s*章|[0-9]{1,2}(?![.．]?[0-9])[、.．\s]?|[〇零一二三四五六七八九十]{1,3}[、.．])\s*")
+_HEADING_ANY = re.compile(r"<h([1-6])[^>]*>(.*?)</h\1>", re.I | re.S)
+# 层级编号前缀（N.M 或 N.M.K…，可被行内标签包住）：首段改写为当前章号
+_HIER_NO = re.compile(r"(<h[234][^>]*>\s*(?:<[^>]+>\s*)*)([0-9]{1,2})((?:[.．][0-9]{1,3})+)", re.I)
+_BARE_NO_TEXT = re.compile(r"^[0-9]{1,2}[、\s]")      # 裸编号小节（"2 实施"）——存在即整章不改编号
+
+
+def _drop_leading_chapter_heading(html: str, title: str) -> str:
+    """剥正文首个 h1/h2 章级标题。审查修正后的判定（宁留勿删，全部条件缺一不可）：
+    ① 不是子项级标题（N.M 开头绝不剥）；② 剩余部分没有同级或更高级标题（有并列小节 =
+    它是普通小节标题，不是章级容器）；③ 语义命中之一：去编号前缀后与当前章标题**相等**
+    （"包含"会误杀「售后服务体系」这类含章标题词的子项）／「第X章」强编号／弱编号且确有下级标题。"""
+    m = _LEAD_HEADING.match(html)
+    if not m:
+        return html
+    level, raw = int(m.group(1)), _TAGS.sub("", m.group(2)).strip()
+    rest = html[m.end():]
+    if _HIER_PREFIX.match(raw):
+        return html
+    for hm in _HEADING_ANY.finditer(rest):
+        if int(hm.group(1)) <= level:
+            return html
+    wanted = _WS.sub("", title or "")
+    if wanted and _WS.sub("", _NO_PREFIX.sub("", raw)) == wanted:
+        return rest
+    if _STRONG_NO.match(raw):
+        return rest
+    if _WEAK_NO.match(raw) and _HEADING_ANY.search(rest):
+        return rest
+    return html
+
+
+def _renumber_hier_headings(html: str, n: int) -> str:
+    """h2-h4 层级编号（N.M…）首段改写为章号 n。先体检整章编号形态，两类情况一律不动
+    （审查修正：盲改会造出 7.1/7.1 重号或父子编号打架）：
+    ① 存在裸编号小节标题（"2 实施"式——它不会被改写，改了子级会与它打架）；
+    ② 层级编号首段不唯一（1.x 与 2.x 混排 = 多小节体，统一改成 n.x 必重号）。"""
+    firsts: set[str] = set()
+    for hm in _HEADING_ANY.finditer(html):
+        if int(hm.group(1)) not in (2, 3, 4):
+            continue
+        text = _TAGS.sub("", hm.group(2)).strip()
+        hier = re.match(r"^([0-9]{1,2})[.．][0-9]", text)
+        if hier:
+            firsts.add(hier.group(1))
+        elif _BARE_NO_TEXT.match(text):
+            return html
+    if len(firsts) != 1:
+        return html
+    return _HIER_NO.sub(lambda m: f"{m.group(1)}{n}{m.group(3)}", html)
+
+
+def normalize_chapter_html(html: str, no: str, title: str) -> str:
+    """章正文与提纲对齐：剥内嵌旧章级标题 + 小节层级编号首段跟随当前章号。
+    确定性、宁留勿删/宁不动勿改错（规范形态下幂等）；no 解析不出数字时编号不动。
+    导出渲染与前端编辑器装载共用同一套规则
+    （前端 TS 版见 apps/web/lib/chapter-normalize.ts，改语义须两侧同步）。"""
+    if not html:
+        return html
+    out = _drop_leading_chapter_heading(html, title)
+    n = chapter_ordinal(no)
+    if n is not None:
+        out = _renumber_hier_headings(out, n)
+    return out
+
+
 _FENCE = re.compile(r"```[a-zA-Z]*\r?\n?(.*?)```", re.S)
 _ANY_TAG = re.compile(r"<[a-zA-Z][^>]*>")
 # 明显的闲聊句式（开场白/收尾语）。只有命中这些才动刀——判不准一律保留：
