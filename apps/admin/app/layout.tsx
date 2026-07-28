@@ -1,4 +1,3 @@
-import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import { TooltipProvider } from '@/components/ui/tooltip'
@@ -55,7 +54,6 @@ export default function RootLayout({
       <body className="bg-background font-sans antialiased">
         <TooltipProvider>{children}</TooltipProvider>
         <Toaster position="top-center" richColors />
-        {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
     </html>
   )
