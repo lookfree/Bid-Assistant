@@ -3,6 +3,7 @@
 import Link from "next/link"
 import { ArrowRight, Lock, ShieldAlert, ShieldCheck, X } from "lucide-react"
 import { CreditEstimate } from "@/components/credit-estimate"
+import { AdviceLockHint } from "@/components/tool/advice-lock-hint"
 import { type CheckItem, type HealthReport } from "@/lib/risk-derive"
 
 export const checkToneClasses: Record<CheckItem["tone"], { badge: string; border: string }> = {
@@ -10,8 +11,9 @@ export const checkToneClasses: Record<CheckItem["tone"], { badge: string; border
   warning: { badge: "bg-warning/15 text-warning-foreground", border: "border-warning/30" },
 }
 
-/** 体检摘要弹层里的单条风险（整改建议非会员模糊处理）。 */
-function SummaryItem({ item, isMember }: { item: CheckItem; isMember: boolean }) {
+/** 体检摘要弹层里的单条风险。整改建议的可见性由**服务端**决定（评审修正:此前全量下发靠前端
+ *  模糊遮挡,F12 可读）——非会员时 advice 为空 + report.adviceLocked,这里只渲染解锁引导。 */
+function SummaryItem({ item, locked }: { item: CheckItem; locked: boolean }) {
   const tc = checkToneClasses[item.tone]
   return (
     <div className={`rounded-xl border ${tc.border} p-2.5`}>
@@ -20,21 +22,10 @@ function SummaryItem({ item, isMember }: { item: CheckItem; isMember: boolean })
         <span className="truncate text-[12px] font-medium text-foreground">{item.title}</span>
       </div>
       <p className="mt-1 text-[11px] text-muted-foreground">{item.chapter}</p>
-      {isMember ? (
-        <p className="mt-1 text-[11px] leading-relaxed text-foreground">{item.advice}</p>
+      {locked ? (
+        <AdviceLockHint className="mt-1.5" />
       ) : (
-        <div className="relative mt-1">
-          <p className="select-none text-[11px] leading-relaxed text-foreground blur-[3px]">{item.advice}</p>
-          <div className="absolute inset-0 flex items-center justify-center">
-            <Link
-              href="/membership"
-              className="inline-flex items-center gap-1 rounded-full bg-card/80 px-2 py-0.5 text-[10px] font-medium text-primary transition-opacity hover:opacity-80"
-            >
-              <Lock className="size-3" />
-              解锁查看完整整改建议
-            </Link>
-          </div>
-        </div>
+        <p className="mt-1 text-[11px] leading-relaxed text-foreground">{item.advice}</p>
       )}
     </div>
   )
@@ -43,12 +34,10 @@ function SummaryItem({ item, isMember }: { item: CheckItem; isMember: boolean })
 /** 体检结果摘要弹层（锚定在「一键废标体检」按钮上方）。 */
 export function CheckSummary({
   report,
-  isMember,
   onClose,
   onOpenReport,
 }: {
   report: HealthReport
-  isMember: boolean
   onClose: () => void
   onOpenReport: () => void
 }) {
@@ -81,7 +70,7 @@ export function CheckSummary({
         {/* 逐条风险 */}
         <div className="mt-3 flex max-h-56 flex-col gap-2 overflow-y-auto">
           {report.items.map((it, i) => (
-            <SummaryItem key={i} item={it} isMember={isMember} />
+            <SummaryItem key={i} item={it} locked={report.adviceLocked} />
           ))}
         </div>
 

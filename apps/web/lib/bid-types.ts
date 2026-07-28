@@ -80,7 +80,9 @@ export type RiskFinding = {
   targetId: string
 }
 
-/** review 步结果（agent RiskReport，camelCase）。 */
+/** review 步结果（agent RiskReport，camelCase）。
+ *  adviceLocked：App 出口标志（非会员时 items[].advice 服务端置空不下发,前端据此渲染解锁引导——
+ *  评审修正:此前全量下发靠前端模糊,F12 可读）。 */
 export type RiskReport = {
   score: number
   high: number
@@ -88,6 +90,7 @@ export type RiskReport = {
   passed: number
   items: RiskFinding[]
   passedItems: string[]
+  adviceLocked?: boolean
 }
 
 

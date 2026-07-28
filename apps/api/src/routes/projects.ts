@@ -16,6 +16,7 @@ import { failStepAndRefund } from "../services/stuck-steps"
 import { ensureChecklistTemplate } from "../services/checklist-template"
 import { ragRunInput } from "../services/rag-config"
 import { generationRunInput } from "../services/generation-config"
+import { getEntitlements, featureLocked, lockRiskAdvice } from "../services/entitlements"
 import { credentialsRunInput, type CredentialInput } from "../services/credentials"
 import { toCamel, toSnake } from "../lib/case"
 import { parsePagination, pagedBody, pagedResult } from "../lib/pagination"
@@ -289,6 +290,15 @@ function resultToClient(step: string, result: unknown): unknown {
   return step === "content" ? result : toCamel(result)
 }
 
+/** review 结果出口按请求者会员态裁剪（评审修正,方案 A）：整改建议此前全量下发、仅前端模糊遮挡
+ *  （F12 可读）——非会员在此不下发 advice（置空+adviceLocked 标志）。其余步原样。 */
+async function resultForUser(step: string, result: unknown, userId: string): Promise<unknown> {
+  const out = resultToClient(step, result)
+  if (step !== "review" || out == null) return out
+  const ents = await getEntitlements(userId)
+  return ents.member ? out : lockRiskAdvice(out)
+}
+
 export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
   const preDeduct = deps.preDeduct ?? billing.preDeduct
   const settle = deps.settle ?? billing.settle
@@ -539,6 +549,12 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const p = await ownedProject(id, userId)
     if (!p) return c.json({ error: "not_found" }, 404)
 
+    // 档位权益门禁（评审修正,方案 A）：企业 PPT 模板是档位权益,features.pptTemplate 显式 false
+    // 且本次真带了模板才拦（先于占位/预扣,不留残行不占额度）;不带模板照常走既有校验链。
+    if (runInput.enterprise_template_key != null && featureLocked(await getEntitlements(userId), "pptTemplate")) {
+      return c.json({ error: "feature_locked", feature: "pptTemplate" }, 403)
+    }
+
     // 跳步校验：只允许推进「当前步」（draft 项目限 read），避免与 agent checkpoint 顺序错位。
     // 例外（述标独立化，用户口径「下载标书不要求完成述标生成」，agent 图有对应条件边）：
     //   ① export 在 present/done 时均可跑——present 时=跳过述标直出文件；done 时=重渲重出
@@ -726,7 +742,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
           await stream.writeSSE({
             event: "step.done",
             data: JSON.stringify({
-              step, cost: fresh.costPoints ?? 0, status: "done", result: resultToClient(step, fresh.result),
+              step, cost: fresh.costPoints ?? 0, status: "done", result: await resultForUser(step, fresh.result, project.userId),
             }),
           })
           return
@@ -755,7 +771,10 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     // content 步例外：result 键是章 id，不做大小写转换（见 resultToClient）。
     await stream.writeSSE({
       event: "step.done",
-      data: JSON.stringify({ step, cost, status: failed ? "failed" : "done", result: resultToClient(step, run.result ?? null) }),
+      data: JSON.stringify({
+        step, cost, status: failed ? "failed" : "done",
+        result: await resultForUser(step, run.result ?? null, project.userId),
+      }),
     })
   }
 
@@ -791,6 +810,11 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     if (!p) return c.json({ error: "not_found" }, 404)
     const parsed = rewriteBodySchema.safeParse(await c.req.json().catch(() => ({})))
     if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
+    // 档位权益门禁（评审修正,方案 A）：features.rewrite 显式 false 的档拒之——此前 plans.features
+    // 零执行消费方,运营配置不联动。先于预扣判定,分文不动;缺键放行（口径见 entitlements）。
+    if (featureLocked(await getEntitlements(userId), "rewrite")) {
+      return c.json({ error: "feature_locked", feature: "rewrite" }, 403)
+    }
     // content 步必须已完成才有章可改（result 即 { <章id>: html } 的 chapters 字典）
     const contentRow = await latestDoneStep(p.id, "content")
     if (!contentRow) return c.json({ error: "content_not_done" }, 409)
@@ -899,7 +923,9 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const steps = [...latest.values()]
     return c.json({
       project: p,
-      steps: steps.map((s) => ({ ...s, result: resultToClient(s.step, s.result) })),
+      steps: await Promise.all(
+        steps.map(async (s) => ({ ...s, result: await resultForUser(s.step, s.result, c.get("user").id) })),
+      ),
       takenPackageIds: await takenPackageIds(c.get("user").id, p.tenderFileKey, p.id),
     })
   })
@@ -912,7 +938,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     if (!p) return c.json({ error: "not_found" }, 404)
     const row = await latestDoneStep(p.id, step)
     if (!row) return c.json({ error: "not_found" }, 404)
-    return c.json({ result: resultToClient(step, row.result) })
+    return c.json({ result: await resultForUser(step, row.result, c.get("user").id) })
   })
 
   // 产物下载：present/export 步的 result.artifacts[kind]（spec201 step.done 带 artifacts 合并快照），

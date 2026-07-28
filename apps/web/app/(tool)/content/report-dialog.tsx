@@ -3,6 +3,7 @@
 import Link from "next/link"
 import { AlertTriangle, ArrowRight, CheckCircle2, FileText, FileType2, FileText as FileDoc, ShieldAlert, ShieldCheck, X } from "lucide-react"
 import { type CheckItem, type HealthReport } from "@/lib/risk-derive"
+import { AdviceLockHint } from "@/components/tool/advice-lock-hint"
 import { checkToneClasses } from "./check-dialogs"
 import { type BidType } from "./export-menu"
 
@@ -47,8 +48,9 @@ function ReportHeader({ report, onClose }: { report: HealthReport; onClose: () =
   )
 }
 
-/** 单条风险卡：整改建议 + 定位到对应章节。 */
-function RiskCard({ item, onGoto }: { item: CheckItem; onGoto: (tab: BidType, id: string) => void }) {
+/** 单条风险卡：整改建议 + 定位到对应章节。整改建议可见性由服务端决定（评审修正:此前本弹层
+ *  完全无锁,与摘要弹层一锁一不锁自相矛盾）——advice 被裁剪时渲染统一解锁引导。 */
+function RiskCard({ item, locked, onGoto }: { item: CheckItem; locked: boolean; onGoto: (tab: BidType, id: string) => void }) {
   const tc = checkToneClasses[item.tone]
   return (
     <div className={`rounded-xl border ${tc.border} p-3.5`}>
@@ -56,7 +58,7 @@ function RiskCard({ item, onGoto }: { item: CheckItem; onGoto: (tab: BidType, id
         <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${tc.badge}`}>{item.level}</span>
         <span className="text-sm font-medium text-foreground">{item.title}</span>
       </div>
-      <p className="mt-2 text-xs leading-relaxed text-foreground">{item.advice}</p>
+      {locked ? <AdviceLockHint className="mt-2" /> : <p className="mt-2 text-xs leading-relaxed text-foreground">{item.advice}</p>}
       <div className="mt-3 flex items-center justify-between">
         <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
           <FileText className="size-3.5" />
@@ -173,7 +175,7 @@ export function ReportDialog({
           <p className="text-xs font-semibold text-foreground">待处理风险项</p>
           <div className="mt-2 flex flex-col gap-3">
             {report.items.map((it, i) => (
-              <RiskCard key={i} item={it} onGoto={onGoto} />
+              <RiskCard key={i} item={it} locked={report.adviceLocked} onGoto={onGoto} />
             ))}
           </div>
 

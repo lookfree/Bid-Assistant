@@ -103,7 +103,8 @@ export default function ContentPage() {
   const { openPaywall } = usePaywall()
 
   /* 真实积分余额与会员身份（GET /api/membership；仅 active 订阅算会员，决定整改建议是否完整可见） */
-  const { overview, balance, isMember, loading: membershipLoading, error: membershipError, reload: reloadMembership } = useMembership()
+  // isMember 不再解构：整改建议的可见性改由服务端裁剪决定（result.adviceLocked，评审修正）
+  const { overview, balance, loading: membershipLoading, error: membershipError, reload: reloadMembership } = useMembership()
   /* 计费口径：优先后端实时配置（运营可改），缺省回落默认值 */
   const reviewCost = creditCostValue(overview, "review", 60)
   const rewriteCost = creditCostValue(overview, "rewrite", 25)
@@ -646,7 +647,6 @@ export default function ContentPage() {
             {checkOpen && checkState === "done" && healthCheck && (
               <CheckSummary
                 report={healthCheck}
-                isMember={isMember}
                 onClose={() => setCheckOpen(false)}
                 onOpenReport={openReport}
               />

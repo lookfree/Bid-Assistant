@@ -4,7 +4,8 @@ import type { RiskReport } from "./bid-types"
 // /risk 页与 /content 页废标体检共用（同一步、同一份结果），映射逻辑也集中在此。
 export type RealRisk = RiskReport
 
-/** /risk 页视图映射：总览计数 + 风险条目（chapter 取招标出处 tenderRef）。 */
+/** /risk 页视图映射：总览计数 + 风险条目（chapter 取招标出处 tenderRef）。
+ *  adviceLocked 透传（评审修正:非会员 advice 由服务端裁剪不下发,三个展示面据此渲染同一套解锁引导）。 */
 export function deriveRisk(f: RealRisk) {
   return {
     score: f.score,
@@ -15,6 +16,7 @@ export function deriveRisk(f: RealRisk) {
     ],
     riskItems: f.items.map((x) => ({ level: x.level, tone: x.tone, title: x.title, chapter: x.tenderRef, advice: x.advice })),
     passed: f.passedItems,
+    adviceLocked: f.adviceLocked === true,
   }
 }
 
@@ -36,6 +38,8 @@ export type HealthReport = {
   passed: number
   items: CheckItem[]
   passedItems: string[]
+  /** 非会员整改建议被服务端裁剪（items[].advice 为空）,展示面据此渲染解锁引导 */
+  adviceLocked: boolean
 }
 
 /** /content 页「废标体检」视图映射：与 deriveRisk 同源，另带章节定位信息。 */
@@ -45,6 +49,7 @@ export function deriveHealthReport(f: RealRisk): HealthReport {
     high: f.high,
     mid: f.mid,
     passed: f.passed,
+    adviceLocked: f.adviceLocked === true,
     items: f.items.map((x) => ({
       level: x.level,
       tone: x.tone,
