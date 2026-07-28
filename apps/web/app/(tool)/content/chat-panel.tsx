@@ -83,8 +83,9 @@ export function ChatPanel({
       if (e instanceof ApiError && e.status === 402) {
         push({ role: "ai", text: "积分余额不足，本次改写未执行。", link: { href: "/membership", label: "去充值" } })
       } else if (e instanceof ApiError && e.code === "feature_locked") {
-        // 档位权益门禁（服务端按 plans.features 判定,未扣分）:引导升级到含改写权益的档位
-        push({ role: "ai", text: "AI 逐章改写是专业版会员权益，本次未执行、未扣积分。", link: { href: "/membership", label: "了解会员权益" } })
+        // 档位权益门禁（服务端按 plans.features 判定,未扣分）。文案不写死"专业版"——
+        // 改写现已全档开放,403 只在运营显式关闭某档时出现（评审二轮:与会员页宣传自相矛盾）
+        push({ role: "ai", text: "当前会员档位未包含 AI 逐章改写权益，本次未执行、未扣积分。", link: { href: "/membership", label: "查看会员权益" } })
       } else if (e instanceof ApiError && e.status === 409) {
         push({ role: "ai", text: "正文尚未生成完成，暂不能改写本章。" })
       } else if (e instanceof ApiError && e.code === "rewrite_not_instruction") {

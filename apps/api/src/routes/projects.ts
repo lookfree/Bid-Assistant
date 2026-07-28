@@ -17,6 +17,7 @@ import { ensureChecklistTemplate } from "../services/checklist-template"
 import { ragRunInput } from "../services/rag-config"
 import { generationRunInput } from "../services/generation-config"
 import { getEntitlements, featureLocked, lockRiskAdvice } from "../services/entitlements"
+import { createAdviceScrubber } from "../services/sse-scrub"
 import { credentialsRunInput, type CredentialInput } from "../services/credentials"
 import { toCamel, toSnake } from "../lib/case"
 import { parsePagination, pagedBody, pagedResult } from "../lib/pagination"
@@ -306,6 +307,18 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
   const settleFailed = deps.settleFailed ?? billing.settleFailed
   const resolveStepHoldAmount = deps.resolveStepHoldAmount ?? billing.resolveStepHoldAmount
   const stateOverrides = deps.buildStateOverrides ?? buildStateOverrides
+
+  /** 回灌 state 前的权益守卫（评审二轮 F8）：落库 deck 里的企业模板 key 是「专业版时期设置」的
+   *  持久物,export/present 重渲会原样复用——档位已不含 pptTemplate 时在此剥除（导出照跑,
+   *  回落默认模板;不 403,别把整次导出挡死）。 */
+  async function guardedOverrides(projectId: string, step: Step, userId: string) {
+    const overrides = await stateOverrides(projectId, step)
+    const deck = overrides.deck as Record<string, unknown> | undefined
+    if (deck?.enterprise_template_id != null && featureLocked(await getEntitlements(userId), "pptTemplate")) {
+      delete deck.enterprise_template_id
+    }
+    return overrides
+  }
   const createRun = deps.createRun ?? client.createRun
   const relayStream = deps.relayStream ?? client.relayStream
   const getRun = deps.getRun ?? client.getRun
@@ -431,10 +444,16 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         try { await stream.writeSSE({ event: "idle", data: "{}" }) } catch { /* client gone */ }
         return
       }
+      // 评审二轮 F1：review 事件流带全量整改建议——非会员挂帧级裁剪器,其余原样零开销
+      const scrub = step === "review" && !(await getEntitlements(c.get("user").id)).member ? createAdviceScrubber() : null
       try {
         for await (const chunk of relayStream(row.runId)) {
-          try { await stream.write(chunk) } catch { break }  // 客户端断开即停，run 不受影响
+          const out = scrub ? scrub.push(chunk) : chunk
+          if (!out) continue
+          try { await stream.write(out) } catch { break }  // 客户端断开即停，run 不受影响
         }
+        const rest = scrub?.flush()
+        if (rest) await stream.write(rest).catch(() => {})
       } catch { /* agent 结束/掉线：正常收尾 */ }
     })
   })
@@ -626,7 +645,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         ...(step === "content" ? await generationRunInput() : {}),
         ...(step === "export" && gen.format ? { format: gen.format } : {}),
       },
-      state_overrides: await stateOverrides(p.id, step as Step),
+      state_overrides: await guardedOverrides(p.id, step as Step, userId),
     }
 
     // 模型唯一来自运营后台配置（主模型 + 降级链）：未配置则不建 run、不计费、不占步位，
@@ -691,7 +710,14 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         },
       }
       try {
-        for await (const chunk of relayStream(run_id)) await safe.write(chunk) // 透传 agent SSE
+        // 评审二轮 F1：review 的 agent 事件流带全量整改建议——非会员挂帧级裁剪器,其余步原样零开销
+        const scrub = step === "review" && !(await getEntitlements(userId)).member ? createAdviceScrubber() : null
+        for await (const chunk of relayStream(run_id)) {
+          const out = scrub ? scrub.push(chunk) : chunk // 透传 agent SSE(必要时裁剪)
+          if (out) await safe.write(out)
+        }
+        const rest = scrub?.flush()
+        if (rest) await safe.write(rest)
         await finishStep(safe, { project: p, stepRow: s, step: step as Step, runId: run_id, hold })
       } catch (e) {
         // 中继/收尾真炸（agent 掉线等，非客户端断连）：走条件翻转的判死收尾（failStepAndRefund:
@@ -796,6 +822,15 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     if (!row) return c.json({ error: "step_not_done" }, 404) // 该步没跑完（无 done 行）不可编辑
     // content 步的键是章 id（LLM 自由字符串），不做大小写转换（对称：读侧 resultToClient 同样跳过）
     const stored = step === "content" ? parsed.data.result : toSnake(parsed.data.result)
+    // 评审二轮 F2（安全）：企业模板 key 只能经 POST present 的属主+档位门禁路径设置。present 结果是
+    // passthrough schema,PATCH 直改 enterprise_template_id 可绕过两道门并指向**他人**的 MinIO 对象
+    // （agent fetch_master_bytes 裸读 key）——一律以库中现值为准覆盖客户端送来的值。
+    if (step === "present") {
+      const cur = (row.result as Record<string, unknown> | null)?.enterprise_template_id
+      const s = stored as Record<string, unknown>
+      if (cur == null) delete s.enterprise_template_id
+      else s.enterprise_template_id = cur
+    }
     await getDb().update(projectSteps).set({ result: stored }).where(eq(projectSteps.id, row.id))
     return c.json({ ok: true })
   })

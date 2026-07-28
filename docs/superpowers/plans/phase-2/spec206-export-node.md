@@ -71,7 +71,9 @@ def _emit_html(doc: Document, html: str) -> None:
     for el in soup.children:
         name = getattr(el, "name", None)
         if name in ("h1", "h2", "h3", "h4"):
-            doc.add_heading(el.get_text(strip=True), level=2)
+            doc.add_heading(el.get_text(strip=True), level={"h1": 2, "h2": 2, "h3": 2, "h4": 3}.get(name, 4))
+            # 实现校正（2026-07-28,评审二轮）:绝对映射 h3=节→Word2、h4=小节→Word3,TOC 域 1-4,
+            # Heading 4 样式已配置——旧的"h1-h4 全压 level=2"（章下标题平级）已废
         elif name == "p":
             doc.add_paragraph(el.get_text(strip=True))
         elif name == "ul":

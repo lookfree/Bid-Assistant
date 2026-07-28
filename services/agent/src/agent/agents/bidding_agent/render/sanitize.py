@@ -164,18 +164,3 @@ def strip_chat_wrapper(text: str) -> str:
     return text.strip()
 
 
-_H_TAG = re.compile(r"<(/?)[hH]([1-6])((?:\s[^>]*)?)>")
-
-
-def promote_heading_levels(html: str) -> str:
-    """章内标题层级相对化归一（导出侧专用，评审：章下标题全平级）：正文实际出现的标题级别按
-    出现序归一到 h2/h3/h4（最高→h2、次→h3、第三及更深并入 h4）。动机：写手历史契约整章只产
-    <h3>（单级），且 h3/h4 曾映射同一 Word 级——归一让旧文档自动获得 章(1)→节(2) 层级、
-    新三级文档忠实映射、跑偏杂级也能校正；规范形态（h2/h3/h4）下幂等。
-    只在 docx 渲染前调用，不进 normalize_chapter_html——前端编辑器不做被动升级
-    （apps/web/lib/chapter-normalize.ts 孪生因此零改动）。"""
-    levels = sorted({int(m.group(2)) for m in _H_TAG.finditer(html)})
-    if not levels:
-        return html
-    mapping = {lv: min(2 + i, 4) for i, lv in enumerate(levels)}
-    return _H_TAG.sub(lambda m: f"<{m.group(1)}h{mapping[int(m.group(2))]}{m.group(3)}>", html)

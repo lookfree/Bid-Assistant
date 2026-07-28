@@ -82,7 +82,8 @@ def _outline_queries(outline: dict | None) -> list[str]:
     """提纲每章标题 + items label 拼一条 query（章粒度），供全局参考资料检索。"""
     queries = []
     for chapter in (outline or {}).get("chapters", []):
-        labels = " ".join(item.get("label", "") for item in chapter.get("items", []))
+        # 展平含小节（三级提纲）：小节 label 是最具体的检索词,漏掉会让密集章检索退化
+        labels = " ".join(item.get("label", "") for item in _iter_items(chapter.get("items", [])))
         queries.append(f"{chapter.get('title', '')} {labels}".strip())
     return queries
 
@@ -143,7 +144,7 @@ def _template_block(read: dict, outline: dict) -> str:
             continue
         # 模板原文定位：优先构成项的 clause_ids，回退章内 items 的 clause_ids；取所属节全文
         clause_ids = list((struct or {}).get("clause_ids") or [])
-        for it in chapter.get("items", []):
+        for it in _iter_items(chapter.get("items", [])):  # 含小节:条款引用可能挂在第三层
             clause_ids += it.get("clause_ids") or []
         secs = sorted({s for cid in clause_ids if (s := _sec_of(cid))})
         text = "\n".join(t for sec in secs for t in by_sec.get(sec, []) if t)
@@ -175,7 +176,7 @@ def _scores_per_chapter(chapters: list[dict], scoring: list[dict]) -> dict[str, 
     ids = {c.get("id") for c in chapters}
     clause_to_ch: dict[str, str] = {}
     for c in chapters:
-        for it in (c.get("items") or []):
+        for it in _iter_items(c.get("items") or []):  # 含小节:评分行经条款回退定位不得漏第三层
             for cid in (it.get("clause_ids") or []):
                 clause_to_ch.setdefault(cid, c.get("id"))
     out: dict[str, float] = {}
@@ -198,9 +199,22 @@ def _scoring_weighted_budgets(chapters: list[dict], target: int, score_by_ch: di
     return {cid: max(300, round(target * w / total_w / 100) * 100) for cid, w in weights.items()}
 
 
-def _item_count(items: list) -> int:
-    """提纲子项计数（含各级 children,三级提纲）：预算权重的规模口径。"""
-    return sum(1 + _item_count(it.get("children") or []) for it in items if isinstance(it, dict))
+def _iter_items(items: object) -> "list[dict]":
+    """提纲子项展平（节+小节,三级提纲）：预算计数/RAG query/模板定位/评分回退共用的唯一口径。
+    类型钳制（评审:API 对 items 内部零校验,children 可能被 PATCH 存成任意垃圾）:
+    非 list/非 dict 一律跳过,绝不让脏数据把付费 content 步炸在预算规划。"""
+    out: list[dict] = []
+    for it in items if isinstance(items, list) else []:
+        if not isinstance(it, dict):
+            continue
+        out.append(it)
+        out.extend(c for c in (it.get("children") if isinstance(it.get("children"), list) else []) if isinstance(c, dict))
+    return out
+
+
+def _item_count(items: object) -> int:
+    """提纲子项计数（含小节）：预算权重的规模口径。"""
+    return len(_iter_items(items))
 
 
 def _group_weighted_budgets(chapters: list[dict], target: int) -> dict[str, int]:

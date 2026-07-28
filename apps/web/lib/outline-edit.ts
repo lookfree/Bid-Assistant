@@ -66,6 +66,47 @@ export function applyNumbering<C extends NumberedChapter>(groups: C[][], mode: N
   })
 }
 
+const HIER_PREFIX = /^\d{1,2}(?:\.\d{1,3})+/
+
+/** 子项树按**位置**重排层级编号（评审二轮 F6:拖拽/删除后 1.2 排在 1.1 前,提纲与导出全乱序）。
+ *  规则（宁保守勿改错,与既有编号体检先例一致）：
+ *  - 带层级编号前缀的项 → 前缀重写为「章号.位置序」(节 n.i)/「父编号.位置序」(小节 n.i.j)；
+ *  - 无编号前缀的项（如刚新增的「新增子项」）原样跳过——不阻断其它项重排,位置序按实际下标计
+ *    （占位跳号,用户补上编号后下次操作自动纳入）；
+ *  - 章号解析不出（自定义编号模式）→ 整树原样不动。 */
+export function renumberItemsByPosition<I extends { label: string; children?: I[] }>(items: I[], ordinal: number | null): I[] {
+  if (ordinal == null) return items
+  const renumber = <T extends { label: string; children?: T[] }>(list: T[], prefix: string): T[] =>
+    list.map((it, i) => {
+      if (!HIER_PREFIX.test(it.label)) return it
+      const no = `${prefix}.${i + 1}`
+      return {
+        ...it,
+        label: it.label.replace(HIER_PREFIX, no),
+        ...(it.children?.length ? { children: renumber(it.children, no) } : {}),
+      }
+    })
+  return renumber(items, String(ordinal))
+}
+
+/** 子项树展平（节+小节顺序铺开）：统计徽标/计数共用。 */
+export function flattenItems<I extends { children?: I[] }>(list: I[]): I[] {
+  return list.flatMap((it) => [it, ...flattenItems(it.children ?? [])])
+}
+
+/** 子项树序列化（保存回写 Outline 契约）：children 递归透传——丢了这个键=丢用户的小节。 */
+export function serializeItems(
+  list: Array<{ id: string; label: string; clauseIds?: string[]; isNew?: boolean; children?: unknown[] }>,
+): unknown[] {
+  return list.map((it) => ({
+    id: it.id,
+    label: it.label,
+    clauseIds: it.clauseIds ?? [],
+    isNew: it.isNew ?? false,
+    children: serializeItems((it.children ?? []) as Parameters<typeof serializeItems>[0]),
+  }))
+}
+
 /** 同层拖拽重排（评审需求:子项在本章内、小节在本节内拖动）：把 dragId 移到 dropId 之前；
  *  dropId 为 null 移到末尾；任一 id 不在本层原样返回（跨层拖拽由调用方先行拦截,这里兜底）。 */
 export function reorderWithin<T extends { id: string }>(list: T[], dragId: string, dropId: string | null): T[] {

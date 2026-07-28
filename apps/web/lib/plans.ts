@@ -84,7 +84,7 @@ export const memberTiers: MemberTier[] = [
     features: [
       { text: "每月 6000 积分", included: true },
       { text: "包含个人版全部功能", included: true },
-      { text: "逐章重写与一键改写", included: true },
+      // 逐章改写已全档开放（2026-07-28 产品口径）,不再列为专业版差异化条目（「包含个人版全部功能」已覆盖）
       { text: "标书查重（全维度指纹）", included: true },
       { text: "套用企业 PPT 模板 · 历史述标参考", included: true },
       { text: "优先算力队列，生成更快", included: true },

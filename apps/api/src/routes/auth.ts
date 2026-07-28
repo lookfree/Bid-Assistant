@@ -2,6 +2,7 @@ import { Hono } from "hono"
 import { z } from "zod"
 import { authMiddleware } from "../middleware/auth"
 import { loginWithPhone, logout, TermsRequiredError, InvalidCodeError, AccountBannedError } from "../services/auth"
+import { findUserByIdentity } from "../repos/users"
 import { sha256Hex } from "../services/crypto"
 import { normalizePhone } from "../util/phone"
 import type { SmsCodeService } from "../services/sms-code"
@@ -39,6 +40,9 @@ export function authRoutes(deps: AuthRouteDeps) {
       return c.json({ error: "captcha_required" }, 403)
     }
     const phone = normalizePhone(body.data.phone)
+    // 封禁账号不发验证码（评审二轮）：验证码是真金白银的短信费,verify 侧才拦会先烧一条码费
+    const existing = await findUserByIdentity("phone", phone)
+    if (existing?.status === "banned") return c.json({ error: "account_banned" }, 403)
     const ip = clientIp((n) => c.req.header(n))
     const res = await deps.smsCode.request({ phone, ip })
     if (!res.ok) {
@@ -78,9 +82,11 @@ export function authRoutes(deps: AuthRouteDeps) {
     return c.json({ id: u.id, nickname: u.nickname, status: u.status })
   })
 
-  r.post("/logout", authMiddleware, async (c) => {
+  // 注销不挂 authMiddleware（评审二轮 F12）：封禁用户也必须能吊销自己的会话——盗号封禁场景下
+  // 403 挡注销会让攻击者的会话在解封瞬间原样复活。logout(token) 无会话即 no-op,匿名调用无害。
+  r.post("/logout", async (c) => {
     const header = c.req.header("Authorization") ?? ""
-    await logout(header.slice(7))
+    if (header.startsWith("Bearer ")) await logout(header.slice(7))
     return c.json({ ok: true })
   })
 

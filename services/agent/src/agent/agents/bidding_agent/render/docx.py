@@ -3,7 +3,7 @@ import base64
 import io
 from bs4 import BeautifulSoup
 from docx import Document
-from agent.agents.bidding_agent.render.sanitize import normalize_chapter_html, promote_heading_levels, strip_document_shell
+from agent.agents.bidding_agent.render.sanitize import normalize_chapter_html, strip_document_shell
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -42,10 +42,10 @@ def _emit_el(doc: Document, el) -> None:
     table→表格；容器标签（div 等）递归展开，防止整块被 get_text 压扁成一段。"""
     name = getattr(el, "name", None)
     if name in ("h1", "h2", "h3", "h4", "h5", "h6"):
-        # 章内层级忠实映射（评审:此前 h3/h4 压同级=章下标题平级）：章标题占 Heading 1,
-        # 正文经 promote_heading_levels 归一后只出现 h2/h3/h4 → Word 2/3/4;
-        # h1 与 h5/h6 为未归一调用的防御位（就近并入 2/4,绝不落成正文段落）。
-        doc.add_heading(el.get_text(strip=True), level={"h1": 2, "h2": 2, "h3": 3}.get(name, 4))
+        # 章内层级绝对映射（评审二轮:相对归一会让同一 <h4> 在不同章落不同 Word 级）：
+        # 编辑器/写手契约 h3=节、h4=小节 → Word 2/3;章标题占 Heading 1。旧文档整章全 <h3>
+        # 同样得到 章(1)→节(2) 的层级（平级问题就此修复);h1/h2 跑偏按节待遇,h5/h6 并入第四级。
+        doc.add_heading(el.get_text(strip=True), level={"h1": 2, "h2": 2, "h3": 2, "h4": 3}.get(name, 4))
     elif name == "p":
         doc.add_paragraph(el.get_text(strip=True))
         for img in el.find_all("img"):  # 光标处插图常嵌在段落里，只取文字会把图整个丢掉
@@ -318,7 +318,6 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
         # 再与提纲对齐（剥内嵌旧章标题 + 小节编号跟随当前章号）——标书必须按用户设置后的提纲出
         body = strip_document_shell(chapters.get(ch.get("id", ""), ""))
         body = normalize_chapter_html(body, ch.get("no", ""), ch.get("title", ""))
-        body = promote_heading_levels(body)  # 层级归一（剥章题后做,否则章题被当最高级）
         if body:
             _emit_html(doc, body)
         else:

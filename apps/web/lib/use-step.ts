@@ -247,7 +247,10 @@ export function useStep<T>(step: StepName) {
             ? "标书生成的积分口径尚未配置，请联系运营在后台设置后重试"
             : code === "package_required"
               ? "本项目为多包件招标，请先在「招标解读」页选择投标包件，再生成大纲"
-              : stepErrorMessage(status))
+              // 档位权益门禁（评审二轮 F15:此前无文案,个人版选企业模板被 403 只见笼统失败）
+              : code === "feature_locked"
+                ? "当前会员档位未包含该功能权益（如企业 PPT 模板），可在会员中心升级后重试"
+                : stepErrorMessage(status))
         return null
       } finally {
         inFlight.current = false

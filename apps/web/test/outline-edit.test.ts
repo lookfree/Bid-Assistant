@@ -6,7 +6,10 @@ import {
   deriveNumberMode,
   moveChapter,
   renumberLabel,
+  renumberItemsByPosition,
   reorderWithin,
+  flattenItems,
+  serializeItems,
 } from "@/lib/outline-edit"
 
 type Ch = { no: string; items: { label: string }[] }
@@ -105,5 +108,37 @@ describe("reorderWithin 同层拖拽重排", () => {
     expect(reorderWithin(list, "a", "a")).toBe(list)
     expect(reorderWithin(list, "x", "a")).toBe(list)
     expect(reorderWithin(list, "a", "x")).toBe(list)
+  })
+})
+
+describe("renumberItemsByPosition：拖拽/删除后按位置重排（评审二轮 F6）", () => {
+  it("节按位置重排 n.i,小节跟随父编号 n.i.j;标题文本保留", () => {
+    const items = [
+      { label: "1.2 实施方案", children: [{ label: "1.2.3 部署" }, { label: "1.2.1 架构" }] },
+      { label: "1.1 总体设计" },
+    ]
+    const out = renumberItemsByPosition(items, 1)
+    expect(out[0]!.label).toBe("1.1 实施方案")
+    expect(out[0]!.children![0]!.label).toBe("1.1.1 部署")
+    expect(out[0]!.children![1]!.label).toBe("1.1.2 架构")
+    expect(out[1]!.label).toBe("1.2 总体设计")
+  })
+  it("无编号项跳过不阻断（新增子项占位跳号）;章号 null 整树不动", () => {
+    const items = [{ label: "新增子项" }, { label: "3.9 保障" }]
+    const out = renumberItemsByPosition(items, 2)
+    expect(out[0]!.label).toBe("新增子项")
+    expect(out[1]!.label).toBe("2.2 保障") // 位置序按实际下标:占位跳号
+    expect(renumberItemsByPosition(items, null)).toBe(items)
+  })
+})
+
+describe("flattenItems / serializeItems（评审二轮:迁入可测纯函数层）", () => {
+  it("展平含小节;序列化 children 往返不丢", () => {
+    const items = [{ id: "a", label: "1.1 x", children: [{ id: "a1", label: "1.1.1 y", clauseIds: ["sec-1-c1"] }] }]
+    expect(flattenItems(items).map((i) => i.id)).toEqual(["a", "a1"])
+    const ser = serializeItems(items) as Array<{ id: string; children: Array<{ id: string; clauseIds: string[]; children: unknown[] }> }>
+    expect(ser[0]!.children[0]!.id).toBe("a1")
+    expect(ser[0]!.children[0]!.clauseIds).toEqual(["sec-1-c1"])
+    expect(ser[0]!.children[0]!.children).toEqual([])
   })
 })

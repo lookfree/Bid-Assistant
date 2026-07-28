@@ -471,3 +471,22 @@ def test_group_weighted_budgets_count_children():
     budgets = _group_weighted_budgets(chapters, 90000)
     assert budgets["t1"] > budgets["t2"]  # 含小节的章权重更大
     assert abs(budgets["t1"] / budgets["t2"] - 6 / 3) < 0.35  # 权重比 ≈ (5+1)/(2+1)
+
+
+def test_iter_items_flattens_children_and_clamps_garbage():
+    """三级提纲统一展平口径（评审二轮）：RAG query/模板定位/评分回退/预算计数共用 _iter_items;
+    脏 children（数字/字符串/混杂,API 对 items 内部零校验）钳制跳过,绝不炸付费步。"""
+    from agent.agents.bidding_agent.nodes.content import _iter_items, _item_count, _outline_queries
+    items = [
+        {"id": "a", "label": "1.1 总体", "children": [{"id": "a1", "label": "1.1.1 架构", "clause_ids": ["sec-2-c1"]}]},
+        {"id": "b", "label": "1.2 实施", "children": 5},          # 垃圾:数字
+        {"id": "c", "label": "1.3 保障", "children": ["裸字符串", {"id": "c1", "label": "1.3.1 值守"}]},
+        "非字典项",                                                  # 垃圾:裸字符串
+    ]
+    flat = _iter_items(items)
+    assert [it["id"] for it in flat] == ["a", "a1", "b", "c", "c1"]
+    assert _item_count(items) == 5
+    assert _item_count(None) == 0 and _item_count(5) == 0
+    # RAG query 含小节 label（最具体的检索词）
+    q = _outline_queries({"chapters": [{"title": "技术方案", "items": items}]})
+    assert "1.1.1 架构" in q[0] and "1.3.1 值守" in q[0]

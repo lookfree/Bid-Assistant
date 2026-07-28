@@ -102,6 +102,12 @@ function buildPlanViews(allRows: PlanRow[]): { list: PlanView[]; byTier: Map<Tie
   return { list: TIER_ORDER.map((t) => byTier.get(t)).filter((p): p is PlanView => !!p), byTier }
 }
 
+/** 「会员有效」唯一谓词（评审二轮:此前 entitlements 手抄同一判定,两处口径会漂移）：
+ *  status=active 且未过周期末。到期宽限不算会员——会员中心展示与权益执行共用本函数。 */
+export function subscriptionActive(row: { status: string; currentPeriodEnd: Date | null }): boolean {
+  return row.status === "active" && !(row.currentPeriodEnd != null && row.currentPeriodEnd.getTime() < Date.now())
+}
+
 /** 当前订阅视图：一人一订阅行（unique user_id），过期（状态或周期末<now）归一为 expired。
  *  档位/周期直接从已取的 allPlans 里按 planId 定位，免建全表映射。 */
 async function loadSubscription(userId: string, allPlans: PlanRow[]): Promise<SubscriptionView> {

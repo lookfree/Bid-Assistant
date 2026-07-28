@@ -35,7 +35,7 @@ import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import { patchErrorMessage, patchStep } from "@/lib/project"
 import { clauseLocationIn, groupDocSections, type DocSentence } from "@/lib/doc-sections"
-import { applyNumbering, chapterNo, deriveNumberMode, moveChapter, type NumberMode } from "@/lib/outline-edit"
+import { applyNumbering, chapterNo, chapterOrdinal, deriveNumberMode, flattenItems, moveChapter, renumberItemsByPosition, serializeItems, type NumberMode } from "@/lib/outline-edit"
 import { ChapterItems } from "./chapter-items"
 
 // agent Outline（camelCase）：chapters[{id,no,title,group,sourced,structureRef?,items[{id,label,clauseIds,isNew}]}]
@@ -121,15 +121,6 @@ export default function OutlinePage() {
   async function saveOutline() {
     if (!projectId || saveState === "saving") return
     setSaveState("saving")
-  // 子项树序列化（含小节,三级提纲）：保存回写 Outline 契约,children 递归透传
-  const serializeItems = (list: OutlineItem[]): unknown[] =>
-    list.map((it) => ({
-      id: it.id,
-      label: it.label,
-      clauseIds: it.clauseIds ?? [],
-      isNew: it.isNew ?? false,
-      children: serializeItems(it.children ?? []),
-    }))
     const serialize = (list: Chapter[], group: "tech" | "business") =>
       list.map((ch) => ({
         id: ch.id,
@@ -174,7 +165,6 @@ export default function OutlinePage() {
         ? [{ label: "商务标", kind: "business", chapters: businessChapters }]
         : groupSeq
 
-  const flattenItems = (list: OutlineItem[]): OutlineItem[] => list.flatMap((it) => [it, ...flattenItems(it.children ?? [])])
   const allItems = groups.flatMap((g) => g.chapters).flatMap((c) => flattenItems(c.items))
   const indexedCount = allItems.filter((i) => i.clauseIds && i.clauseIds.length > 0).length
   const newCount = allItems.filter((i) => i.isNew).length
@@ -195,7 +185,10 @@ export default function OutlinePage() {
 
   /* -------- 章节编辑（标题 + 序号都可改） -------- */
   const [noDraft, setNoDraft] = useState("")
+  // 章标题编辑与子项编辑互斥（评审二轮:重构曾丢互斥）——bump 让所有 ChapterItems 收敛编辑态
+  const [itemEditReset, setItemEditReset] = useState(0)
   function startEditChapter(ch: Chapter) {
+    setItemEditReset((n) => n + 1)
     setEditingChapter(ch.id)
     setDraft(ch.title)
     setNoDraft(ch.no)
@@ -559,8 +552,16 @@ export default function OutlinePage() {
                           locate={locate}
                           onItemClick={handleItemClick}
                           genId={genId}
+                          onEditStart={() => setEditingChapter(null)}
+                          closeEditToken={itemEditReset}
                           onChange={(items) =>
-                            setter(group.kind)((prev) => prev.map((ch) => (ch.id === chapter.id ? { ...ch, items } : ch)))
+                            // 结构性修改（拖拽/增删）后按位置重排层级编号（评审二轮 F6:1.2 排 1.1 前）;
+                            // 章号解析不出（自定义编号）整树不动,与章级 custom 保守原则一致
+                            setter(group.kind)((prev) =>
+                              prev.map((ch) =>
+                                ch.id === chapter.id ? { ...ch, items: renumberItemsByPosition(items, chapterOrdinal(ch.no)) } : ch,
+                              ),
+                            )
                           }
                         />
                       </div>

@@ -260,15 +260,18 @@ def test_render_docx_follows_edited_outline_numbering():
 
 
 def test_render_docx_three_level_heading_hierarchy_and_toc():
-    """三级层级贯通（评审:章下标题全平级）:写手节<h3>/小节<h4> 经归一映射为 Word 章(1)→节(2)→
-    小节(3);旧文档全 <h3> 自动获得 章(1)→节(2);TOC 域扩到 1-4;Heading 4 样式已配置(防主题蓝)。"""
+    """三级层级贯通（评审:章下标题全平级）:绝对映射 节<h3>→Word2、小节<h4>→Word3（评审二轮:
+    相对归一会让同一 <h4> 在不同章落不同级,改绝对映射保证跨章一致、编辑器可预期）;
+    旧文档全 <h3> 同样得到 章(1)→节(2);TOC 域扩到 1-4;Heading 4 样式已配置(防主题蓝)。"""
     outline = {"chapters": [
         {"id": "t1", "no": "第一章", "title": "技术方案", "group": "tech"},
         {"id": "t2", "no": "第二章", "title": "实施方案", "group": "tech"},
+        {"id": "t3", "no": "第三章", "title": "培训方案", "group": "tech"},
     ]}
     chapters = {
         "t1": "<h3>1.1 需求理解</h3><p>正文</p><h4>1.1.1 现状分析</h4><p>细项</p><h3>1.2 总体设计</h3>",
         "t2": "<h3>2.1 计划</h3><p>旧式单级正文</p><h3>2.2 保障</h3>",
+        "t3": "<h4>3.0.1 只有小节的章</h4><p>跨章一致:h4 恒为第三级,不随本章标签构成漂移</p>",
     }
     doc = Document(io.BytesIO(render_docx(outline, chapters)))
     styles = {p.text: p.style.name for p in doc.paragraphs if p.style.name.startswith("Heading")}
@@ -276,6 +279,7 @@ def test_render_docx_three_level_heading_hierarchy_and_toc():
     assert styles["1.1 需求理解"] == "Heading 2"      # 节
     assert styles["1.1.1 现状分析"] == "Heading 3"    # 小节（此前与节平级）
     assert styles["1.2 总体设计"] == "Heading 2"
-    assert styles["2.1 计划"] == "Heading 2"          # 旧式全 h3 章:整体归一为节级
+    assert styles["2.1 计划"] == "Heading 2"          # 旧式全 h3 章:节级,平级问题修复
+    assert styles["3.0.1 只有小节的章"] == "Heading 3"  # 绝对映射:h4 不因缺 h3 被抬级
     assert doc.styles["Heading 4"].font.size.pt == 12  # 第四级样式已配置
     assert 'TOC \\o "1-4"' in doc.element.xml

@@ -1,7 +1,6 @@
 "use client"
 
-import Link from "next/link"
-import { ArrowRight, Lock, ShieldAlert, ShieldCheck, X } from "lucide-react"
+import { ArrowRight, ShieldAlert, ShieldCheck, X } from "lucide-react"
 import { CreditEstimate } from "@/components/credit-estimate"
 import { AdviceLockHint } from "@/components/tool/advice-lock-hint"
 import { type CheckItem, type HealthReport } from "@/lib/risk-derive"

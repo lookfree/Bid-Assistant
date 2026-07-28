@@ -2,6 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **实现校正（2026-07-28,评审二轮）**：提纲已升级为**三级**（章→节→小节）。`OutlineItem` 增加
+> `children: list[OutlineChildItem]`（小节,独立非递归模型——递归自引用会在 LLM tool schema 转换中
+> 被抹平,且非递归即三层封顶的 schema 硬约束）。提纲页支持小节维护与同层拖拽,拖拽/增删后按位置
+> 重排 `N.M` / `N.M.K` 编号。本文其余「章—节两级」表述以此为准。
+
 **Goal:** 把 spec201 的 `outline` stub 替换为真实节点：读 `state['read']`（读标结论）→ 生成**技术标/商务标提纲**（章—节两级，标注来源/新增）→ 用 `submit_outline` 产出 `Outline` 写入 `state['outline']`。结构逐字对齐 C 端 `/outline` 原型（`sample-bid.ts: chapters / OutlineItem`）。create_agent 式（结构化生成，可加轻量规划）。
 
 **Architecture:** `make_outline_node(ctx)` 内部用 `build_create_agent`（spec105）跑一个挂了 `submit_outline(Outline)` 工具的子 agent；系统提示喂入读标结论（评分项、★不可偏离、废标红线），要求产出覆盖评分点的章节大纲，并对每章标 `sourced`（能否在招标文件索引到来源）、每个子项标 `is_new`（提纲新增）。

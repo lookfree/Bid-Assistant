@@ -81,14 +81,24 @@ class ReadResult(BaseModel):
         return self
 
 
+class OutlineChildItem(BaseModel):
+    """小节（三级提纲的第三层）。独立非递归模型而非自引用（评审修正）：
+    ① 自引用 schema 经 langchain 转 LLM tool schema 时递归 $ref 被抹平成空对象,模型对小节结构
+      零引导,易产垃圾 children 烧尽 submit 重试;② 无 children 字段=「三层封顶」的 schema 硬约束,
+    深于三层的数据在校验时被静默剪掉（pydantic 默认忽略未知字段）,所有下游天然安全。"""
+    id: str
+    label: str                                    # 如 "1.1.1 系统架构"
+    clause_ids: list[str] = Field(default_factory=list)
+    is_new: bool = False
+
+
 class OutlineItem(BaseModel):
     id: str
     label: str                                    # 如 "1.1 项目背景与需求理解"
     clause_ids: list[str] = Field(default_factory=list)  # 招标依据条款 id（${secId}-cN，对齐原型 clauseIds）
     is_new: bool = False                          # 提纲新增（招标无直接来源）
-    # 三级提纲（章→节→小节,评审需求）：节可带小节。schema 自引用不设深度上限,
-    # 但产品口径三层封顶——提纲页 UI 只维护到小节,写手契约 节<h3>/小节<h4>。
-    children: list["OutlineItem"] = Field(default_factory=list)
+    # 三级提纲（章→节→小节,评审需求）：节可带小节;写手契约 节<h3>/小节<h4>
+    children: list[OutlineChildItem] = Field(default_factory=list)
 
 
 class OutlineChapter(BaseModel):
