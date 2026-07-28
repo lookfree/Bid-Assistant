@@ -76,6 +76,14 @@ export class InvalidCodeError extends Error {
   }
 }
 
+/** 账号已被运营封禁（users.status='banned'）——登录与既有会话一律拒止。 */
+export class AccountBannedError extends Error {
+  constructor() {
+    super("account_banned")
+    this.name = "AccountBannedError"
+  }
+}
+
 /**
  * 手机号验证码登录（即注册）。顺序很关键：
  *  1. 先判“新用户是否需同意协议”——在消费验证码之前，避免 terms_required 把一次性码烧掉；
@@ -90,6 +98,7 @@ export async function loginWithPhone(
   consumeCode: () => Promise<boolean>,
 ): Promise<{ token: string; user: User; isNew: boolean }> {
   let user = await findUserByIdentity("phone", phone)
+  if (user?.status === "banned") throw new AccountBannedError() // 消费码前判定（同 terms），一次性码不被烧
   if (!user && !meta.agreedToTerms) throw new TermsRequiredError() // 消费码前判定，码不被烧
   if (!(await consumeCode())) throw new InvalidCodeError()
   let isNew = false

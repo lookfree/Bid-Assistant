@@ -1,7 +1,7 @@
 import { Hono } from "hono"
 import { z } from "zod"
 import { authMiddleware } from "../middleware/auth"
-import { loginWithPhone, logout, TermsRequiredError, InvalidCodeError } from "../services/auth"
+import { loginWithPhone, logout, TermsRequiredError, InvalidCodeError, AccountBannedError } from "../services/auth"
 import { sha256Hex } from "../services/crypto"
 import { normalizePhone } from "../util/phone"
 import type { SmsCodeService } from "../services/sms-code"
@@ -68,6 +68,7 @@ export function authRoutes(deps: AuthRouteDeps) {
     } catch (e) {
       if (e instanceof TermsRequiredError) return c.json({ error: "terms_required" }, 400)
       if (e instanceof InvalidCodeError) return c.json({ error: "invalid_code" }, 401)
+      if (e instanceof AccountBannedError) return c.json({ error: "account_banned" }, 403)
       throw e
     }
   })

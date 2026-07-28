@@ -8,6 +8,7 @@ const AUTH_ERROR_MESSAGES: Record<string, string> = {
   terms_required: "请先同意《用户协议》和《隐私政策》后再登录",
   invalid_input: "手机号或验证码格式有误",
   invalid_code: "验证码错误或已过期",
+  account_banned: "该账号已被封禁，如有疑问请联系客服",
 }
 
 // 按 error code 取文案；429 特判带上重试秒数；其余回退到调用方给的兜底文案。

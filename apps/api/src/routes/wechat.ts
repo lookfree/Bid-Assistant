@@ -1,6 +1,6 @@
 import { Hono } from "hono"
 import { z } from "zod"
-import { TermsRequiredError } from "../services/auth"
+import { TermsRequiredError, AccountBannedError } from "../services/auth"
 import { clientIp } from "./auth"
 import { InvalidStateError, makeWechatAuth } from "../services/wechat-auth"
 
@@ -37,6 +37,7 @@ export function wechatRoutes(deps: WechatRouteDeps) {
     } catch (e) {
       if (e instanceof TermsRequiredError) return c.json({ error: "terms_required" }, 400)
       if (e instanceof InvalidStateError) return c.json({ error: "invalid_state" }, 400)
+      if (e instanceof AccountBannedError) return c.json({ error: "account_banned" }, 403) // 须在兜底 401 之前
       return c.json({ error: "wechat_login_failed" }, 401)
     }
   })

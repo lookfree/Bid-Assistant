@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto"
 import type { Redis } from "ioredis"
 import { findUserByIdentity, createOrGetOnConflict } from "../repos/users"
-import { mintSession, TermsRequiredError, applySignupBonus } from "./auth"
+import { mintSession, TermsRequiredError, AccountBannedError, applySignupBonus } from "./auth"
 import type { WechatOAuthClient } from "./wechat-oauth"
 import type { User } from "../db/schema"
 
@@ -36,6 +36,7 @@ export function makeWechatAuth(redis: Redis, oauth: WechatOAuthClient, ttlDays: 
       const identifier = profile.unionid ?? profile.openid // 优先 unionid（开放平台跨应用稳定）
 
       let user = await findUserByIdentity("wechat", identifier)
+      if (user?.status === "banned") throw new AccountBannedError() // 封禁账号不得经微信重登（与手机号同一拦截）
       let isNew = false
       if (!user) {
         if (!agreedToTerms) throw new TermsRequiredError()
