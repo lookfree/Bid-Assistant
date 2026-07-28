@@ -458,6 +458,7 @@ export default function ContentPage() {
           generatedCount={generatedCount}
           total={list.length}
           onSelect={selectChapter}
+          fullDoc={bidType === "full"}
         />
 
         {/* 中：可编辑正文 */}

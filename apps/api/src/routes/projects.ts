@@ -15,6 +15,7 @@ import { healStuckStep, finalizeStepSuccess, STEP_ORDER, type Step } from "../se
 import { failStepAndRefund } from "../services/stuck-steps"
 import { ensureChecklistTemplate } from "../services/checklist-template"
 import { ragRunInput } from "../services/rag-config"
+import { generationRunInput } from "../services/generation-config"
 import { credentialsRunInput, type CredentialInput } from "../services/credentials"
 import { toCamel, toSnake } from "../lib/case"
 import { parsePagination, pagedBody, pagedResult } from "../lib/pagination"
@@ -603,8 +604,10 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         ...(step === "export" ? await exportCredentials(userId) : {}),
         // spec328：线下标书审查/述标——review/present 节点用该 key 确定性解析出 chapters（无 LLM 不计费）
         ...((step === "review" || step === "present") && p.bidFileKey ? { bid_file_key: p.bidFileKey } : {}),
-        // spec330 生成配置：目标字数（规划轮拆各章预算）/ 输出格式（docx 渲染）
+        // spec330 生成配置：目标字数（规划轮拆各章预算）/ 输出格式（docx 渲染）；
+        // 超写校准系数（运营可调,billing_configs generation.*）随 content 步一并下发
         ...(step === "content" && gen.targetChars ? { target_chars: gen.targetChars } : {}),
+        ...(step === "content" ? await generationRunInput() : {}),
         ...(step === "export" && gen.format ? { format: gen.format } : {}),
       },
       state_overrides: await stateOverrides(p.id, step as Step),

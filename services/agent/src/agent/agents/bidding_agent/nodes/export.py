@@ -85,10 +85,14 @@ def make_export_node(ctx):
         pdf_bytes = await asyncio.to_thread(docx_to_pdf, data)
         if pdf_bytes is not None:
             artifacts["pdf"] = await upload_artifact(ctx, "bid.pdf", pdf_bytes, "application/pdf")
-            # 真实页数回报（篇幅控制地面真值）：前端展示"实际 N 页",也是后续密度/超写校准的数据源
-            pages = pdf_page_count(pdf_bytes)
-            if pages is not None:
-                artifacts["pdf_pages"] = pages
+            # 真实页数回报（篇幅控制地面真值）：前端展示"实际 N 页",也是后续密度/超写校准的数据源。
+            # 解析不出也写 None——state.artifacts 是 merge reducer,不显式覆写会把上一版页数带给新文档
+            artifacts["pdf_pages"] = pdf_page_count(pdf_bytes)
+        else:
+            # 本次 docx→pdf 失败:显式置空。否则 merge reducer 让上一版的 pdf/pdf_pages 混进新结果——
+            # 用户会下载到旧版式 PDF、看到旧文档的"实际 N 页"（评审 F1,重导出改格式场景实翻）
+            artifacts["pdf"] = None
+            artifacts["pdf_pages"] = None
         deck = state.get("deck")
         if deck:   # 编辑后 deck 的导出由此生效（overrides 已在续跑前灌入 state）
             master_bytes = await fetch_master_bytes(deck.get("enterprise_template_id"))

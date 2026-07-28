@@ -363,13 +363,11 @@ def test_length_plan_block_scoring_weighted():
         {"id": "s2", "category": "技术方案", "name": "理解", "score": 10, "clause_ids": ["c1"]},  # 无 chapter_id → clause 回退到 t1
         {"id": "s3", "category": "投标报价", "name": "报价", "score": 30, "chapter_id": "b1"},   # 报价类排除
     ]
-    from agent.agents.bidding_agent.nodes.content import _OVERSHOOT_CALIBRATION
     budgets = _budgets_from_block(_length_plan_block({"target_chars": 100000}, outline, scoring))
     assert budgets["t2"] > budgets["t1"] > budgets["b1"]        # 分越高字越多
     assert budgets["b1"] < budgets["t1"]                        # 报价 30 分被排除,没把 b1 抬起来
-    # 总量≈工作目标（用户目标÷超写校准系数,2026-07-28 实测写手对目标系统性超写 ~40%）
-    work = 100000 / _OVERSHOOT_CALIBRATION
-    assert abs(sum(budgets.values()) - work) < work * 0.05
+    # 总量≈工作目标 71400（=100000÷1.4,独立字面量锚定——用实现公式回算会让系数改错也全绿）
+    assert abs(sum(budgets.values()) - 71400) < 71400 * 0.05
 
 
 def test_length_plan_block_group_weighted_fallback_no_scoring():
@@ -381,8 +379,7 @@ def test_length_plan_block_group_weighted_fallback_no_scoring():
         {"id": "b1", "title": "报价说明", "group": "business", "items": []},          # biz 权重 1
         {"id": "b2", "title": "投标函",   "group": "business", "items": [{}]},        # biz 权重 2
     ]}
-    from agent.agents.bidding_agent.nodes.content import _OVERSHOOT_CALIBRATION
-    work = round(130000 / _OVERSHOOT_CALIBRATION / 100) * 100  # 下发的工作目标(超写校准后)
+    work = 92900  # =130000÷1.4 百字取整;独立字面量锚定校准方向与幅度
     block = _length_plan_block({"target_chars": 130000}, outline)
     assert f"全书目标约 {work} 字" in block
     budgets = _budgets_from_block(block)
@@ -408,7 +405,17 @@ def test_length_plan_block_single_group_gets_full_budget():
         {"id": "t1", "title": "方案", "group": "tech", "items": [{}, {}]},
         {"id": "t2", "title": "实施", "group": "tech", "items": [{}] * 5},
     ]}
-    from agent.agents.bidding_agent.nodes.content import _OVERSHOOT_CALIBRATION
-    work = 100000 / _OVERSHOOT_CALIBRATION
     budgets = _budgets_from_block(_length_plan_block({"target_chars": 100000}, outline))
-    assert abs(sum(budgets.values()) - work) < work * 0.05  # 单组独占全部(校准后口径)
+    assert abs(sum(budgets.values()) - 71400) < 71400 * 0.05  # 单组独占全部(校准后口径,字面量锚定)
+
+
+def test_length_plan_block_calibration_configurable():
+    """超写校准系数可经 run_input.overshoot_calibration 运营下发覆盖;非法值回落默认并夹域。"""
+    from agent.agents.bidding_agent.nodes.content import _length_plan_block
+    outline = {"chapters": [{"id": "t1", "title": "方案", "group": "tech", "items": [{}, {}]}]}
+    assert "全书目标约 50000 字" in _length_plan_block(
+        {"target_chars": 100000, "overshoot_calibration": 2.0}, outline)
+    assert "全书目标约 71400 字" in _length_plan_block(
+        {"target_chars": 100000, "overshoot_calibration": "坏值"}, outline)   # 非法 → 默认 1.4
+    assert "全书目标约 33300 字" in _length_plan_block(
+        {"target_chars": 100000, "overshoot_calibration": 99}, outline)      # 越界 → 夹到 3.0

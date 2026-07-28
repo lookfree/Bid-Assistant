@@ -56,15 +56,10 @@ export function useExport(opts: {
     setTimeout(() => setExportStatus(""), 3000)
   }
 
-  /** 真实页数后缀（agent 导出时用 PDF 数出的地面真值,artifacts.pdfPages）：拿不到就空串,绝不挡下载提示。 */
-  async function realPagesSuffix(): Promise<string> {
-    try {
-      const r = (await fetchStepResult(projectId!, "export")) as { pdfPages?: number } | null
-      return typeof r?.pdfPages === "number" && r.pdfPages > 0 ? `（实际 ${r.pdfPages} 页）` : ""
-    } catch {
-      return ""
-    }
-  }
+  /** 真实页数后缀（agent 导出时用 PDF 数出的地面真值,artifacts.pdfPages）。
+   *  从手头已有的 export 结果读（评审 F5:再发一次网络请求既多付一个 RTT,挂住还会卡死 finally）。 */
+  const pagesSuffix = (r: { pdfPages?: number } | null | undefined): string =>
+    typeof r?.pdfPages === "number" && r.pdfPages > 0 ? `（实际 ${r.pdfPages} 页）` : ""
 
   function onExportEntry() {
     // 余额加载中不做付费墙判定（按钮已禁用，双保险防按 balance=0 误弹）
@@ -144,13 +139,16 @@ export function useExport(opts: {
         const fmtKey = `bid.exportFmt.${projectId}`
         const fmtNow = JSON.stringify(fmt ?? null)
         const fmtChanged = localStorage.getItem(fmtKey) !== null && localStorage.getItem(fmtKey) !== fmtNow
-        if (fmtChanged || !(await fetchStepResult(projectId, "export"))) {
-          await runStep(projectId, "export", undefined, fmt ? { format: fmt } : undefined)
+        let exportRes = (await fetchStepResult(projectId, "export")) as { pdfPages?: number } | null
+        if (fmtChanged || !exportRes) {
+          exportRes = (await runStep(projectId, "export", undefined, fmt ? { format: fmt } : undefined)) as {
+            pdfPages?: number
+          } | null
         }
         localStorage.setItem(fmtKey, fmtNow)
         const dl = await artifactDownload(projectId, kind)
         triggerDownload(dl.url)
-        setExportStatus(`已开始下载《${dl.filename}》${await realPagesSuffix()}，可在浏览器「下载」列表查看`)
+        setExportStatus(`已开始下载《${dl.filename}》${pagesSuffix(exportRes)}，可在浏览器「下载」列表查看`)
         setHasExported(true)
       } catch (e) {
         // 连接中途断开 / 双发撞 running / 撞上对账刚收尾（step_already_done）：run 在服务端照常
@@ -161,11 +159,11 @@ export function useExport(opts: {
             (e.code === "step_already_running" || e.code === "step_already_done"))
         if (converge) {
           try {
-            await pollStepResult(projectId, "export")
+            const converged = (await pollStepResult(projectId, "export")) as { pdfPages?: number } | null
             notifyCreditsChanged()
             const dl = await artifactDownload(projectId, kind)
             triggerDownload(dl.url)
-            setExportStatus(`已开始下载《${dl.filename}》${await realPagesSuffix()}，可在浏览器「下载」列表查看`)
+            setExportStatus(`已开始下载《${dl.filename}》${pagesSuffix(converged)}，可在浏览器「下载」列表查看`)
             setHasExported(true)
             return
           } catch (e2) {

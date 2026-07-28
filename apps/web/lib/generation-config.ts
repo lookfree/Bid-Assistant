@@ -1,6 +1,9 @@
 // 生成配置（spec330）：目标字数 + 输出格式。偏好存 localStorage（用户级,下次默认带出）;
 // 格式键名与后端 zod 白名单/agent 渲染契约一致（snake_case 直传）。
-import { densityForFormat, suggestedCharsForPages } from "@/lib/page-estimate"
+import { DEFAULT_FORMAT, densityForFormat, suggestedCharsForPages } from "@/lib/page-estimate"
+
+// 默认排版唯一权威定义随密度校准基线放在 page-estimate（评审 F12）,此处 re-export 保既有引用
+export { DEFAULT_FORMAT }
 export type DocFormat = {
   margin_cm?: { top?: number; bottom?: number; left?: number; right?: number }
   heading_font?: string
@@ -14,24 +17,12 @@ export type DocFormat = {
 
 export type GenerationConfig = { targetChars: number; format: DocFormat }
 
-/** 默认格式（用户 2026-07-23 提供的口径,与 agent 渲染端 _FMT_DEFAULT 一致） */
-export const DEFAULT_FORMAT: Required<Omit<DocFormat, "margin_cm">> & { margin_cm: Required<NonNullable<DocFormat["margin_cm"]>> } = {
-  margin_cm: { top: 2.2, bottom: 2.2, left: 2.3, right: 2.3 },
-  heading_font: "宋体",
-  heading_size: "四号",
-  heading_bold: true,
-  body_font: "宋体",
-  body_size: "小四",
-  body_indent_chars: 2,
-  line_spacing: 1.5,
-}
-
 export const TARGET_MIN = 10_000
 export const TARGET_MAX = 500_000
 
 // 初始字数经验换算（用户口径）：招标预算「一般一万元一页」，且非线性有下限——40万项目也要 70~80 页、
 // 几百万起要几百页，故 页数 = max(下限, 预算万元数)。页数→字数走排版感知密度（page-estimate，
-// 实测校准 ~415 字/页;旧口径 600 字/页导致 98 页目标实际导出 190 页）。
+// 实测校准 515 字/页,校准记录见 page-estimate.ts 文件头;旧口径 600 字/页偏高 ~14%）。
 const YUAN_PER_PAGE = 10_000
 const PAGE_FLOOR = 80
 
@@ -93,10 +84,11 @@ const KEY = "bid.genConfig"
  *  用 targetProjectId 标记它属于哪个项目——目标字数由该项目/包件的预算规模决定，不是用户偏好。 */
 type StoredGenConfig = Partial<GenerationConfig> & { targetProjectId?: string | null }
 
-/** 生成配置指纹（localStorage 原串）：页数估算的 memo/缓存失效依据——格式改了估算必须跟着变。 */
+/** 排版格式指纹：页数估算的 memo/缓存失效依据——格式改了估算必须跟着变。
+ *  只看 format 子对象（评审 F14:整串指纹会让"只改字数"的保存也触发全书结构重走查）。 */
 export function genConfigFingerprint(): string {
   if (typeof window === "undefined") return ""
-  return localStorage.getItem(KEY) ?? ""
+  return JSON.stringify(loadGenConfig().format ?? null)
 }
 
 export function loadGenConfig(): StoredGenConfig {

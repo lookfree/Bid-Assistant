@@ -37,36 +37,35 @@ export function ChapterNav({
   generatedCount,
   total,
   onSelect,
+  fullDoc,
 }: {
   groups: { label: string; items: Chapter[] }[]
   activeId: string
   generatedCount: number
   total: number
   onSelect: (id: string) => void
+  /** 全文视图才计封面/目录/签章固定页——技术标/商务标分栏是局部视图,带上会凭空多 2+ 页（评审 F9） */
+  fullDoc?: boolean
 }) {
   const charsOf = useChapterChars()
   const totalChars = groups.reduce((sum, g) => sum + g.items.reduce((s, c) => s + charsOf(c), 0), 0)
   // 页数按排版感知结构估算（表格/标题按行高计费）；逐章行数走同款引用缓存,格式取用户存的导出偏好。
-  // 格式指纹变了（生成配置弹层里改过）→ 重解析格式并清缓存,否则目录页数停在旧排版口径（评审 F5）
+  // 缓存条目带格式指纹（评审 F5/F14）：格式改过的章按需重算,未变的章引用命中零成本
   const fmtRaw = genConfigFingerprint()
   const fmt = useMemo(() => sanitizeFormat(loadGenConfig().format ?? {}), [fmtRaw])
-  const linesCache = useRef(new Map<string, { html: string; stat: ChapterLines }>())
-  const lastFmtRaw = useRef(fmtRaw)
-  if (lastFmtRaw.current !== fmtRaw) {
-    lastFmtRaw.current = fmtRaw
-    linesCache.current.clear()
-  }
+  const linesCache = useRef(new Map<string, { html: string; fmtRaw: string; stat: ChapterLines }>())
   const totalPages = pagesFromLines(
     groups.flatMap((g) =>
       g.items.map((c) => {
         const hit = linesCache.current.get(c.id)
-        if (hit && hit.html === c.html) return hit.stat
+        if (hit && hit.html === c.html && hit.fmtRaw === fmtRaw) return hit.stat
         const stat = estimateChapterLines(c.html, fmt)
-        linesCache.current.set(c.id, { html: c.html, stat })
+        linesCache.current.set(c.id, { html: c.html, fmtRaw, stat })
         return stat
       }),
     ),
     fmt,
+    { fixedSections: fullDoc === true },
   )
   return (
     <aside className="flex min-h-0 flex-col rounded-2xl border border-border bg-card">

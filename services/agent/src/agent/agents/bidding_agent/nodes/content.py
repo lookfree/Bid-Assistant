@@ -223,10 +223,22 @@ def _chapter_budgets(chapters: list[dict], target: int, scoring: list[dict] | No
     return [f"- {c.get('id')}「{c.get('title', '')}」目标约 {budgets.get(c.get('id'), 300)} 字" for c in chapters]
 
 
-# 篇幅超写校准（2026-07-28 生产实测):写手对"目标 N 字"系统性超写 ~40%（目标 5.6 万实际产出
-# 7.9 万,导出 190 页)。下发的工作目标 = 用户目标 ÷ 本系数,超写回弹后恰落在用户目标附近。
-# 导出侧 pdf_pages 真实页数持续回报（export 节点),偏差扩大时据实调整本系数。
+# 篇幅超写校准（2026-07-28 生产实测):写手对"目标 N 字"系统性超写 ~40%（目标 5.6 万,生成完成时
+# 产出 ~7.9 万;完整校准记录见 apps/web/lib/page-estimate.ts 文件头)。下发的工作目标 = 用户目标 ÷
+# 本系数,超写回弹后恰落在用户目标附近。注意（评审提示):1.4 是在旧"±20% 写足"提示词下量的,本次
+# 同时把写手上限收紧到 +10%——若新提示词真管住超写会变成系统性偏欠,盯导出 pdf_pages 回报双向调。
+# 运营可经 run_input.overshoot_calibration 覆盖（App 从 billing_configs 的
+# generation.overshoot_calibration 读出下发),不必发版;本常量只是未配置时的默认。
 _OVERSHOOT_CALIBRATION = 1.4
+
+
+def _calibration(run_input: dict) -> float:
+    """超写校准系数:运营配置（run_input 下发)优先,非法/缺省回落默认;夹在 [1.0, 3.0] 防手滑。"""
+    try:
+        v = float(run_input.get("overshoot_calibration") or _OVERSHOOT_CALIBRATION)
+    except (TypeError, ValueError):
+        return _OVERSHOOT_CALIBRATION
+    return min(3.0, max(1.0, v))
 
 
 def _length_plan_block(run_input: dict, outline: dict, scoring: list[dict] | None = None) -> str:
@@ -236,7 +248,7 @@ def _length_plan_block(run_input: dict, outline: dict, scoring: list[dict] | Non
     chapters = outline.get("chapters") or []
     if not isinstance(target, int) or target <= 0 or not chapters:
         return ""
-    work = max(1000, round(target / _OVERSHOOT_CALIBRATION / 100) * 100)
+    work = max(1000, round(target / _calibration(run_input) / 100) * 100)
     lines = _chapter_budgets(chapters, work, scoring)
     return ("【篇幅规划】全书目标约 " + f"{work} 字（硬目标,超过 10% 视为不合格）。"
             "下列各章目标是**按招标评分分值加权的建议**（评分高的方案章多、概述/表单/报价章少）：\n"

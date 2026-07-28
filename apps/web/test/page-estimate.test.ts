@@ -27,6 +27,7 @@ describe("pageCapacity", () => {
 
 describe("densityForFormat / suggestedCharsForPages", () => {
   test("默认排版密度=校准基线,随排版容量等比缩放", () => {
+    expect(densityForFormat()).toBe(515) // 字面量锚定校准基线(=BASE_DENSITY)
     expect(densityForFormat()).toBe(BASE_DENSITY)
     expect(densityForFormat({ body_size: "五号" })).toBeGreaterThan(BASE_DENSITY)
     expect(densityForFormat({ body_size: "四号" })).toBeLessThan(BASE_DENSITY)

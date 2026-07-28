@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Sparkles } from "lucide-react"
 import { fmtChars } from "@/lib/doc-stats"
 import { densityForFormat } from "@/lib/page-estimate"
@@ -53,8 +53,11 @@ export function GenerationConfigDialog({
   const budgetYuan = parseBudgetYuan(budget)
   const [fmt, setFmt] = useState<DocFormat>(() => sanitizeFormat(loadGenConfig().format ?? {}))
   const [fmtOpen, setFmtOpen] = useState(false)
+  // 派生估算一律吃**消毒后**的格式（评审 F6:边距输入框敲到一半的"25"会把版面算成负宽、
+  // 推荐字数被垃圾值改写并可能被确认提交）;输入框本身仍绑原始 fmt,不与用户打字互搏
+  const fmtView = useMemo(() => sanitizeFormat(fmt), [fmt])
   // 推荐字数随排版走（页数目标不变,每页容量随字号/行距/边距变）
-  const suggested = suggestedTarget(chapterCount, budget, fmt)
+  const suggested = suggestedTarget(chapterCount, budget, fmtView)
   // 只在挂载时读一次，且**仅取本项目**存过的值：目标字数由该项目/包件的预算规模决定，
   // 跨项目复用会让新项目沿用上个大项目的字数（滑杆 25.5万 vs 说明「推荐 5.9万」自相矛盾）。
   const savedTarget = useRef<number | undefined>(storedTargetFor(projectId)).current
@@ -98,7 +101,7 @@ export function GenerationConfigDialog({
             className="h-1.5 flex-1 accent-primary"
           />
           <span className="shrink-0 text-sm text-muted-foreground">
-            约 <b className="text-primary">{fmtChars(clamped)}字</b> · {targetPagesFor(clamped, fmt)}页
+            约 <b className="text-primary">{fmtChars(clamped)}字</b> · {targetPagesFor(clamped, fmtView)}页
           </span>
         </div>
         <label className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
@@ -129,7 +132,7 @@ export function GenerationConfigDialog({
         </label>
         <p className="mt-1.5 text-xs text-muted-foreground">
           {budgetYuan != null
-            ? `按${usingPkgBudget ? "本包" : "招标"}预算约 ${(budgetYuan / 10000).toLocaleString("zh-CN", { maximumFractionDigits: 0 })} 万元估算(约 1 万元/页 · 按当前排版每页约 ${densityForFormat(fmt)} 字 · 下限约 80 页),推荐 ${fmtChars(suggested)} 字`
+            ? `按${usingPkgBudget ? "本包" : "招标"}预算约 ${(budgetYuan / 10000).toLocaleString("zh-CN", { maximumFractionDigits: 0 })} 万元估算(约 1 万元/页 · 按当前排版每页约 ${densityForFormat(fmtView)} 字 · 下限约 80 页),推荐 ${fmtChars(suggested)} 字`
             : `本标书共 ${chapterCount} 章,推荐 ${fmtChars(Math.round((chapterCount * 2000) / 1000) * 1000)}~${fmtChars(suggestedTarget(chapterCount))} 字`}
           。此为目标参考:字数向技术标正文倾斜分配(商务标多为投标函/报价/偏离表等表单声明,篇幅短、不注水凑数),实际以内容质量为准,可拖动调整
         </p>

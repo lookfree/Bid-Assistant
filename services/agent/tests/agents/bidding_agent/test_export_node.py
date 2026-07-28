@@ -25,7 +25,8 @@ def test_export_node_writes_docx_key(monkeypatch):
 
 
 def test_export_node_pdf_conversion_failure_keeps_docx_only(monkeypatch):
-    """spec323：docx_to_pdf 返回 None（soffice 缺失/失败）→ artifacts 里没有 pdf key，docx 仍产出。"""
+    """spec323：docx_to_pdf 返回 None（soffice 缺失/失败）→ pdf/pdf_pages 显式置 None（清 merge 残留,
+    评审 F1:否则重导出失败时上一版 PDF/页数会混进新结果），docx 仍产出、不上传 pdf。"""
     saved = {}
 
     class _Storage:
@@ -40,8 +41,7 @@ def test_export_node_pdf_conversion_failure_keeps_docx_only(monkeypatch):
         "chapters": {"t1": "<p>正文</p>"},
         "read": {"project_meta": {"name": "投标文件"}},
     }))
-    assert out["artifacts"] == {"docx": "artifacts/proj-9/bid.docx"}
-    assert "pdf" not in out["artifacts"]
+    assert out["artifacts"] == {"docx": "artifacts/proj-9/bid.docx", "pdf": None, "pdf_pages": None}
     assert "artifacts/proj-9/bid.pdf" not in saved
 
 
@@ -61,7 +61,9 @@ def test_export_node_pdf_conversion_success_adds_pdf_key(monkeypatch):
         "chapters": {"t1": "<p>正文</p>"},
         "read": {"project_meta": {"name": "投标文件"}},
     }))
-    assert out["artifacts"] == {"docx": "artifacts/proj-10/bid.docx", "pdf": "artifacts/proj-10/bid.pdf"}
+    # 假 PDF 字节解析不出页数 → pdf_pages 显式 None（同样要压过 merge 里的旧值）
+    assert out["artifacts"] == {"docx": "artifacts/proj-10/bid.docx", "pdf": "artifacts/proj-10/bid.pdf",
+                                "pdf_pages": None}
     assert saved["artifacts/proj-10/bid.pdf"] == (13, "application/pdf")
 
 
@@ -82,7 +84,7 @@ def test_export_node_rerenders_pptx_when_deck_present(monkeypatch):
         "deck": {"title": "述标", "template": "tech",
                  "slides": [{"id": "s0", "title": "封面", "kind": "cover"}]},
     }))
-    assert out["artifacts"] == {"docx": "artifacts/proj-8/bid.docx",
+    assert out["artifacts"] == {"docx": "artifacts/proj-8/bid.docx", "pdf": None, "pdf_pages": None,
                                 "pptx": "artifacts/proj-8/present.pptx"}
     assert saved["artifacts/proj-8/bid.docx"] > 0 and saved["artifacts/proj-8/present.pptx"] > 0
 
