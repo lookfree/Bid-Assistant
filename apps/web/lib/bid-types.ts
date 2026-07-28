@@ -52,7 +52,8 @@ export type PackageInfo = {
 
 /* ===================== 提纲 / 正文章节 ===================== */
 export type Group = "tech" | "business"
-export type OutlineItem = { id: string; label: string; clauseIds?: string[]; isNew?: boolean }
+/** 提纲子项（节）。children=小节（三级提纲:章→节→小节,产品口径三层封顶——评审需求）。 */
+export type OutlineItem = { id: string; label: string; clauseIds?: string[]; isNew?: boolean; children?: OutlineItem[] }
 
 export type BidChapter = {
   id: string

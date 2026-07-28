@@ -456,3 +456,18 @@ def test_length_telemetry_recorded(caplog):
     with caplog.at_level("WARNING", logger="agent.agents.bidding_agent.nodes.content"):
         asyncio.run(_log_length_telemetry(ctx, {"target_chars": 100000}, chapters))  # 落库炸 → 只 warning,不抛
     assert any("length telemetry event write failed" in r.getMessage() for r in caplog.records)
+
+
+def test_group_weighted_budgets_count_children():
+    """三级提纲预算贯通：children（小节）计入章规模权重——小节多的章拿到更多字数预算。"""
+    from agent.agents.bidding_agent.nodes.content import _group_weighted_budgets
+    chapters = [
+        {"id": "t1", "group": "tech", "items": [
+            {"id": "a", "children": [{"id": "a1"}, {"id": "a2"}, {"id": "a3"}]},
+            {"id": "b", "children": []},
+        ]},  # 计数 2+3=5
+        {"id": "t2", "group": "tech", "items": [{"id": "c"}, {"id": "d"}]},  # 计数 2
+    ]
+    budgets = _group_weighted_budgets(chapters, 90000)
+    assert budgets["t1"] > budgets["t2"]  # 含小节的章权重更大
+    assert abs(budgets["t1"] / budgets["t2"] - 6 / 3) < 0.35  # 权重比 ≈ (5+1)/(2+1)

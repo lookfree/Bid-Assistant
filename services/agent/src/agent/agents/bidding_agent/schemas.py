@@ -86,6 +86,9 @@ class OutlineItem(BaseModel):
     label: str                                    # 如 "1.1 项目背景与需求理解"
     clause_ids: list[str] = Field(default_factory=list)  # 招标依据条款 id（${secId}-cN，对齐原型 clauseIds）
     is_new: bool = False                          # 提纲新增（招标无直接来源）
+    # 三级提纲（章→节→小节,评审需求）：节可带小节。schema 自引用不设深度上限,
+    # 但产品口径三层封顶——提纲页 UI 只维护到小节,写手契约 节<h3>/小节<h4>。
+    children: list["OutlineItem"] = Field(default_factory=list)
 
 
 class OutlineChapter(BaseModel):

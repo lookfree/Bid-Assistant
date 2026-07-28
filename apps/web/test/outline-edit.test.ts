@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, it } from "bun:test"
 import {
   applyNumbering,
   chapterNo,
@@ -6,6 +6,7 @@ import {
   deriveNumberMode,
   moveChapter,
   renumberLabel,
+  reorderWithin,
 } from "@/lib/outline-edit"
 
 type Ch = { no: string; items: { label: string }[] }
@@ -77,5 +78,32 @@ describe("moveChapter", () => {
   test("越界原样返回", () => {
     expect(moveChapter(list, "a", -1).map((c) => c.id)).toEqual(["a", "b", "c"])
     expect(moveChapter(list, "c", 1).map((c) => c.id)).toEqual(["a", "b", "c"])
+  })
+})
+
+// ---- 三级提纲（评审需求:节带小节）与同层拖拽 ----
+describe("applyNumbering 递归重排小节编号", () => {
+  it("children 的 N.M.K 首段与节的 N.M 一起跟随章号", () => {
+    const groups = [[
+      { no: "第一章", items: [{ label: "3.1 总体", children: [{ label: "3.1.1 架构" }, { label: "3.1.2 部署" }] }] },
+      { no: "第二章", items: [{ label: "3.2 实施", children: [] }] },
+    ]]
+    const [g] = applyNumbering(groups, "grouped")
+    expect(g![0]!.items[0]!.label).toBe("1.1 总体")
+    expect(g![0]!.items[0]!.children![0]!.label).toBe("1.1.1 架构")
+    expect(g![0]!.items[0]!.children![1]!.label).toBe("1.1.2 部署")
+    expect(g![1]!.items[0]!.label).toBe("2.2 实施") // 首段跟章号,其余段不动（与既有语义一致）
+  })
+})
+
+describe("reorderWithin 同层拖拽重排", () => {
+  const list = [{ id: "a" }, { id: "b" }, { id: "c" }]
+  it("移到目标之前;null 移到末尾;非法 id/自拖原样", () => {
+    expect(reorderWithin(list, "c", "a").map((x) => x.id)).toEqual(["c", "a", "b"])
+    expect(reorderWithin(list, "a", "c").map((x) => x.id)).toEqual(["b", "a", "c"])
+    expect(reorderWithin(list, "a", null).map((x) => x.id)).toEqual(["b", "c", "a"])
+    expect(reorderWithin(list, "a", "a")).toBe(list)
+    expect(reorderWithin(list, "x", "a")).toBe(list)
+    expect(reorderWithin(list, "a", "x")).toBe(list)
   })
 })

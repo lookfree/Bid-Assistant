@@ -36,6 +36,7 @@ import { creditCostValue } from "@/lib/membership-view"
 import { patchErrorMessage, patchStep } from "@/lib/project"
 import { clauseLocationIn, groupDocSections, type DocSentence } from "@/lib/doc-sections"
 import { applyNumbering, chapterNo, deriveNumberMode, moveChapter, type NumberMode } from "@/lib/outline-edit"
+import { ChapterItems } from "./chapter-items"
 
 // agent Outline（camelCase）：chapters[{id,no,title,group,sourced,structureRef?,items[{id,label,clauseIds,isNew}]}]
 type RealChapter = BidChapter & { group: "tech" | "business"; structureRef?: string | null }
@@ -60,7 +61,7 @@ const toOutline = (list: RealChapter[]): Chapter[] =>
     title,
     sourced,
     structureRef,
-    items: items.map((it) => ({ ...it })),
+    items: items.map((it) => ({ ...it, children: (it.children ?? []).map((c) => ({ ...c })) })),
   }))
 
 type TabId = "tech" | "business" | "full"
@@ -120,6 +121,15 @@ export default function OutlinePage() {
   async function saveOutline() {
     if (!projectId || saveState === "saving") return
     setSaveState("saving")
+  // 子项树序列化（含小节,三级提纲）：保存回写 Outline 契约,children 递归透传
+  const serializeItems = (list: OutlineItem[]): unknown[] =>
+    list.map((it) => ({
+      id: it.id,
+      label: it.label,
+      clauseIds: it.clauseIds ?? [],
+      isNew: it.isNew ?? false,
+      children: serializeItems(it.children ?? []),
+    }))
     const serialize = (list: Chapter[], group: "tech" | "business") =>
       list.map((ch) => ({
         id: ch.id,
@@ -128,12 +138,7 @@ export default function OutlinePage() {
         group,
         sourced: ch.sourced,
         structureRef: ch.structureRef ?? null,
-        items: ch.items.map((it) => ({
-          id: it.id,
-          label: it.label,
-          clauseIds: it.clauseIds ?? [],
-          isNew: it.isNew ?? false,
-        })),
+        items: serializeItems(ch.items),
       }))
     try {
       // 数组顺序即成书顺序（导出/正文页跟随）：按当前组顺序拼接
@@ -151,7 +156,6 @@ export default function OutlinePage() {
   }
 
   // 正在编辑的目标：条目或章节标题
-  const [editingItem, setEditingItem] = useState<string | null>(null)
   const [editingChapter, setEditingChapter] = useState<string | null>(null)
   const [draft, setDraft] = useState("")
 
@@ -170,7 +174,8 @@ export default function OutlinePage() {
         ? [{ label: "商务标", kind: "business", chapters: businessChapters }]
         : groupSeq
 
-  const allItems = groups.flatMap((g) => g.chapters).flatMap((c) => c.items)
+  const flattenItems = (list: OutlineItem[]): OutlineItem[] => list.flatMap((it) => [it, ...flattenItems(it.children ?? [])])
+  const allItems = groups.flatMap((g) => g.chapters).flatMap((c) => flattenItems(c.items))
   const indexedCount = allItems.filter((i) => i.clauseIds && i.clauseIds.length > 0).length
   const newCount = allItems.filter((i) => i.isNew).length
 
@@ -186,54 +191,11 @@ export default function OutlinePage() {
     clauseRefs.current[clauseIds[0]]?.scrollIntoView({ behavior: "smooth", block: "center" })
   }
 
-  /* -------- 条目编辑 -------- */
-  function startEditItem(item: OutlineItem) {
-    setEditingChapter(null)
-    setEditingItem(item.id)
-    setDraft(item.label)
-  }
-
-  function saveItem(kind: "tech" | "business", chapterId: string, itemId: string) {
-    const text = draft.trim()
-    if (!text) {
-      setEditingItem(null)
-      return
-    }
-    setter(kind)((prev) =>
-      prev.map((ch) =>
-        ch.id === chapterId
-          ? { ...ch, items: ch.items.map((it) => (it.id === itemId ? { ...it, label: text } : it)) }
-          : ch,
-      ),
-    )
-    setEditingItem(null)
-    setDraft("")
-  }
-
-  function deleteItem(kind: "tech" | "business", chapterId: string, itemId: string) {
-    setter(kind)((prev) =>
-      prev.map((ch) => (ch.id === chapterId ? { ...ch, items: ch.items.filter((it) => it.id !== itemId) } : ch)),
-    )
-  }
-
-  function addItem(kind: "tech" | "business", chapterId: string) {
-    const newId = genId()
-    setter(kind)((prev) =>
-      prev.map((ch) =>
-        ch.id === chapterId
-          ? { ...ch, items: [...ch.items, { id: newId, label: "新增子项", isNew: true }] }
-          : ch,
-      ),
-    )
-    setEditingChapter(null)
-    setEditingItem(newId)
-    setDraft("新增子项")
-  }
+  /* 条目编辑/增删/拖拽已内聚到 ChapterItems 组件（三级提纲,评审需求） */
 
   /* -------- 章节编辑（标题 + 序号都可改） -------- */
   const [noDraft, setNoDraft] = useState("")
   function startEditChapter(ch: Chapter) {
-    setEditingItem(null)
     setEditingChapter(ch.id)
     setDraft(ch.title)
     setNoDraft(ch.no)
@@ -590,108 +552,17 @@ export default function OutlinePage() {
                           </div>
                         )}
 
-                        {/* 子项列表 */}
-                        <ul className="mt-2.5 flex flex-col gap-1.5">
-                          {chapter.items.map((item) => {
-                            const indexed = !!item.clauseIds && item.clauseIds.length > 0
-                            const isEditing = editingItem === item.id
-                            return (
-                              <li key={item.id}>
-                                {isEditing ? (
-                                  <div className="flex items-center gap-2 rounded-lg border border-primary bg-primary/5 px-2.5 py-1.5">
-                                    <ListTree className="size-3.5 shrink-0 text-primary/60" />
-                                    <input
-                                      autoFocus
-                                      value={draft}
-                                      onChange={(e) => setDraft(e.target.value)}
-                                      onKeyDown={(e) => {
-                                        if (e.key === "Enter") saveItem(group.kind, chapter.id, item.id)
-                                        if (e.key === "Escape") setEditingItem(null)
-                                      }}
-                                      className="min-w-0 flex-1 rounded-md border border-border bg-card px-2 py-1 text-sm text-foreground outline-none focus:border-primary"
-                                    />
-                                    <button
-                                      onClick={() => saveItem(group.kind, chapter.id, item.id)}
-                                      className="rounded-md p-1 text-success hover:bg-success/10"
-                                      aria-label="保存子项"
-                                    >
-                                      <Check className="size-4" />
-                                    </button>
-                                    <button
-                                      onClick={() => setEditingItem(null)}
-                                      className="rounded-md p-1 text-muted-foreground hover:bg-muted"
-                                      aria-label="取消"
-                                    >
-                                      <X className="size-4" />
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <div
-                                    className={`group flex items-center gap-2 rounded-lg border px-2.5 py-2 text-sm transition-colors ${
-                                      activeItem === item.id
-                                        ? "border-primary bg-primary/5 ring-1 ring-primary/30"
-                                        : indexed
-                                          ? "border-transparent hover:border-border hover:bg-muted/60"
-                                          : "border-primary/20 bg-primary/5"
-                                    }`}
-                                  >
-                                    <button
-                                      onClick={() => handleItemClick(item.clauseIds, item.id)}
-                                      disabled={!indexed}
-                                      className={`flex min-w-0 flex-1 items-center gap-2 text-left ${
-                                        indexed ? "cursor-pointer" : "cursor-default"
-                                      }`}
-                                    >
-                                      <ListTree className="size-3.5 shrink-0 text-primary/60" />
-                                      <span className="min-w-0 flex-1 truncate text-foreground">{item.label}</span>
-                                    </button>
-                                    {indexed ? (
-                                      /* 定位徽标限宽 45% + 内部截断：条款多时（技术需求可引用 60+ 条）绝不把
-                                         条目标题挤出可视区（生产实测）；完整定位见 title 悬浮提示。 */
-                                      <span
-                                        className="inline-flex max-w-[45%] shrink-0 items-center gap-1 rounded-md bg-success/10 px-1.5 py-0.5 text-[11px] font-medium text-success"
-                                        title={`定位到 ${locate(item.clauseIds)}`}
-                                      >
-                                        <MapPin className="size-3 shrink-0" />
-                                        <span className="truncate">{locate(item.clauseIds)}</span>
-                                      </span>
-                                    ) : (
-                                      <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary">
-                                        <Sparkles className="size-3" />
-                                        新增
-                                      </span>
-                                    )}
-                                    <div className="flex shrink-0 items-center gap-0.5">
-                                      <button
-                                        onClick={() => startEditItem(item)}
-                                        className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                                        aria-label="编辑子项"
-                                      >
-                                        <Pencil className="size-3.5" />
-                                      </button>
-                                      <button
-                                        onClick={() => deleteItem(group.kind, chapter.id, item.id)}
-                                        className="rounded-md p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                                        aria-label="删除子项"
-                                      >
-                                        <Trash2 className="size-3.5" />
-                                      </button>
-                                    </div>
-                                  </div>
-                                )}
-                              </li>
-                            )
-                          })}
-                        </ul>
-
-                        {/* 添加子项 */}
-                        <button
-                          onClick={() => addItem(group.kind, chapter.id)}
-                          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-border py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
-                        >
-                          <Plus className="size-3.5" />
-                          添加子项
-                        </button>
+                        {/* 子项树（节/小节两层:编辑/删除/添加小节/同层拖拽,评审需求） */}
+                        <ChapterItems
+                          items={chapter.items}
+                          activeItem={activeItem}
+                          locate={locate}
+                          onItemClick={handleItemClick}
+                          genId={genId}
+                          onChange={(items) =>
+                            setter(group.kind)((prev) => prev.map((ch) => (ch.id === chapter.id ? { ...ch, items } : ch)))
+                          }
+                        />
                       </div>
                     ))}
 

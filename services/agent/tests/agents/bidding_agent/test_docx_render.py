@@ -58,7 +58,7 @@ def test_render_docx_has_real_toc_and_page_number_fields():
     header_xml = "".join(
         zf.read(n).decode("utf-8") for n in zf.namelist() if n.startswith("word/header")
     )
-    assert 'TOC \\o "1-3" \\h \\z \\u' in document_xml     # 真 TOC 域 instrText
+    assert 'TOC \\o "1-4" \\h \\z \\u' in document_xml     # 真 TOC 域 instrText（1-4:章/节/小节/细项）
     assert "在 Word 中按 F9 更新目录" in document_xml       # 保留人工提示文案
     assert "PAGE" in footer_xml                            # 页脚 PAGE 域
     assert "某项目 投标文件" in header_xml                  # 页眉=项目名
@@ -257,3 +257,25 @@ def test_render_docx_follows_edited_outline_numbering():
     assert "第一章 变更申请基本信息" not in texts          # 内嵌旧章标题被剥
     assert "7.1 项目名称与申请单号" in texts               # 层级编号跟随当前章号
     assert "7.1.1 项目名称" in texts
+
+
+def test_render_docx_three_level_heading_hierarchy_and_toc():
+    """三级层级贯通（评审:章下标题全平级）:写手节<h3>/小节<h4> 经归一映射为 Word 章(1)→节(2)→
+    小节(3);旧文档全 <h3> 自动获得 章(1)→节(2);TOC 域扩到 1-4;Heading 4 样式已配置(防主题蓝)。"""
+    outline = {"chapters": [
+        {"id": "t1", "no": "第一章", "title": "技术方案", "group": "tech"},
+        {"id": "t2", "no": "第二章", "title": "实施方案", "group": "tech"},
+    ]}
+    chapters = {
+        "t1": "<h3>1.1 需求理解</h3><p>正文</p><h4>1.1.1 现状分析</h4><p>细项</p><h3>1.2 总体设计</h3>",
+        "t2": "<h3>2.1 计划</h3><p>旧式单级正文</p><h3>2.2 保障</h3>",
+    }
+    doc = Document(io.BytesIO(render_docx(outline, chapters)))
+    styles = {p.text: p.style.name for p in doc.paragraphs if p.style.name.startswith("Heading")}
+    assert styles["第一章 技术方案（技术标）"] == "Heading 1"
+    assert styles["1.1 需求理解"] == "Heading 2"      # 节
+    assert styles["1.1.1 现状分析"] == "Heading 3"    # 小节（此前与节平级）
+    assert styles["1.2 总体设计"] == "Heading 2"
+    assert styles["2.1 计划"] == "Heading 2"          # 旧式全 h3 章:整体归一为节级
+    assert doc.styles["Heading 4"].font.size.pt == 12  # 第四级样式已配置
+    assert 'TOC \\o "1-4"' in doc.element.xml

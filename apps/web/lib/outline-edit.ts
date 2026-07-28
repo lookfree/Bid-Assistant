@@ -40,8 +40,18 @@ export function renumberLabel(label: string, ordinal: number): string {
   return label.replace(/^(\d{1,2})((?:\.\d{1,3})+)/, `${ordinal}$2`)
 }
 
-type NumberedChapter = { no: string; items: { label: string }[] }
+type NumberedItem = { label: string; children?: NumberedItem[] }
+type NumberedChapter = { no: string; items: NumberedItem[] }
 export type NumberMode = "continuous" | "grouped"
+
+/** 子项树编号重排（含小节，三级提纲）：各级 label 的层级编号首段都跟随章号（N.M / N.M.K 同规则）。 */
+function renumberItems<I extends NumberedItem>(items: I[], n: number): I[] {
+  return items.map((it) => ({
+    ...it,
+    label: renumberLabel(it.label, n),
+    ...(it.children?.length ? { children: renumberItems(it.children, n) } : {}),
+  }))
+}
 
 /** 按组显示顺序重排编号：continuous 全文连续；grouped 各组自起。子项层级编号首段跟随章号。 */
 export function applyNumbering<C extends NumberedChapter>(groups: C[][], mode: NumberMode): C[][] {
@@ -49,11 +59,24 @@ export function applyNumbering<C extends NumberedChapter>(groups: C[][], mode: N
   return groups.map((list) => {
     const next = list.map((c, i) => {
       const n = (mode === "continuous" ? offset : 0) + i + 1
-      return { ...c, no: chapterNo(n), items: c.items.map((it) => ({ ...it, label: renumberLabel(it.label, n) })) }
+      return { ...c, no: chapterNo(n), items: renumberItems(c.items, n) }
     })
     offset += list.length
     return next
   })
+}
+
+/** 同层拖拽重排（评审需求:子项在本章内、小节在本节内拖动）：把 dragId 移到 dropId 之前；
+ *  dropId 为 null 移到末尾；任一 id 不在本层原样返回（跨层拖拽由调用方先行拦截,这里兜底）。 */
+export function reorderWithin<T extends { id: string }>(list: T[], dragId: string, dropId: string | null): T[] {
+  const from = list.findIndex((x) => x.id === dragId)
+  if (from < 0 || dragId === dropId) return list
+  const next = [...list]
+  const [moved] = next.splice(from, 1)
+  const at = dropId == null ? next.length : next.findIndex((x) => x.id === dropId)
+  if (at < 0) return list
+  next.splice(at, 0, moved!)
+  return next
 }
 
 /** 从实际编号识别当前模式（严格匹配 chapterNo 生成的中文序号才算；单组时两模式等价，归 grouped）；

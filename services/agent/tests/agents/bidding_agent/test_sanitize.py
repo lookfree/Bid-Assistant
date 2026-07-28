@@ -88,3 +88,14 @@ def test_chat_wrapper_aside_fence_with_unfenced_chapter():
     text = "修改点如下：```\n- 响应时间改为15分钟\n```\n<h3>5.1 应急响应</h3><p>正文</p>"
     out = strip_chat_wrapper(text)
     assert out == "<h3>5.1 应急响应</h3><p>正文</p>"
+
+
+def test_promote_heading_levels_relative():
+    """层级归一（评审:导出章下标题全平级）:正文实际出现的标题级别按序归一 h2/h3/h4——
+    旧文档全 h3 → 全 h2（章1→节2）;h3+h4 → h2+h3;规范三级幂等;更深并入 h4;属性保留。"""
+    from agent.agents.bidding_agent.render.sanitize import promote_heading_levels as p
+    assert p("<h3>1.1 甲</h3><p>x</p><h3>1.2 乙</h3>") == "<h2>1.1 甲</h2><p>x</p><h2>1.2 乙</h2>"
+    assert p('<h3 class="a">节</h3><h4>小节</h4>') == '<h2 class="a">节</h2><h3>小节</h3>'
+    assert p("<h2>节</h2><h3>小节</h3><h4>细项</h4>") == "<h2>节</h2><h3>小节</h3><h4>细项</h4>"
+    assert p("<h2>a</h2><h3>b</h3><h4>c</h4><h5>d</h5>") == "<h2>a</h2><h3>b</h3><h4>c</h4><h4>d</h4>"
+    assert p("<p>无标题</p>") == "<p>无标题</p>"

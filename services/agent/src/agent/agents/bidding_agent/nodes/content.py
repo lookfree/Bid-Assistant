@@ -198,6 +198,11 @@ def _scoring_weighted_budgets(chapters: list[dict], target: int, score_by_ch: di
     return {cid: max(300, round(target * w / total_w / 100) * 100) for cid, w in weights.items()}
 
 
+def _item_count(items: list) -> int:
+    """提纲子项计数（含各级 children,三级提纲）：预算权重的规模口径。"""
+    return sum(1 + _item_count(it.get("children") or []) for it in items if isinstance(it, dict))
+
+
 def _group_weighted_budgets(chapters: list[dict], target: int) -> dict[str, int]:
     """回退：无可用评分信号时，技术标组占 _TECH_SHARE / 商务标组占其余，组内按子项权重分。单组则独占。"""
     tech = [c for c in chapters if c.get("group") == "tech"]
@@ -207,7 +212,8 @@ def _group_weighted_budgets(chapters: list[dict], target: int) -> dict[str, int]
     for chs, share in ((tech, _TECH_SHARE if both else 1.0), (biz, 1 - _TECH_SHARE if both else 1.0)):
         if not chs:
             continue
-        weights = [max(1, len(c.get("items") or []) + 1) for c in chs]
+        # 子项数含小节（三级提纲）：children 多的章实质内容量更大,预算权重同步放大
+        weights = [max(1, _item_count(c.get("items") or []) + 1) for c in chs]
         total_w = sum(weights)
         for c, w in zip(chs, weights):
             budgets[c.get("id")] = max(300, round(target * share * w / total_w / 100) * 100)

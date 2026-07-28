@@ -3,7 +3,7 @@ import base64
 import io
 from bs4 import BeautifulSoup
 from docx import Document
-from agent.agents.bidding_agent.render.sanitize import normalize_chapter_html, strip_document_shell
+from agent.agents.bidding_agent.render.sanitize import normalize_chapter_html, promote_heading_levels, strip_document_shell
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -12,8 +12,9 @@ from docx.shared import Cm, Inches, Pt, RGBColor
 
 _CONTAINERS = ("div", "section", "article", "body")
 
-# H1/H2/H3 → (磅值, 中文习惯字号名，仅注释用) 见 _apply_bid_styles
-_HEADING_SIZES = {"Heading 1": Pt(16), "Heading 2": Pt(14), "Heading 3": Pt(12)}
+# H1-H4 →磅值（章/节/小节/细项四级,见 _apply_bid_styles）。H4 必须入表:未配置的 Word 内建
+# 标题样式会继承主题蓝/西文字体（评审:三级提纲落地后 h4 首次可达）。
+_HEADING_SIZES = {"Heading 1": Pt(16), "Heading 2": Pt(14), "Heading 3": Pt(12), "Heading 4": Pt(12)}
 
 
 def _apply_bid_styles(doc: Document) -> None:
@@ -40,10 +41,11 @@ def _emit_el(doc: Document, el) -> None:
     """单个 HTML 元素 → docx：h1/h2→Heading2、h3/h4→Heading3、p→段落、ul/li→项目符号、
     table→表格；容器标签（div 等）递归展开，防止整块被 get_text 压扁成一段。"""
     name = getattr(el, "name", None)
-    if name in ("h1", "h2", "h3", "h4"):
-        # 章内小节分级：章标题占 Heading 1（目录一级），内层 h1/h2→二级、h3/h4→三级——
-        # TOC 域是 \o "1-3"，此前全压成二级导致目录里章内层级不可辨。
-        doc.add_heading(el.get_text(strip=True), level=2 if name in ("h1", "h2") else 3)
+    if name in ("h1", "h2", "h3", "h4", "h5", "h6"):
+        # 章内层级忠实映射（评审:此前 h3/h4 压同级=章下标题平级）：章标题占 Heading 1,
+        # 正文经 promote_heading_levels 归一后只出现 h2/h3/h4 → Word 2/3/4;
+        # h1 与 h5/h6 为未归一调用的防御位（就近并入 2/4,绝不落成正文段落）。
+        doc.add_heading(el.get_text(strip=True), level={"h1": 2, "h2": 2, "h3": 3}.get(name, 4))
     elif name == "p":
         doc.add_paragraph(el.get_text(strip=True))
         for img in el.find_all("img"):  # 光标处插图常嵌在段落里，只取文字会把图整个丢掉
@@ -198,7 +200,7 @@ def _add_toc_field(doc: Document) -> None:
     doc.add_heading("目录", level=1)
     doc.add_paragraph("（在 Word 中按 F9 更新目录）")
     field_p = doc.add_paragraph()
-    _add_field(field_p, 'TOC \\o "1-3" \\h \\z \\u')
+    _add_field(field_p, 'TOC \\o "1-4" \\h \\z \\u')  # 1-4:章/节/小节/细项（评审:三级提纲）
     doc.add_page_break()
 
 
@@ -316,6 +318,7 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
         # 再与提纲对齐（剥内嵌旧章标题 + 小节编号跟随当前章号）——标书必须按用户设置后的提纲出
         body = strip_document_shell(chapters.get(ch.get("id", ""), ""))
         body = normalize_chapter_html(body, ch.get("no", ""), ch.get("title", ""))
+        body = promote_heading_levels(body)  # 层级归一（剥章题后做,否则章题被当最高级）
         if body:
             _emit_html(doc, body)
         else:
