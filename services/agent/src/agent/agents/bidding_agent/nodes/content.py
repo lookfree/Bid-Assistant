@@ -266,11 +266,13 @@ def _visible_len(html: str) -> int:
     return len(re.sub(r"\s+", "", text))
 
 
-def _log_length_telemetry(ctx, run_input: dict, chapters: dict[str, str]) -> None:
+async def _log_length_telemetry(ctx, run_input: dict, chapters: dict[str, str]) -> None:
     """篇幅遥测（评审 F2 兜底）：pdf_pages 只有页数,密度误差和超写偏差混在一起分不开——
     这里把「产出可见字数 vs 工作目标/用户目标」落 observability 事件（agent.agent_event,可查询),
     校准系数据此双向调（偏欠也看得见）。生产 root logger 是 WARNING,logger.info 在生产
-    **看不见**（运维铁律）——遥测必须落库,日志只作本地开发兜底。best-effort,绝不阻断交付。"""
+    **看不见**（运维铁律）——遥测必须落库,日志只作本地开发兜底。best-effort,绝不阻断交付。
+    落库走 to_thread（与 executor/export 同款）:log_event 是同步 PG 写且先拿 per-run advisory 锁,
+    直接在事件循环上调会与同 run 的并发埋点争锁,卡住单进程全部 SSE。"""
     target = run_input.get("target_chars")
     if not isinstance(target, int) or target <= 0 or not chapters:
         return
@@ -280,7 +282,8 @@ def _log_length_telemetry(ctx, run_input: dict, chapters: dict[str, str]) -> Non
                 target, work, produced, produced / work, produced / target)
     try:
         if ctx.recorder and ctx.run_id:
-            ctx.recorder.log_event(
+            await asyncio.to_thread(
+                ctx.recorder.log_event,
                 ctx.run_id, ctx.agent_type, "length_telemetry", node="content",
                 data={"target": target, "work": work, "produced": produced,
                       "produced_over_work": round(produced / work, 3),
@@ -380,7 +383,7 @@ def make_content_node(ctx):
         chapters = _collect_chapters(res.get("files"))
         if not chapters:
             raise RuntimeError("deepagent 未产出任何章节草稿（chapters/*.html）")
-        _log_length_telemetry(ctx, state.get("run_input") or {}, chapters)  # 超写系数的校准数据源（评审 F2）
+        await _log_length_telemetry(ctx, state.get("run_input") or {}, chapters)  # 超写系数的校准数据源（评审 F2）
         return {"chapters": chapters}
     return content_node
 

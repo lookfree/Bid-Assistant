@@ -424,6 +424,7 @@ def test_length_plan_block_calibration_configurable():
 def test_length_telemetry_recorded(caplog):
     """篇幅遥测（评审 F2 兜底）：产出可见字数 vs 工作/用户目标落 observability 事件
     （生产 root logger=WARNING,logger.info 看不见——遥测必须落库;日志仅本地开发兜底）;
+    落库经 to_thread 下线程（log_event 同步 PG 写+advisory 锁,直调会卡事件循环——与 executor/export 同款）;
     口径与前端 countChars 一致（去标签/实体/空白）;未配置目标静默;落库失败不阻断。"""
     from agent.agents.bidding_agent.nodes.content import _log_length_telemetry, _visible_len
     assert _visible_len("<h3>1.1 标题</h3><p>正文&nbsp;两段  x</p>") == len("1.1标题正文两段x")
@@ -437,14 +438,14 @@ def test_length_telemetry_recorded(caplog):
 
     ctx = RunContext(run_id="r1", agent_type="bidding_agent", thread_id="t")
     ctx.recorder = _Recorder()
-    _log_length_telemetry(ctx, {"target_chars": 100000}, chapters)
+    asyncio.run(_log_length_telemetry(ctx, {"target_chars": 100000}, chapters))
     assert len(ctx.recorder.events) == 1
     run_id, event_type, data = ctx.recorder.events[0]
     # target=100000 work=71400(÷1.4) produced=71400 → produced/work=1.00
     assert (run_id, event_type) == ("r1", "length_telemetry")
     assert data == {"target": 100000, "work": 71400, "produced": 71400,
                     "produced_over_work": 1.0, "produced_over_target": 0.714}
-    _log_length_telemetry(ctx, {}, chapters)  # 未配置目标 → 静默
+    asyncio.run(_log_length_telemetry(ctx, {}, chapters))  # 未配置目标 → 静默
     assert len(ctx.recorder.events) == 1
 
     class _Boom:
@@ -452,4 +453,6 @@ def test_length_telemetry_recorded(caplog):
             raise RuntimeError("db down")
 
     ctx.recorder = _Boom()
-    _log_length_telemetry(ctx, {"target_chars": 100000}, chapters)  # 落库炸 → 只 warning,不抛
+    with caplog.at_level("WARNING", logger="agent.agents.bidding_agent.nodes.content"):
+        asyncio.run(_log_length_telemetry(ctx, {"target_chars": 100000}, chapters))  # 落库炸 → 只 warning,不抛
+    assert any("length telemetry event write failed" in r.getMessage() for r in caplog.records)
