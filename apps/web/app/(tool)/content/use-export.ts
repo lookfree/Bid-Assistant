@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import { ApiError } from "@/lib/api-client"
-import { artifactDownload, triggerDownload, fetchStepResult, runStep, StreamIncompleteError, type ProjectInfo } from "@/lib/project"
+import { artifactDownload, triggerDownload, runStep, StreamIncompleteError, type ProjectInfo } from "@/lib/project"
 import { storedFormat } from "@/lib/generation-config"
 import { notifyCreditsChanged, pollStepResult, useOtherStepResult } from "@/lib/use-step"
 import type { RealRisk } from "@/lib/risk-derive"
@@ -61,12 +61,17 @@ export function useExport(opts: {
   const pagesSuffix = (r: { pdfPages?: number } | null | undefined): string =>
     typeof r?.pdfPages === "number" && r.pdfPages > 0 ? `（实际 ${r.pdfPages} 页）` : ""
 
+  /** 本项目此前已成功导出过 ⇒ 本次是重渲，服务端不再计费（首次收费口径见 projects.ts）。
+   *  据此免掉余额门与费用文案——欠费用户也必须能把改过的正文重新出成文件。
+   *  并上本会话的 hasExported：info 走 30s 缓存，刚导出完那次不至于还显示要扣费。 */
+  const freeRerender = hasExported || !!info?.steps.some((s) => s.step === "export" && s.status === "done")
+
   function onExportEntry() {
     // 余额加载中不做付费墙判定（按钮已禁用，双保险防按 balance=0 误弹）
     if (opts.membershipLoading) return
     setExportGate(null)
-    // 积分不足：弹「开通会员」付费墙；积分充足：打开导出弹窗（消耗积分）
-    if (!opts.canAfford) {
+    // 积分不足：弹「开通会员」付费墙；重渲免费则不设门（积分不足也放行）
+    if (!freeRerender && !opts.canAfford) {
       opts.openPaywall()
       return
     }
@@ -132,20 +137,14 @@ export function useExport(opts: {
     setExportStatus(format === "pdf" ? "正在渲染完整标书（PDF）…" : "正在渲染完整标书…")
     void (async () => {
       try {
-        // spec330：导出带上用户存好的输出格式（未配置过则不带,后端走现行样式）。
-        // 格式指纹（审查修正）：已有产物但格式改过 → 必须重渲（正常计费）,否则用户改完格式
-        // 永远只能拿到旧版式文件;指纹在成功后落 localStorage,未改格式的重复下载仍旧免费直下。
+        // 每次导出都按**当前**正文重渲（用户口径 2026-07-28）：此前是「export 步已有结果且
+        // 格式指纹没变 → 跳过重跑,直接下载 MinIO 里的旧文件」,于是在线编辑、AI 改写（25 积分/次）、
+        // 提纲顺序调整、渲染器升级全都拿不到——用户可能拿着不含自己修改的标书去投标。
+        // 导出是确定性渲染（无 LLM）,重渲只花本机 CPU,服务端对重渲也不再计费,故一律重跑。
         const fmt = storedFormat()
-        const fmtKey = `bid.exportFmt.${projectId}`
-        const fmtNow = JSON.stringify(fmt ?? null)
-        const fmtChanged = localStorage.getItem(fmtKey) !== null && localStorage.getItem(fmtKey) !== fmtNow
-        let exportRes = (await fetchStepResult(projectId, "export")) as { pdfPages?: number } | null
-        if (fmtChanged || !exportRes) {
-          exportRes = (await runStep(projectId, "export", undefined, fmt ? { format: fmt } : undefined)) as {
-            pdfPages?: number
-          } | null
-        }
-        localStorage.setItem(fmtKey, fmtNow)
+        const exportRes = (await runStep(projectId, "export", undefined, fmt ? { format: fmt } : undefined)) as {
+          pdfPages?: number
+        } | null
         const dl = await artifactDownload(projectId, kind)
         triggerDownload(dl.url)
         setExportStatus(`已开始下载《${dl.filename}》${pagesSuffix(exportRes)}，可在浏览器「下载」列表查看`)
@@ -225,7 +224,7 @@ export function useExport(opts: {
     exportFormat, setExportFormat,
     exportStatus, flashExportStatus,
     exportGate, exportGateHint,
-    hasExported, pdfUnavailable, exporting,
+    hasExported, pdfUnavailable, exporting, freeRerender,
     onExportEntry, attemptExport, doExport,
   }
 }

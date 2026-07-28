@@ -272,6 +272,32 @@ describe("/api/projects 按步编排", () => {
     expect(ri.format).toEqual({ body_font: "仿宋", margin_cm: { top: 2.2 }, line_spacing: 1.5 })
   })
 
+  it("重新导出不计费（用户口径 2026-07-28）：导出过的项目再导出 → 零预扣但照常重渲", async () => {
+    // 导出是确定性渲染步（无 LLM）。此前前端「已有产物就直接下载」导致编辑/改写/提纲调整
+    // 全都拿不到（下载到旧文件），改为每次点导出都重渲——那么对同一份内容反复收费说不通。
+    const [pr] = await getDb()
+      .insert(bidProjects)
+      .values({ userId, threadId: `proj-${crypto.randomUUID()}`, currentStep: "done", status: "done" })
+      .returning()
+    const first = await app.request(`/api/projects/${pr!.id}/steps/export`, { method: "POST", headers: auth() })
+    expect(first.status).toBe(200)
+    await first.text()
+    expect(captured.preDeductSteps.at(-1)).toBe("export") // 首次导出正常收费
+
+    const before = captured.preDeductSteps.length
+    const again = await app.request(`/api/projects/${pr!.id}/steps/export`, { method: "POST", headers: auth() })
+    expect(again.status).toBe(200)
+    await again.text()
+    expect(captured.preDeductSteps.length).toBe(before) // 二次导出零预扣
+    const rows = await getDb()
+      .select({ id: projectSteps.id, cost: projectSteps.costPoints })
+      .from(projectSteps)
+      .where(and(eq(projectSteps.projectId, pr!.id), eq(projectSteps.step, "export")))
+    expect(rows.length).toBe(2)              // 确实重渲了一遍,不是复用旧产物
+    expect(rows.at(-1)!.cost).toBe(0)        // 重渲行落 0 费
+    await getDb().delete(bidProjects).where(eq(bidProjects.id, pr!.id))
+  })
+
   it("项目级并发闸（审查修正）：present 在途时 export 一律 409 step_already_running", async () => {
     const [p7] = await getDb()
       .insert(bidProjects)

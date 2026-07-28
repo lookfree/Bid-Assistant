@@ -154,7 +154,7 @@ export default function ContentPage() {
   /* 导出全流程（入口/步序闸/断流收敛/断点续看）拆到 use-export.ts；确认弹层仍在本页,回调发信号 */
   const {
     exportOpen, setExportOpen, exportFormat, setExportFormat, exportStatus, flashExportStatus,
-    exportGate, exportGateHint, hasExported, pdfUnavailable, exporting, onExportEntry, attemptExport, doExport,
+    exportGate, exportGateHint, hasExported, pdfUnavailable, exporting, freeRerender, onExportEntry, attemptExport, doExport,
   } = useExport({
     projectId, info, membershipLoading, canAfford,
     openPaywall: () => openPaywall("export"),
@@ -680,6 +680,8 @@ export default function ContentPage() {
                 cost={exportCost}
                 balance={balance}
                 pdfUnavailable={pdfUnavailable}
+                freeRerender={freeRerender}
+                projectId={projectId}
                 onScope={setExportScope}
                 onFormat={setExportFormat}
                 onConfirm={() => void attemptExport()}

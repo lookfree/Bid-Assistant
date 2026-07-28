@@ -216,6 +216,17 @@ async function exportCredentials(userId: string): Promise<{ credentials?: Creden
 }
 
 /** 取该项目某步最新 done 行（result 现值 = 编辑过即编辑后；snake 原样）。 */
+/** 本项目此前是否成功导出过——决定本次导出是否计费（首次收费、重渲免费）。
+ *  只取 id 不碰 result 列：这是每次点导出的必经路径（slim 教训）。 */
+async function hasExportedBefore(projectId: string): Promise<boolean> {
+  const [row] = await getDb()
+    .select({ id: projectSteps.id })
+    .from(projectSteps)
+    .where(and(eq(projectSteps.projectId, projectId), eq(projectSteps.step, "export"), eq(projectSteps.status, "done")))
+    .limit(1)
+  return !!row
+}
+
 async function latestDoneStep(projectId: string, step: string) {
   const [row] = await getDb()
     .select()
@@ -671,10 +682,14 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     if (s === "recovered") return c.json({ error: "step_already_done" }, 409) // 刚被对账收尾:刷新即见结果
     if (!s) return c.json({ error: "step_already_running" }, 409)
 
-    // 真账本预扣（spec302）：ref=占位行 id（该次步进的稳定标识，幂等键随之稳定）。
-    // 按真实配置键扣费：content 步预扣按计费阶梯最大价（结算再按产出总字数落档），其余步用同名 credit_cost.<step>。
-    // 余额不足 → 释放占位行，402。
-    const hold = await preDeduct(userId, step, s.id, holdAmount)
+    // 重新导出不计费（用户口径 2026-07-28）：导出是**确定性渲染**步（无 LLM、不烧模型钱），
+    // 前端改为每次点导出都按最新正文重渲——此前「已有产物就直接下载」让在线编辑、AI 改写、
+    // 提纲调整、渲染器升级全都拿不到（下载到旧文件，可能拿去投标）。既然同一份内容会反复重渲，
+    // 就不能反复收费：首次导出照收 credit_cost.export，之后一律免费（也不看余额，欠费也能重出）。
+    const freeRerender = step === "export" && (await hasExportedBefore(p.id))
+    const hold = freeRerender
+      ? { ok: true as const, holdId: undefined, hold: 0 }
+      : await preDeduct(userId, step, s.id, holdAmount)
     if (!hold.ok) {
       await getDb().update(projectSteps).set({ status: "failed" }).where(eq(projectSteps.id, s.id))
       return c.json({ error: "insufficient" }, 402)
