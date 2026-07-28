@@ -9,12 +9,12 @@ describe("正文体量估算", () => {
     expect(countChars("<p><br/></p>")).toBe(0)
   })
 
-  it("estimatePages：600 字/页向上取整，空为 0、非空至少 1", () => {
+  it("estimatePages：按校准密度(515 字/页,192 页实转标定)向上取整，空为 0、非空至少 1", () => {
     expect(estimatePages(0)).toBe(0)
     expect(estimatePages(1)).toBe(1)
-    expect(estimatePages(600)).toBe(1)
-    expect(estimatePages(601)).toBe(2)
-    expect(estimatePages(28000)).toBe(47)
+    expect(estimatePages(515)).toBe(1)
+    expect(estimatePages(516)).toBe(2)
+    expect(estimatePages(98_821)).toBe(192) // 校准样本:9.88万字 → LibreOffice 实转 192 页
   })
 
   it("fmtChars：≥1 万用「N.N万」，其余千分位", () => {

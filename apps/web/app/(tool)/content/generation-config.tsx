@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from "react"
 import { Sparkles } from "lucide-react"
-import { estimatePages, fmtChars } from "@/lib/doc-stats"
+import { fmtChars } from "@/lib/doc-stats"
+import { densityForFormat } from "@/lib/page-estimate"
 import { useOtherStepResult } from "@/lib/use-step"
 import type { ProjectInfo } from "@/lib/project"
 import type { PackageInfo } from "@/lib/bid-types"
@@ -19,6 +20,7 @@ import {
   sanitizeFormat,
   saveGenConfig,
   suggestedTarget,
+  targetPagesFor,
   type DocFormat,
 } from "@/lib/generation-config"
 
@@ -49,7 +51,10 @@ export function GenerationConfigDialog({
     selectedPkgId,
   )
   const budgetYuan = parseBudgetYuan(budget)
-  const suggested = suggestedTarget(chapterCount, budget)
+  const [fmt, setFmt] = useState<DocFormat>(() => sanitizeFormat(loadGenConfig().format ?? {}))
+  const [fmtOpen, setFmtOpen] = useState(false)
+  // 推荐字数随排版走（页数目标不变,每页容量随字号/行距/边距变）
+  const suggested = suggestedTarget(chapterCount, budget, fmt)
   // 只在挂载时读一次，且**仅取本项目**存过的值：目标字数由该项目/包件的预算规模决定，
   // 跨项目复用会让新项目沿用上个大项目的字数（滑杆 25.5万 vs 说明「推荐 5.9万」自相矛盾）。
   const savedTarget = useRef<number | undefined>(storedTargetFor(projectId)).current
@@ -62,8 +67,6 @@ export function GenerationConfigDialog({
   const [custom, setCustom] = useState(false)
   // 自定义输入用「原始字符串」状态：受控值若绑夹位后的数字,逐位输入会被强改（审查实测 15000 打成 100005）
   const [customText, setCustomText] = useState("")
-  const [fmt, setFmt] = useState<DocFormat>(() => sanitizeFormat(loadGenConfig().format ?? {}))
-  const [fmtOpen, setFmtOpen] = useState(false)
 
   const raw = custom ? Number(customText) : target
   const clamped = Math.min(TARGET_MAX, Math.max(TARGET_MIN, Math.round(raw) || TARGET_MIN))
@@ -95,7 +98,7 @@ export function GenerationConfigDialog({
             className="h-1.5 flex-1 accent-primary"
           />
           <span className="shrink-0 text-sm text-muted-foreground">
-            约 <b className="text-primary">{fmtChars(clamped)}字</b> · {estimatePages(clamped)}页
+            约 <b className="text-primary">{fmtChars(clamped)}字</b> · {targetPagesFor(clamped, fmt)}页
           </span>
         </div>
         <label className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
@@ -126,7 +129,7 @@ export function GenerationConfigDialog({
         </label>
         <p className="mt-1.5 text-xs text-muted-foreground">
           {budgetYuan != null
-            ? `按${usingPkgBudget ? "本包" : "招标"}预算约 ${(budgetYuan / 10000).toLocaleString("zh-CN", { maximumFractionDigits: 0 })} 万元估算(约 1 万元/页 · 每页约 600 字 · 下限约 80 页),推荐 ${fmtChars(suggested)} 字`
+            ? `按${usingPkgBudget ? "本包" : "招标"}预算约 ${(budgetYuan / 10000).toLocaleString("zh-CN", { maximumFractionDigits: 0 })} 万元估算(约 1 万元/页 · 按当前排版每页约 ${densityForFormat(fmt)} 字 · 下限约 80 页),推荐 ${fmtChars(suggested)} 字`
             : `本标书共 ${chapterCount} 章,推荐 ${fmtChars(Math.round((chapterCount * 2000) / 1000) * 1000)}~${fmtChars(suggestedTarget(chapterCount))} 字`}
           。此为目标参考:字数向技术标正文倾斜分配(商务标多为投标函/报价/偏离表等表单声明,篇幅短、不注水凑数),实际以内容质量为准,可拖动调整
         </p>

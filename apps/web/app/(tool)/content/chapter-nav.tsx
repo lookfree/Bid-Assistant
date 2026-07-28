@@ -1,8 +1,10 @@
 "use client"
 
-import { useRef } from "react"
+import { useMemo, useRef } from "react"
 import { AlertTriangle, CheckCircle2 } from "lucide-react"
-import { countChars, estimatePages, fmtChars } from "@/lib/doc-stats"
+import { countChars, fmtChars } from "@/lib/doc-stats"
+import { estimateChapterLines, pagesFromLines, type ChapterLines } from "@/lib/page-estimate"
+import { genConfigFingerprint, loadGenConfig, sanitizeFormat } from "@/lib/generation-config"
 
 export type Chapter = {
   id: string
@@ -44,6 +46,28 @@ export function ChapterNav({
 }) {
   const charsOf = useChapterChars()
   const totalChars = groups.reduce((sum, g) => sum + g.items.reduce((s, c) => s + charsOf(c), 0), 0)
+  // 页数按排版感知结构估算（表格/标题按行高计费）；逐章行数走同款引用缓存,格式取用户存的导出偏好。
+  // 格式指纹变了（生成配置弹层里改过）→ 重解析格式并清缓存,否则目录页数停在旧排版口径（评审 F5）
+  const fmtRaw = genConfigFingerprint()
+  const fmt = useMemo(() => sanitizeFormat(loadGenConfig().format ?? {}), [fmtRaw])
+  const linesCache = useRef(new Map<string, { html: string; stat: ChapterLines }>())
+  const lastFmtRaw = useRef(fmtRaw)
+  if (lastFmtRaw.current !== fmtRaw) {
+    lastFmtRaw.current = fmtRaw
+    linesCache.current.clear()
+  }
+  const totalPages = pagesFromLines(
+    groups.flatMap((g) =>
+      g.items.map((c) => {
+        const hit = linesCache.current.get(c.id)
+        if (hit && hit.html === c.html) return hit.stat
+        const stat = estimateChapterLines(c.html, fmt)
+        linesCache.current.set(c.id, { html: c.html, stat })
+        return stat
+      }),
+    ),
+    fmt,
+  )
   return (
     <aside className="flex min-h-0 flex-col rounded-2xl border border-border bg-card">
       <div className="border-b border-border px-4 py-3">
@@ -55,7 +79,7 @@ export function ChapterNav({
         </div>
         {totalChars > 0 && (
           <p className="mt-1 text-[11px] text-muted-foreground">
-            全文约 {fmtChars(totalChars)} 字 · 约 {estimatePages(totalChars)} 页（A4 估算）
+            全文约 {fmtChars(totalChars)} 字 · 约 {totalPages} 页（按当前排版估算）
           </p>
         )}
       </div>

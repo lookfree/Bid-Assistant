@@ -8,6 +8,7 @@ import {
   TARGET_MIN,
   TARGET_MAX,
 } from "../lib/generation-config"
+import { suggestedCharsForPages } from "../lib/page-estimate"
 
 // bun test 无 DOM：给 window/localStorage 打最小内存垫片（generation-config 直接用全局，
 // 改成注入属于超范围重构，故只在测试侧补齐）。
@@ -59,8 +60,8 @@ describe("多包件字数基准 budgetForSizing", () => {
   ]
   it("选中某包 → 用该包限价（而非招标总预算＝各包之和）", () => {
     expect(budgetForSizing("279万元", pkgs, "p2")).toEqual({ budget: "98万元", fromPackage: true })
-    // 由此推荐字数按 98 万（≈98 页）而非 279 万（≈279 页）算
-    expect(suggestedTarget(10, budgetForSizing("279万元", pkgs, "p2").budget)).toBe(98 * 600)
+    // 由此推荐字数按 98 万（≈98 页）而非 279 万（≈279 页）算——密度走排版感知校准基线
+    expect(suggestedTarget(10, budgetForSizing("279万元", pkgs, "p2").budget)).toBe(suggestedCharsForPages(98))
   })
 
   it("多包件下选中包限价不可解析（面议/空）→ 不用总预算(各包之和,必虚高),回落章数推荐", () => {
@@ -122,11 +123,13 @@ describe("招标预算解析 parseBudgetYuan", () => {
 })
 
 describe("初始字数推荐 suggestedTarget", () => {
-  it("按预算：一万元一页 × 600 字/页，下限 80 页", () => {
-    expect(suggestedTarget(10, "500万")).toBe(300_000) // 500 页 × 600
-    expect(suggestedTarget(10, "600万")).toBe(360_000) // 600 页 × 600
-    expect(suggestedTarget(10, "40万")).toBe(48_000) // max(80,40)=80 页 × 600（小预算走下限）
-    expect(suggestedTarget(10, "100万")).toBe(60_000) // 100 页 × 600
+  it("按预算：一万元一页 × 排版感知密度，下限 80 页", () => {
+    expect(suggestedTarget(10, "500万")).toBe(suggestedCharsForPages(500))
+    expect(suggestedTarget(10, "600万")).toBe(suggestedCharsForPages(600))
+    expect(suggestedTarget(10, "40万")).toBe(suggestedCharsForPages(80)) // max(80,40)=80 页（小预算走下限）
+    expect(suggestedTarget(10, "100万")).toBe(suggestedCharsForPages(100))
+    // 98 页目标落在 5 万字量级(实测密度 515;旧 600 口径给 5.9 万偏高 ~14%)
+    expect(suggestedTarget(10, "98万")).toBeLessThan(55_000)
   })
 
   it("大预算封顶 50 万字、结果始终夹在 [MIN,MAX]", () => {

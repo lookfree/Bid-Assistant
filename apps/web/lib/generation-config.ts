@@ -1,5 +1,6 @@
 // 生成配置（spec330）：目标字数 + 输出格式。偏好存 localStorage（用户级,下次默认带出）;
 // 格式键名与后端 zod 白名单/agent 渲染契约一致（snake_case 直传）。
+import { densityForFormat, suggestedCharsForPages } from "@/lib/page-estimate"
 export type DocFormat = {
   margin_cm?: { top?: number; bottom?: number; left?: number; right?: number }
   heading_font?: string
@@ -29,10 +30,10 @@ export const TARGET_MIN = 10_000
 export const TARGET_MAX = 500_000
 
 // 初始字数经验换算（用户口径）：招标预算「一般一万元一页」，且非线性有下限——40万项目也要 70~80 页、
-// 几百万起要几百页，故 页数 = max(下限, 预算万元数)；每页约 600 字（与 doc-stats CHARS_PER_PAGE 一致）。
+// 几百万起要几百页，故 页数 = max(下限, 预算万元数)。页数→字数走排版感知密度（page-estimate，
+// 实测校准 ~415 字/页;旧口径 600 字/页导致 98 页目标实际导出 190 页）。
 const YUAN_PER_PAGE = 10_000
 const PAGE_FLOOR = 80
-const CHARS_PER_PAGE = 600
 
 /** 解析招标预算自由文本 → 元；无法可靠解析返回 null（回退章数推荐，不瞎猜量级）。
  *  支持「600万」「¥6,000,000元」「1.2亿」「6,000,000」：去千分位/空白，识别万/亿单位；
@@ -65,15 +66,20 @@ export function budgetForSizing(
   return { budget: tenderBudget, fromPackage: false }
 }
 
-/** 初始推荐目标字数：优先按招标预算（一万元一页、下限约 80 页、每页 600 字）；预算不可解析时回退
- *  章节数 × 3000。夹在滑杆范围内（1万~50万）。budgetText 缺省 = 无预算信号。 */
-export function suggestedTarget(chapterCount: number, budgetText?: string | null): number {
+/** 初始推荐目标字数：优先按招标预算（一万元一页、下限约 80 页），页数→字数按**排版感知密度**
+ *  换算（format 影响每页容量）；预算不可解析时回退章节数 × 3000。夹在滑杆范围内（1万~50万）。 */
+export function suggestedTarget(chapterCount: number, budgetText?: string | null, format?: DocFormat): number {
   const yuan = parseBudgetYuan(budgetText)
   const raw =
     yuan != null
-      ? Math.max(PAGE_FLOOR, Math.round(yuan / YUAN_PER_PAGE)) * CHARS_PER_PAGE
+      ? suggestedCharsForPages(Math.max(PAGE_FLOOR, Math.round(yuan / YUAN_PER_PAGE)), format)
       : chapterCount * 3000
   return Math.min(TARGET_MAX, Math.max(TARGET_MIN, raw))
+}
+
+/** 目标页数（展示口径）：字数 ÷ 排版密度,与 suggestedTarget 同一模型反向。 */
+export function targetPagesFor(chars: number, format?: DocFormat): number {
+  return Math.max(1, Math.round(chars / densityForFormat(format)))
 }
 
 // 字体/字号可选值：唯一权威在服务端 zod 白名单,此处为同步副本（勿单侧增删——只加这边会让
@@ -86,6 +92,12 @@ const KEY = "bid.genConfig"
 /** 存储形状：format 是**用户级**偏好（字体/页边距，换项目照用）；targetChars 则**按项目归属**，
  *  用 targetProjectId 标记它属于哪个项目——目标字数由该项目/包件的预算规模决定，不是用户偏好。 */
 type StoredGenConfig = Partial<GenerationConfig> & { targetProjectId?: string | null }
+
+/** 生成配置指纹（localStorage 原串）：页数估算的 memo/缓存失效依据——格式改了估算必须跟着变。 */
+export function genConfigFingerprint(): string {
+  if (typeof window === "undefined") return ""
+  return localStorage.getItem(KEY) ?? ""
+}
 
 export function loadGenConfig(): StoredGenConfig {
   if (typeof window === "undefined") return {}

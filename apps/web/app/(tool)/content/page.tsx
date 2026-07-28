@@ -2,7 +2,8 @@
 
 import Link from "next/link"
 import { stripDocumentShell } from "@/lib/bid-types"
-import { countChars, estimatePages, fmtChars } from "@/lib/doc-stats"
+import { countChars, fmtChars } from "@/lib/doc-stats"
+import { estimatePagesFromHtml } from "@/lib/page-estimate"
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
   FileText,
@@ -51,7 +52,7 @@ import { libraryItemHtml } from "./use-editor-insert"
 import { RichEditor } from "./rich-editor"
 import type { Editor as TiptapEditor } from "@tiptap/react"
 import { GenerationConfigDialog } from "./generation-config"
-import { storedTargetFor } from "@/lib/generation-config"
+import { genConfigFingerprint, loadGenConfig, sanitizeFormat, storedTargetFor } from "@/lib/generation-config"
 
 // agent content 步结果（camelCase）：{chapterId: bodyHtml}；章结构取 outline 步结果
 type RealChapters = Record<string, string>
@@ -174,8 +175,14 @@ export default function ContentPage() {
   const list: Chapter[] = bidType === "full" ? fullList() : data[bidType]
   const active = list.find((c) => c.id === activeId) ?? list[0]
   const generatedCount = list.filter((c) => c.html.trim()).length
-  // 本章字数只在 html 变化时重算（正则扫大章节不便宜，页面因保存态/余额刷新频繁重渲染）
+  // 本章字数/页数只在 html 变化时重算（正则扫大章节不便宜，页面因保存态/余额刷新频繁重渲染）；
+  // 页数按排版感知结构估算（表格/标题按行高计费），格式取用户存的导出偏好
   const activeChars = useMemo(() => countChars(active?.html ?? ""), [active?.html])
+  const fmtRaw = genConfigFingerprint() // 格式改过 → 页数估算跟着变（评审 F5）
+  const activePages = useMemo(
+    () => estimatePagesFromHtml([active?.html ?? ""], sanitizeFormat(loadGenConfig().format ?? {}), { fixedSections: false }),
+    [active?.html, fmtRaw],
+  )
 
   // 目录分组（全文模式下展示技术标 / 商务标分组标题，顺序跟随提纲组顺序）
   const groups: { label: string; items: Chapter[] }[] =
@@ -515,7 +522,7 @@ export default function ContentPage() {
                 重写本章可在右侧 AI 助手输入指令（{rewriteCost} 积分/次）
               </span>
               <span className="text-xs text-muted-foreground">
-                · 本章约 {fmtChars(activeChars)} 字 · 约 {estimatePages(activeChars)} 页
+                · 本章约 {fmtChars(activeChars)} 字 · 约 {activePages} 页
               </span>
               <span
                 className={`ml-auto text-xs ${contentSaveState === "error" ? "font-medium text-destructive" : "text-muted-foreground"}`}
