@@ -89,3 +89,24 @@ describe("estimatePagesFromHtml 覆盖率兜底", () => {
     expect(estimatePagesFromHtml([bare], undefined, { fixedSections: false })).toBeGreaterThanOrEqual(2)
   })
 })
+
+// ---- 评审 F7/F8 回归：嵌套图片逐张计费、空占位段占行 ----
+describe("嵌套图片与空段计费", () => {
+  test("列表项/单元格/段落里的图片不再被容器块整段吞掉(证照扫描件常见插法)", () => {
+    const inList = `<ul><li><img src='a'/></li><li><img src='b'/></li></ul>`
+    expect(estimatePagesFromHtml([inList], undefined, { fixedSections: false })).toBeGreaterThanOrEqual(1)
+    const inTable = `<table><tr><td><img src='a'/></td><td>说明</td></tr></table>`
+    expect(estimatePagesFromHtml([inTable], undefined, { fixedSections: false })).toBeGreaterThanOrEqual(1)
+    // 20 张 p 包图约 1/3 页/张,不再估成 0 页
+    const pWrapped = Array.from({ length: 20 }, (_, i) => `<p><img src='${i}'/></p>`).join("")
+    expect(estimatePagesFromHtml([pWrapped], undefined, { fixedSections: false })).toBeGreaterThanOrEqual(7)
+  })
+  test("空占位段按 1 行计(导出渲染器对空 <p> 原样吐空段);整章全空仍为 0 页", () => {
+    const prose = `<p>${"字".repeat(1000)}</p>`
+    const base = estimatePagesFromHtml([prose], undefined, { fixedSections: false })
+    const spaced = estimatePagesFromHtml([prose + "<p></p>".repeat(60)], undefined, { fixedSections: false })
+    expect(spaced).toBeGreaterThan(base)
+    // 章内容只有空段/换行 → 早退分支仍判空章,不因"空段占行"变成非空
+    expect(estimatePagesFromHtml(["<p></p><p><br/></p>"], undefined, { fixedSections: false })).toBe(0)
+  })
+})

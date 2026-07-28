@@ -258,6 +258,39 @@ def _length_plan_block(run_input: dict, outline: dict, scoring: list[dict] | Non
             "超过一成必须精简——内容优先,严禁为凑字数堆套话/复读/注水（宁可略欠,绝不掺水）。")
 
 
+def _visible_len(html: str) -> int:
+    """与前端 countChars 同口径的可见字符数（去标签→实体折空格→去空白）：
+    超写比值必须和用户在页面上看到的字数同尺度,才能直接用于调 overshoot_calibration。"""
+    text = re.sub(r"<[^>]+>", "", html)
+    text = re.sub(r"&[a-z#0-9]+;", " ", text, flags=re.I)
+    return len(re.sub(r"\s+", "", text))
+
+
+def _log_length_telemetry(ctx, run_input: dict, chapters: dict[str, str]) -> None:
+    """篇幅遥测（评审 F2 兜底）：pdf_pages 只有页数,密度误差和超写偏差混在一起分不开——
+    这里把「产出可见字数 vs 工作目标/用户目标」落 observability 事件（agent.agent_event,可查询),
+    校准系数据此双向调（偏欠也看得见）。生产 root logger 是 WARNING,logger.info 在生产
+    **看不见**（运维铁律）——遥测必须落库,日志只作本地开发兜底。best-effort,绝不阻断交付。"""
+    target = run_input.get("target_chars")
+    if not isinstance(target, int) or target <= 0 or not chapters:
+        return
+    produced = sum(_visible_len(h) for h in chapters.values())
+    work = max(1000, round(target / _calibration(run_input) / 100) * 100)
+    logger.info("length telemetry: target=%d work=%d produced=%d produced/work=%.2f produced/target=%.2f",
+                target, work, produced, produced / work, produced / target)
+    try:
+        if ctx.recorder and ctx.run_id:
+            ctx.recorder.log_event(
+                ctx.run_id, ctx.agent_type, "length_telemetry", node="content",
+                data={"target": target, "work": work, "produced": produced,
+                      "produced_over_work": round(produced / work, 3),
+                      "produced_over_target": round(produced / target, 3)},
+                thread_id=ctx.thread_id,
+            )
+    except Exception:  # noqa: BLE001 遥测落库失败绝不影响正文交付
+        logger.warning("length telemetry event write failed", exc_info=True)
+
+
 def _deviation_items_block(read: dict) -> str:
     """技术/商务/资格分类全量条目（title/value/clause_ids/star），供偏离表子写手逐条落表——
     不动 slim_read 本身，这里另起一段附加给规划轮（spec322）。"""
@@ -347,6 +380,7 @@ def make_content_node(ctx):
         chapters = _collect_chapters(res.get("files"))
         if not chapters:
             raise RuntimeError("deepagent 未产出任何章节草稿（chapters/*.html）")
+        _log_length_telemetry(ctx, state.get("run_input") or {}, chapters)  # 超写系数的校准数据源（评审 F2）
         return {"chapters": chapters}
     return content_node
 

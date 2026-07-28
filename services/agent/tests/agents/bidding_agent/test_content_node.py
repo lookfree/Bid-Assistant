@@ -419,3 +419,37 @@ def test_length_plan_block_calibration_configurable():
         {"target_chars": 100000, "overshoot_calibration": "坏值"}, outline)   # 非法 → 默认 1.4
     assert "全书目标约 33300 字" in _length_plan_block(
         {"target_chars": 100000, "overshoot_calibration": 99}, outline)      # 越界 → 夹到 3.0
+
+
+def test_length_telemetry_recorded(caplog):
+    """篇幅遥测（评审 F2 兜底）：产出可见字数 vs 工作/用户目标落 observability 事件
+    （生产 root logger=WARNING,logger.info 看不见——遥测必须落库;日志仅本地开发兜底）;
+    口径与前端 countChars 一致（去标签/实体/空白）;未配置目标静默;落库失败不阻断。"""
+    from agent.agents.bidding_agent.nodes.content import _log_length_telemetry, _visible_len
+    assert _visible_len("<h3>1.1 标题</h3><p>正文&nbsp;两段  x</p>") == len("1.1标题正文两段x")
+    chapters = {"t1": "<p>" + "字" * 60000 + "</p>", "b1": "<p>" + "字" * 11400 + "</p>"}
+
+    class _Recorder:
+        events = []
+
+        def log_event(self, run_id, agent_type, event_type, **kw):
+            self.events.append((run_id, event_type, kw.get("data")))
+
+    ctx = RunContext(run_id="r1", agent_type="bidding_agent", thread_id="t")
+    ctx.recorder = _Recorder()
+    _log_length_telemetry(ctx, {"target_chars": 100000}, chapters)
+    assert len(ctx.recorder.events) == 1
+    run_id, event_type, data = ctx.recorder.events[0]
+    # target=100000 work=71400(÷1.4) produced=71400 → produced/work=1.00
+    assert (run_id, event_type) == ("r1", "length_telemetry")
+    assert data == {"target": 100000, "work": 71400, "produced": 71400,
+                    "produced_over_work": 1.0, "produced_over_target": 0.714}
+    _log_length_telemetry(ctx, {}, chapters)  # 未配置目标 → 静默
+    assert len(ctx.recorder.events) == 1
+
+    class _Boom:
+        def log_event(self, *a, **kw):
+            raise RuntimeError("db down")
+
+    ctx.recorder = _Boom()
+    _log_length_telemetry(ctx, {"target_chars": 100000}, chapters)  # 落库炸 → 只 warning,不抛
