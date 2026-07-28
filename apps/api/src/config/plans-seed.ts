@@ -10,13 +10,13 @@ type FeatureFlags = {
   export: boolean // 导出 Word/PDF（各档均可，消耗积分）
   riskReview: boolean // 废标风险审查
   dedupe: boolean // 标书查重
-  rewrite: boolean // 逐章重写/一键改写（pro）
+  rewrite: boolean // 逐章重写/一键改写（2026-07-28 产品口径:全档开放,消耗积分;运营后台可按档关闭）
   pptTemplate: boolean // 企业 PPT 模板·历史述标（pro）
   priorityQueue: boolean // 优先算力队列（pro）
   longHistory: boolean // 历史项目与版本长期保存（pro）
   fullDedupe: boolean // 全维度指纹查重（pro；个人=标准维度）
 }
-const BASE: FeatureFlags = { export: true, riskReview: true, dedupe: true, rewrite: false, pptTemplate: false, priorityQueue: false, longHistory: false, fullDedupe: false }
+const BASE: FeatureFlags = { export: true, riskReview: true, dedupe: true, rewrite: true, pptTemplate: false, priorityQueue: false, longHistory: false, fullDedupe: false }
 const PRO: FeatureFlags = { export: true, riskReview: true, dedupe: true, rewrite: true, pptTemplate: true, priorityQueue: true, longHistory: true, fullDedupe: true }
 
 export interface PlanSeed {
