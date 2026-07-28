@@ -51,4 +51,31 @@ describe("createAdviceScrubber", () => {
     s.push("event: run.end\ndata: {\"type\"")
     expect(s.flush()).toBe("event: run.end\ndata: {\"type\"")
   })
+
+  // ---- 三轮核验补漏：这两条是实证过的真实泄漏路径 ----
+
+  it("node.end 的真实形状 data.delta={<节点名>: 返回值} 同样被裁剪", () => {
+    // agent.py:46 `yield {"type":"node.end","data":{"delta": delta}}`,review 节点返回 {"risk": RiskReport}
+    // ——delta 自身没有 items 键,只按顶层形状判定会整帧放行（实测泄漏）。
+    const frame = `event: node.end\ndata: ${JSON.stringify({
+      type: "node.end", node: "review",
+      data: { delta: { risk: { score: 45, items: [{ title: "缺认证", advice: "补 ISO27001" }] } } },
+    })}\n\n`
+    const s = createAdviceScrubber()
+    const out = s.push(frame)
+    expect(out).not.toContain("补 ISO27001")
+    const risk = (JSON.parse(out.split("\ndata: ")[1]!.split("\n")[0]!) as
+      { data: { delta: { risk: { items: { advice: string }[]; adviceLocked?: boolean } } } }).data.delta.risk
+    expect(risk.items[0]!.advice).toBe("")
+    expect(risk.adviceLocked).toBe(true)
+  })
+
+  it("末帧未以空行收尾时,flush 的残余帧也必须裁剪（不得裸奔出网）", () => {
+    const s = createAdviceScrubber()
+    const frame = riskEvent("result")
+    s.push(frame.slice(0, -2)) // 掐掉帧尾空行:整帧滞留缓冲
+    const rest = s.flush()
+    expect(rest).toContain("event: step.done")
+    expect(rest).not.toContain("补 ISO27001")
+  })
 })
