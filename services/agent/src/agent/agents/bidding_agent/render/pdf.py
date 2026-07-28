@@ -133,6 +133,18 @@ def _convert_via_cli(src: str, tmp: str) -> bytes | None:
         return f.read()
 
 
+def pdf_page_count(pdf_bytes: bytes) -> int | None:
+    """PDF 字节 → 真实页数（篇幅控制的地面真值,导出后回报给 App 展示并供密度校准）。
+    解析失败返回 None（best-effort,绝不影响导出交付）。"""
+    try:
+        import io
+        from pypdf import PdfReader
+        return len(PdfReader(io.BytesIO(pdf_bytes)).pages)
+    except Exception:  # noqa: BLE001 页数统计失败绝不阻断导出
+        logger.warning("PDF 页数统计失败", exc_info=True)
+        return None
+
+
 def docx_to_pdf(docx_bytes: bytes) -> bytes | None:
     """.docx 字节 → .pdf 字节，走 agent 镜像自带的 LibreOffice headless（spec320 已装 soffice）。
     优先走 UNO 脚本（_convert_via_uno，会真正更新目录域），失败时回退到旧的 CLI 直转

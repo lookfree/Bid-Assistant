@@ -21,5 +21,6 @@ class BiddingState(TypedDict, total=False):
     chapters: Annotated[dict[str, str], _merge_dict]
     risk: dict[str, Any]           # RiskReport.model_dump()      ← review（spec204）
     deck: dict[str, Any]           # DeckSpec.model_dump()        ← present（spec205）
-    # {"docx": key, "pptx": key, "pdf": key} ← export/present（spec205/206/323）；合并 reducer 让三者并存
-    artifacts: Annotated[dict[str, str], _merge_dict]
+    # {"docx": key, "pptx": key, "pdf": key, "pdf_pages": int} ← export/present（spec205/206/323）；
+    # 合并 reducer 让产物并存;pdf_pages 是真实页数回报（int,非 MinIO key,下载路由按值类型过滤）
+    artifacts: Annotated[dict[str, str | int], _merge_dict]

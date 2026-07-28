@@ -90,3 +90,16 @@ def test_docx_to_pdf_both_paths_fail_returns_none(monkeypatch):
 
     monkeypatch.setattr(pdf_mod.subprocess, "run", fake_run)
     assert pdf_mod.docx_to_pdf(b"fake docx bytes") is None
+
+
+def test_pdf_page_count_real_and_garbage():
+    import io
+    from pypdf import PdfWriter
+    from agent.agents.bidding_agent.render.pdf import pdf_page_count
+    w = PdfWriter()
+    for _ in range(5):
+        w.add_blank_page(width=595, height=842)
+    buf = io.BytesIO()
+    w.write(buf)
+    assert pdf_page_count(buf.getvalue()) == 5
+    assert pdf_page_count(b"%PDF-1.4 fake") is None  # 解析失败 → None,绝不抛

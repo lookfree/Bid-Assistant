@@ -223,20 +223,27 @@ def _chapter_budgets(chapters: list[dict], target: int, scoring: list[dict] | No
     return [f"- {c.get('id')}「{c.get('title', '')}」目标约 {budgets.get(c.get('id'), 300)} 字" for c in chapters]
 
 
+# 篇幅超写校准（2026-07-28 生产实测):写手对"目标 N 字"系统性超写 ~40%（目标 5.6 万实际产出
+# 7.9 万,导出 190 页)。下发的工作目标 = 用户目标 ÷ 本系数,超写回弹后恰落在用户目标附近。
+# 导出侧 pdf_pages 真实页数持续回报（export 节点),偏差扩大时据实调整本系数。
+_OVERSHOOT_CALIBRATION = 1.4
+
+
 def _length_plan_block(run_input: dict, outline: dict, scoring: list[dict] | None = None) -> str:
-    """【篇幅规划】（spec330 方案3）：用户选了目标总字数 → 按评分分值加权给各章「建议」预算，随规划轮
-    下发；主笔把总目标视作硬目标，在建议上按各章实质内容量微调后派工。未配置返回空串（行为不变）。"""
+    """【篇幅规划】（spec330 方案3）：用户选了目标总字数 → 先按超写校准折成工作目标，再按评分分值
+    加权给各章「建议」预算，随规划轮下发；主笔把工作目标视作硬目标。未配置返回空串（行为不变）。"""
     target = run_input.get("target_chars")
     chapters = outline.get("chapters") or []
     if not isinstance(target, int) or target <= 0 or not chapters:
         return ""
-    lines = _chapter_budgets(chapters, target, scoring)
-    return ("【篇幅规划】全书目标约 " + f"{target} 字（硬目标）。下列各章目标是**按招标评分分值加权的建议**"
-            "（评分高的方案章多、概述/表单/报价章少）：\n"
+    work = max(1000, round(target / _OVERSHOOT_CALIBRATION / 100) * 100)
+    lines = _chapter_budgets(chapters, work, scoring)
+    return ("【篇幅规划】全书目标约 " + f"{work} 字（硬目标,超过 10% 视为不合格）。"
+            "下列各章目标是**按招标评分分值加权的建议**（评分高的方案章多、概述/表单/报价章少）：\n"
             + "\n".join(lines)
             + "\n主笔：以此为起点,再结合各章**实质内容量**上下微调（能写实的方案章可加、概述/程序性章减），"
-            "保持各章之和≈全书目标,并把每章目标字数写进子写手指令；写手尽量写足达标,把方法论/步骤/案例/"
-            "指标/保障展开写实写透——但内容优先,严禁为凑字数堆套话/复读/注水（宁可略欠,绝不掺水）。")
+            "保持各章之和≈全书目标,并把每章目标字数写进子写手指令；写手以目标为准写实写透,"
+            "超过一成必须精简——内容优先,严禁为凑字数堆套话/复读/注水（宁可略欠,绝不掺水）。")
 
 
 def _deviation_items_block(read: dict) -> str:

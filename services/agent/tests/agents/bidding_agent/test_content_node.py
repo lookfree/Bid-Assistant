@@ -363,10 +363,13 @@ def test_length_plan_block_scoring_weighted():
         {"id": "s2", "category": "技术方案", "name": "理解", "score": 10, "clause_ids": ["c1"]},  # 无 chapter_id → clause 回退到 t1
         {"id": "s3", "category": "投标报价", "name": "报价", "score": 30, "chapter_id": "b1"},   # 报价类排除
     ]
+    from agent.agents.bidding_agent.nodes.content import _OVERSHOOT_CALIBRATION
     budgets = _budgets_from_block(_length_plan_block({"target_chars": 100000}, outline, scoring))
     assert budgets["t2"] > budgets["t1"] > budgets["b1"]        # 分越高字越多
     assert budgets["b1"] < budgets["t1"]                        # 报价 30 分被排除,没把 b1 抬起来
-    assert abs(sum(budgets.values()) - 100000) < 100000 * 0.05  # 总量≈目标
+    # 总量≈工作目标（用户目标÷超写校准系数,2026-07-28 实测写手对目标系统性超写 ~40%）
+    work = 100000 / _OVERSHOOT_CALIBRATION
+    assert abs(sum(budgets.values()) - work) < work * 0.05
 
 
 def test_length_plan_block_group_weighted_fallback_no_scoring():
@@ -378,18 +381,20 @@ def test_length_plan_block_group_weighted_fallback_no_scoring():
         {"id": "b1", "title": "报价说明", "group": "business", "items": []},          # biz 权重 1
         {"id": "b2", "title": "投标函",   "group": "business", "items": [{}]},        # biz 权重 2
     ]}
+    from agent.agents.bidding_agent.nodes.content import _OVERSHOOT_CALIBRATION
+    work = round(130000 / _OVERSHOOT_CALIBRATION / 100) * 100  # 下发的工作目标(超写校准后)
     block = _length_plan_block({"target_chars": 130000}, outline)
-    assert "全书目标约 130000 字" in block
+    assert f"全书目标约 {work} 字" in block
     budgets = _budgets_from_block(block)
     tech_sum, biz_sum = budgets["t1"] + budgets["t2"], budgets["b1"] + budgets["b2"]
     # 组级：技术标 ~80% / 商务标 ~20%（百字取整有小误差）
-    assert abs(tech_sum - 130000 * _TECH_SHARE) < 130000 * 0.03
-    assert abs(biz_sum - 130000 * (1 - _TECH_SHARE)) < 130000 * 0.03
+    assert abs(tech_sum - work * _TECH_SHARE) < work * 0.03
+    assert abs(biz_sum - work * (1 - _TECH_SHARE)) < work * 0.03
     # 商务标整组也拿不到技术标任一大章那么多（防回退到平均摊）
     assert biz_sum < budgets["t2"]
     # 组内仍按子项权重：t2>t1、b2>b1
     assert budgets["t2"] > budgets["t1"] and budgets["b2"] > budgets["b1"]
-    assert abs(sum(budgets.values()) - 130000) < 130000 * 0.05
+    assert abs(sum(budgets.values()) - work) < work * 0.05
     # 未配置/坏值 → 空串
     assert _length_plan_block({}, outline) == ""
     assert _length_plan_block({"target_chars": 0}, outline) == ""
@@ -403,5 +408,7 @@ def test_length_plan_block_single_group_gets_full_budget():
         {"id": "t1", "title": "方案", "group": "tech", "items": [{}, {}]},
         {"id": "t2", "title": "实施", "group": "tech", "items": [{}] * 5},
     ]}
+    from agent.agents.bidding_agent.nodes.content import _OVERSHOOT_CALIBRATION
+    work = 100000 / _OVERSHOOT_CALIBRATION
     budgets = _budgets_from_block(_length_plan_block({"target_chars": 100000}, outline))
-    assert abs(sum(budgets.values()) - 100000) < 100000 * 0.05  # 单组独占全部
+    assert abs(sum(budgets.values()) - work) < work * 0.05  # 单组独占全部(校准后口径)

@@ -3,7 +3,7 @@ import asyncio
 import json
 import logging
 from agent.agents.bidding_agent.render.docx import render_docx
-from agent.agents.bidding_agent.render.pdf import docx_to_pdf
+from agent.agents.bidding_agent.render.pdf import docx_to_pdf, pdf_page_count
 from agent.agents.bidding_agent.render.pptx import render_pptx
 from agent.agents.bidding_agent.schemas import DeckSpec
 from agent.agents.bidding_agent.nodes.common import upload_artifact, fetch_master_bytes
@@ -85,6 +85,10 @@ def make_export_node(ctx):
         pdf_bytes = await asyncio.to_thread(docx_to_pdf, data)
         if pdf_bytes is not None:
             artifacts["pdf"] = await upload_artifact(ctx, "bid.pdf", pdf_bytes, "application/pdf")
+            # 真实页数回报（篇幅控制地面真值）：前端展示"实际 N 页",也是后续密度/超写校准的数据源
+            pages = pdf_page_count(pdf_bytes)
+            if pages is not None:
+                artifacts["pdf_pages"] = pages
         deck = state.get("deck")
         if deck:   # 编辑后 deck 的导出由此生效（overrides 已在续跑前灌入 state）
             master_bytes = await fetch_master_bytes(deck.get("enterprise_template_id"))

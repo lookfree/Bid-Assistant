@@ -336,3 +336,30 @@ def test_artifacts_reducer_keeps_pptx_and_docx():
     from agent.agents.bidding_agent.state import _merge_dict
     merged = _merge_dict({"pptx": "artifacts/p/present.pptx"}, {"docx": "artifacts/p/bid.docx"})
     assert merged == {"pptx": "artifacts/p/present.pptx", "docx": "artifacts/p/bid.docx"}
+
+
+def test_export_node_reports_real_pdf_pages(monkeypatch):
+    """真实页数回报（篇幅控制地面真值）：可解析的 PDF → artifacts 带 pdf_pages；
+    解析不了（上一用例的假字节）则静默缺省,绝不影响导出。"""
+    import io
+    from pypdf import PdfWriter
+    w = PdfWriter()
+    for _ in range(3):
+        w.add_blank_page(width=595, height=842)
+    buf = io.BytesIO()
+    w.write(buf)
+    real_pdf = buf.getvalue()
+
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+    monkeypatch.setattr(export_mod, "docx_to_pdf", lambda data: real_pdf)
+    node = make_export_node(RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-11"))
+    out = asyncio.run(node({
+        "outline": {"chapters": [{"id": "t1", "no": "第一章", "title": "项目理解", "group": "tech"}]},
+        "chapters": {"t1": "<p>正文</p>"},
+        "read": {"project_meta": {"name": "投标文件"}},
+    }))
+    assert out["artifacts"]["pdf_pages"] == 3
