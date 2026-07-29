@@ -199,16 +199,21 @@ def _scoring_weighted_budgets(chapters: list[dict], target: int, score_by_ch: di
     return {cid: max(300, round(target * w / total_w / 100) * 100) for cid, w in weights.items()}
 
 
-def _iter_items(items: object) -> "list[dict]":
-    """提纲子项展平（节+小节,三级提纲）：预算计数/RAG query/模板定位/评分回退共用的唯一口径。
+def _iter_items(items: object, _depth: int = 0) -> "list[dict]":
+    """提纲子项全深度展平（二～五级）：预算计数/RAG query/模板定位/评分回退共用的唯一口径。
+    必须递归到底——四、五级子项同样带 clause_ids,只展两层会让拆得深的章丢掉条款引用
+    （模板原文定位不到、评分回退漏项）,且 _item_count 少算规模、把它的字数预算越拆越小。
     类型钳制（评审:API 对 items 内部零校验,children 可能被 PATCH 存成任意垃圾）:
-    非 list/非 dict 一律跳过,绝不让脏数据把付费 content 步炸在预算规划。"""
+    非 list/非 dict 一律跳过,绝不让脏数据把付费 content 步炸在预算规划;
+    深度封顶 8 层,挡住脏数据里自引用造成的无限递归。"""
     out: list[dict] = []
+    if _depth > 8:
+        return out
     for it in items if isinstance(items, list) else []:
         if not isinstance(it, dict):
             continue
         out.append(it)
-        out.extend(c for c in (it.get("children") if isinstance(it.get("children"), list) else []) if isinstance(c, dict))
+        out.extend(_iter_items(it.get("children"), _depth + 1))
     return out
 
 

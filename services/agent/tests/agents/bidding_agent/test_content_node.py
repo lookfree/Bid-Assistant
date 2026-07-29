@@ -490,3 +490,24 @@ def test_iter_items_flattens_children_and_clamps_garbage():
     # RAG query 含小节 label（最具体的检索词）
     q = _outline_queries({"chapters": [{"title": "技术方案", "items": items}]})
     assert "1.1.1 架构" in q[0] and "1.3.1 值守" in q[0]
+
+
+def test_iter_items_recurses_to_the_deepest_outline_level():
+    """五级提纲：四、五级子项同样带 clause_ids（模板定位/评分回退要用），只展两层等于把它们丢了；
+    规模计数也会少算，反而给拆得最细的章最小的字数预算。自引用脏数据不得把递归拖死。"""
+    from agent.agents.bidding_agent.nodes.content import _iter_items, _item_count
+    items = [{"id": "l2", "label": "一、总体", "children": [
+        {"id": "l3", "label": "1. 架构", "children": [
+            {"id": "l4", "label": "（1）人员配置", "clause_ids": ["sec-9-c3"], "children": [
+                {"id": "l5", "label": "① 值班安排", "clause_ids": ["sec-9-c4"]},
+            ]},
+        ]},
+    ]}]
+    flat = _iter_items(items)
+    assert [it["id"] for it in flat] == ["l2", "l3", "l4", "l5"]
+    assert [c for it in flat for c in it.get("clause_ids", [])] == ["sec-9-c3", "sec-9-c4"]
+    assert _item_count(items) == 4
+
+    loop: dict = {"id": "x", "label": "自引用"}
+    loop["children"] = [loop]  # 脏数据（API 对 items 内部零校验）：深度封顶兜住，不递归到栈溢出
+    assert len(_iter_items([loop])) <= 10

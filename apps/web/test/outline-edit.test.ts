@@ -43,23 +43,26 @@ describe("renumberLabel", () => {
 })
 
 describe("applyNumbering", () => {
-  test("continuous：按组显示顺序全文连续，子项按中式编号在本层重排", () => {
+  test("continuous：按组显示顺序全文连续", () => {
     const groups = [
-      [ch("第一章", ["1.1 商务一"]), ch("第二章", ["2.1 商务二"])], // 商务标在前
-      [ch("第一章", ["1.1 技术一"])],
+      [ch("第一章", ["一、商务一"]), ch("第二章", ["一、商务二"])], // 商务标在前
+      [ch("第一章", ["一、技术一"])],
     ]
     const [biz, tech] = applyNumbering(groups, "continuous")
     expect(biz!.map((c) => c.no)).toEqual(["第一章", "第二章"])
     expect(tech!.map((c) => c.no)).toEqual(["第三章"])
-    // 二级用「一、」而非点分——投标惯例 第一章 → 一、 → 1. → （1） → ①
-    expect(tech![0]!.items[0]!.label).toBe("一、技术一")
   })
-  test("grouped：各组自起第一章；子项一律回到本层顺序", () => {
-    const groups = [[ch("第三章", ["3.1 a"])], [ch("第四章", ["4.1 b"]), ch("第五章", ["5.2 c"])]]
+  test("grouped：各组自起第一章", () => {
+    const groups = [[ch("第三章")], [ch("第四章"), ch("第五章")]]
     const [g1, g2] = applyNumbering(groups, "grouped")
     expect(g1!.map((c) => c.no)).toEqual(["第一章"])
     expect(g2!.map((c) => c.no)).toEqual(["第一章", "第二章"])
-    expect(g2![1]!.items[0]!.label).toBe("一、c") // 旧「5.2」前缀被剥掉，按本层第 1 项编号
+  })
+  test("只改章号，绝不动子项（加一章不该重写另一组手写的小节标题）", () => {
+    const groups = [[ch("第九章", ["3.5吨叉车配置方案", "1.1 总体设计"])]]
+    const [g] = applyNumbering(groups, "grouped")
+    expect(g![0]!.no).toBe("第一章")
+    expect(g![0]!.items.map((i) => i.label)).toEqual(["3.5吨叉车配置方案", "1.1 总体设计"])
   })
 })
 
@@ -86,33 +89,6 @@ describe("moveChapter", () => {
   })
 })
 
-// ---- 三级提纲（评审需求:节带小节）与同层拖拽 ----
-describe("applyNumbering 递归重排（多级中式编号）", () => {
-  it("逐层各按本层形态编号：一、 → 1. → （1） → ①；旧点分前缀被剥掉", () => {
-    const groups = [[
-      { no: "第一章", items: [{ label: "3.1 总体", children: [{ label: "3.1.1 架构" }, { label: "3.1.2 部署" }] }] },
-      { no: "第二章", items: [{ label: "3.2 实施", children: [] }] },
-    ]]
-    const [g] = applyNumbering(groups, "grouped")
-    expect(g![0]!.items[0]!.label).toBe("一、总体")
-    expect(g![0]!.items[0]!.children![0]!.label).toBe("1. 架构")
-    expect(g![0]!.items[0]!.children![1]!.label).toBe("2. 部署")
-    expect(g![1]!.items[0]!.label).toBe("一、实施") // 各章的二级都从「一、」起（本层内编号）
-  })
-
-  it("四、五级：（1） 与 ①；深度封顶 5 级", () => {
-    const deep = [[{ no: "第一章", items: [
-      { label: "总体", children: [{ label: "架构", children: [{ label: "人员配置", children: [{ label: "值班安排" }] }] }] },
-    ] }]]
-    const [g] = applyNumbering(deep, "grouped")
-    const l2 = g![0]!.items[0]!
-    const l3 = l2.children![0]!
-    const l4 = l3.children![0]!
-    const l5 = l4.children![0]!
-    expect([l2.label, l3.label, l4.label, l5.label]).toEqual(["一、总体", "1. 架构", "（1）人员配置", "① 值班安排"])
-  })
-})
-
 describe("stripNumberPrefix", () => {
   it("剥得掉各种编号形态（含历史点分式），无编号原样返回", () => {
     for (const [raw, bare] of [
@@ -127,6 +103,12 @@ describe("stripNumberPrefix", () => {
     ] as const) {
       expect(stripNumberPrefix(raw)).toBe(bare)
     }
+  })
+
+  it("标题里的小数不当编号剥（剥了=数字永久丢失，评审）", () => {
+    expect(stripNumberPrefix("3.5吨叉车配置方案")).toBe("3.5吨叉车配置方案")
+    expect(stripNumberPrefix("2.5G承载网建设")).toBe("2.5G承载网建设")
+    expect(stripNumberPrefix("1.1 项目理解")).toBe("项目理解") // 点分式后接空白仍照剥
   })
 })
 
@@ -148,18 +130,27 @@ describe("renumberItemsByPosition：拖拽/删除后按位置重排（评审二�
       { label: "1.2 实施方案", children: [{ label: "1.2.3 部署" }, { label: "1.2.1 架构" }] },
       { label: "1.1 总体设计" },
     ]
-    const out = renumberItemsByPosition(items, 1)
+    const out = renumberItemsByPosition(items)
     expect(out[0]!.label).toBe("一、实施方案")
     expect(out[0]!.children![0]!.label).toBe("1. 部署")
     expect(out[0]!.children![1]!.label).toBe("2. 架构")
     expect(out[1]!.label).toBe("二、总体设计")
   })
-  it("无编号项跳过不阻断（新增子项占位跳号）;章号 null 整树不动", () => {
-    const items = [{ label: "新增子项" }, { label: "3.9 保障" }]
-    const out = renumberItemsByPosition(items, 2)
+
+  it("四、五级：（1） 与 ①", () => {
+    const deep = [{ label: "1. 总体", children: [{ label: "1. 架构", children: [{ label: "1. 人员", children: [{ label: "1. 值班" }] }] }] }]
+    const [l2] = renumberItemsByPosition(deep)
+    const l3 = l2!.children![0]!
+    const l4 = l3.children![0]!
+    expect([l2!.label, l3.label, l4.label, l4.children![0]!.label]).toEqual(["一、总体", "1. 架构", "（1）人员", "① 值班"])
+  })
+
+  it("无编号项保留原文但子树照常重排（父项没编号不该冻住整条分支）", () => {
+    const items = [{ label: "新增子项", children: [{ label: "2. 乙" }, { label: "1. 甲" }] }, { label: "3.9 保障" }]
+    const out = renumberItemsByPosition(items)
     expect(out[0]!.label).toBe("新增子项")
+    expect(out[0]!.children!.map((c) => c.label)).toEqual(["1. 乙", "2. 甲"])
     expect(out[1]!.label).toBe("二、保障") // 位置序按实际下标:占位跳号
-    expect(renumberItemsByPosition(items, null)).toBe(items)
   })
 })
 

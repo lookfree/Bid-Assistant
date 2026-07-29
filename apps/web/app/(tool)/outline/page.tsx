@@ -35,7 +35,7 @@ import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import { patchErrorMessage, patchStep } from "@/lib/project"
 import { clauseLocationIn, groupDocSections, type DocSentence } from "@/lib/doc-sections"
-import { applyNumbering, chapterNo, chapterOrdinal, deriveNumberMode, flattenItems, moveChapter, renumberItemsByPosition, serializeItems, type NumberMode } from "@/lib/outline-edit"
+import { applyNumbering, chapterNo, deriveNumberMode, flattenItems, moveChapter, renumberItemsByPosition, serializeItems, type NumberMode } from "@/lib/outline-edit"
 import { ChapterItems } from "./chapter-items"
 
 // agent Outline（camelCase）：chapters[{id,no,title,group,sourced,structureRef?,items[{id,label,clauseIds,isNew}]}]
@@ -555,12 +555,9 @@ export default function OutlinePage() {
                           onEditStart={() => setEditingChapter(null)}
                           closeEditToken={itemEditReset}
                           onChange={(items) =>
-                            // 结构性修改（拖拽/增删）后按位置重排层级编号（评审二轮 F6:1.2 排 1.1 前）;
-                            // 章号解析不出（自定义编号）整树不动,与章级 custom 保守原则一致
+                            // 结构性修改（拖拽/增删）后按位置重排层级编号（评审二轮 F6:1.2 排 1.1 前）
                             setter(group.kind)((prev) =>
-                              prev.map((ch) =>
-                                ch.id === chapter.id ? { ...ch, items: renumberItemsByPosition(items, chapterOrdinal(ch.no)) } : ch,
-                              ),
+                              prev.map((ch) => (ch.id === chapter.id ? { ...ch, items: renumberItemsByPosition(items) } : ch)),
                             )
                           }
                         />

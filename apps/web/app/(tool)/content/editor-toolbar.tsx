@@ -1,7 +1,7 @@
 "use client"
 
 import { type Editor, useEditorState } from "@tiptap/react"
-import { Bold, Heading2, Heading3, ImagePlus, Italic, Library, List, Maximize2, Minimize2, Table, Undo2 } from "lucide-react"
+import { Bold, Heading2, Heading3, Heading4, Heading5, ImagePlus, Italic, Library, List, Maximize2, Minimize2, Table, Undo2 } from "lucide-react"
 
 /** 正文编辑工具栏（TipTap,spec329）：撤销 + 加粗/斜体/小标题/列表/字号/插图/插表格 +
  *  「从资料库插入」+ 全屏切换;光标在表格内时追加表格操作条（行列增删/合并拆分/表头行）。 */
@@ -41,12 +41,20 @@ export function EditorToolbar({
       <ToolBtn onClick={run((e) => e.chain().focus().toggleItalic().run())} label="斜体">
         <Italic className="size-4" />
       </ToolBtn>
-      <ToolBtn onClick={run((e) => e.chain().focus().toggleHeading({ level: 3 }).run())} label="节标题">
+      {/* 四级标题按钮对齐提纲五级（章由系统渲染，正文从二级节起）：
+          h3 节「一、」/ h4 小节「1.」/ h5 细分「（1）」/ h6 明细「①」→ 导出 Word Heading 2/3/4/5。
+          少一个按钮 = 该层级只能由智能体产出、用户改不了（评审）。 */}
+      <ToolBtn onClick={run((e) => e.chain().focus().toggleHeading({ level: 3 }).run())} label="节标题（一、）">
         <Heading2 className="size-4" />
       </ToolBtn>
-      {/* 小节标题 <h4>（三级提纲:章→节→小节;导出映射 Word 第三层级,评审需求） */}
-      <ToolBtn onClick={run((e) => e.chain().focus().toggleHeading({ level: 4 }).run())} label="小节标题">
+      <ToolBtn onClick={run((e) => e.chain().focus().toggleHeading({ level: 4 }).run())} label="小节标题（1.）">
         <Heading3 className="size-4" />
+      </ToolBtn>
+      <ToolBtn onClick={run((e) => e.chain().focus().toggleHeading({ level: 5 }).run())} label="细分标题（（1））">
+        <Heading4 className="size-4" />
+      </ToolBtn>
+      <ToolBtn onClick={run((e) => e.chain().focus().toggleHeading({ level: 6 }).run())} label="明细标题（①）">
+        <Heading5 className="size-4" />
       </ToolBtn>
       <ToolBtn onClick={run((e) => e.chain().focus().toggleBulletList().run())} label="列表">
         <List className="size-4" />

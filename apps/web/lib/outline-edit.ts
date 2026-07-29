@@ -67,8 +67,20 @@ function intToCn(n: number): string {
 
 // 已知的各种编号前缀：中式（一、/1./（1）/①）与历史点分式（1.1 / 1.1.1）都要能剥，
 // 否则重排会在旧前缀上再叠一层（「一、1.1 项目理解」）。
-const NUMBER_PREFIX =
-  /^\s*(?:第\s*[0-9〇零一二三四五六七八九十百]{1,3}\s*章|[0-9]{1,2}(?:[.．][0-9]{1,3})+|[〇零一二三四五六七八九十]{1,3}[、.．]|[0-9]{1,2}[、.．)）]|[（(][0-9]{1,2}[）)]|[①-⑩])\s*/
+// 小数陷阱（评审）：标题里的小数不是编号——「3.5吨叉车配置方案」「2.5G承载网建设」若按点分式剥掉，
+// 数字就永久丢了。故点分式要求后接空白/顿号/结尾，单个数字后的点要求不接数字；宁可少剥（多一层
+// 前缀只是难看）也不错剥（吃掉标题里的数字是不可逆的数据损失）。
+const NUMBER_PREFIX = new RegExp(
+  "^\\s*(?:" +
+    "第\\s*[0-9〇零一二三四五六七八九十百]{1,3}\\s*章" +
+    "|[0-9]{1,2}(?:[.．][0-9]{1,3})+(?=[\\s、]|$)" + // 历史点分式 1.1 / 1.1.1
+    "|[〇零一二三四五六七八九十]{1,3}[、.．]" +
+    "|[0-9]{1,2}[、)）]" +
+    "|[0-9]{1,2}[.．](?![0-9])" + // 「1. 项目背景」是编号，「3.5吨」不是
+    "|[（(][0-9]{1,2}[）)]" +
+    "|[①-⑩]" +
+    ")\\s*",
+)
 
 /** 去掉 label 上的任何编号前缀，只留正文标题。 */
 export function stripNumberPrefix(label: string): string {
@@ -89,46 +101,32 @@ type NumberedItem = { label: string; children?: NumberedItem[] }
 type NumberedChapter = { no: string; items: NumberedItem[] }
 export type NumberMode = "continuous" | "grouped"
 
-/** 子项树逐层重排编号：每层在**本层内**从 1 顺排，形态取该层的 LEVEL_NUMBER。
- *  depth 从 1 起（0 是章，由 chapter.no 承载）。 */
-function renumberItems<I extends NumberedItem>(items: I[], depth = 1): I[] {
-  return items.map((it, i) => ({
-    ...it,
-    label: labelWithNumber(it.label, depth, i + 1),
-    ...(it.children?.length ? { children: renumberItems(it.children, depth + 1) } : {}),
-  }))
-}
-
-/** 按组显示顺序重排编号：continuous 全文连续；grouped 各组自起。子项层级编号首段跟随章号。 */
+/** 按组显示顺序重排**章号**：continuous 全文连续；grouped 各组自起。
+ *  只动 no，不动子项：子项编号在本层内顺排、与章号无关（见 LEVEL_NUMBER），加一章不该把
+ *  另一组用户手写的小节标题全部重写一遍（评审：加 1 章 → 技术标全树被剥前缀重编）。
+ *  子项编号由子项自身的增删/拖拽触发 renumberItemsByPosition。 */
 export function applyNumbering<C extends NumberedChapter>(groups: C[][], mode: NumberMode): C[][] {
   let offset = 0
   return groups.map((list) => {
-    const next = list.map((c, i) => {
-      const n = (mode === "continuous" ? offset : 0) + i + 1
-      return { ...c, no: chapterNo(n), items: renumberItems(c.items) } // 子项按本层顺序编号，与章号无关
-    })
+    const next = list.map((c, i) => ({ ...c, no: chapterNo((mode === "continuous" ? offset : 0) + i + 1) }))
     offset += list.length
     return next
   })
 }
 
 /** 子项树按**位置**重排层级编号（评审二轮 F6:拖拽/删除后 1.2 排在 1.1 前,提纲与导出全乱序）。
- *  编号形态按层级取（一、/1./（1）/①，见 LEVEL_NUMBER）。规则（宁保守勿改错）：
- *  - 已有任意编号前缀的项 → 重写为本层位置序；
- *  - 完全没有编号前缀的项（如刚新增的「新增子项」）原样跳过——不阻断其它项重排，
- *    位置序仍按实际下标计（占位跳号，用户补上编号后下次操作自动纳入）；
- *  - 章号解析不出（自定义编号模式）→ 整树原样不动。 */
-export function renumberItemsByPosition<I extends { label: string; children?: I[] }>(items: I[], ordinal: number | null): I[] {
-  if (ordinal == null) return items
+ *  编号形态按层级取（一、/1./（1）/①，见 LEVEL_NUMBER），与章号无关——所以「附录A」这类
+ *  自定义章号的章同样重排（评审：旧版按章号解析失败就整树不动，二、会留在 一、上面）。
+ *  规则（宁保守勿改错）：已有编号前缀的项重写为本层位置序；完全没编号的项（如刚新增的
+ *  「新增子项」）保留原文不打编号，但**其子树照常重排**——否则一个没编号的父项会把整条
+ *  分支冻在乱序上（五级提纲下分支可深达 4 层）。位置序按实际下标计（占位跳号）。 */
+export function renumberItemsByPosition<I extends { label: string; children?: I[] }>(items: I[]): I[] {
   const walk = <T extends { label: string; children?: T[] }>(list: T[], depth: number): T[] =>
-    list.map((it, i) => {
-      if (!NUMBER_PREFIX.test(it.label)) return it
-      return {
-        ...it,
-        label: labelWithNumber(it.label, depth, i + 1),
-        ...(it.children?.length ? { children: walk(it.children, depth + 1) } : {}),
-      }
-    })
+    list.map((it, i) => ({
+      ...it,
+      ...(NUMBER_PREFIX.test(it.label) ? { label: labelWithNumber(it.label, depth, i + 1) } : {}),
+      ...(it.children?.length ? { children: walk(it.children, depth + 1) } : {}),
+    }))
   return walk(items, 1)
 }
 

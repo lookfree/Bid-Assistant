@@ -81,7 +81,8 @@ const IMG_LINES = 12
 const CHAPTER_TITLE_LINES = 2.5
 const FIXED_PAGES = 2
 
-const OPEN_TOKEN = /<(\/?)(h[1-4]|p|li|tr|img)\b[^>]*>/gi
+// h5/h6 也要收（提纲支持到五级后正文会出现）：漏了它们只按散文兜底计，段前后距与目录页数都会少算
+const OPEN_TOKEN = /<(\/?)(h[1-6]|p|li|tr|img)\b[^>]*>/gi
 const CELL = /<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi
 
 /** 线性分块（评审 F4:惰性回溯正则对未闭合标签是 O(未闭合数×长度),1MB 病态输入实测数百 ms 卡渲染线程）：
