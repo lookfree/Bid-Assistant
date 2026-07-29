@@ -77,12 +77,12 @@ function nextStepFor(step: Step, kind: string): Step | undefined {
 }
 
 /** 条件推进的 WHERE 守卫：常规=停在本步才推进（幂等/并发安全）。
- *  export 例外（述标独立化）：跳过述标直出时项目停在 present，export 完成也要推到 done——
- *  否则项目永远停 running。present 在 done 后补跑时本守卫不匹配（currentStep=done），
- *  不会把已完成项目回退到 export，正是想要的。 */
+ *  export 例外（述标与体检均可跳过）：停在 review（跳过体检直出）或 present（跳过述标直出）时，
+ *  export 完成也要推到 done——否则项目永远停 running。present/review 在 done 后补跑时本守卫
+ *  不匹配（currentStep=done），不会把已完成项目回退到 export，正是想要的。 */
 function advanceGuard(step: Step) {
   return step === "export"
-    ? inArray(bidProjects.currentStep, ["present", "export"])
+    ? inArray(bidProjects.currentStep, ["review", "present", "export"])
     : eq(bidProjects.currentStep, step)
 }
 

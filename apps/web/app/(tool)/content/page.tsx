@@ -158,7 +158,6 @@ export default function ContentPage() {
     projectId, info, membershipLoading, canAfford,
     openPaywall: () => openPaywall("export"),
     canCheck, isReal, findings, checkState, runCheck, softPassed,
-    reviewCost,
     requestCheckConfirm: () => setCheckConfirm("export"),
     onHighRisk: () => setExportConfirm(true),
   })

@@ -300,3 +300,25 @@ def test_render_docx_maps_five_heading_levels():
     assert levels["1. 项目背景分析"] == "Heading 3"
     assert levels["（1）人员配置"] == "Heading 4"
     assert levels["① 值班安排"] == "Heading 5"
+
+
+def test_render_docx_strips_leaked_outline_ids_and_breaks_pages():
+    """生产实测（7月28日反馈）：导出标题成了「t3.1 升级改造部署实施方案」——提纲内部 id 被写手
+    抄进了标题，目录里也全是 t2.3/t3.1。渲染层确定性摘掉打头的 t/b，编号数字保留；
+    另：每章另起一页（首章不加，否则目录后多一页空白）。"""
+    outline = {"chapters": [
+        {"id": "t1", "no": "第一章", "title": "整体服务方案", "group": "tech"},
+        {"id": "t2", "no": "第二章", "title": "实施方案", "group": "tech"},
+    ]}
+    html = {
+        "t1": "<h3>t1.1 项目理解</h3><p>x</p><h4>t1.1.1 背景分析</h4><p>y</p>",
+        "t2": "<h3>b2b 服务体系</h3><p>z</p>",  # 「b2b」不是 id，一个字母都不能动
+    }
+    doc = Document(io.BytesIO(render_docx(outline, html)))
+    heads = [p.text for p in doc.paragraphs if p.style.name.startswith("Heading")]
+    assert "1.1 项目理解" in heads and "1.1.1 背景分析" in heads
+    assert not any(h.startswith("t1.") for h in heads)
+    assert "b2b 服务体系" in heads
+    # 分页：两章之间恰好一个分页符（首章前不加）
+    breaks = sum(1 for p in doc.paragraphs for r in p.runs if "w:br" in r._element.xml and 'type="page"' in r._element.xml)
+    assert breaks >= 1

@@ -26,7 +26,6 @@ export function useExport(opts: {
   checkState: "idle" | "checking" | "done"
   runCheck: () => Promise<RealRisk | null>
   softPassed: boolean
-  reviewCost: number
   /** 体检未跑：页面弹计费确认（checkConfirm="export"） */
   requestCheckConfirm: () => void
   /** 体检有高风险且未软放行：页面弹二次确认（exportConfirm） */
@@ -83,11 +82,10 @@ export function useExport(opts: {
       runStep("export")（后端必 409），给完成路径提示。 */
   function exportGateHint(): ExportGate | null {
     const cur = info?.project.currentStep
-    if (!cur || cur === "present" || cur === "export" || cur === "done") return null
-    // 就地体检刚跑完时 info 是陈旧快照（仍显示 review）——checkState/findings 是新鲜信号,
-    // 审查已完成就放行,否则用户刚付完体检费立刻被这里拦死（审查修正 2026-07-23,恢复被误删的桥）
-    if (cur === "review" && (opts.checkState === "done" || opts.findings)) return null
-    return { text: `导出前需完成：废标审查（${opts.reviewCost} 积分）`, href: "/risk", label: "前往审查页" }
+    // review 起即可导出：废标体检可跳过（用户口径「不能跳过废标体检直接导出，希望能跳过，省积分」）——
+    // 后端步序闸同步放行。仍未走到 review（正文没生成完）才拦，那是真的没东西可导。
+    if (!cur || ["review", "present", "export", "done"].includes(cur)) return null
+    return { text: "导出前需完成：标书正文生成", href: "/content", label: "前往正文页" }
   }
 
   /* 付费用户在导出菜单点「确认导出」：体检未跑不再静默触发，先显式确认计费；再按风险弱拦截 */

@@ -606,8 +606,9 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
 
     // 跳步校验：只允许推进「当前步」（draft 项目限 read），避免与 agent checkpoint 顺序错位。
     // 例外（述标独立化，用户口径「下载标书不要求完成述标生成」，agent 图有对应条件边）：
-    //   ① export 在 present/done 时均可跑——present 时=跳过述标直出文件；done 时=重渲重出
-    //     （渲染器升级/模板调整后,已完成项目才能重新出文件,否则只会一直下载旧产物）；
+    //   ① export 在 review/present/done 时均可跑——review 时=跳过废标体检直出（用户口径:
+    //     体检 60 积分,不想查的人不该被强收；风险自负,前端弹层已明示）；present 时=跳过述标
+    //     直出文件；done 时=重渲重出（渲染器升级/模板调整后,已完成项目才能重新出文件）；
     //   ② present 在 done 后可补跑（先导出后补述标,补完重导出可带 PPT）。
     // spec328 审查专用项目：read/review 走既定流程；present 独立于审查报告——有线下标书就能随时
     // 述标（用户口径「想述标就述标」），任何 currentStep/status 下都放行、不占 currentStep（agent 侧
@@ -621,7 +622,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       || (p.status === "draft"
         ? step === "read"
         : step === p.currentStep ||
-          (step === "export" && (p.currentStep === "present" || p.currentStep === "done")) ||
+          (step === "export" && ["review", "present", "done"].includes(p.currentStep)) ||
           (step === "present" && p.currentStep === "done"))
     if (!allowed) return c.json({ error: "out_of_order", expected: p.currentStep }, 409)
 

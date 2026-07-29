@@ -319,9 +319,12 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
     _style_cover(doc, meta, package)
     _add_toc_field(doc)
     _add_page_number_footer(doc, meta.get("name", "投标文件"))
-    # 章节正文：按 outline 顺序（缺正文出占位，不报错）
-    for ch in outline.get("chapters", []):
+    # 章节正文：按 outline 顺序（缺正文出占位，不报错）。每章另起一页——评标翻阅按章定位，
+    # 章接章挤在同一页找不到边界（用户要求）；首章不加，否则目录后会多出一整页空白。
+    for i, ch in enumerate(outline.get("chapters", [])):
         group = "技术标" if ch.get("group") == "tech" else "商务标"
+        if i:
+            doc.add_page_break()
         doc.add_heading(f"{ch.get('no', '')} {ch.get('title', '')}（{group}）", level=1)
         # 防御清洗：库存章节可能带完整文档壳（<head><style>...），不剥会把样式文本吐进正文；
         # 再与提纲对齐（剥内嵌旧章标题 + 小节编号跟随当前章号）——标书必须按用户设置后的提纲出

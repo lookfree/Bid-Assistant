@@ -69,6 +69,13 @@ _HEADING_ANY = re.compile(r"<h([1-6])[^>]*>(.*?)</h\1>", re.I | re.S)
 # 层级编号前缀（N.M 或 N.M.K…，可被行内标签包住）：首段改写为当前章号
 _HIER_NO = re.compile(r"(<h[234][^>]*>\s*(?:<[^>]+>\s*)*)([0-9]{1,2})((?:[.．][0-9]{1,3})+)", re.I)
 _BARE_NO_TEXT = re.compile(r"^[0-9]{1,2}[、\s]")      # 裸编号小节（"2 实施"）——存在即整章不改编号
+# 提纲内部 id 泄漏进标题（生产实测：导出成「t3.1 升级改造部署实施方案」，目录里全是 t2.3/t3.1）：
+# 章 id 形如 t1/b2，子项 id 形如 t3.1/t3-1，写手把它当编号抄进了标题。只吃掉打头的 t/b 字母，
+# 后面的数字是真编号要留；须紧跟数字且其后是分隔符或中文，"b2b服务方案"这类不动。
+_ID_PREFIX = re.compile(
+    r"(<h[1-6][^>]*>\s*(?:<[^>]+>\s*)*)[tb](?=[0-9]{1,2}(?:[.\-][0-9]{1,3})*(?:[\s、.．)）]|[\u4e00-\u9fa5]))",
+    re.I,
+)
 
 
 def _drop_leading_chapter_heading(html: str, title: str) -> str:
@@ -123,7 +130,8 @@ def normalize_chapter_html(html: str, no: str, title: str) -> str:
     （前端 TS 版见 apps/web/lib/chapter-normalize.ts，改语义须两侧同步）。"""
     if not html:
         return html
-    out = _drop_leading_chapter_heading(html, title)
+    out = _ID_PREFIX.sub(lambda m: m.group(1), html)   # 先摘掉 id 前缀，后续编号判定才看得到真编号
+    out = _drop_leading_chapter_heading(out, title)
     n = chapter_ordinal(no)
     if n is not None:
         out = _renumber_hier_headings(out, n)
