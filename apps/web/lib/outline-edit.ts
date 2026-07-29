@@ -35,21 +35,67 @@ export function chapterOrdinal(no: string): number | null {
   return cnToInt(m[1] ?? m[2] ?? m[3] ?? "")
 }
 
-/** 子项 label 的层级编号（N.M / N.M.K…）首段改写为章号；无层级编号原样返回。 */
+/** 子项 label 的层级编号（N.M / N.M.K…）首段改写为章号；无层级编号原样返回。
+ *  旧点分编号体系的兼容函数——新建/重排走 LEVEL_NUMBER 的中式编号。 */
 export function renumberLabel(label: string, ordinal: number): string {
   return label.replace(/^(\d{1,2})((?:\.\d{1,3})+)/, `${ordinal}$2`)
+}
+
+/** 提纲最大层级（章 + 4 层子项）。投标惯例一般到四级足够，五级仅供特别复杂的技术标局部使用。 */
+export const MAX_OUTLINE_DEPTH = 5
+
+const CIRCLED = ["", "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"]
+
+/** 各级编号形态（投标文件通行写法）：
+ *  一级 第一章 → 二级 一、 → 三级 1. → 四级 （1） → 五级 ①
+ *  逐级**在本层内**顺序编号（不是点分累进）——这是评标专家习惯的读法。 */
+export const LEVEL_NUMBER: ((n: number) => string)[] = [
+  (n) => chapterNo(n),                                    // L1 章
+  (n) => `${intToCn(n)}、`,                                // L2 节
+  (n) => `${n}.`,                                         // L3 小节
+  (n) => `（${n}）`,                                       // L4 细分
+  (n) => CIRCLED[n] ?? `(${n})`,                          // L5 局部细化（超 10 项回落括号数字）
+]
+
+/** 整数 → 中文数字（1..99）。 */
+function intToCn(n: number): string {
+  if (n <= 9) return CN_DIGITS[n] ?? String(n)
+  if (n === 10) return "十"
+  if (n < 20) return `十${CN_DIGITS[n % 10]}`
+  return `${CN_DIGITS[Math.floor(n / 10)]}十${n % 10 ? CN_DIGITS[n % 10] : ""}`
+}
+
+// 已知的各种编号前缀：中式（一、/1./（1）/①）与历史点分式（1.1 / 1.1.1）都要能剥，
+// 否则重排会在旧前缀上再叠一层（「一、1.1 项目理解」）。
+const NUMBER_PREFIX =
+  /^\s*(?:第\s*[0-9〇零一二三四五六七八九十百]{1,3}\s*章|[0-9]{1,2}(?:[.．][0-9]{1,3})+|[〇零一二三四五六七八九十]{1,3}[、.．]|[0-9]{1,2}[、.．)）]|[（(][0-9]{1,2}[）)]|[①-⑩])\s*/
+
+/** 去掉 label 上的任何编号前缀，只留正文标题。 */
+export function stripNumberPrefix(label: string): string {
+  return label.replace(NUMBER_PREFIX, "")
+}
+
+/** 给 label 打上该层级的编号（先剥旧前缀，幂等）。depth 从 0（章）起算。
+ *  间隔按中文排版惯例：顿号/右括号后**不留空格**（一、项目理解 /（1）人员配置），其余留一个空格。 */
+export function labelWithNumber(label: string, depth: number, seq: number): string {
+  const fmt = LEVEL_NUMBER[Math.min(depth, LEVEL_NUMBER.length - 1)]!
+  const no = fmt(seq)
+  const bare = stripNumberPrefix(label)
+  const sep = /[、）)]$/.test(no) ? "" : " "
+  return `${no}${sep}${bare}`.trim()
 }
 
 type NumberedItem = { label: string; children?: NumberedItem[] }
 type NumberedChapter = { no: string; items: NumberedItem[] }
 export type NumberMode = "continuous" | "grouped"
 
-/** 子项树编号重排（含小节，三级提纲）：各级 label 的层级编号首段都跟随章号（N.M / N.M.K 同规则）。 */
-function renumberItems<I extends NumberedItem>(items: I[], n: number): I[] {
-  return items.map((it) => ({
+/** 子项树逐层重排编号：每层在**本层内**从 1 顺排，形态取该层的 LEVEL_NUMBER。
+ *  depth 从 1 起（0 是章，由 chapter.no 承载）。 */
+function renumberItems<I extends NumberedItem>(items: I[], depth = 1): I[] {
+  return items.map((it, i) => ({
     ...it,
-    label: renumberLabel(it.label, n),
-    ...(it.children?.length ? { children: renumberItems(it.children, n) } : {}),
+    label: labelWithNumber(it.label, depth, i + 1),
+    ...(it.children?.length ? { children: renumberItems(it.children, depth + 1) } : {}),
   }))
 }
 
@@ -59,34 +105,31 @@ export function applyNumbering<C extends NumberedChapter>(groups: C[][], mode: N
   return groups.map((list) => {
     const next = list.map((c, i) => {
       const n = (mode === "continuous" ? offset : 0) + i + 1
-      return { ...c, no: chapterNo(n), items: renumberItems(c.items, n) }
+      return { ...c, no: chapterNo(n), items: renumberItems(c.items) } // 子项按本层顺序编号，与章号无关
     })
     offset += list.length
     return next
   })
 }
 
-const HIER_PREFIX = /^\d{1,2}(?:\.\d{1,3})+/
-
 /** 子项树按**位置**重排层级编号（评审二轮 F6:拖拽/删除后 1.2 排在 1.1 前,提纲与导出全乱序）。
- *  规则（宁保守勿改错,与既有编号体检先例一致）：
- *  - 带层级编号前缀的项 → 前缀重写为「章号.位置序」(节 n.i)/「父编号.位置序」(小节 n.i.j)；
- *  - 无编号前缀的项（如刚新增的「新增子项」）原样跳过——不阻断其它项重排,位置序按实际下标计
- *    （占位跳号,用户补上编号后下次操作自动纳入）；
+ *  编号形态按层级取（一、/1./（1）/①，见 LEVEL_NUMBER）。规则（宁保守勿改错）：
+ *  - 已有任意编号前缀的项 → 重写为本层位置序；
+ *  - 完全没有编号前缀的项（如刚新增的「新增子项」）原样跳过——不阻断其它项重排，
+ *    位置序仍按实际下标计（占位跳号，用户补上编号后下次操作自动纳入）；
  *  - 章号解析不出（自定义编号模式）→ 整树原样不动。 */
 export function renumberItemsByPosition<I extends { label: string; children?: I[] }>(items: I[], ordinal: number | null): I[] {
   if (ordinal == null) return items
-  const renumber = <T extends { label: string; children?: T[] }>(list: T[], prefix: string): T[] =>
+  const walk = <T extends { label: string; children?: T[] }>(list: T[], depth: number): T[] =>
     list.map((it, i) => {
-      if (!HIER_PREFIX.test(it.label)) return it
-      const no = `${prefix}.${i + 1}`
+      if (!NUMBER_PREFIX.test(it.label)) return it
       return {
         ...it,
-        label: it.label.replace(HIER_PREFIX, no),
-        ...(it.children?.length ? { children: renumber(it.children, no) } : {}),
+        label: labelWithNumber(it.label, depth, i + 1),
+        ...(it.children?.length ? { children: walk(it.children, depth + 1) } : {}),
       }
     })
-  return renumber(items, String(ordinal))
+  return walk(items, 1)
 }
 
 /** 子项树展平（节+小节顺序铺开）：统计徽标/计数共用。 */

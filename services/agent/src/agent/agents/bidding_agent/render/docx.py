@@ -12,9 +12,11 @@ from docx.shared import Cm, Inches, Pt, RGBColor
 
 _CONTAINERS = ("div", "section", "article", "body")
 
-# H1-H4 →磅值（章/节/小节/细项四级,见 _apply_bid_styles）。H4 必须入表:未配置的 Word 内建
-# 标题样式会继承主题蓝/西文字体（评审:三级提纲落地后 h4 首次可达）。
-_HEADING_SIZES = {"Heading 1": Pt(16), "Heading 2": Pt(14), "Heading 3": Pt(12), "Heading 4": Pt(12)}
+# H1-H5 → 磅值（章/节/小节/细分/明细五级，见 _apply_bid_styles）。五级都必须入表：
+# 未配置的 Word 内建标题样式会继承主题蓝/西文字体（三级提纲落地时 h4 首次可达，五级后 h5 同理）。
+_HEADING_SIZES = {
+    "Heading 1": Pt(16), "Heading 2": Pt(14), "Heading 3": Pt(12), "Heading 4": Pt(12), "Heading 5": Pt(12),
+}
 
 
 def _apply_bid_styles(doc: Document) -> None:
@@ -42,10 +44,15 @@ def _emit_el(doc: Document, el) -> None:
     table→表格；容器标签（div 等）递归展开，防止整块被 get_text 压扁成一段。"""
     name = getattr(el, "name", None)
     if name in ("h1", "h2", "h3", "h4", "h5", "h6"):
-        # 章内层级绝对映射（评审二轮:相对归一会让同一 <h4> 在不同章落不同 Word 级）：
-        # 编辑器/写手契约 h3=节、h4=小节 → Word 2/3;章标题占 Heading 1。旧文档整章全 <h3>
-        # 同样得到 章(1)→节(2) 的层级（平级问题就此修复);h1/h2 跑偏按节待遇,h5/h6 并入第四级。
-        doc.add_heading(el.get_text(strip=True), level={"h1": 2, "h2": 2, "h3": 2, "h4": 3}.get(name, 4))
+        # 章内层级绝对映射（评审二轮:相对归一会让同一 <h4> 在不同章落不同 Word 级）。
+        # 写手契约与提纲五级一一对应：二级节 h3 / 三级小节 h4 / 四级细分 h5 / 五级明细 h6，
+        # 章标题占 Heading 1，故正文各级整体下移一位 → Word 2/3/4/5。
+        # 旧文档整章全 <h3> 同样得到 章(1)→节(2) 的层级（平级问题就此修复）；
+        # h1/h2 是跑偏时的防御位（按节待遇），绝不落成正文段落。
+        doc.add_heading(
+            el.get_text(strip=True),
+            level={"h1": 2, "h2": 2, "h3": 2, "h4": 3, "h5": 4, "h6": 5}.get(name, 5),
+        )
     elif name == "p":
         doc.add_paragraph(el.get_text(strip=True))
         for img in el.find_all("img"):  # 光标处插图常嵌在段落里，只取文字会把图整个丢掉
@@ -195,12 +202,14 @@ def _add_field(paragraph, instr_text: str) -> None:
 
 
 def _add_toc_field(doc: Document) -> None:
-    """真目录域（非静态文本）：TOC \\o "1-3" \\h \\z \\u。目录页码只有 Word 排版引擎知道，
+    """真目录域（非静态文本）：TOC \\o "1-4" \\h \\z \\u。目录页码只有 Word 排版引擎知道，
     导出域交由 Word 打开时按 F9 更新，比人工维护的静态占位准确。"""
     doc.add_heading("目录", level=1)
     doc.add_paragraph("（在 Word 中按 F9 更新目录）")
     field_p = doc.add_paragraph()
-    _add_field(field_p, 'TOC \\o "1-4" \\h \\z \\u')  # 1-4:章/节/小节/细项（评审:三级提纲）
+    # 目录只收到四级：五级明细（① 值班安排）进目录会把目录撑得比正文还碎，
+    # 评标专家反而找不到重点——五级仍在正文里有层级，只是不进目录。
+    _add_field(field_p, 'TOC \\o "1-4" \\h \\z \\u')
     doc.add_page_break()
 
 

@@ -81,23 +81,47 @@ class ReadResult(BaseModel):
         return self
 
 
-class OutlineChildItem(BaseModel):
-    """小节（三级提纲的第三层）。独立非递归模型而非自引用（评审修正）：
-    ① 自引用 schema 经 langchain 转 LLM tool schema 时递归 $ref 被抹平成空对象,模型对小节结构
-      零引导,易产垃圾 children 烧尽 submit 重试;② 无 children 字段=「三层封顶」的 schema 硬约束,
-    深于三层的数据在校验时被静默剪掉（pydantic 默认忽略未知字段）,所有下游天然安全。"""
+# 提纲层级（投标文件通行写法，最多五级）：
+#   一级 章    第一章 投标函
+#   二级 节    一、项目理解
+#   三级 小节  1. 项目背景分析
+#   四级 细分  （1）人员配置
+#   五级 明细  ① 值班安排        ← 仅特别复杂的技术标局部使用
+# **逐级显式建模、不用自引用**（评审修正）：自引用 schema 经 langchain 转 LLM tool schema 时
+# 递归 $ref 被抹平成空对象，模型对下级结构零引导、易产垃圾 children 烧尽 submit 重试；
+# 显式到第五级同时把「五级封顶」变成 schema 硬约束——更深的数据在校验时被静默剪掉，下游天然安全。
+class OutlineLeafItem(BaseModel):
+    """五级（明细）：封顶层，无 children。"""
     id: str
-    label: str                                    # 如 "1.1.1 系统架构"
+    label: str                                    # 如 "① 值班安排"
     clause_ids: list[str] = Field(default_factory=list)
     is_new: bool = False
 
 
-class OutlineItem(BaseModel):
+class OutlineGrandChildItem(BaseModel):
+    """四级（细分）：如「（1）人员配置」。"""
     id: str
-    label: str                                    # 如 "1.1 项目背景与需求理解"
+    label: str
+    clause_ids: list[str] = Field(default_factory=list)
+    is_new: bool = False
+    children: list[OutlineLeafItem] = Field(default_factory=list)
+
+
+class OutlineChildItem(BaseModel):
+    """三级（小节）：如「1. 项目背景分析」。"""
+    id: str
+    label: str
+    clause_ids: list[str] = Field(default_factory=list)
+    is_new: bool = False
+    children: list[OutlineGrandChildItem] = Field(default_factory=list)
+
+
+class OutlineItem(BaseModel):
+    """二级（节）：如「一、项目理解」。"""
+    id: str
+    label: str
     clause_ids: list[str] = Field(default_factory=list)  # 招标依据条款 id（${secId}-cN，对齐原型 clauseIds）
     is_new: bool = False                          # 提纲新增（招标无直接来源）
-    # 三级提纲（章→节→小节,评审需求）：节可带小节;写手契约 节<h3>/小节<h4>
     children: list[OutlineChildItem] = Field(default_factory=list)
 
 

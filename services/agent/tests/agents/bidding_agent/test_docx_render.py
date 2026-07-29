@@ -283,3 +283,20 @@ def test_render_docx_three_level_heading_hierarchy_and_toc():
     assert styles["3.0.1 只有小节的章"] == "Heading 3"  # 绝对映射:h4 不因缺 h3 被抬级
     assert doc.styles["Heading 4"].font.size.pt == 12  # 第四级样式已配置
     assert 'TOC \\o "1-4"' in doc.element.xml
+
+
+def test_render_docx_maps_five_heading_levels():
+    """五级提纲（第一章 → 一、 → 1. → （1） → ①）逐级落到 Word 1-5 级。
+    写手契约：二级节 h3 / 三级小节 h4 / 四级细分 h5 / 五级明细 h6；章标题由渲染层占 1 级。"""
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "整体服务方案", "group": "tech"}]}
+    html = ("<h3>一、项目理解</h3><p>x</p>"
+            "<h4>1. 项目背景分析</h4><p>y</p>"
+            "<h5>（1）人员配置</h5><p>z</p>"
+            "<h6>① 值班安排</h6><p>w</p>")
+    doc = Document(io.BytesIO(render_docx(outline, {"t1": html})))
+    levels = {p.text: p.style.name for p in doc.paragraphs if p.style.name.startswith("Heading")}
+    assert levels["第一章 整体服务方案（技术标）"] == "Heading 1"
+    assert levels["一、项目理解"] == "Heading 2"
+    assert levels["1. 项目背景分析"] == "Heading 3"
+    assert levels["（1）人员配置"] == "Heading 4"
+    assert levels["① 值班安排"] == "Heading 5"

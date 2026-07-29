@@ -1,27 +1,32 @@
 "use client"
 
-// 一章的子项树编辑器（评审需求:三级提纲 章→节→小节）。从 outline/page.tsx 抽出（页面近 800 行上限）：
-// - 同层拖拽排序：节在本章内、小节在本节内（HTML5 原生 DnD;dragstart 必须 setData——Firefox 不设即拒启,评审二轮 F5）
-// - 节可添加小节;两层的编辑/删除一致;溯源徽标/新增徽标与点击定位逻辑与原实现保真
+// 一章的子项树编辑器（章 + 四层子项 = 投标惯例的五级：第一章 → 一、 → 1. → （1） → ①）。
+// 从 outline/page.tsx 抽出（页面近 800 行上限）：
+// - 同层拖拽排序：按「祖先 id 链」判同层（HTML5 原生 DnD;dragstart 必须 setData——Firefox 不设即拒启,评审二轮 F5）
+// - 每级可加下一级直至封顶;各级编辑/删除一致;溯源徽标/新增徽标与点击定位逻辑与原实现保真
 // - 结构性修改统一经 onChange 交回页面（位置编号重排/保存由页面链路负责）
 // - 与页面章标题编辑互斥（评审二轮:重构曾丢互斥）:开编辑时回调 onEditStart,页面 bump closeEditToken 反向关这里
 import { useEffect, useState } from "react"
 import { Check, CornerDownRight, GripVertical, ListTree, MapPin, Pencil, Plus, Sparkles, Trash2, X } from "lucide-react"
 import type { OutlineItem } from "@/lib/bid-types"
-import { reorderWithin } from "@/lib/outline-edit"
+import { MAX_OUTLINE_DEPTH, reorderWithin } from "@/lib/outline-edit"
 
-type Drag = { id: string; parentId: string | null }
+type Drag = { id: string; parentId: string } // parentId = 祖先 id 链 join("/")，空串=顶层
 
-/** 编辑态单行（节/小节共用）。 */
-function EditRow({ child, draft, setDraft, onSave, onCancel }: {
+/** 编辑态单行（各级共用；depth 决定缩进，与展示态对齐）。 */
+function EditRow({ child, depth = 1, draft, setDraft, onSave, onCancel }: {
   child: boolean
+  depth?: number
   draft: string
   setDraft: (v: string) => void
   onSave: () => void
   onCancel: () => void
 }) {
   return (
-    <div className={`flex items-center gap-2 rounded-lg border border-primary bg-primary/5 px-2.5 py-1.5 ${child ? "ml-6" : ""}`}>
+    <div
+      style={child ? { marginLeft: `${(depth - 1) * 1.5}rem` } : undefined}
+      className="flex items-center gap-2 rounded-lg border border-primary bg-primary/5 px-2.5 py-1.5"
+    >
       {child ? <CornerDownRight className="size-3.5 shrink-0 text-primary/60" /> : <ListTree className="size-3.5 shrink-0 text-primary/60" />}
       <input
         autoFocus
@@ -72,10 +77,14 @@ export function ChapterItems({
 
   useEffect(() => setEditingId(null), [closeEditToken])
 
-  /** 对某一层做变换：parentId=null 变换顶层,否则变换该节的 children。 */
-  const mutateLevel = (parentId: string | null, fn: (list: OutlineItem[]) => OutlineItem[]) => {
-    if (parentId == null) return onChange(fn(items))
-    onChange(items.map((it) => (it.id === parentId ? { ...it, children: fn(it.children ?? []) } : it)))
+  /** 对某一层做变换：path=祖先 id 链（空=顶层）。递归下钻，支持到五级（MAX_OUTLINE_DEPTH）。 */
+  const mutateLevel = (path: string[], fn: (list: OutlineItem[]) => OutlineItem[]) => {
+    const walk = (list: OutlineItem[], rest: string[]): OutlineItem[] => {
+      if (rest.length === 0) return fn(list)
+      const [head, ...tail] = rest
+      return list.map((it) => (it.id === head ? { ...it, children: walk(it.children ?? [], tail) } : it))
+    }
+    onChange(walk(items, path))
   }
 
   const startEdit = (item: OutlineItem) => {
@@ -84,44 +93,47 @@ export function ChapterItems({
     setDraft(item.label)
   }
 
-  const saveLabel = (id: string, parentId: string | null) => {
+  const saveLabel = (id: string, path: string[]) => {
     const text = draft.trim()
     setEditingId(null)
     setDraft("")
     if (!text) return
-    mutateLevel(parentId, (list) => list.map((it) => (it.id === id ? { ...it, label: text } : it)))
+    mutateLevel(path, (list) => list.map((it) => (it.id === id ? { ...it, label: text } : it)))
   }
 
-  const add = (parentId: string | null) => {
+  /** 各级新增项的默认名（depth 从 1=节 起算，与提纲编号层级一一对应）。 */
+  const LEVEL_NAME = ["", "新增子项", "新增小节", "新增细分项", "新增明细项"]
+
+  const add = (path: string[]) => {
     const id = genId()
-    const label = parentId == null ? "新增子项" : "新增小节"
+    const label = LEVEL_NAME[Math.min(path.length + 1, LEVEL_NAME.length - 1)]!
     onEditStart?.()
-    mutateLevel(parentId, (list) => [...list, { id, label, isNew: true }])
+    mutateLevel(path, (list) => [...list, { id, label, isNew: true }])
     setEditingId(id)
     setDraft(label)
   }
 
-  /** 同层放置：drag 与目标 parentId 一致才接受。dropId=null 落到层尾。 */
-  const dropOn = (dropId: string | null, parentId: string | null) => {
+  /** 同层放置：drag 与目标同一父路径才接受。dropId=null 落到层尾。 */
+  const dropOn = (dropId: string | null, path: string[]) => {
     setOverId(null)
-    if (!drag || drag.parentId !== parentId) return
-    mutateLevel(parentId, (list) => reorderWithin(list, drag.id, dropId))
+    if (!drag || drag.parentId !== path.join("/")) return
+    mutateLevel(path, (list) => reorderWithin(list, drag.id, dropId))
     setDrag(null)
   }
 
-  const dragProps = (id: string, parentId: string | null) => ({
+  const dragProps = (id: string, path: string[]) => ({
     draggable: true,
     onDragStart: (e: React.DragEvent) => {
       e.dataTransfer.setData("text/plain", id) // Firefox 不 setData 即中止拖拽（评审二轮 F5）
       e.dataTransfer.effectAllowed = "move"
-      setDrag({ id, parentId })
+      setDrag({ id, parentId: path.join("/") })
     },
     onDragEnd: () => {
       setDrag(null)
       setOverId(null)
     },
     onDragOver: (e: React.DragEvent) => {
-      if (drag && drag.parentId === parentId && drag.id !== id) {
+      if (drag && drag.parentId === path.join("/") && drag.id !== id) {
         e.preventDefault() // 同层才是合法放置目标
         setOverId(id)
       }
@@ -133,29 +145,31 @@ export function ChapterItems({
     },
     onDrop: (e: React.DragEvent) => {
       e.preventDefault()
-      dropOn(id, parentId)
+      dropOn(id, path)
     },
   })
 
   /** 尾部落点（层内拖到最后一位；插前语义下末位否则不可达,评审二轮 F9）。 */
-  const tailDropProps = (parentId: string | null) => ({
+  const tailDropProps = (path: string[]) => ({
     onDragOver: (e: React.DragEvent) => {
-      if (drag?.parentId === parentId) e.preventDefault()
+      if (drag?.parentId === path.join("/")) e.preventDefault()
     },
     onDrop: (e: React.DragEvent) => {
       e.preventDefault()
-      dropOn(null, parentId)
+      dropOn(null, path)
     },
   })
 
-  /** 展示态单行（节/小节共用;小节缩进 + 角标图标 + 无「添加小节」按钮）。 */
-  const row = (item: OutlineItem, parentId: string | null) => {
+  /** 展示态单行（各级共用）：depth 从 1（节）起算，逐级缩进；未到封顶才给「添加下级」。 */
+  const row = (item: OutlineItem, path: string[], depth: number) => {
     const indexed = !!item.clauseIds && item.clauseIds.length > 0
-    const child = parentId != null
+    const child = depth > 1
+    const canNest = depth < MAX_OUTLINE_DEPTH - 1 // depth 是子项层级(1=节)，章占一级，故减一
     return (
       <div
-        {...dragProps(item.id, parentId)}
-        className={`group flex items-center gap-2 rounded-lg border px-2.5 py-2 text-sm transition-colors ${child ? "ml-6 py-1.5" : ""} ${
+        {...dragProps(item.id, path)}
+        style={child ? { marginLeft: `${(depth - 1) * 1.5}rem` } : undefined}
+        className={`group flex items-center gap-2 rounded-lg border px-2.5 py-2 text-sm transition-colors ${child ? "py-1.5" : ""} ${
           overId === item.id ? "border-t-2 border-t-primary" : ""
         } ${
           activeItem === item.id
@@ -190,15 +204,15 @@ export function ChapterItems({
           </span>
         )}
         <div className="flex shrink-0 items-center gap-0.5">
-          {!child && (
-            <button onClick={() => add(item.id)} className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-primary" aria-label="添加小节" title="添加小节">
+          {canNest && (
+            <button onClick={() => add([...path, item.id])} className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-primary" aria-label="添加下级" title="添加下一级">
               <CornerDownRight className="size-3.5" />
             </button>
           )}
-          <button onClick={() => startEdit(item)} className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={child ? "编辑小节" : "编辑子项"}>
+          <button onClick={() => startEdit(item)} className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="编辑标题">
             <Pencil className="size-3.5" />
           </button>
-          <button onClick={() => mutateLevel(parentId, (list) => list.filter((it) => it.id !== item.id))} className="rounded-md p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive" aria-label={child ? "删除小节" : "删除子项"}>
+          <button onClick={() => mutateLevel(path, (list) => list.filter((it) => it.id !== item.id))} className="rounded-md p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive" aria-label="删除本项">
             <Trash2 className="size-3.5" />
           </button>
         </div>
@@ -206,43 +220,50 @@ export function ChapterItems({
     )
   }
 
-  const renderRow = (item: OutlineItem, parentId: string | null) =>
+  const renderRow = (item: OutlineItem, path: string[], depth: number) =>
     editingId === item.id ? (
       <EditRow
-        child={parentId != null}
+        child={depth > 1}
+        depth={depth}
         draft={draft}
         setDraft={setDraft}
-        onSave={() => saveLabel(item.id, parentId)}
+        onSave={() => saveLabel(item.id, path)}
         onCancel={() => setEditingId(null)}
       />
     ) : (
-      row(item, parentId)
+      row(item, path, depth)
     )
+
+  /** 递归渲染一层（含该层尾部落点）。depth 从 1（节）起算，最深到 MAX_OUTLINE_DEPTH-1。 */
+  const renderLevel = (list: OutlineItem[], path: string[], depth: number) => (
+    <ul className={`flex flex-col gap-1.5 ${depth === 1 ? "mt-2.5" : "mt-1.5"}`}>
+      {list.map((item) => (
+        <li key={item.id}>
+          {renderRow(item, path, depth)}
+          {(item.children?.length ?? 0) > 0 && renderLevel(item.children!, [...path, item.id], depth + 1)}
+          {/* 该项下级的尾部落点：仅拖动其直接子项时显形 */}
+          {drag?.parentId === [...path, item.id].join("/") && (item.children?.length ?? 0) > 0 && (
+            <ul className="mt-1.5">
+              <li
+                {...tailDropProps([...path, item.id])}
+                style={{ marginLeft: `${depth * 1.5}rem` }}
+                className="h-2 rounded border border-dashed border-primary/40"
+                aria-label="移到本层末尾"
+              />
+            </ul>
+          )}
+        </li>
+      ))}
+    </ul>
+  )
 
   return (
     <>
-      <ul className="mt-2.5 flex flex-col gap-1.5">
-        {items.map((item) => (
-          <li key={item.id}>
-            {renderRow(item, null)}
-            {(item.children?.length ?? 0) > 0 && (
-              <ul className="mt-1.5 flex flex-col gap-1.5">
-                {item.children!.map((c) => (
-                  <li key={c.id}>{renderRow(c, item.id)}</li>
-                ))}
-                {/* 小节层尾部落点:仅拖本节小节时显形 */}
-                {drag?.parentId === item.id && (
-                  <li {...tailDropProps(item.id)} className="ml-6 h-2 rounded border border-dashed border-primary/40" aria-label="移到本节末尾" />
-                )}
-              </ul>
-            )}
-          </li>
-        ))}
-      </ul>
+      {renderLevel(items, [], 1)}
       {/* 添加子项;也是顶层拖拽的「移到末尾」落点（拖到按钮上放手） */}
       <button
-        onClick={() => add(null)}
-        {...tailDropProps(null)}
+        onClick={() => add([])}
+        {...tailDropProps([])}
         className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-border py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
       >
         <Plus className="size-3.5" />
