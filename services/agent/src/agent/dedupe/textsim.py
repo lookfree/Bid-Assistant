@@ -8,13 +8,35 @@ import re
 
 _SENT_SPLIT = re.compile(r"[。！？；!?;\n]+")
 _WS = re.compile(r"\s+")
+# 行尾出现这些字符 = 这一行自身已断句，不是被硬换行截断的
+_LINE_ENDS = "。！？；：!?;:，,、）)】」』"
 
 
-def split_sentences(clauses: list[dict], min_len: int) -> list[str]:
-    """条款文本 → 句子列表：按中文句读切分、去空白、过滤短句（编号/页眉类噪声）。"""
-    out: list[str] = []
+def _merge_hard_wraps(clauses: list[dict]) -> list[str]:
+    """把硬换行粘回连续文本。同一份内容导成 PDF 后每个**视觉行**都是一条 clause，
+    而 docx 里是整段一条；若照旧把换行当句号切，docx 的一整句会去对 PDF 的三四个碎片，
+    Jaccard 恒低于阈值——生产实测同一份内容的 docx×PDF 只得 12%，用户看到的就是「查重显示 0」。
+    规则：上一行结尾不是断句符号，且两行都不是表格行（含 \t）→ 判定为被换行截断，粘回上一行。"""
+    lines: list[str] = []
     for c in clauses:
-        for raw in _SENT_SPLIT.split(c.get("text", "")):
+        t = (c.get("text") or "").strip()
+        if not t:
+            continue
+        prev = lines[-1] if lines else ""
+        if prev and "\t" not in t and "\t" not in prev and prev[-1] not in _LINE_ENDS:
+            lines[-1] = prev + t
+        else:
+            lines.append(t)
+    return lines
+
+
+def split_sentences(clauses: list[dict], min_len: int, merge_wraps: bool = False) -> list[str]:
+    """条款文本 → 句子列表：按中文句读切分、去空白、过滤短句（编号/页眉类噪声）。
+    merge_wraps 只对 **PDF** 开（逐视觉行是 pypdf 提取的产物，见 _merge_hard_wraps）；
+    docx 的一条 clause 是真段落，粘起来反而会把整章糊成一句、毁掉句级比对的粒度。"""
+    out: list[str] = []
+    for line in (_merge_hard_wraps(clauses) if merge_wraps else [(c.get("text") or "") for c in clauses]):
+        for raw in _SENT_SPLIT.split(line):
             s = _WS.sub("", raw)
             if len(s) >= min_len:
                 out.append(s)

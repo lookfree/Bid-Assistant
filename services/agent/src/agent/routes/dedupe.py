@@ -45,8 +45,11 @@ def _load_doc(key: str, label: str, dims: list[str], k: int) -> DocFeatures:
     parsed = parse_bytes(data, key)
     feats = DocFeatures(label=label)
     if "text" in dims:
-        # 短于 shingle 窗口的句子无法比对，直接过滤（也顺带滤掉编号类噪声）
-        feats.sentences = split_sentences(parsed.clauses, min_len=max(k, 6))
+        # 短于 shingle 窗口的句子无法比对，直接过滤（也顺带滤掉编号类噪声）。
+        # PDF 要先粘回硬换行：pypdf 逐视觉行提取，不归一化的话同一份内容的 docx×PDF 配不上
+        # （生产实测只得 12%，用户看到的是「查重显示 0」）。
+        feats.sentences = split_sentences(parsed.clauses, min_len=max(k, 6),
+                                          merge_wraps=parsed.kind == "pdf")
     if "image" in dims:
         feats.image_hashes = extract_media_hashes(data, parsed.kind)
     if "meta" in dims:

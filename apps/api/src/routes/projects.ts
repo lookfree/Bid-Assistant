@@ -542,6 +542,11 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
           // done 表示整本完成（不在 STEP_ORDER 内）→ 进度打满；否则取当前步下标
           stepIndex: p.currentStep === "done" ? totalSteps : Math.max(STEP_ORDER.indexOf(p.currentStep as Step), 0),
           totalSteps,
+          // 招标文件份数：列表要展示「主文件名 · 含 N 份」，一份招标常有正文+补遗+答疑+清单多个文件
+          tenderCount: (p.tenderFileKeys ?? (p.tenderFileKey ? [p.tenderFileKey] : [])).length,
+          // 是否已有可用的投标文件：述标/审查的选择列表据此过滤——列出没有标书的项目
+          // 只会让用户选中后空转，甚至触发一次白扣积分的运行。
+          hasBid: p.kind === "review" ? !!p.bidFileKey : ["review", "present", "export", "done"].includes(p.currentStep),
           createdAt: p.createdAt,
         })),
         total,

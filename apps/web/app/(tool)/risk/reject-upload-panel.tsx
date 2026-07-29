@@ -6,7 +6,8 @@ import { createReviewProject, setCurrentProjectId } from "@/lib/project"
 import { uploadFile, uploadErrorMessage, uploadHint, ACCEPT_BID, ACCEPT_TENDER } from "@/lib/files"
 
 /** 废标风险审查的默认入口：招标文件 + 投标文件双上传区（用户指定的版式）。
- *  两个都没传时按钮禁用；只传投标文件也放行（做通用自查，是既有能力，不因版式改动而丢）。
+ *  **两份都必传**（用户口径：废标审查是拿招标要求逐条比对投标文件，两者是一体的，
+ *  不允许单独拿投标文件做废标审查）——缺一侧按钮就禁用，避免用户只传一份也被扣掉积分。
  *  隐私文案按**实际实现**写（加密传输存储 / 仅本人可见 / 模型不训练 / 可阅后即焚）——
  *  文件确实会传到服务端解析，不能照抄「浏览器本地存储、不上传服务器」那种做不到的承诺。 */
 export function RejectUploadPanel({ onPickExisting }: { onPickExisting: () => void }) {
@@ -16,7 +17,7 @@ export function RejectUploadPanel({ onPickExisting }: { onPickExisting: () => vo
   const [error, setError] = useState<string | null>(null)
 
   async function submit() {
-    if (!bid.length || busy) return
+    if (!bid.length || !tender.length || busy) return
     setBusy(true)
     setError(null)
     try {
@@ -27,8 +28,7 @@ export function RejectUploadPanel({ onPickExisting }: { onPickExisting: () => vo
       ])
       const id = await createReviewProject(bidUp.map((f) => f.key), tenderUp.map((f) => f.key))
       setCurrentProjectId(id)
-      // 附了招标文件先去读标（读完自动接续审查步），否则直接进本项目的审查
-      window.location.href = tenderUp.length ? "/read" : "/risk?view=project"
+      window.location.href = "/read" // 先读标，读完自动接续审查步
     } catch (e) {
       setError(uploadErrorMessage(e, "创建失败，请重试"))
       setBusy(false)
@@ -47,7 +47,7 @@ export function RejectUploadPanel({ onPickExisting }: { onPickExisting: () => vo
         <DropZone
           label="招标文件"
           en="Tender Doc"
-          hint="招标正文、补遗澄清、答疑文件等，可多选（不传则做通用自查，不逐条对照）"
+          hint="招标正文、补遗澄清、答疑文件等，可多选（必选：没有招标要求就无从判定废标）"
           accept={ACCEPT_TENDER}
           files={tender}
           onPick={setTender}
@@ -56,7 +56,7 @@ export function RejectUploadPanel({ onPickExisting }: { onPickExisting: () => vo
         <DropZone
           label="投标文件"
           en="Bid Doc"
-          hint="需要进行合规审查的投标文件，可多选（商务标与技术标分册出卷时一起传）"
+          hint="需要进行合规审查的投标文件，可多选（必选；商务标与技术标分册出卷时一起传）"
           accept={ACCEPT_BID}
           files={bid}
           onPick={setBid}
@@ -81,17 +81,19 @@ export function RejectUploadPanel({ onPickExisting }: { onPickExisting: () => vo
 
       <button
         onClick={() => void submit()}
-        disabled={!bid.length || busy}
+        disabled={!bid.length || !tender.length || busy}
         className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold transition-opacity disabled:cursor-not-allowed disabled:bg-secondary disabled:text-muted-foreground enabled:gradient-brand enabled:text-white enabled:hover:opacity-90"
       >
         {busy && <Loader2 className="size-4 animate-spin" />}
         {busy
           ? "正在上传并创建…"
-          : !bid.length
+          : !bid.length && !tender.length
             ? "请先上传招标文件与投标文件"
-            : tender.length
-              ? "创建对照审查（先读标）"
-              : "创建通用自查（未附招标文件）"}
+            : !tender.length
+              ? "请补充招标文件"
+              : !bid.length
+                ? "请补充投标文件"
+                : "创建对照审查（先读标）"}
       </button>
 
       <button

@@ -16,6 +16,7 @@ import {
   Loader2,
   AlertTriangle,
   UploadCloud,
+  Files,
 } from "lucide-react"
 import { Trash2 } from "lucide-react"
 import { ApiError } from "@/lib/api-client"
@@ -367,6 +368,14 @@ function ProjectCard({ project: p, onDelete }: { project: ProjectListItem; onDel
               {formatDate(p.createdAt)} 创建
             </span>
             <span>{statusLabel[p.status]}</span>
+            {/* 一份招标常是正文+补遗+答疑+清单好几个文件：只显示主文件名会让用户以为漏传了，
+                标出份数（主文件名 · 含 N 份），点进项目在读标页可逐份切换查看原文 */}
+            {(p.tenderCount ?? 0) > 1 && (
+              <span className="inline-flex items-center gap-1">
+                <Files className="size-3.5" />
+                招标文件 {p.tenderCount} 份（主文件 + 附件）
+              </span>
+            )}
           </div>
           {/* 进度条：已完成步数 / 总步数 */}
           <div className="mt-2.5 flex items-center gap-2">

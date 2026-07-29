@@ -59,3 +59,31 @@ def test_strip_baseline_removes_tender_alike():
     kept, removed = strip_baseline(list(_A), tender, k=5, threshold=0.6)
     assert removed == 1
     assert _A[0] not in kept and _A[1] in kept and _A[2] in kept
+
+
+def test_same_content_across_docx_and_pdf_scores_high():
+    """生产实测（用户反馈「两份实际是同一份文件内容，查重显示 0」）：同一份内容一份 docx 一份 PDF，
+    pypdf 提取时每个视觉行都成一条 clause，旧实现把换行当句号切 → docx 的整句去对 PDF 的碎片，
+    Jaccard 恒低于阈值，得分 12%（真实 PDF 行更长时直接 0）。粘回硬换行后应判为高度相同。"""
+    from agent.dedupe.textsim import match_sentences, split_sentences
+
+    para = ("我方承诺严格按照招标文件要求提供全部服务并保证质量满足国家标准。"
+            "项目实施期间我方将安排专职项目经理驻场负责日常协调与进度管理。"
+            "售后服务响应时间不超过两小时并提供七乘二十四小时值班电话。")
+    docx = split_sentences([{"text": para}], 6)                                    # docx：整段一条
+    pdf = split_sentences([{"text": para[i:i + 16]} for i in range(0, len(para), 16)], 6, merge_wraps=True)  # PDF：逐视觉行
+    assert docx == pdf                                                             # 归一化后两侧句子一致
+    score, pairs = match_sentences(docx, pdf, 5, 0.50)
+    assert score > 95 and len(pairs) == 3
+
+
+def test_merge_hard_wraps_keeps_table_rows_and_finished_lines_apart():
+    """只粘「被换行截断」的行：表格行（含 \\t）与已断句的行各自独立，
+    否则整张表会被糊成一句，反而把无关内容判成相似。"""
+    from agent.dedupe.textsim import _merge_hard_wraps
+
+    assert _merge_hard_wraps([{"text": "我方承诺按期交付。"}, {"text": "项目经理驻场。"}]) == [
+        "我方承诺按期交付。", "项目经理驻场。",
+    ]
+    assert _merge_hard_wraps([{"text": "序号\t名称"}, {"text": "1\t服务器"}]) == ["序号\t名称", "1\t服务器"]
+    assert _merge_hard_wraps([{"text": "本项目服务期为"}, {"text": "三年整。"}]) == ["本项目服务期为三年整。"]

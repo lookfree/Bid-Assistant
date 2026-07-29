@@ -77,7 +77,13 @@ def compare_pair(a: DocFeatures, b: DocFeatures, dims: list[str], strategy: str)
     hits: list[dict] = []
     notes: list[str] = []
     score = 0.0
-    if "text" in dims:
+    text_unavailable = "text" in dims and not (a.sentences and b.sentences)
+    if text_unavailable:
+        # 提不出文字（扫描件/图片版 PDF）却报「未见明显围标特征」= 假放行，用户据此认定没问题
+        blank = "、".join(d.label for d in (a, b) if not d.sentences)
+        notes.append(f"「{blank}」未提取到可比对文本（扫描件/图片版 PDF 暂不支持），"
+                     "本次文本比对不成立，请换用可复制文字的版本重试")
+    elif "text" in dims:
         text_score, pairs = match_sentences(a.sentences, b.sentences, cfg["k"], cfg["sent_th"])
         hits += _text_hits(a.sentences, b.sentences, pairs)
         score += text_score
@@ -99,7 +105,8 @@ def compare_pair(a: DocFeatures, b: DocFeatures, dims: list[str], strategy: str)
     final = min(100, round(score))
     tone = ("destructive" if final >= cfg["destructive"]
             else "warning" if final >= cfg["warning"] else "success")
-    note = f"{_TONE_LEAD[tone]}：{'；'.join(notes)}" if notes else _TONE_LEAD[tone]
+    lead = "文本比对未完成" if text_unavailable else _TONE_LEAD[tone]
+    note = f"{lead}：{'；'.join(notes)}" if notes else lead
     return {"a": a.label, "b": b.label, "score": final, "tone": tone, "note": note, "hits": hits}
 
 

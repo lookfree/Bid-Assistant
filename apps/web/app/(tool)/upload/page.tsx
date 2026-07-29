@@ -187,13 +187,21 @@ export default function UploadPage() {
     setFiles((prev) => prev.filter((f) => f.id !== id))
   }
 
+  /* 主招标文件（项目名取它，其余按附件处理）：默认第一份已就绪的文件，用户可改。
+     一份招标常带补遗/答疑/清单共四五个文件，谁当项目名不能靠运气——用户在「我的标书」里
+     看到的就是这个名字，选错了他根本认不出这是哪个项目。 */
+  const [primaryId, setPrimaryId] = useState<string | null>(null)
+  const doneFiles = files.filter((f) => f.status === "done" && f.fileKey)
+  const primary = doneFiles.find((f) => f.id === primaryId) ?? doneFiles[0]
+
   const [creating, setCreating] = useState(false)
 
   // 建项目（一本标书一个 thread）→ 进入读标；后续各页经 localStorage 的 projectId 贯穿。
   // ?autostart=1：本按钮已标注读标费用，这一下点击即计费授权，read 页据此自动跑一次读标。
   async function startRead() {
-    // 多文件招标：按上传顺序收集所有已完成文件的 fileKey，一并传给建项目接口
-    const keys = files.filter((f) => f.status === "done").map((f) => f.fileKey).filter((k): k is string => !!k)
+    // 多文件招标：主文件排首位（后端按 keys[0] 定项目名），其余按选择顺序跟随
+    const ordered = primary ? [primary, ...doneFiles.filter((f) => f.id !== primary.id)] : doneFiles
+    const keys = ordered.map((f) => f.fileKey).filter((k): k is string => !!k)
     if (keys.length === 0 || creating) return
     setCreating(true)
     try {
@@ -320,10 +328,18 @@ export default function UploadPage() {
             }`}
           >
             <div className="flex items-center justify-between gap-2">
-              <p className="text-sm font-semibold text-foreground">
-                已选择 {files.length} 个文件
-                {!allDone && <span className="ml-1 font-normal text-muted-foreground">· 上传中 {doneCount}/{files.length}</span>}
-              </p>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-foreground">
+                  已选择 {files.length} 个文件
+                  {!allDone && <span className="ml-1 font-normal text-muted-foreground">· 上传中 {doneCount}/{files.length}</span>}
+                </p>
+                {doneFiles.length > 1 && (
+                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                    项目名取主文件：<span className="text-foreground">{primary?.name}</span>
+                    ，其余 {doneFiles.length - 1} 份作为附件（补遗/答疑/清单等）一并读标
+                  </p>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={() => inputRef.current?.click()}
@@ -350,7 +366,14 @@ export default function UploadPage() {
                       {f.status === "done" ? <FileCheck2 className="size-5" /> : <FileText className="size-5" />}
                     </span>
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium text-foreground">{f.name}</p>
+                      <p className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+                        <span className="truncate">{f.name}</span>
+                        {primary?.id === f.id && (
+                          <span className="shrink-0 rounded-md bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary">
+                            主文件
+                          </span>
+                        )}
+                      </p>
                       <p className="text-xs text-muted-foreground">
                         {formatSize(f.size)}
                         {f.status === "done" ? (
@@ -366,6 +389,16 @@ export default function UploadPage() {
                       <Loader2 className="size-5 shrink-0 animate-spin text-primary" />
                     ) : (
                       <div className="flex shrink-0 items-center gap-1">
+                        {/* 多文件招标才需要指定主文件（单文件时它自然就是） */}
+                        {f.status === "done" && doneFiles.length > 1 && primary?.id !== f.id && (
+                          <button
+                            onClick={() => setPrimaryId(f.id)}
+                            className="rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                            aria-label={`把 ${f.name} 设为主招标文件`}
+                          >
+                            设为主文件
+                          </button>
+                        )}
                         {/* 失败可单文件重传，不必移除重加（格式拦截项无原始 File，不给重试） */}
                         {f.status === "error" && f.file && (
                           <button

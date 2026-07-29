@@ -22,6 +22,8 @@ export type StandaloneBidEntryProps = {
   bidOnly?: boolean
   /** 招标文件可选项的提示（仅 !bidOnly 时展示）。 */
   tenderHint?: string
+  /** 招标文件必传（审查：废标体检要逐条比对招标要求，两者一体，缺一不可） */
+  tenderRequired?: boolean
   submitLabel: string
   /** 附了招标文件时的提交按钮文案（仅 !bidOnly 时可能用到）。 */
   submitLabelWithTender?: string
@@ -113,6 +115,7 @@ function UploadBidCard({
   uploadDesc,
   bidOnly,
   tenderHint,
+  tenderRequired,
   submitLabel,
   submitLabelWithTender,
 }: StandaloneBidEntryProps & { highlight?: boolean }) {
@@ -125,6 +128,7 @@ function UploadBidCard({
 
   async function submit() {
     if (!bidFiles.length || busy) return
+    if (tenderRequired && !tenderFile) return
     setBusy(true)
     setError(null)
     try {
@@ -176,7 +180,7 @@ function UploadBidCard({
       {error && <p className="mt-2 text-xs font-medium text-destructive">{error}</p>}
       <button
         onClick={() => void submit()}
-        disabled={!bidFiles.length || busy}
+        disabled={!bidFiles.length || busy || (tenderRequired && !tenderFile)}
         className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-xl gradient-brand px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
       >
         {busy ? <Loader2 className="size-4 animate-spin" /> : <UploadCloud className="size-4" />}

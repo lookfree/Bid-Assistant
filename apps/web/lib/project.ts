@@ -128,6 +128,10 @@ export type ProjectListItem = {
   currentStep: "read" | "outline" | "content" | "review" | "present" | "export" | "done"
   stepIndex: number
   totalSteps: number
+  /** 招标文件份数（正文+补遗+答疑+清单常是多份）：列表展示「主文件名 · 含 N 份」 */
+  tenderCount?: number
+  /** 已有可用的投标文件（生成到正文之后，或线下上传的标书）：述标/审查选择列表据此过滤 */
+  hasBid?: boolean
   createdAt: string
 }
 

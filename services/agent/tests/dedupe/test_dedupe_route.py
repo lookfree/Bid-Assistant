@@ -25,6 +25,7 @@ def _docx(paras: list[str], author: str | None = None) -> bytes:
     return buf.getvalue()
 
 
+
 def _fake_store(monkeypatch, files: dict[str, bytes]):
     """monkeypatch 路由模块的 read_bytes：按 key 从内存字典取，不碰 MinIO。"""
     monkeypatch.setattr(dedupe_mod, "read_bytes", lambda key: files[key])
@@ -152,3 +153,43 @@ async def test_dedupe_parse_failure_422(monkeypatch):
     assert "B 公司标书" in body
     assert "请确认为文本可读" in body       # 只给稳定文案
     assert "KeyError" not in body           # 原始异常细节不外泄
+
+
+async def test_dedupe_matches_same_content_across_docx_and_pdf(monkeypatch):
+    """用户反馈「两份实际上传的是同一份文件内容，查重显示 0」：同一内容一份 docx 一份 PDF，
+    PDF 经 pypdf 逐视觉行提取（每行一条 clause），旧实现把换行当句号切 → 两侧句子对不上判 0%。
+    这里按 kind 造出两种形态的解析结果，验证 PDF 侧粘回硬换行后判为高度相同。"""
+    from agent.parsing.parsers import ParsedDoc
+
+    # 用真实标书的句读形态（句末有句号）：PDF 只有靠句号才知道段落到哪结束
+    paras = ["本项目采用微服务架构设计，保障系统高可用与弹性扩展能力。",
+             "我方承诺在合同签订后三十个日历天内完成全部系统部署与上线工作。",
+             "售后服务团队提供七乘二十四小时热线响应服务并按时限闭环。"]
+
+    def fake_parse(data: bytes, key: str) -> ParsedDoc:
+        if key.endswith(".pdf"):   # PDF：每 20 字一条 clause，模拟逐视觉行
+            lines = [para[i:i + 20] for para in paras for i in range(0, len(para), 20)]
+            return ParsedDoc(text="\n".join(lines), kind="pdf",
+                             clauses=[{"id": f"sec-1-c{i}", "text": t} for i, t in enumerate(lines)])
+        return ParsedDoc(text="\n".join(paras), kind="docx",
+                         clauses=[{"id": f"sec-1-c{i}", "text": t} for i, t in enumerate(paras)])
+
+    _fake_store(monkeypatch, {"u/a.docx": b"x", "u/b.pdf": b"y"})
+    monkeypatch.setattr(dedupe_mod, "parse_bytes", fake_parse)
+    res = await dedupe(DedupeBody(files=[DedupeFile(key="u/a.docx", label="应答文件.docx"),
+                                         DedupeFile(key="u/b.pdf", label="投标书.pdf")],
+                                  dims=["text"]))
+    p = res["pairs"][0]
+    assert p["score"] >= 70 and p["tone"] == "destructive", p["note"]
+
+
+async def test_dedupe_flags_documents_with_no_extractable_text(monkeypatch):
+    """扫描件/图片版 PDF 提不出文字时，绝不能报「未见明显围标特征」——那是假放行，
+    用户会据此认定两份标书没问题。必须显式说明本次文本比对不成立。"""
+    _fake_store(monkeypatch, {"u/a.docx": _docx(_A), "u/b.docx": _docx([])})
+    res = await dedupe(DedupeBody(files=[DedupeFile(key="u/a.docx", label="A.docx"),
+                                         DedupeFile(key="u/b.docx", label="扫描件.docx")],
+                                  dims=["text"]))
+    note = res["pairs"][0]["note"]
+    assert "未见明显围标特征" not in note
+    assert "扫描件.docx" in note and "未提取到可比对文本" in note
