@@ -30,7 +30,7 @@ import { NoProjectGuide } from "@/components/tool/no-project-guide"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { StepRunCta } from "@/components/tool/step-run-cta"
 import { AiNotice } from "@/components/tool/ai-notice"
-import { useStep, useOtherStepResult } from "@/lib/use-step"
+import { stepNotApplicable, useStep, useOtherStepResult } from "@/lib/use-step"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import { patchErrorMessage, patchStep } from "@/lib/project"
@@ -440,7 +440,7 @@ export default function OutlinePage() {
                 <StepPlaceholder text={error ? "结果加载异常，请按上方提示重试或刷新" : "提纲生成中…完成后在此展示，可自由增删改"} />
               ) : info?.project.currentStep === "read" ? (
                 <StepPlaceholder text="先完成读标步骤，再生成提纲" action={{ href: "/read", label: "前往读标" }} />
-              ) : info?.project.kind === "review" ? (
+              ) : stepNotApplicable(info, "outline") ? (
                 /* 审查专用项目（spec328）没有提纲步:渲染引导而非计费 CTA（点了必 409） */
                 <StepPlaceholder text="本项目为「标书审查」专用,不含提纲/正文生成" action={{ href: "/risk", label: "前往标书审查" }} />
               ) : (
@@ -580,15 +580,19 @@ export default function OutlinePage() {
         </section>
       </div>
 
-      {/* 右下角悬浮：进入正文生成 */}
-      <Link
-        href="/content"
-        className="fixed bottom-6 right-6 z-40 inline-flex items-center gap-2 rounded-full gradient-brand px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-primary/30 transition-opacity hover:opacity-90"
-      >
-        <CheckCircle2 className="size-4" />
-        确认大纲，生成投标正文
-        <ArrowRight className="size-4" />
-      </Link>
+      {/* 右下角悬浮：进入正文生成。**没有提纲就不该有这个按钮**——
+          审查专用项目页面上明写着「不含提纲/正文生成」，右下角却还挂着「确认大纲，生成投标正文」，
+          自相矛盾（用户反馈：逻辑混乱）；提纲尚未生成的普通项目同理，没什么「大纲」可确认。 */}
+      {real && !stepNotApplicable(info, "outline") && (
+        <Link
+          href="/content"
+          className="fixed bottom-6 right-6 z-40 inline-flex items-center gap-2 rounded-full gradient-brand px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-primary/30 transition-opacity hover:opacity-90"
+        >
+          <CheckCircle2 className="size-4" />
+          确认大纲，生成投标正文
+          <ArrowRight className="size-4" />
+        </Link>
+      )}
     </div>
   )
 }

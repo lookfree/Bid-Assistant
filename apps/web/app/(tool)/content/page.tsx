@@ -34,7 +34,7 @@ import { tiersCostText } from "@/lib/content-tiers"
 import { useLibrary } from "@/lib/use-library"
 import { type LibraryItem } from "@/lib/library"
 import { deriveHealthReport } from "@/lib/risk-derive"
-import { stepPrereq, useOtherStepResult, useStep } from "@/lib/use-step"
+import { stepNotApplicable, stepPrereq, useOtherStepResult, useStep } from "@/lib/use-step"
 import { normalizeChapterHtml } from "@/lib/chapter-normalize"
 import { useExport } from "./use-export"
 import { AiNotice } from "@/components/tool/ai-notice"
@@ -358,6 +358,14 @@ export default function ContentPage() {
           <StepPlaceholder text={dataLoading ? "正在加载正文数据…" : "正在加载提纲章节…"} delayMs={250} />
         ) : outlineError ? (
           <StepPlaceholder text="提纲数据加载失败，请刷新重试" />
+        ) : stepNotApplicable(info, "content") ? (
+          /* 审查专用项目没有正文步：原来会引导去「提纲页」，而提纲页对这类项目说的是
+             「不含提纲/正文生成」——两页互相指，用户绕不出去（反馈：逻辑混乱） */
+          <StepPrereqGuide
+            prereq={stepNotApplicable(info, "content")!}
+            title="本项目不含正文生成"
+            currentDesc="这是独立的标书审查项目（上传的线下标书），只做废标体检与述标，不走提纲/正文生成流水线。"
+          />
         ) : stepPrereq(info, "content") ? (
           <StepPrereqGuide
             prereq={stepPrereq(info, "content")!}
