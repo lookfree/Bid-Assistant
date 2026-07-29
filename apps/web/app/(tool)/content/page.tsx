@@ -215,7 +215,11 @@ export default function ContentPage() {
     contentSaveState, contentSaveError,
     saveEditor, undoChapter, applyRewrite, insertAtCaret,
     imageInputRef, openImagePicker, onImageChosen,
-  } = useChapterEdits({ isReal, projectId, data, setData, editor, active, bumpEpoch: () => setEditorEpoch((e) => e + 1) })
+  } = useChapterEdits({
+    isReal, projectId, data, setData, editor, active,
+    bumpEpoch: () => setEditorEpoch((e) => e + 1),
+    scrollRef: editorScrollRef,
+  })
 
   function openLibrary() {
     setLibraryOpen(true)

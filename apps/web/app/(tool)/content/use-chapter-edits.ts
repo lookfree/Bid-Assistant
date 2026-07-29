@@ -19,8 +19,23 @@ export function useChapterEdits(opts: {
   active: Chapter
   /** AI 改写/快照回退后换 key 重挂 RichEditor（内容与撤销栈干净重置） */
   bumpEpoch: () => void
+  /** 编辑器滚动容器：重挂会把滚动位置清零，替换正文后要还原（否则用户被甩回文首找不到改了哪） */
+  scrollRef?: { current: HTMLElement | null }
 }) {
-  const { isReal, projectId, data, setData, editor, active, bumpEpoch } = opts
+  const { isReal, projectId, data, setData, editor, active, bumpEpoch, scrollRef } = opts
+
+  /** 重挂 RichEditor 但保住滚动位置：换 key 会重建 DOM、scrollTop 归零。
+   *  先记下当前位置，两帧后（新内容已挂载测量完）还原——生产反馈「改完跳到文章开头，找不到改了哪」。 */
+  function bumpKeepingScroll() {
+    const top = scrollRef?.current?.scrollTop ?? 0
+    bumpEpoch()
+    if (!top) return
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const el = scrollRef?.current
+      if (!el) return
+      el.scrollTop = Math.min(top, Math.max(0, el.scrollHeight - el.clientHeight))
+    }))
+  }
 
   /* 编辑持久化状态（真实项目失焦自动全量回写 content 步结果） */
   const [contentSaveState, setContentSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle")
@@ -69,7 +84,7 @@ export function useChapterEdits(opts: {
     const next = withChapterHtml(data, active.id, prev)
     setData(next)
     persistContent(next)
-    bumpEpoch()
+    bumpKeepingScroll()
   }
 
   /** 失焦保存（RichEditor onBlur 吐 HTML）：无变化不回写;被覆盖版本入撤销栈。 */
@@ -91,7 +106,7 @@ export function useChapterEdits(opts: {
       if (old !== undefined && old !== html) pushHistory(chapterId, old)
       return withChapterHtml(prev, chapterId, html)
     })
-    bumpEpoch() // 改写替换经重挂生效（见 RichEditor 文档注释）
+    bumpKeepingScroll() // 改写替换经重挂生效（见 RichEditor 文档注释），滚动位置保持不动
   }
 
   /* 插入内容：TipTap 失焦仍保留文档内选区,insertContent 落在光标处;

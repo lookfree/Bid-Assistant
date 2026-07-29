@@ -2,17 +2,21 @@
 
 import { useEffect, useState } from "react"
 import Link from "next/link"
-import { Bot, Library, Loader2, Send, User } from "lucide-react"
+import { Bot, Check, Library, Loader2, Send, User, X } from "lucide-react"
 import { ApiError } from "@/lib/api-client"
 import { rewriteChapter } from "@/lib/project"
 import { notifyCreditsChanged } from "@/lib/use-step"
 import { isQuestionNotInstruction, QUESTION_GUIDE_REPLY } from "@/lib/assistant-guard"
 
 type ChatMsg = { role: "user" | "ai"; text: string; link?: { href: string; label: string } }
+/** 待确认的改写结果：改写完成后先挂在这里，用户点「应用」才写回正文（此前是直接覆盖，
+ *  用户既没机会看就被改了，编辑器还因重挂跳回文首、找不到改了哪——两条生产反馈）。 */
+type Pending = { chapterId: string; label: string; html: string }
 
 /**
  * AI 对话侧栏：真实项目走单章改写通道（POST /api/projects/:id/chapters/:chapterId/rewrite，
- * App 侧计费 25 积分）；改写成功由父组件替换该章正文并刷新余额。无项目（demo）只提示引导。
+ * 2026-07-29 起不计费）。改写结果**先给预览、用户确认后**才由父组件替换该章正文。
+ * 无项目（demo）只提示引导。
  */
 export function ChatPanel({
   chapters,
@@ -30,14 +34,16 @@ export function ChatPanel({
   /** content 步已完成（真实改写通道可用；未完成后端会 409） */
   contentReady: boolean
   balance: number
-  /** 改写成功：把返回 html 替换目标章正文 */
+  /** 用户确认后：把返回 html 替换目标章正文（父组件负责保住滚动位置） */
   onApply: (chapterId: string, html: string) => void
   refreshBalance: () => void
   onOpenLibrary: () => void
 }) {
   const [chat, setChat] = useState<ChatMsg[]>([
-    { role: "ai", text: "你好，我是智启元 · 投标助手。选中目标章节后输入改写指令（如「把响应时间改为15分钟」「本章更正式一些」），我会改写该章内容并直接替换正文。" },
+    { role: "ai", text: "你好，我是智启元 · 投标助手。选中目标章节后输入改写指令（如「把响应时间改为15分钟」「本章更正式一些」），我会先把改写结果给你过目，确认后再替换正文。" },
   ])
+  /** 待确认的改写结果（同一时刻只保留最新一份） */
+  const [pending, setPending] = useState<Pending | null>(null)
   const [input, setInput] = useState("")
   const [sending, setSending] = useState(false)
   // 目标章节：默认跟随当前编辑章；用户可在下拉改选，切换编辑章后恢复跟随
@@ -47,6 +53,12 @@ export function ChatPanel({
   const target = chapters.find((c) => c.id === targetId) ?? chapters[0]
 
   const push = (m: ChatMsg) => setChat((prev) => [...prev, m])
+
+/** 改写结果摘要：剥标签取纯文本（HTML 直接展示既看不懂又会撑爆侧栏）；过长截断。 */
+function previewOf(html: string): string {
+  const text = html.replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/gi, " ").replace(/\s+/g, " ").trim()
+  return text.length > 260 ? `${text.slice(0, 260)}…` : text || "（改写结果为空）"
+}
 
   async function sendMessage() {
     const text = input.trim()
@@ -70,12 +82,12 @@ export function ChatPanel({
     push({ role: "ai", text: `收到，正在改写「${target.no} ${target.title}」…` })
     try {
       const r = await rewriteChapter(projectId, target.id, text)
-      onApply(r.chapterId, r.html)
-      // 广播全局扣费事件：侧边栏积分卡 + useMembership（底部栏/本面板余额）一起刷新。
-      // 此前只调 refreshBalance（页面级），侧边栏停在旧值 → 同屏两个余额（生产实测）。
+      // 不直接覆盖正文：挂起待确认，由用户决定是否应用（生产反馈：没问过就改了）
+      setPending({ chapterId: r.chapterId, label: `${target.no} ${target.title}`, html: r.html })
+      // 余额刷新保留：改写虽已免费，但同屏余额口径仍应与服务端一致（将来恢复收费也不用再改这里）
       notifyCreditsChanged()
       refreshBalance()
-      push({ role: "ai", text: `已完成「${target.no} ${target.title}」的改写并替换正文，可在编辑器继续微调。` })
+      push({ role: "ai", text: `「${target.no} ${target.title}」已改写完成，请在下方确认后再替换正文。` })
     } catch (e) {
       if (e instanceof ApiError && e.status === 402) {
         push({ role: "ai", text: "积分余额不足，本次改写未执行。", link: { href: "/membership", label: "去充值" } })
@@ -143,6 +155,38 @@ export function ChatPanel({
             </div>
           </div>
         ))}
+        {/* 待确认的改写：给出摘要预览与去留选择——不确认就绝不动正文 */}
+        {pending && (
+          <div className="rounded-xl border border-primary/30 gradient-brand-soft p-3">
+            <p className="text-xs font-semibold text-foreground">改写结果待确认 · {pending.label}</p>
+            <p className="mt-1.5 max-h-28 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-background/70 p-2 text-[11px] leading-relaxed text-muted-foreground">
+              {previewOf(pending.html)}
+            </p>
+            <div className="mt-2.5 flex items-center gap-2">
+              <button
+                onClick={() => {
+                  onApply(pending.chapterId, pending.html)
+                  setPending(null)
+                  push({ role: "ai", text: `已替换「${pending.label}」的正文，可在编辑器继续微调；不满意可用编辑器的撤销回退。` })
+                }}
+                className="inline-flex items-center gap-1 rounded-lg gradient-brand px-3 py-1.5 text-xs font-semibold text-white transition-opacity hover:opacity-90"
+              >
+                <Check className="size-3.5" />
+                应用到正文
+              </button>
+              <button
+                onClick={() => {
+                  setPending(null)
+                  push({ role: "ai", text: "已放弃本次改写，正文未做任何改动。" })
+                }}
+                className="inline-flex items-center gap-1 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+              >
+                <X className="size-3.5" />
+                放弃
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 快捷指令 */}
