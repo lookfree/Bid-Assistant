@@ -630,7 +630,9 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         ? step === "read"
         : step === p.currentStep ||
           (step === "export" && ["review", "present", "done"].includes(p.currentStep)) ||
-          (["present", "review"].includes(step) && p.currentStep === "done"))
+          // 述标同样不依赖体检报告（与 export 同理）：正文写完就能述标，不必先花 60 积分体检
+          (step === "present" && ["review", "done"].includes(p.currentStep)) ||
+          (step === "review" && p.currentStep === "done"))
     if (!allowed) return c.json({ error: "out_of_order", expected: p.currentStep }, 409)
 
     // 一项目同一时刻只许一个在途 run（审查修正 2026-07-23）：述标/导出解耦后 present 与 export

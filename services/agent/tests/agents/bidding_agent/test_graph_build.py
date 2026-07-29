@@ -91,6 +91,7 @@ def test_content_routes_to_export_when_review_is_skipped():
     from agent.agents.bidding_agent.graph import _route_after_content, _route_after_export
 
     assert _route_after_content({"run_input": {"step": "export"}}) == "export"
+    assert _route_after_content({"run_input": {"step": "present"}}) == "present"  # 述标同样不依赖体检
     assert _route_after_content({"run_input": {"step": "review"}}) == "review"
     assert _route_after_content({}) == "review"          # 未指定=按流水线正常走体检
     # 跳过体检直出的项目事后仍要能补跑体检，否则那个项目的废标体检永远买不到

@@ -51,6 +51,9 @@ export function stepNotApplicable(info: ProjectInfo | null, step: StepName): { h
  *  述标，不依赖 review 是否已跑（与后端 routes/projects.ts 的步序闸对齐，见「审查专用项目」注释）。 */
 export function stepPrereq(info: ProjectInfo | null, step: StepName): { href: string; label: string } | null {
   if (step === "present" && info?.project.kind === "review") return null
+  // 述标不依赖废标体检（后端步序闸同步放行）：正文写完（currentStep 到 review）就能述标，
+  // 否则述标页会把用户拦回「选项目/传标书」中转页，看不到本项目的生成卡
+  if (step === "present" && info?.project.currentStep === "review") return null
   const cur = info?.project.currentStep
   if (!cur) return null
   const curIdx = STEP_ORDER.indexOf(cur as StepName)
