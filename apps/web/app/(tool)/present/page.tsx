@@ -373,6 +373,11 @@ export default function PresentPage() {
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
         <FlowNav current="present" info={info} />
         <StepPageHeader icon={Presentation} title="述标演示" desc="一键把标书提炼成述标/答辩 PPT，含演讲备注与预计问答" />
+        {!projectId && (
+          <p className="mb-3 rounded-xl border border-border bg-card px-4 py-2.5 text-sm text-muted-foreground">
+            还没有选中的标书——先从下面选一份（或上传线下标书），选完就直接进入述标生成页。
+          </p>
+        )}
         <PresentEntry
           onBack={projectId && info && !stepPrereq(info, "present") ? () => { window.location.href = "/present?view=project" } : undefined}
         />
@@ -389,14 +394,16 @@ export default function PresentPage() {
       </div>
     )
 
-  // 前序步未完成：不再引导「前往标书生成」——述标是独立能力，直接给独立操作入口
-  // （选已生成正文的项目，或上传线下标书；同 risk 页对废标风险审查 tab 的处理）。
-  if (!realDeck && stepPrereq(info, "present"))
+  // 当前项目还不能述标（正文没生成完）：**仍然停在这张卡上**，说清楚差哪一步、给一键前往，
+  // 并保留「从我的标书选择 / 上传标书文件」两个次要入口。原来直接甩回选择页——用户从菜单点进来
+  // 看到的是一个完全不同的页面（反馈：莫名其妙又出现这种页面）。此时不渲染任何计费按钮。
+  const gap = realDeck ? null : stepPrereq(info, "present")
+  if (gap)
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
         <FlowNav current="present" info={info} />
         <StepPageHeader icon={Presentation} title="述标演示" desc="一键把标书提炼成述标/答辩 PPT，含演讲备注与预计问答" />
-        <PresentEntry />
+        <NotReadyCard projectName={info.project.name ?? "当前项目"} gap={gap} />
       </div>
     )
 
@@ -730,6 +737,39 @@ export default function PresentPage() {
           ensureMember={ensureMember}
         />
       )}
+    </div>
+  )
+}
+
+/** 当前项目还不能述标：保持在这张卡的位置上说清楚差哪一步，并留两个换标书的入口。
+ *  不渲染任何计费按钮——后端此时也不放行，亮出来点了就是 409。 */
+function NotReadyCard({ projectName, gap }: { projectName: string; gap: { href: string; label: string } }) {
+  const cls =
+    "inline-flex items-center gap-2 rounded-xl border border-border bg-background px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:border-primary/40"
+  return (
+    <div className="flex justify-center p-4">
+      <div className="my-auto w-full max-w-xl py-8">
+        <div className="rounded-2xl border border-border bg-card p-6 text-center sm:p-8">
+          <div className="mx-auto flex size-14 items-center justify-center rounded-2xl gradient-brand-soft">
+            <Presentation className="size-7 text-primary" />
+          </div>
+          <h2 className="mt-4 text-lg font-bold text-foreground">一键生成述标大纲</h2>
+          <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted-foreground">
+            述标取的是标书正文（技术标 + 商务标）。当前项目「{projectName}」还没走到这一步，
+            先完成「{gap.label}」，回来即可一键生成。
+          </p>
+          <div className="mt-5 flex justify-center">
+            <Link href={gap.href} className="inline-flex items-center gap-2 rounded-xl gradient-brand px-5 py-2.5 text-sm font-semibold text-white">
+              前往{gap.label}
+            </Link>
+          </div>
+          <p className="mt-5 text-xs text-muted-foreground">或者述标别的标书：</p>
+          <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
+            <a href="/present?view=entry&focus=pick" className={cls}>从我的标书选择</a>
+            <a href="/present?view=entry&focus=upload" className={cls}>上传标书文件</a>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
