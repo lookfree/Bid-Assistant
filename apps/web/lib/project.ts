@@ -220,10 +220,12 @@ export async function setProjectPackage(
 // pkg = 新项目投的包（多包流程建项即选包，名称带包名）；返回同 createProject 的 {id,threadId} 形状；
 // 同样把新 id 落 localStorage，贯穿后续工具页。
 /** 独立审查建项（spec328）：线下标书必传,招标文件可选（附了先读标做对照审查）。返回项目 id。 */
-export async function createReviewProject(bidFileKey: string, tenderFileKey?: string): Promise<string> {
+/** 线下标书建项：两侧都收多文件（商务标/技术标常分册出卷；招标文件常带补遗与答疑）。
+ *  数组顺序 = agent 解析拼接顺序，别在这里排序。 */
+export async function createReviewProject(bidFileKeys: string[], tenderFileKeys: string[] = []): Promise<string> {
   const { id } = await api.request<{ id: string; threadId: string }>("/api/projects/review", {
     method: "POST",
-    body: JSON.stringify(tenderFileKey ? { bidFileKey, tenderFileKey } : { bidFileKey }),
+    body: JSON.stringify({ bidFileKeys, ...(tenderFileKeys.length ? { tenderFileKeys } : {}) }),
   })
   return id
 }

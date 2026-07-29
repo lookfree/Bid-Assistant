@@ -1,7 +1,7 @@
 "use client"
 
 import { useRef, useState } from "react"
-import { Brain, EyeOff, Flame, FolderOpen, Loader2, Lock, Upload, Zap } from "lucide-react"
+import { Brain, EyeOff, Flame, FolderOpen, Loader2, Lock, Upload, X, Zap } from "lucide-react"
 import { createReviewProject, setCurrentProjectId } from "@/lib/project"
 import { uploadFile, uploadErrorMessage, uploadHint, ACCEPT_BID, ACCEPT_TENDER } from "@/lib/files"
 
@@ -10,21 +10,25 @@ import { uploadFile, uploadErrorMessage, uploadHint, ACCEPT_BID, ACCEPT_TENDER }
  *  隐私文案按**实际实现**写（加密传输存储 / 仅本人可见 / 模型不训练 / 可阅后即焚）——
  *  文件确实会传到服务端解析，不能照抄「浏览器本地存储、不上传服务器」那种做不到的承诺。 */
 export function RejectUploadPanel({ onPickExisting }: { onPickExisting: () => void }) {
-  const [tender, setTender] = useState<File | null>(null)
-  const [bid, setBid] = useState<File | null>(null)
+  const [tender, setTender] = useState<File[]>([])
+  const [bid, setBid] = useState<File[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   async function submit() {
-    if (!bid || busy) return
+    if (!bid.length || busy) return
     setBusy(true)
     setError(null)
     try {
-      const [bidUp, tenderUp] = await Promise.all([uploadFile(bid), tender ? uploadFile(tender) : null])
-      const id = await createReviewProject(bidUp.key, tenderUp?.key)
+      // 顺序即拼接顺序（商务标在前还是技术标在前由用户的选择顺序决定），故 map 后整体并发上传
+      const [bidUp, tenderUp] = await Promise.all([
+        Promise.all(bid.map(uploadFile)),
+        Promise.all(tender.map(uploadFile)),
+      ])
+      const id = await createReviewProject(bidUp.map((f) => f.key), tenderUp.map((f) => f.key))
       setCurrentProjectId(id)
       // 附了招标文件先去读标（读完自动接续审查步），否则直接进本项目的审查
-      window.location.href = tenderUp ? "/read" : "/risk?view=project"
+      window.location.href = tenderUp.length ? "/read" : "/risk?view=project"
     } catch (e) {
       setError(uploadErrorMessage(e, "创建失败，请重试"))
       setBusy(false)
@@ -43,18 +47,18 @@ export function RejectUploadPanel({ onPickExisting }: { onPickExisting: () => vo
         <DropZone
           label="招标文件"
           en="Tender Doc"
-          hint="招标正文、补遗澄清、答疑文件等（不传则做通用自查，不逐条对照）"
+          hint="招标正文、补遗澄清、答疑文件等，可多选（不传则做通用自查，不逐条对照）"
           accept={ACCEPT_TENDER}
-          file={tender}
+          files={tender}
           onPick={setTender}
           primary
         />
         <DropZone
           label="投标文件"
           en="Bid Doc"
-          hint="需要进行合规审查的投标文件（必选）"
+          hint="需要进行合规审查的投标文件，可多选（商务标与技术标分册出卷时一起传）"
           accept={ACCEPT_BID}
-          file={bid}
+          files={bid}
           onPick={setBid}
         />
       </div>
@@ -77,11 +81,17 @@ export function RejectUploadPanel({ onPickExisting }: { onPickExisting: () => vo
 
       <button
         onClick={() => void submit()}
-        disabled={!bid || busy}
+        disabled={!bid.length || busy}
         className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold transition-opacity disabled:cursor-not-allowed disabled:bg-secondary disabled:text-muted-foreground enabled:gradient-brand enabled:text-white enabled:hover:opacity-90"
       >
         {busy && <Loader2 className="size-4 animate-spin" />}
-        {busy ? "正在上传并创建…" : !bid ? "请先上传招标文件与投标文件" : tender ? "创建对照审查（先读标）" : "创建通用自查（未附招标文件）"}
+        {busy
+          ? "正在上传并创建…"
+          : !bid.length
+            ? "请先上传招标文件与投标文件"
+            : tender.length
+              ? "创建对照审查（先读标）"
+              : "创建通用自查（未附招标文件）"}
       </button>
 
       <button
@@ -95,13 +105,13 @@ export function RejectUploadPanel({ onPickExisting }: { onPickExisting: () => vo
   )
 }
 
-/** 单个拖拽区：点击打开或拖拽落入；选中后显示文件名与「重新选择」。 */
+/** 单个拖拽区：点击打开或拖拽落入，可多选并追加；已选文件逐条列出、可单独移除。 */
 function DropZone({
   label,
   en,
   hint,
   accept,
-  file,
+  files,
   onPick,
   primary,
 }: {
@@ -109,21 +119,26 @@ function DropZone({
   en: string
   hint: string
   accept: string
-  file: File | null
-  onPick: (f: File | null) => void
+  files: File[]
+  onPick: (f: File[]) => void
   primary?: boolean
 }) {
   const ref = useRef<HTMLInputElement>(null)
   const [over, setOver] = useState(false)
+  // 追加而非替换：分册标书往往分两次选（先选商务标再选技术标），替换会让用户以为第一份没传上
+  const add = (list: FileList | null) => {
+    const picked = Array.from(list ?? [])
+    if (picked.length) onPick([...files, ...picked])
+  }
 
   return (
     <div
       onClick={() => ref.current?.click()}
       onDragOver={(e) => { e.preventDefault(); setOver(true) }}
       onDragLeave={() => setOver(false)}
-      onDrop={(e) => { e.preventDefault(); setOver(false); onPick(e.dataTransfer.files?.[0] ?? null) }}
+      onDrop={(e) => { e.preventDefault(); setOver(false); add(e.dataTransfer.files) }}
       className={`cursor-pointer rounded-xl border border-dashed px-4 py-8 text-center transition-colors ${
-        over || file ? "border-primary/50 bg-primary/[0.03]" : "border-border hover:border-primary/40"
+        over || files.length ? "border-primary/50 bg-primary/[0.03]" : "border-border hover:border-primary/40"
       }`}
     >
       <span
@@ -134,10 +149,25 @@ function DropZone({
       <p className="mt-3 text-sm font-semibold text-foreground">
         {label} <span className="font-normal text-muted-foreground">({en})</span>
       </p>
-      {file ? (
-        <p className="mt-1.5 truncate text-xs font-medium text-primary" title={file.name}>
-          {file.name} · 点击重新选择
-        </p>
+      {files.length > 0 ? (
+        <ul className="mt-2 space-y-1 text-left">
+          {files.map((f, i) => (
+            <li key={`${f.name}-${i}`} className="flex items-center gap-1.5 rounded-lg bg-background px-2 py-1">
+              <span className="min-w-0 flex-1 truncate text-xs text-foreground" title={f.name}>
+                {f.name}
+              </span>
+              <button
+                type="button"
+                aria-label={`移除 ${f.name}`}
+                onClick={(e) => { e.stopPropagation(); onPick(files.filter((_, idx) => idx !== i)) }}
+                className="shrink-0 text-muted-foreground hover:text-destructive"
+              >
+                <X className="size-3.5" />
+              </button>
+            </li>
+          ))}
+          <li className="pt-0.5 text-center text-[11px] text-primary">点击继续添加</li>
+        </ul>
       ) : (
         <p className="mt-1.5 text-xs text-muted-foreground">
           <span className="font-medium text-primary">点击打开</span> 或拖拽文件至此
@@ -149,8 +179,9 @@ function DropZone({
         ref={ref}
         type="file"
         accept={accept}
+        multiple
         className="hidden"
-        onChange={(e) => { onPick(e.target.files?.[0] ?? null); e.target.value = "" /* 允许重选同名文件 */ }}
+        onChange={(e) => { add(e.target.files); e.target.value = "" /* 允许重选同名文件 */ }}
       />
     </div>
   )

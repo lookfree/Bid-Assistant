@@ -29,8 +29,11 @@ def make_review_node(ctx):
         run_input = state.get("run_input") or {}
         chapters_src = state.get("chapters") or {}
         # spec328 独立审查:线下标书没有生成链路,chapters 由上传文件确定性解析而来
-        if not chapters_src and run_input.get("bid_file_key"):
-            chapters_src = await asyncio.to_thread(parse_bid_chapters, run_input["bid_file_key"])
+        bid_files = run_input.get("bid_file_keys") or (
+            [run_input["bid_file_key"]] if run_input.get("bid_file_key") else []
+        )
+        if not chapters_src and bid_files:
+            chapters_src = await asyncio.to_thread(parse_bid_chapters, bid_files)
             # 审查修正：解析为空（扫描件/图片 PDF 提不出文字）绝不能拿空文档去跑计费审查——
             # run 直接失败,App 侧 settleFailed 全额退款,错误文案告知原因
             if not chapters_src:

@@ -15,17 +15,26 @@ __all__ = ["publish_phase", "upload_artifact", "fetch_master_bytes", "package_sc
            "filter_read_by_package", "slim_read", "parse_bid_chapters"]
 
 
-def parse_bid_chapters(key: str) -> dict[str, str]:
+def parse_bid_chapters(keys: str | list[str]) -> dict[str, str]:
     """线下标书 → chapters（spec328 独立审查 / 独立述标共用）：确定性解析,按节聚合成 {sec-N: html}。
     无 LLM、不计费;解析失败抛错由节点层转 run 失败（App 侧退款）。review/present 两节点共用——
-    没有 state['chapters']（没跑过 content）时,靠 run_input.bid_file_key 兜底解析出正文。"""
-    parsed = read_and_parse(key)
-    by_sec: dict[str, list[str]] = {}
-    for c in parsed.clauses:
-        m = re.match(r"^(sec-\d+)-", c.get("id") or "")
-        if m:
-            by_sec.setdefault(m.group(1), []).append(c.get("text") or "")
-    return {sec: "".join(f"<p>{t}</p>" for t in texts if t) for sec, texts in by_sec.items()}
+    没有 state['chapters']（没跑过 content）时,靠 run_input 里的标书文件兜底解析出正文。
+
+    收多份文件（商务标与技术标常常分册出卷）：按传入顺序逐份解析再拼接。**节号必须全局重排**——
+    每份文件的节号都从 sec-1 起,直接合并会让后一份把前一份的同号节整节覆盖（静默丢半本标书）。"""
+    out: dict[str, str] = {}
+    for key in [keys] if isinstance(keys, str) else keys:
+        parsed = read_and_parse(key)
+        by_sec: dict[str, list[str]] = {}
+        for c in parsed.clauses:
+            m = re.match(r"^(sec-\d+)-", c.get("id") or "")
+            if m:
+                by_sec.setdefault(m.group(1), []).append(c.get("text") or "")
+        for texts in by_sec.values():
+            html = "".join(f"<p>{t}</p>" for t in texts if t)
+            if html:
+                out[f"sec-{len(out) + 1}"] = html
+    return out
 
 
 async def upload_artifact(ctx, filename: str, data: bytes, content_type: str) -> str:

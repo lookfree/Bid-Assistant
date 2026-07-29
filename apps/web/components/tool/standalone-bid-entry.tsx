@@ -118,19 +118,22 @@ function UploadBidCard({
 }: StandaloneBidEntryProps & { highlight?: boolean }) {
   const bidRef = useRef<HTMLInputElement>(null)
   const tenderRef = useRef<HTMLInputElement>(null)
-  const [bidFile, setBidFile] = useState<File | null>(null)
+  const [bidFiles, setBidFiles] = useState<File[]>([])
   const [tenderFile, setTenderFile] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   async function submit() {
-    if (!bidFile || busy) return
+    if (!bidFiles.length || busy) return
     setBusy(true)
     setError(null)
     try {
       const useTender = !bidOnly && tenderFile
-      const [bid, tender] = await Promise.all([uploadFile(bidFile), useTender ? uploadFile(tenderFile) : null])
-      const id = await createReviewProject(bid.key, tender?.key)
+      const [bids, tender] = await Promise.all([
+        Promise.all(bidFiles.map(uploadFile)), // 顺序即拼接顺序（商务标/技术标分册）
+        useTender ? uploadFile(tenderFile) : null,
+      ])
+      const id = await createReviewProject(bids.map((f) => f.key), tender ? [tender.key] : [])
       setCurrentProjectId(id)
       // 带招标文件（仅 !bidOnly）：先去读标（读完自动接续本工具的步）；否则直接去本工具页
       window.location.href = tender ? "/read" : noTenderHref
@@ -140,13 +143,13 @@ function UploadBidCard({
     }
   }
 
-  const fileBtn = (label: string, file: File | null, onClick: () => void, hint: string) => (
+  const fileBtn = (label: string, picked: string | null, onClick: () => void, hint: string) => (
     <button
       type="button"
       onClick={onClick}
       className="flex w-full items-center justify-between rounded-xl border border-dashed border-border px-3 py-2.5 text-left text-sm transition-colors hover:border-primary/40"
     >
-      <span className={file ? "truncate text-foreground" : "text-muted-foreground"}>{file ? file.name : `${label}${hint}`}</span>
+      <span className={picked ? "truncate text-foreground" : "text-muted-foreground"}>{picked ?? `${label}${hint}`}</span>
       <UploadCloud className="ml-2 size-4 shrink-0 text-muted-foreground" />
     </button>
   )
@@ -159,16 +162,21 @@ function UploadBidCard({
       </h3>
       <p className="mt-1 text-xs text-muted-foreground">{uploadDesc}</p>
       <div className="mt-3 space-y-2">
-        {fileBtn("选择投标文件", bidFile, () => bidRef.current?.click(), "（必选）")}
-        {!bidOnly && fileBtn("选择招标文件", tenderFile, () => tenderRef.current?.click(), tenderHint ?? "（可选）")}
-        <input ref={bidRef} type="file" accept={ACCEPT_BID} className="hidden" onChange={(e) => { setBidFile(e.target.files?.[0] ?? null); e.target.value = "" /* 允许重选同名文件 */ }} />
+        {fileBtn(
+          "选择投标文件",
+          bidFiles.length ? `已选 ${bidFiles.length} 个文件：${bidFiles.map((f) => f.name).join("、")}` : null,
+          () => bidRef.current?.click(),
+          "（必选，可多选）",
+        )}
+        {!bidOnly && fileBtn("选择招标文件", tenderFile?.name ?? null, () => tenderRef.current?.click(), tenderHint ?? "（可选）")}
+        <input ref={bidRef} type="file" accept={ACCEPT_BID} multiple className="hidden" onChange={(e) => { setBidFiles(Array.from(e.target.files ?? [])); e.target.value = "" /* 允许重选同名文件 */ }} />
         <input ref={tenderRef} type="file" accept={ACCEPT_TENDER} className="hidden" onChange={(e) => { setTenderFile(e.target.files?.[0] ?? null); e.target.value = "" }} />
       </div>
       <p className="mt-2 text-[11px] text-muted-foreground">{uploadHint(bidOnly ? ACCEPT_BID : ACCEPT_TENDER)}</p>
       {error && <p className="mt-2 text-xs font-medium text-destructive">{error}</p>}
       <button
         onClick={() => void submit()}
-        disabled={!bidFile || busy}
+        disabled={!bidFiles.length || busy}
         className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-xl gradient-brand px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
       >
         {busy ? <Loader2 className="size-4 animate-spin" /> : <UploadCloud className="size-4" />}

@@ -55,8 +55,11 @@ def make_present_node(ctx):
         enterprise_key = run_input.get("enterprise_template_key")
         master_bytes = await fetch_master_bytes(enterprise_key)
         chapters_src = state.get("chapters") or {}
-        if not chapters_src and run_input.get("bid_file_key"):
-            chapters_src = await asyncio.to_thread(parse_bid_chapters, run_input["bid_file_key"])
+        bid_files = run_input.get("bid_file_keys") or (
+            [run_input["bid_file_key"]] if run_input.get("bid_file_key") else []
+        )
+        if not chapters_src and bid_files:
+            chapters_src = await asyncio.to_thread(parse_bid_chapters, bid_files)
             if not chapters_src:
                 raise RuntimeError("上传的标书未能解析出任何正文（扫描件/图片版暂不支持），请上传可复制文字的 docx/pdf 后重试")
         chapters = {cid: _plain(html) for cid, html in chapters_src.items()}

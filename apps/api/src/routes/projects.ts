@@ -104,7 +104,21 @@ const createBodySchema = z.union([
 const packageBodySchema = z.union([z.object({ id: z.string().min(1), name: z.string().min(1) }), z.null()])
 
 // 独立审查建项（spec328）：线下标书必传,招标文件可选（附了做对照审查,否则通用自查）。
-const reviewProjectSchema = z.object({ bidFileKey: z.string().min(1), tenderFileKey: z.string().min(1).optional() })
+// 两侧都收数组（商务标/技术标常分册出卷,招标文件也常有补遗/答疑）；单文件形状保留兼容——
+// 发版瞬间用户浏览器里还挂着旧前端,它仍在发 bidFileKey/tenderFileKey,不能 400 掉。
+const keyList = z.array(z.string().min(1)).min(1).max(10)
+const reviewProjectSchema = z
+  .object({
+    bidFileKey: z.string().min(1).optional(),
+    bidFileKeys: keyList.optional(),
+    tenderFileKey: z.string().min(1).optional(),
+    tenderFileKeys: keyList.optional(),
+  })
+  .transform((v) => ({
+    bidKeys: v.bidFileKeys ?? (v.bidFileKey ? [v.bidFileKey] : []),
+    tenderKeys: v.tenderFileKeys ?? (v.tenderFileKey ? [v.tenderFileKey] : []),
+  }))
+  .refine((v) => v.bidKeys.length > 0, { message: "bid_file_required" })
 
 // 生成配置（spec330）：content 步收目标字数,export 步收输出格式;白名单校验,坏值 400 不占步位不预扣。
 const marginSchema = z.number().min(0.5).max(6)
@@ -379,8 +393,8 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const parsed = reviewProjectSchema.safeParse(await c.req.json().catch(() => ({})))
     if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
     const userId = c.get("user").id
-    const { bidFileKey, tenderFileKey } = parsed.data
-    const wanted = tenderFileKey ? [bidFileKey, tenderFileKey] : [bidFileKey]
+    const { bidKeys, tenderKeys } = parsed.data
+    const wanted = [...new Set([...bidKeys, ...tenderKeys])]
     const rows = await getDb()
       .select({ key: projectFiles.key, filename: projectFiles.filename })
       .from(projectFiles)
@@ -393,14 +407,18 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         userId,
         threadId: `proj-${crypto.randomUUID()}`,
         kind: "review",
-        bidFileKey,
-        tenderFileKey: tenderFileKey ?? null,
-        tenderFileKeys: tenderFileKey ? [tenderFileKey] : null,
+        bidFileKey: bidKeys[0]!, // 旧读侧口径：首个文件
+        bidFileKeys: bidKeys,
+        tenderFileKey: tenderKeys[0] ?? null,
+        tenderFileKeys: tenderKeys.length ? tenderKeys : null,
         // 中性后缀「（线下标书）」：这类项目现在既可审查也可述标，不再专属「（审查）」。
-        name: `${(filenameByKey.get(bidFileKey) ?? "线下标书").replace(/\.[a-zA-Z0-9]+$/, "")}（线下标书）`,
+        // 多文件时以第一份命名并标数量，列表里能一眼看出这是分册上传的一套标书。
+        name: `${(filenameByKey.get(bidKeys[0]!) ?? "线下标书").replace(/\.[a-zA-Z0-9]+$/, "")}${
+          bidKeys.length > 1 ? ` 等 ${bidKeys.length} 份` : ""
+        }（线下标书）`,
         // 带招标文件走 draft→read（读标计费后自动接 review）;不带直接站上 review 步
-        status: tenderFileKey ? "draft" : "running",
-        currentStep: tenderFileKey ? "read" : "review",
+        status: tenderKeys.length ? "draft" : "running",
+        currentStep: tenderKeys.length ? "read" : "review",
       })
       .returning()
     if (!p) return c.json({ error: "insert_failed" }, 500)
@@ -650,7 +668,9 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         ...(step !== "read" && p.selectedPackage ? { package: p.selectedPackage } : {}),
         ...(step === "export" ? await exportCredentials(userId) : {}),
         // spec328：线下标书审查/述标——review/present 节点用该 key 确定性解析出 chapters（无 LLM 不计费）
-        ...((step === "review" || step === "present") && p.bidFileKey ? { bid_file_key: p.bidFileKey } : {}),
+        ...((step === "review" || step === "present") && p.bidFileKey
+          ? { bid_file_key: p.bidFileKey, bid_file_keys: p.bidFileKeys ?? [p.bidFileKey] }
+          : {}),
         // spec330 生成配置：目标字数（规划轮拆各章预算）/ 输出格式（docx 渲染）；
         // 超写校准系数（运营可调,billing_configs generation.*）随 content 步一并下发
         ...(step === "content" && gen.targetChars ? { target_chars: gen.targetChars } : {}),
@@ -1017,7 +1037,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const p = await ownedProject(id, getUserId(c))
     if (!p) return c.json({ error: "not_found" }, 404)
     const uploads = new Set<string>(p.tenderFileKeys ?? (p.tenderFileKey ? [p.tenderFileKey] : []))
-    if (p.bidFileKey) uploads.add(p.bidFileKey)
+    for (const k of p.bidFileKeys ?? (p.bidFileKey ? [p.bidFileKey] : [])) uploads.add(k)
     const artifacts = new Set<string>(["bid.docx", "bid.pdf", "present.pptx"].map((f) => `artifacts/${p.threadId}/${f}`))
     const deleted = await getDb().transaction(async (tx) => {
       const [running] = await tx
@@ -1036,7 +1056,9 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       const [ref] = await getDb()
         .select({ id: bidProjects.id })
         .from(bidProjects)
-        .where(sql`${bidProjects.tenderFileKey} = ${k} or ${bidProjects.bidFileKey} = ${k} or ${bidProjects.tenderFileKeys} @> ${JSON.stringify([k])}::jsonb`)
+        .where(sql`${bidProjects.tenderFileKey} = ${k} or ${bidProjects.bidFileKey} = ${k}
+          or ${bidProjects.tenderFileKeys} @> ${JSON.stringify([k])}::jsonb
+          or ${bidProjects.bidFileKeys} @> ${JSON.stringify([k])}::jsonb`)
         .limit(1)
       if (!ref) removable.push(k)
     }
