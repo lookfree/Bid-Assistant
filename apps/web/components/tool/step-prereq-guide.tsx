@@ -11,18 +11,21 @@ import { ListTodo } from "lucide-react"
 export function StepPrereqGuide({
   prereq,
   currentDesc,
+  title,
 }: {
-  /** 未完成的前序步入口（stepPrereq 的返回值） */
+  /** 未完成的前序步入口（stepPrereq / stepNotApplicable 的返回值） */
   prereq: { href: string; label: string }
   /** 本步说明，如「投标正文需要基于提纲章节结构撰写」 */
   currentDesc: string
+  /** 标题覆盖：本步「不适用」时用（「先完成 X」的说法在那种场景是错的） */
+  title?: string
 }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-14 text-center">
       <span className="flex size-12 items-center justify-center rounded-2xl gradient-brand-soft">
         <ListTodo className="size-6 text-primary" />
       </span>
-      <p className="text-base font-semibold text-foreground">先完成「{prereq.label}」</p>
+      <p className="text-base font-semibold text-foreground">{title ?? `先完成「${prereq.label}」`}</p>
       <p className="max-w-md text-xs leading-relaxed text-muted-foreground">{currentDesc}</p>
       <Link
         href={prereq.href}

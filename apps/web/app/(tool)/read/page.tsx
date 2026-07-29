@@ -24,7 +24,7 @@ import {
   type LucideIcon,
 } from "lucide-react"
 import type { AnalysisItem, PackageInfo, ScoringRow, StructureItem, StructureKind } from "@/lib/bid-types"
-import { useStep } from "@/lib/use-step"
+import { stepNotApplicable, useStep } from "@/lib/use-step"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import { clauseLocationIn, groupDocSections, type DocSentence } from "@/lib/doc-sections"
@@ -78,11 +78,14 @@ import { TenderDocPanel } from "@/components/tool/tender-doc-panel"
 import { NoProjectGuide } from "@/components/tool/no-project-guide"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { StepRunCta } from "@/components/tool/step-run-cta"
+import { StepPrereqGuide } from "@/components/tool/step-prereq-guide"
 import { AiNotice } from "@/components/tool/ai-notice"
 
 
 export default function ReadPage() {
   const { projectId, info, data: real, dataLoading, running, phase, error, errorAction, start } = useStep<RealRead>("read")
+  // 线下标书审查项目（无招标文件）不适用读标：绝不亮计费按钮（点了必 409）
+  const notApplicable = stepNotApplicable(info, "read")
   const { overview } = useMembership()
   const readCost = creditCostValue(overview, "read", 20)
   // 唯一允许的自动触发：从上传页「开始智能读标」跳转（URL 带 ?autostart=1，那一下点击即计费授权，
@@ -261,7 +264,13 @@ export default function ReadPage() {
           onRetry={() => void start()}
           action={errorAction ?? undefined}
         />
-        {running || error ? (
+        {notApplicable ? (
+          <StepPrereqGuide
+            prereq={notApplicable}
+            title="本项目无需读标"
+            currentDesc="这是独立的标书审查项目（上传的线下标书，没有招标文件），不走生成流水线；读标需要招标文件。直接去审查即可；若想做逐条对照审查，请回审查入口重新上传时附上招标文件。"
+          />
+        ) : running || error ? (
           <StepPlaceholder text={error ? "结果加载异常，请按上方提示重试或刷新" : "读标完成后显示招标原文与分类解读"} />
         ) : (
           <StepRunCta

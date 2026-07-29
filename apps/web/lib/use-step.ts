@@ -35,6 +35,17 @@ const STEP_PAGE: Record<string, { href: string; label: string }> = {
   present: { href: "/present", label: "述标演示" },
 }
 
+/** 本步对该项目**根本不适用**（区别于「前序没做完」）：线下标书审查项目（kind=review）是独立能力，
+ *  不进生成流水线——提纲/正文/导出对它没有意义；没附招标文件时连读标也无从谈起（没有招标文件可读）。
+ *  这些页面绝不能亮计费按钮：后端步序闸只放行 read/review，点下去必得 409「步骤顺序不符」
+ *  （生产实测：从标书审查进来的项目点开「招标解读」即报错）。 */
+export function stepNotApplicable(info: ProjectInfo | null, step: StepName): { href: string; label: string } | null {
+  if (info?.project.kind !== "review") return null
+  if (step === "review" || step === "present") return null
+  if (step === "read" && info.project.tenderFileKey) return null // 附了招标文件的对照审查，读标照跑
+  return { href: "/risk", label: "标书审查" }
+}
+
 /** step 的未完成前序步（按项目 currentStep 判断）：返回该前序步的页面入口；无前序缺口返回 null。
  *  spec328+ 独立述标：审查专用项目（kind=review）的 present 不受线性步序约束——有线下标书就能随时
  *  述标，不依赖 review 是否已跑（与后端 routes/projects.ts 的步序闸对齐，见「审查专用项目」注释）。 */

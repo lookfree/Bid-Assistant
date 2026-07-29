@@ -1,12 +1,12 @@
 import { describe, it, expect } from "bun:test"
-import { stepPrereq } from "../lib/use-step"
+import { stepNotApplicable, stepPrereq } from "../lib/use-step"
 import type { ProjectInfo } from "../lib/project"
 
-function info(currentStep: string, kind?: "bid" | "review"): ProjectInfo {
+function info(currentStep: string, kind?: "bid" | "review", tenderFileKey: string | null = null): ProjectInfo {
   return {
     project: {
       id: "p1", threadId: "t1", name: "项目", status: "running", currentStep,
-      tenderFileKey: null, kind, selectedPackage: null,
+      tenderFileKey, kind, selectedPackage: null,
     },
     steps: [],
   }
@@ -33,5 +33,26 @@ describe("stepPrereq", () => {
   it("kind=bid（或未标注）项目请求 present 仍按正常前序判定（不受 review-kind 豁免影响）", () => {
     expect(stepPrereq(info("outline", "bid"), "present")).toEqual({ href: "/outline", label: "提纲生成" })
     expect(stepPrereq(info("outline"), "present")).toEqual({ href: "/outline", label: "提纲生成" })
+  })
+})
+
+describe("stepNotApplicable：审查项目不适用的步不得亮计费按钮", () => {
+  it("线下标书审查（无招标文件）：读标/提纲/正文一律给去审查的引导", () => {
+    const guide = { href: "/risk", label: "标书审查" }
+    // 生产实测：从标书审查进来的项目点开「招标解读」，点按钮后报 409「步骤顺序不符」
+    expect(stepNotApplicable(info("review", "review"), "read")).toEqual(guide)
+    expect(stepNotApplicable(info("review", "review"), "outline")).toEqual(guide)
+    expect(stepNotApplicable(info("review", "review"), "content")).toEqual(guide)
+  })
+
+  it("附了招标文件的对照审查：读标照跑（后端也放行）", () => {
+    expect(stepNotApplicable(info("read", "review", "uploads/u/tender.pdf"), "read")).toBeNull()
+  })
+
+  it("审查与述标本身恒适用；普通生成项目一律不拦", () => {
+    expect(stepNotApplicable(info("review", "review"), "review")).toBeNull()
+    expect(stepNotApplicable(info("review", "review"), "present")).toBeNull()
+    expect(stepNotApplicable(info("read"), "read")).toBeNull()
+    expect(stepNotApplicable(null, "read")).toBeNull()
   })
 })
