@@ -472,7 +472,9 @@ export default function PresentPage() {
             </div>
           )}
         </StepPageHeader>
-        <PresentEntryBar onOpen={() => { window.location.href = "/present" }} />
+        {/* 换一份标书述标：必须显式带 ?view=entry——入口默认直连当前项目后，
+            跳 /present 会立刻弹回本页，这个按钮就成了点了没反应的死按钮 */}
+        <PresentEntryBar onOpen={() => { window.location.href = "/present?view=entry&focus=pick" }} />
         {deckReady && <AiNotice />}
 
         {/* 导出菜单 */}
