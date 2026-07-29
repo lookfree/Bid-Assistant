@@ -18,6 +18,7 @@ import { ragRunInput } from "../services/rag-config"
 import { generationRunInput } from "../services/generation-config"
 import { getEntitlements, featureLocked, lockRiskAdvice } from "../services/entitlements"
 import { createAdviceScrubber } from "../services/sse-scrub"
+import { getConfig } from "../services/config"
 import { credentialsRunInput, type CredentialInput } from "../services/credentials"
 import { toCamel, toSnake } from "../lib/case"
 import { parsePagination, pagedBody, pagedResult } from "../lib/pagination"
@@ -850,8 +851,10 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     return c.json({ ok: true })
   })
 
-  // 单章改写（spec315a 契约 2，真实计费）：hold(rewrite=25) → agent 同步改写 → 持久化 → settle 足额；
-  // 失败 settleFailed 净 0。chapterId 是 agent 章节 id（字符串，非 uuid，不做 uuid 校验）。
+  // 单章改写（spec315a 契约 2）：agent 同步改写 → 校验 → 持久化。
+  // **不计费**（2026-07-29 产品决定：费用统一由下载/导出侧承担，用户可放开改到满意为止）——
+  // 全链路不碰账本：不预扣、不结算、不看余额，欠费用户也能改。chapterId 是 agent 章节 id
+  // （字符串，非 uuid，不做 uuid 校验）。
   r.post("/:id/chapters/:chapterId/rewrite", async (c) => {
     const { id, chapterId } = c.req.param()
     if (!isUuid(id)) return c.json({ error: "not_found" }, 404) // 非 uuid 直接 404，避免 PG 22P02 → 500
@@ -874,10 +877,6 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const model = await resolveModel()
     if (!model) return c.json({ error: "model_not_configured" }, 400)
 
-    // 预扣 rewrite 口径（credit_cost.rewrite=25）；ref=本次改写的稳定标识（幂等键 hold:/settle:/release:<ref> 随之稳定）
-    const ref = crypto.randomUUID()
-    const hold = await preDeduct(userId, "rewrite", ref)
-    if (!hold.ok) return c.json({ error: "insufficient" }, 402)
 
     let html: string
     try {
@@ -891,7 +890,6 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         userId,
       }))
     } catch {
-      await settleFailed(ref, hold.holdId!).catch(() => {}) // 失败全额退还，净 0
       return c.json({ error: "agent_failed" }, 502)
     }
 
@@ -899,13 +897,11 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     // 「用 HTML 回答问题」也能过标签校验——提示词已约定提问时只回 NOT_AN_INSTRUCTION 标记,
     // 命中即全额退款,绝不拿回答覆盖正文。
     if (html.includes("<!--NOT_AN_INSTRUCTION-->")) {
-      await settleFailed(ref, hold.holdId!).catch(() => {})
       return c.json({ error: "rewrite_not_instruction" }, 422)
     }
     // 兜底校验：产出必须是 HTML 片段（至少含一个标签）。模型偶发用纯文字回答（提问式输入等），
     // 存库等于拿闲聊替换用户章节——拒收并全额退款，不让用户为废品买单（前端正则只是引导，钱闸在这）
     if (!/<[a-zA-Z][^>]*>/.test(html)) {
-      await settleFailed(ref, hold.holdId!).catch(() => {})
       return c.json({ error: "rewrite_not_html" }, 502)
     }
 
@@ -919,20 +915,10 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         await tx.update(projectSteps).set({ result: chapters }).where(eq(projectSteps.id, contentRow.id))
       })
     } catch (e) {
-      // 持久化炸：产物没落库，退还预扣（净 0），不让用户为未交付的产物买单
-      await settleFailed(ref, hold.holdId!).catch(() => {})
       throw e
     }
 
-    // settle 独立于持久化：产物已交付，settle 瞬断**不能**走 settleFailed（那会把已交付产物全额退款）。
-    // 只记日志人工对账；真孤儿 hold 由 24h 清扫（releaseOrphanHolds）兜底释放——宁少收不多收。
-    let cost = hold.hold
-    try {
-      cost = await settle(ref, hold.holdId!, hold.hold) // 成功足额结算
-    } catch (e) {
-      console.error(`rewrite settle 失败（产物已交付，不退款，待对账）ref=${ref} holdId=${hold.holdId}`, e)
-    }
-    return c.json({ chapterId, html, cost })
+    return c.json({ chapterId, html, cost: 0 })
   })
 
   // 查项目 + 各步结果（前端各页渲染；result 转 camelCase，content 步键为章 id 原样透传）

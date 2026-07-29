@@ -7,7 +7,7 @@ import { grant, getBalance } from "../src/services/credits"
 import { seedConfigs, setConfig, getConfig } from "../src/services/config"
 import { loginWithPhone } from "../src/services/auth"
 import { getDb, closeDb } from "../src/db/client"
-import { users, bidProjects, projectSteps } from "../src/db/schema"
+import { users, bidProjects, projectSteps, creditTransactions } from "../src/db/schema"
 import { uniquePhone, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连真库（钱路径走真账本，只 mock agent client）
@@ -131,14 +131,15 @@ const contentResult = async () => {
 }
 
 describe("POST /:id/chapters/:chapterId/rewrite 单章改写（真账本）", () => {
-  it("① 成功：扣 25、单章覆写其余章保留、同 ref settle 幂等不双扣", async () => {
+  it("① 成功：不计费、单章覆写、其余章保留", async () => {
     const res = await rewrite(projectId, "ch-1", { instruction: "更正式一些" }, tokenA)
     expect(res.status).toBe(200)
     const body = (await res.json()) as { chapterId: string; html: string; cost: number }
-    expect(body).toEqual({ chapterId: "ch-1", html: NEW_HTML, cost: 25 })
+    expect(body).toEqual({ chapterId: "ch-1", html: NEW_HTML, cost: 0 })
 
-    // 余额 100 → 75（hold 25 → settle 足额）
-    expect(await getBalance(userA)).toBe(75)
+    // 2026-07-29 口径：改写不碰账本——余额分文不动，账本零新增行（费用在下载侧）
+    expect(await getBalance(userA)).toBe(100)
+    expect(captured.preDeductCalls).toBe(0)
 
     // agent 调用契约：同 thread、章 id、指令原样、底稿=DB 现值（编辑过=编辑后，不吃 state 旧稿）
     expect(captured.rewriteArgs).toMatchObject({
@@ -155,13 +156,9 @@ describe("POST /:id/chapters/:chapterId/rewrite 单章改写（真账本）", ()
     const result = await contentResult()
     expect(result["ch-1"]).toBe(NEW_HTML)
     expect(result["ch-2"]).toBe("<p>旧正文二</p>")
-
-    // 幂等：同 ref 再 settle（幂等键 settle:<ref>）不双扣
-    await billing.settle(captured.ref, captured.holdId, 25)
-    expect(await getBalance(userA)).toBe(75)
   })
 
-  it("② agent 抛错：settleFailed 净 0（余额不变）、result 不变、502 agent_failed", async () => {
+  it("② agent 抛错：502 agent_failed、result 不变、余额自始不动", async () => {
     agentFail = true
     try {
       const before = await getBalance(userA)
@@ -175,14 +172,14 @@ describe("POST /:id/chapters/:chapterId/rewrite 单章改写（真账本）", ()
     }
   })
 
-  it("②d 模型纯文字回答（无 HTML 标签）：拒收 502 rewrite_not_html、全额退款净 0、result 不变", async () => {
+  it("②d 模型纯文字回答（无 HTML 标签）：拒收 502 rewrite_not_html、result 不变", async () => {
     agentReturnsProse = true
     try {
       const before = await getBalance(userA)
       const res = await rewrite(projectId, "ch-2", { instruction: "你改了哪里" }, tokenA)
       expect(res.status).toBe(502)
       expect(((await res.json()) as { error: string }).error).toBe("rewrite_not_html")
-      expect(await getBalance(userA)).toBe(before) // settleFailed 全额退还
+      expect(await getBalance(userA)).toBe(before) // 不碰账本
       expect((await contentResult())["ch-2"]).toBe("<p>旧正文二</p>") // 废品不落库
     } finally {
       agentReturnsProse = false
@@ -209,28 +206,14 @@ describe("POST /:id/chapters/:chapterId/rewrite 单章改写（真账本）", ()
     expect(result["ch-2"]).toBe("<p>并发编辑后的二</p>") // 并发编辑保留，没被请求开始的旧快照冲掉
   })
 
-  it("②c settle 瞬断：产物已持久化 → 仍 200 报 cost，钱已扣（hold 不退），不走 settleFailed", async () => {
-    settleFail = true
-    try {
-      const before = await getBalance(userA)
-      const res = await rewrite(projectId, "ch-2", { instruction: "扩写" }, tokenA)
-      expect(res.status).toBe(200)
-      const body = (await res.json()) as { chapterId: string; html: string; cost: number }
-      expect(body).toEqual({ chapterId: "ch-2", html: NEW_HTML, cost: 25 })
-      expect((await contentResult())["ch-2"]).toBe(NEW_HTML) // 产物已交付
-      expect(await getBalance(userA)).toBe(before - 25) // hold 已扣未退——绝不因 settle 瞬断退掉已交付产物的钱
-    } finally {
-      settleFail = false
-    }
-    // 收尾：把挂着的 hold 正常结算掉（幂等键 settle:<ref>），不留悬挂状态干扰后续用例
-    await billing.settle(captured.ref, captured.holdId, 25)
-  })
-
-  it("③ 余额不足：402 insufficient，无 hold 残留（余额仍 0）", async () => {
+  it("③ 零余额用户照样能改写（2026-07-29 口径：改写不计费，不看余额）", async () => {
+    // 旧口径此处是 402 insufficient；费用移到下载侧后，改写必须对欠费用户也开放——
+    // 否则用户为已付费生成的正文做修改反而被余额挡住。
+    expect(await getBalance(userB)).toBe(0)
     const res = await rewrite(poorProjectId, "ch-1", { instruction: "润色" }, tokenB)
-    expect(res.status).toBe(402)
-    expect(((await res.json()) as { error: string }).error).toBe("insufficient")
-    expect(await getBalance(userB)).toBe(0) // preDeduct 余额不足即拒，无扣减/挂起 hold
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { cost: number }).cost).toBe(0)
+    expect(await getBalance(userB)).toBe(0) // 余额仍 0，未产生任何账本动作
   })
 
   it("④ content 未 done：409 content_not_done 且不扣钱（不触 preDeduct）", async () => {

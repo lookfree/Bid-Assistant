@@ -43,7 +43,7 @@ import { type LibraryItem } from "@/lib/library"
 import { ApiError } from "@/lib/api-client"
 import { storedFormat } from "@/lib/generation-config"
 import { stepPrereq, useStep } from "@/lib/use-step"
-import { artifactDownload, triggerDownload, patchErrorMessage, patchStep, runStep } from "@/lib/project"
+import { artifactDownload, triggerDownload, patchErrorMessage, patchStep, peekProjectCache, runStep, type ProjectInfo } from "@/lib/project"
 import { AiPanel } from "./ai-panel"
 import { EmptyState, DURATIONS, type Duration } from "./empty-state"
 import { TemplatePicker } from "./template-picker"
@@ -69,7 +69,7 @@ export default function PresentPage() {
   /* 述标默认统一进入独立入口（同 risk 页废标审查：不默认衔接当前项目已生成的标书，先让用户选/传）。
      ?view=project = 用户已在入口显式选「当前项目直连述标」（入口内返回/选项目/传标书后跳这里）。
      本组件在 RequireAuth 之后才客户端挂载，惰性读 URL 参数无 SSR 水合问题。 */
-  const [enterProject] = useState(
+  const [viewParam] = useState(
     () => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("view") === "project",
   )
 
@@ -108,6 +108,11 @@ export default function PresentPage() {
     if (DURATIONS.includes(realDeck.duration as Duration)) setDuration(realDeck.duration as Duration)
     if (slideStyles.some((s) => s.id === realDeck.template)) setStyleId(realDeck.template as StyleId)
   }, [realDeck])
+  /* 本项目是否已有述标结果：有就直连结果页，不再拦在选择入口（peek 给同步初值防闪） */
+  const deckDone = (i: ProjectInfo | null | undefined) =>
+    !!i?.steps.some((s) => s.step === "present" && s.status === "done")
+  const enterProject = viewParam || deckDone(info) || deckDone(projectId ? peekProjectCache(projectId) : null)
+
   /* deck 就绪 = present 步已有真实结果（编辑/保存/导出入口只在此后出现） */
   const deckReady = !!realDeck
 
@@ -353,6 +358,8 @@ export default function PresentPage() {
   // 述标默认独立入口（spec328+）：不默认衔接当前项目已生成的标书——直接给「述标我的标书 / 上传线下标书」
   // 入口；「返回当前项目的述标」仅在当前项目确可述标时给出（info 到位且无前序缺口，review-kind 由
   // stepPrereq 特判放行）——否则不给，避免对未就绪项目给一个点了会空转回入口的死链（跳转带 ?view=project）。
+  // **已有述标结果的项目直接进结果页**（用户反馈：生成完 PPT 切走再回来「就没了」——数据一直在，
+  // 是从导航回来的 URL 不带 ?view=project 又被拦在入口页）。peek 缓存给同步初值，避免 info 到达前闪一下入口。
   if (!enterProject || !projectId)
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">

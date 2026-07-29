@@ -107,7 +107,6 @@ export default function ContentPage() {
   const { overview, balance, loading: membershipLoading, error: membershipError, reload: reloadMembership } = useMembership()
   /* 计费口径：优先后端实时配置（运营可改），缺省回落默认值 */
   const reviewCost = creditCostValue(overview, "review", 60)
-  const rewriteCost = creditCostValue(overview, "rewrite", 25)
   /* 标书生成计费阶梯（按产出总字数分档，运营后台可增删）；文案与实际扣减同源，前端不写死。
      三态严格区分：加载中 / 拉取失败 ≠ 运营未配置——把一次网络抖动说成「请联系运营」会把用户和
      客服一起引到错误方向。只有 overview 确实到手、阶梯仍为空，才判定为未配置。 */
@@ -506,7 +505,7 @@ export default function ContentPage() {
               {isReal ? (
                 /* 正文已生成但本章为空：引导走真实单章改写通道 */
                 <p className="mt-5 max-w-xs rounded-xl border border-primary/20 gradient-brand-soft px-4 py-2.5 text-xs leading-relaxed text-primary">
-                  在右侧 AI 助手中选中本章并输入指令，由 AI 生成/改写本章正文（{rewriteCost} 积分/次）
+                  在右侧 AI 助手中选中本章并输入指令，由 AI 生成/改写本章正文（不消耗积分）
                 </p>
               ) : (
                 /* 正文步未跑：指向顶部显式生成入口（生成中由顶部横幅提示进度） */
@@ -521,7 +520,7 @@ export default function ContentPage() {
             <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-2.5">
               <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                 <RefreshCw className="size-3.5" />
-                重写本章可在右侧 AI 助手输入指令（{rewriteCost} 积分/次）
+                重写本章可在右侧 AI 助手输入指令（不消耗积分）
               </span>
               <span className="text-xs text-muted-foreground">
                 · 本章约 {fmtChars(activeChars)} 字 · 约 {activePages} 页
@@ -551,7 +550,6 @@ export default function ContentPage() {
             projectId={projectId}
             contentReady={isReal}
             balance={balance}
-            rewriteCost={rewriteCost}
             onApply={applyRewrite}
             refreshBalance={reloadMembership}
             onOpenLibrary={openLibrary}

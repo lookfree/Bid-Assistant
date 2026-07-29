@@ -20,7 +20,6 @@ export function ChatPanel({
   projectId,
   contentReady,
   balance,
-  rewriteCost,
   onApply,
   refreshBalance,
   onOpenLibrary,
@@ -31,8 +30,6 @@ export function ChatPanel({
   /** content 步已完成（真实改写通道可用；未完成后端会 409） */
   contentReady: boolean
   balance: number
-  /** 单章改写单次消耗（credit_cost.rewrite 实时口径，由页面经 useMembership 提供） */
-  rewriteCost: number
   /** 改写成功：把返回 html 替换目标章正文 */
   onApply: (chapterId: string, html: string) => void
   refreshBalance: () => void
@@ -70,7 +67,7 @@ export function ChatPanel({
       return
     }
     setSending(true)
-    push({ role: "ai", text: `收到，正在改写「${target.no} ${target.title}」，本次消耗 ${rewriteCost} 积分…` })
+    push({ role: "ai", text: `收到，正在改写「${target.no} ${target.title}」…` })
     try {
       const r = await rewriteChapter(projectId, target.id, text)
       onApply(r.chapterId, r.html)
@@ -78,7 +75,7 @@ export function ChatPanel({
       // 此前只调 refreshBalance（页面级），侧边栏停在旧值 → 同屏两个余额（生产实测）。
       notifyCreditsChanged()
       refreshBalance()
-      push({ role: "ai", text: `已完成「${target.no} ${target.title}」的改写并替换正文（消耗 ${r.cost} 积分），可在编辑器继续微调。` })
+      push({ role: "ai", text: `已完成「${target.no} ${target.title}」的改写并替换正文，可在编辑器继续微调。` })
     } catch (e) {
       if (e instanceof ApiError && e.status === 402) {
         push({ role: "ai", text: "积分余额不足，本次改写未执行。", link: { href: "/membership", label: "去充值" } })
@@ -171,7 +168,7 @@ export function ChatPanel({
       <div className="border-t border-border p-3">
         {projectId && (
           <p className="mb-1.5 px-1 text-[11px] text-muted-foreground">
-            本次改写消耗 {rewriteCost} 积分 · 余额 {balance} 积分
+            改写不消耗积分 · 余额 {balance} 积分
           </p>
         )}
         <div className="flex items-end gap-2 rounded-xl border border-border bg-background px-3 py-2 focus-within:border-primary">

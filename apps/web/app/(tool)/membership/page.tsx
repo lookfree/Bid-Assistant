@@ -1,7 +1,6 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from "react"
-import { copyText } from "@/lib/clipboard"
 import Link from "next/link"
 import { memberTiers, type TierId } from "@/lib/plans"
 import { fetchMembership, fetchOrders, startRecharge, renewMembership, fetchInvoices, createInvoice } from "@/lib/membership-api"
@@ -10,7 +9,7 @@ import type { MembershipOverview, OrderView, LaunchResponse, Payway, InvoiceView
 import { formatPeriodEnd, statusLabel, tierCardState, planPriceYuan, plansByTier } from "@/lib/membership-view"
 import { peekMembershipCache, primeMembershipCache } from "@/lib/use-membership"
 import { tiersCostText } from "@/lib/content-tiers"
-import { Check, X, Coins, Receipt, ArrowRight, Sparkles, Info, Infinity as InfinityIcon, TrendingUp, Copy } from "lucide-react"
+import { Check, X, Coins, Receipt, ArrowRight, Sparkles, Info, Infinity as InfinityIcon, TrendingUp } from "lucide-react"
 
 // 发票状态展示映射（spec332）
 const INVOICE_STATUS: Record<InvoiceView["status"], { label: string; tone: string }> = {
@@ -411,7 +410,6 @@ export default function MembershipPage() {
         </section>
 
         <aside className="flex flex-col gap-4">
-          <ReferralCard />
           <div className="rounded-2xl border border-border bg-card p-5">
             <p className="text-sm font-semibold text-foreground">对套餐有疑问？</p>
             <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
@@ -632,66 +630,3 @@ function InvoiceModal(props: { orders: OrderView[]; onClose: () => void; onCreat
   )
 }
 
-/** 邀请入口（spec307）：展示我的邀请码 + 邀请数 + 一键复制邀请链接；绑定在注册流程完成，此处不做绑定写。 */
-function ReferralCard() {
-  const [code, setCode] = useState<string | null>(null)
-  const [count, setCount] = useState<number | null>(null)
-  const [loadFailed, setLoadFailed] = useState(false)
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle")
-  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  async function copyLink() {
-    if (!code) return
-    const ok = await copyText(`${window.location.origin}/login?ref=${code}`)
-    setCopyState(ok ? "copied" : "failed") // 失败也要反馈，静默失败会让用户拿旧剪贴板去分享
-    if (copyTimer.current) clearTimeout(copyTimer.current)
-    copyTimer.current = setTimeout(() => setCopyState("idle"), 2000)
-  }
-  useEffect(() => () => {
-    if (copyTimer.current) clearTimeout(copyTimer.current)
-  }, [])
-
-  useEffect(() => {
-    let alive = true
-    ;(async () => {
-      try {
-        const c = await api.request<{ code: string }>("/api/referral/code")
-        const l = await api.request<{ list: unknown[] }>("/api/referral/list")
-        if (!alive) return
-        setCode(c.code)
-        setCount(l.list.length)
-      } catch {
-        if (alive) setLoadFailed(true) // 不阻塞会员中心主体，但不能永远停在"加载中"
-      }
-    })()
-    return () => {
-      alive = false
-    }
-  }, [])
-
-  return (
-    <div className="rounded-2xl border border-border bg-card p-5">
-      <p className="text-sm font-semibold text-foreground">邀请好友</p>
-      {code ? (
-        <>
-          <p className="mt-1.5 text-xs text-muted-foreground">我的邀请码</p>
-          <p className="mt-1 font-mono text-lg font-bold tracking-widest text-primary">{code}</p>
-          <p className="mt-2 text-xs text-muted-foreground">已邀请 {count ?? 0} 人</p>
-          <button
-            type="button"
-            onClick={copyLink}
-            className="mt-4 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted"
-          >
-            {copyState === "copied" ? <Check className="size-4 text-success" /> : <Copy className="size-4" />}
-            {copyState === "copied" ? "已复制，快去分享吧" : copyState === "failed" ? "复制失败，请手动复制" : "复制邀请链接"}
-          </button>
-          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">好友通过链接注册，双方都得积分奖励</p>
-        </>
-      ) : loadFailed ? (
-        <p className="mt-1.5 text-xs text-muted-foreground">邀请信息加载失败，刷新页面重试</p>
-      ) : (
-        <p className="mt-1.5 text-xs text-muted-foreground">加载中…</p>
-      )}
-    </div>
-  )
-}

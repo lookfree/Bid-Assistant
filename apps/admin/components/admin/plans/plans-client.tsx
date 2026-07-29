@@ -27,6 +27,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { adminApi, AdminApiError, type ApiPlan } from "@/lib/admin-api"
 import { ReferralConfigCard } from "@/components/admin/plans/referral-config-card"
 import { SignupGrantCard } from "@/components/admin/plans/signup-grant-card"
+import { RechargePacksCard } from "@/components/admin/plans/recharge-packs-card"
 
 // tab 名旁的"有未保存的更改"小圆点：不强拦切换，只是轻提示（spec327 反馈：单页塞两块配置太长，
 // 拆成 tab 后容易忘记另一个 tab 还有未保存的编辑，需要一个不打断操作的信号）。
@@ -34,16 +35,16 @@ function UnsavedDot() {
   return <span className="size-1.5 rounded-full bg-amber-500" title="有未保存的更改" />
 }
 
-// 积分口径 7 项以 C 端 membership「积分消耗说明」为准（key 对齐后端 credit_cost.<key>）；
+// 积分口径以 C 端 membership「积分消耗说明」为准（key 对齐后端 credit_cost.<key>）；
 // 标书生成不在此列——它走下方的按字数分档阶梯（credit_cost.content_tiers）。
+// 逐章改写 2026-07-29 起不计费（费用并入导出），故不再列于此。
 const CREDIT_COST_OPS: { key: string; label: string; desc: string }[] = [
   { key: "read", label: "招标解读", desc: "识别评分点与关键条款" },
   { key: "outline", label: "提纲生成", desc: "技术标 + 商务标大纲" },
-  { key: "rewrite", label: "逐章重写 / 改写", desc: "针对单章润色重写" },
   { key: "review", label: "废标风险审查", desc: "全文风险体检 + 整改建议" },
   { key: "dedupe", label: "标书查重", desc: "多维指纹比对" },
   { key: "present", label: "述标演示生成", desc: "标书提炼为述标/答辩 PPT" },
-  { key: "export", label: "导出 Word / PDF", desc: "整本投标文件导出" },
+  { key: "export", label: "导出 Word / PDF", desc: "整本投标文件导出（含无限次在线编辑与逐章改写）" },
 ]
 const DEFAULT_CREDIT_COST = 10
 
@@ -145,6 +146,7 @@ export function PlansClient() {
   const [referralDirty, setReferralDirty] = useState(false)
   // 注册赠送卡同理：自带保存/还原，这里只镜像 dirty 供 tab 圆点显示。
   const [signupDirty, setSignupDirty] = useState(false)
+  const [rechargeDirty, setRechargeDirty] = useState(false)
 
   // 从真实后端拉取积分口径 + 套餐列表，mount 与 reset() 共用。
   async function loadData(isAlive: () => boolean) {
@@ -303,7 +305,7 @@ export function PlansClient() {
         <TabsList>
           <TabsTrigger value="plans-credits" className="gap-1.5">
             套餐与积分
-            {(dirty || signupDirty) && <UnsavedDot />}
+            {(dirty || signupDirty || rechargeDirty) && <UnsavedDot />}
           </TabsTrigger>
           <TabsTrigger value="referral" className="gap-1.5">
             邀请奖励
@@ -526,6 +528,8 @@ export function PlansClient() {
           </Card>
 
           <SignupGrantCard onDirtyChange={setSignupDirty} />
+
+          <RechargePacksCard onDirtyChange={setRechargeDirty} />
         </TabsContent>
 
         <TabsContent value="referral" keepMounted className="mt-4">

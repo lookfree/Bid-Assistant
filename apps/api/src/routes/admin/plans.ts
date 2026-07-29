@@ -33,6 +33,21 @@ export const CONFIG_SCHEMAS: Record<string, z.ZodTypeAny> = {
     }),
   reward_expire_days: z.number().int().nonnegative(),
   signup_grant_credits: z.number().int().nonnegative(), // 注册赠送积分（0=不送）
+  // 充值档位（C 端「单独充值积分」卡片直接由它渲染，单价文案按 amountCents/credits 实时算）：
+  // id 必须稳定且唯一——下单按 id 定位档位，改 id 等于作废用户手上的旧下单入口；
+  // 金额/积分必须为正（0 元或 0 积分的档位下单必被支付通道拒，属坏配置）。
+  recharge_packs: z
+    .array(
+      z
+        .object({
+          id: z.string().min(1),
+          amountCents: z.number().int().positive(),
+          credits: z.number().int().positive(),
+        })
+        .strict(),
+    )
+    .min(1)
+    .refine((v) => new Set(v.map((p) => p.id)).size === v.length, { message: "duplicate_pack_id" }),
   grant_expire_days: z.number().int().nonnegative(), // 赠送积分有效期天数（0=不过期）
   // 标书生成计费阶梯：规则与 services/content-pricing.ts 的 parseContentTiers 等价，
   // 坏配置绝不落库（落库后生成路径会直接 400 拒跑，运营还以为改成功了）。
