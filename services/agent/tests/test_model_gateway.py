@@ -70,6 +70,21 @@ def test_get_chat_unknown_provider_no_thinking_param():
     assert not getattr(chat, "extra_body", None)
 
 
+def test_get_chat_vllm_disables_thinking_via_chat_template_kwargs():
+    """自建 vLLM 端点（provider 标签填 vllm）：关思考参必须走 chat_template_kwargs。
+    2026-07-29 客户内网 Qwen3.6-35B(vLLM) 实测：顶层 enable_thinking=false **无效**——模型照常思考、
+    把推理过程吐进正文并把 max_tokens 烧光（正文空、finish_reason=length）；
+    只有 chat_template_kwargs={"enable_thinking": false} 才真正关掉。"""
+    chat = ModelGateway(_settings()).get_chat("vllm", "Qwen3.6-35B-A3B-W4A8", base_url="http://h/v1", api_key="k")
+    assert chat.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_get_chat_vllm_thinking_on_sends_no_disable():
+    """显式开思考的 vLLM 条目：不下发关闭参（走模型自身思考模式）。"""
+    chat = ModelGateway(_settings()).get_chat("vllm", "m", base_url="http://h/v1", api_key="k", thinking=True)
+    assert not getattr(chat, "extra_body", None)
+
+
 def test_invoke_failover_to_second_provider(monkeypatch):
     gw = ModelGateway(_settings())
 
