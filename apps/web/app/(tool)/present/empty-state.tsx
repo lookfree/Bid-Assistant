@@ -35,9 +35,12 @@ export function EmptyState({
   /** 本项目已生成过述标：卡上给「查看已生成」的入口（用户口径：菜单进来先看卡，已生成的给链接跳过去） */
   existingDeck?: { pages: number; onOpen: () => void }
 }) {
+  // 居中用子元素的 my-auto，而不是父级 items-center：flex 居中 + 溢出滚动的经典冲突——
+  // 内容高于容器时 items-center 会把顶部推到滚动区之外，用户既看不到标题也滚不上去
+  // （加了「已生成述标」横幅后变高即触发，生产实测）。my-auto 空间够时照样居中，不够时塌成 0 正常滚。
   return (
-    <div className="flex flex-1 items-center justify-center overflow-y-auto p-4">
-      <div className="w-full max-w-xl py-8">
+    <div className="flex flex-1 justify-center overflow-y-auto p-4">
+      <div className="my-auto w-full max-w-xl py-8">
         <div className="rounded-2xl border border-border bg-card p-6 text-center sm:p-8">
           <div className="mx-auto flex size-14 items-center justify-center rounded-2xl gradient-brand-soft">
             <Presentation className="size-7 text-primary" />

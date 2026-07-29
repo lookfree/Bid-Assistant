@@ -16,7 +16,6 @@ import {
   X,
   ChevronRight,
   History,
-  UploadCloud,
 } from "lucide-react"
 import { usePaywall } from "@/components/paywall"
 import { CreditEstimate } from "@/components/credit-estimate"
@@ -484,9 +483,8 @@ export default function PresentPage() {
             </div>
           )}
         </StepPageHeader>
-        {/* 换一份标书述标：必须显式带 ?view=entry——入口默认直连当前项目后，
-            跳 /present 会立刻弹回本页，这个按钮就成了点了没反应的死按钮 */}
-        <PresentEntryBar onOpen={() => { window.location.href = "/present?view=entry&focus=pick" }} />
+        {/* 换一份标书述标的入口只留在卡片里（「从我的标书选择 / 上传标书文件」两个按钮）——
+            右上角再挂一条是重复的（用户要求去掉）。 */}
         {deckReady && <AiNotice />}
 
         {/* 导出菜单 */}
@@ -738,17 +736,4 @@ export default function PresentPage() {
 
 /* 独立述标入口条：挂着项目时也能一键切到「述标其它标书/上传线下标书」（同 risk 页 EntryBar 一致的理由：
    防止用户以为述标只能对当前项目跑）。 */
-function PresentEntryBar({ onOpen }: { onOpen: () => void }) {
-  return (
-    <div className="mt-2 flex justify-end">
-      <button
-        onClick={onOpen}
-        className="inline-flex items-center gap-1.5 rounded-xl border border-primary/30 gradient-brand-soft px-4 py-2 text-sm font-semibold text-primary transition-opacity hover:opacity-90"
-      >
-        <UploadCloud className="size-4" />
-        述标其它标书 / 上传线下标书 →
-      </button>
-    </div>
-  )
-}
 

@@ -81,6 +81,11 @@ def make_present_node(ctx):
             "submit_slide_notes", SlideNotes, "提交每页口播稿")
         await publish_phase(ctx, "述标·渲染 PPT 文件")
         deck = _merge_deck(draft, slide_notes)
+        # 兜底（schema 校验之外再守一道）：正文页一条要点都没有 = 一份只有标题的空 PPT。
+        # 这种东西交付出去还扣 80 积分，比失败更糟——直接抛错让 run 失败，App 侧全额退款可重试。
+        content_pages = [sl for sl in deck.slides if sl.kind == "content"]
+        if content_pages and not any(sl.bullets for sl in content_pages):
+            raise RuntimeError("述标骨架未产出任何页面要点（只有标题），已终止并退还积分，请重试")
         if template:
             deck.template = template   # 客户指定优先：模型没照办也强制生效
         if enterprise_key:

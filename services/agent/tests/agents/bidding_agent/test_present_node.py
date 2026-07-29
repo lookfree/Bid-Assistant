@@ -320,3 +320,28 @@ def test_present_prefers_existing_chapters_over_bid_file_key(monkeypatch, submit
     out = asyncio.run(make_present_node(ctx)(
         {"chapters": {"t1": "<p>正文</p>"}, "read": {}, "run_input": {"bid_file_key": "uploads/u/bid.docx"}}))
     assert out["artifacts"]["pptx"] == "artifacts/proj-1/present.pptx"
+
+
+def test_present_never_delivers_a_title_only_deck(monkeypatch, submit_gateway):
+    """生产事故：模型只给标题、bullets 全空，14 页空 PPT 照样交付并扣 80 积分。
+    现在两层都会拦：SlideDraft 校验先判无效并要求重提交，节点合并后再兜一道。
+    无论撞在哪一层，用户可见结果都是 run 失败 → App 全额退款，绝不交付空 PPT。"""
+    import pytest
+    import agent.agents.bidding_agent.nodes.common as common_mod2
+
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+    monkeypatch.setattr(common_mod2, "read_and_parse", lambda key: type("P", (), {"clauses": [{"id": "sec-1-c1", "text": "正文"}]})())
+
+    # 骨架直接构造成「正文页无要点」（绕过 schema，模拟历史数据/校验被绕过的情形）
+    empty = {"title": "述标", "duration": 15, "template": "blue",
+             "slides": [{"id": "s1", "title": "封面", "kind": "cover", "bullets": []},
+                        {"id": "s2", "title": "技术方案", "kind": "content", "bullets": []}],
+             "qa": []}
+    notes = {"notes": [{"id": "s1", "notes": "开场"}, {"id": "s2", "notes": "讲方案"}]}
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-1",
+                     gateway=submit_gateway({"submit_deck_draft": empty, "submit_slide_notes": notes}))
+    with pytest.raises(RuntimeError, match="未产出任何页面要点|未通过 submit_deck_draft"):
+        asyncio.run(make_present_node(ctx)({"chapters": {"t1": "<p>正文</p>"}, "read": {}}))

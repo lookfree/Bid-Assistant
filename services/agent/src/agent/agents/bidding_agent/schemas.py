@@ -207,6 +207,15 @@ class SlideDraft(BaseModel):
     bullets: list[str] = Field(default_factory=list)
     kind: Literal["cover", "content", "end"] = "content"
 
+    @model_validator(mode="after")
+    def _content_needs_bullets(self):
+        """正文页必须有要点。bullets 原是「可选带默认空列表」，模型只给标题就静默通过——
+        生产实测 14 页全空：用户拿到一份只有标题的 PPT，80 积分照扣（封面/尾页本就无要点，不校验）。
+        校验失败会触发强制提交重试，与 SlideNotes.notes 的 min_length=1 同一范式。"""
+        if self.kind == "content" and not [b for b in self.bullets if b.strip()]:
+            raise ValueError(f"content 页「{self.title}」缺少 bullets：每页必须给 3–5 条要点")
+        return self
+
 
 class DeckDraft(BaseModel):
     """述标骨架：DeckSpec 去掉每页 notes，两段式第一段提交对象。"""

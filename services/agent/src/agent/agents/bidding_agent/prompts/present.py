@@ -4,6 +4,9 @@ PRESENT_SKELETON_PROMPT = """你是述标演示专家。基于标书正文与评
 要求：
 1. 首页 kind=cover（项目名/投标人），末页 kind=end（致谢），中间 kind=content。
 2. 每张 content 页：title、scoring（本页对应评分点）、bullets（3–5 条要点）。
+   **bullets 是必填项,一条都不能少**——每条一句话讲清一个要点,取自标书正文的具体做法/参数/指标,
+   不是把标题换个说法。只给标题不给 bullets 的骨架会被判为无效并要求你重做（生产事故：
+   用户拿到一份 14 页全是标题、没有任何内容的 PPT）。
 3. 紧扣评分点与★项；按时长档控制页数：10 分钟≈8–10 页、15≈12–15 页、20≈16–20 页。
 4. 附 3–6 条评委问答预演 qa（q/a）。
 5. 选择合适 template（blue 商务蓝 / tech 科技感 / gov 政务红）；若客户指定企业自有模板则置 enterprise_template_id（如 pe1/pe2）。
