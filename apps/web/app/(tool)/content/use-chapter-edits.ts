@@ -112,7 +112,15 @@ export function useChapterEdits(opts: {
   /* 插入内容：TipTap 失焦仍保留文档内选区,insertContent 落在光标处;
      用户从未点过正文时选区停在文首（会插到视口外顶端,生产实测投诉）→ 追加到末尾并滚到位 */
   function insertAtCaret(html: string) {
-    if (!editor) return
+    // 空章（正文未生成）根本没挂编辑器，editor 为 null——但工具栏的「从资料库插入 / 插入图片」
+    // 一直可点，原来直接 return 等于点了没反应（用户反馈"资料库插入依然有问题"）。
+    // 这里直接写进该章正文：写完 html 非空，编辑器随即挂载，用户就看到插入的内容。
+    if (!editor) {
+      const next = withChapterHtml(data, active.id, `${active.html ?? ""}${html}`)
+      setData(next)
+      persistContent(next)
+      return
+    }
     const neverFocused = !editor.view.hasFocus() && editor.state.selection.from <= 1
     const chain = editor.chain()
     ;(neverFocused ? chain.focus("end") : chain.focus()).insertContent(html).scrollIntoView().run()
