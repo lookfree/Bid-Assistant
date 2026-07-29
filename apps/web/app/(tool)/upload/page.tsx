@@ -3,6 +3,7 @@
 import { useState, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { api } from "@/lib/api"
+import { uploadHint, UPLOAD_MAX_MB, ACCEPT_TENDER } from "@/lib/files"
 import { ApiError } from "@/lib/api-client"
 import { createProject } from "@/lib/project"
 import { FlowNav } from "@/components/tool/flow-nav"
@@ -100,7 +101,7 @@ function putWithProgress(url: string, file: File, onProgress: (pct: number) => v
 /** 上传失败的用户可读原因（网络 / 格式 / 超限分开），决定文件行提示文案。 */
 function uploadErrorText(e: unknown): string {
   if (e instanceof ApiError) {
-    if (e.code === "file_too_large") return "文件超过大小限制（单文件最大 50MB）"
+    if (e.code === "file_too_large") return `文件过大：单文件最大 ${UPLOAD_MAX_MB}MB`
     if (e.code === "unsupported_file_type") return "文件格式不支持，仅支持 PDF / DOCX / XLSX / DOC / XLS"
     return "上传服务异常，请点击重试"
   }
@@ -264,7 +265,7 @@ export default function UploadPage() {
             </span>
             <p className="mt-5 text-lg font-semibold text-foreground">上传【招标文件】</p>
             <p className="mt-1.5 text-sm text-muted-foreground">
-              支持 DOCX、PDF、XLSX、DOC、XLS 格式，单文件最大 50MB，可一次选择多个文件
+              {uploadHint(ACCEPT_TENDER, { multiple: true })}
             </p>
 
             <div className="mt-6 flex flex-col items-center gap-3 sm:flex-row">
@@ -410,7 +411,7 @@ export default function UploadPage() {
           ref={inputRef}
           type="file"
           multiple
-          accept=".pdf,.docx,.xlsx,.doc,.xls"
+          accept={ACCEPT_TENDER}
           className="hidden"
           onChange={(e) => handleFiles(e.target.files)}
         />

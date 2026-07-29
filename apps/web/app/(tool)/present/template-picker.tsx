@@ -1,7 +1,7 @@
 "use client"
 
 import { useRef, useState } from "react"
-import { uploadErrorMessage } from "@/lib/files"
+import { uploadErrorMessage, uploadHint, ACCEPT_PPT } from "@/lib/files"
 import Link from "next/link"
 import { Building2, Check, ChevronRight, History, Loader2, Lock, Palette, Upload, X } from "lucide-react"
 import { useEscapeClose } from "@/hooks/use-escape-close"
@@ -101,7 +101,7 @@ export function TemplatePicker(props: TemplatePickerProps) {
           <input
             ref={refFileRef}
             type="file"
-            accept=".pptx,.ppt"
+            accept={ACCEPT_PPT}
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0]
@@ -112,7 +112,7 @@ export function TemplatePicker(props: TemplatePickerProps) {
           <input
             ref={entFileRef}
             type="file"
-            accept=".pptx,.potx"
+            accept={ACCEPT_PPT}
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0]
@@ -248,10 +248,11 @@ function EnterpriseSection(props: EnterpriseSectionProps) {
           className="flex items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-background p-3 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
         >
           <Upload className="size-4" />
-          上传企业模板（.pptx / .potx）
+          上传企业模板
           {!isMember && <Lock className="size-3 text-primary" />}
         </button>
       </div>
+      <p className="mt-2 text-[11px] text-muted-foreground">{uploadHint(ACCEPT_PPT)}</p>
     </>
   )
 }
@@ -314,10 +315,11 @@ function HistorySection({
           className="flex items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-background p-3 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
         >
           <Upload className="size-4" />
-          上传参考 PPT（.pptx / .ppt）
+          上传参考 PPT
           {!isMember && <Lock className="size-3 text-primary" />}
         </button>
       </div>
+      <p className="mt-2 text-[11px] text-muted-foreground">{uploadHint(ACCEPT_PPT)}</p>
     </>
   )
 }

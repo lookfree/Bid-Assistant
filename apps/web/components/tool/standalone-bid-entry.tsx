@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { FolderOpen, Loader2, UploadCloud } from "lucide-react"
 import { listProjects, setCurrentProjectId, createReviewProject, type ProjectListItem } from "@/lib/project"
-import { uploadFile, uploadErrorMessage } from "@/lib/files"
+import { uploadFile, uploadErrorMessage, uploadHint, ACCEPT_BID, ACCEPT_TENDER } from "@/lib/files"
 
 export type StandaloneBidEntryProps = {
   onBack?: () => void
@@ -50,6 +50,15 @@ export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // ?focus=pick|upload：从工具页卡片里的两个次要入口跳进来时，直接把对应的卡片滚到视野并高亮，
+  // 否则用户点了「上传标书文件」却落在页顶，还要自己找哪张卡是上传（两张卡并排，第一眼分不出）。
+  const focus = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("focus")
+  const ring = (self: "pick" | "upload") => (focus === self ? " ring-2 ring-primary/40" : "")
+  useEffect(() => {
+    if (!focus) return
+    document.getElementById(`entry-${focus}`)?.scrollIntoView({ block: "center" })
+  }, [focus])
+
   return (
     <div className="flex flex-col gap-3">
       {onBack && (
@@ -58,7 +67,7 @@ export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
         </button>
       )}
       <div className="grid gap-4 lg:grid-cols-2">
-        <section className="rounded-2xl border border-border bg-card p-5">
+        <section id="entry-pick" className={`rounded-2xl border border-border bg-card p-5${ring("pick")}`}>
           <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
             <FolderOpen className="size-4 text-primary" />
             {pickTitle}
@@ -90,7 +99,7 @@ export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
             )}
           </div>
         </section>
-        <UploadBidCard {...props} />
+        <UploadBidCard {...props} highlight={focus === "upload"} />
       </div>
     </div>
   )
@@ -98,6 +107,7 @@ export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
 
 /** 上传线下标书卡：标书必传；bidOnly 时不提供招标文件、直接去 noTenderHref。 */
 function UploadBidCard({
+  highlight,
   noTenderHref,
   uploadTitle,
   uploadDesc,
@@ -105,7 +115,7 @@ function UploadBidCard({
   tenderHint,
   submitLabel,
   submitLabelWithTender,
-}: StandaloneBidEntryProps) {
+}: StandaloneBidEntryProps & { highlight?: boolean }) {
   const bidRef = useRef<HTMLInputElement>(null)
   const tenderRef = useRef<HTMLInputElement>(null)
   const [bidFile, setBidFile] = useState<File | null>(null)
@@ -142,7 +152,7 @@ function UploadBidCard({
   )
 
   return (
-    <section className="rounded-2xl border border-border bg-card p-5">
+    <section id="entry-upload" className={`rounded-2xl border border-border bg-card p-5${highlight ? " ring-2 ring-primary/40" : ""}`}>
       <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
         <UploadCloud className="size-4 text-primary" />
         {uploadTitle}
@@ -151,9 +161,10 @@ function UploadBidCard({
       <div className="mt-3 space-y-2">
         {fileBtn("选择投标文件", bidFile, () => bidRef.current?.click(), "（必选）")}
         {!bidOnly && fileBtn("选择招标文件", tenderFile, () => tenderRef.current?.click(), tenderHint ?? "（可选）")}
-        <input ref={bidRef} type="file" accept=".doc,.docx,.pdf" className="hidden" onChange={(e) => { setBidFile(e.target.files?.[0] ?? null); e.target.value = "" /* 允许重选同名文件 */ }} />
-        <input ref={tenderRef} type="file" accept=".doc,.docx,.pdf,.xls,.xlsx" className="hidden" onChange={(e) => { setTenderFile(e.target.files?.[0] ?? null); e.target.value = "" }} />
+        <input ref={bidRef} type="file" accept={ACCEPT_BID} className="hidden" onChange={(e) => { setBidFile(e.target.files?.[0] ?? null); e.target.value = "" /* 允许重选同名文件 */ }} />
+        <input ref={tenderRef} type="file" accept={ACCEPT_TENDER} className="hidden" onChange={(e) => { setTenderFile(e.target.files?.[0] ?? null); e.target.value = "" }} />
       </div>
+      <p className="mt-2 text-[11px] text-muted-foreground">{uploadHint(bidOnly ? ACCEPT_BID : ACCEPT_TENDER)}</p>
       {error && <p className="mt-2 text-xs font-medium text-destructive">{error}</p>}
       <button
         onClick={() => void submit()}

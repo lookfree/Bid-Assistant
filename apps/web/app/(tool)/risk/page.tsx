@@ -15,6 +15,7 @@ import {
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepPageHeader } from "@/components/tool/step-page-header"
 import { ReviewEntry } from "./review-entry"
+import { RejectUploadPanel } from "./reject-upload-panel"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { StepRunCta } from "@/components/tool/step-run-cta"
 import { AiNotice } from "@/components/tool/ai-notice"
@@ -82,21 +83,25 @@ function RejectReview() {
   // 默认统一进入独立审查入口（选已生成项目 / 上传线下标书），不默认衔接当前项目已生成的标书；
   // ?view=project = 用户已在入口显式选「当前项目直连审查」（入口内返回/选项目/传标书后跳这里）。
   // 本组件在 RequireAuth 之后才客户端挂载，惰性读 URL 参数无 SSR 水合问题。
-  const [enterProject] = useState(
-    () => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("view") === "project",
+  const [viewParam] = useState(
+    () => (typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("view")),
   )
+  const goEntry = () => { window.location.href = "/risk?view=entry&focus=pick" }
   const { projectId, info, data: real, dataLoading, running, phase, error, errorAction, start } = useStep<RealRisk>("review")
   const { overview: membershipOverview } = useMembership()
   const reviewCost = creditCostValue(membershipOverview, "review", 60)
 
-  // 默认独立审查入口；「返回当前项目的审查」仅在当前项目确可审查时给出（info 到位且无前序缺口）——
-  // 否则不给，避免对未生成正文的在途项目给一个点了会空转回入口的死链（整页跳转带 ?view=project）。
-  if (!enterProject || !projectId)
+  // ?view=entry：用户从面板里点了「从我的标书选择」，给「选项目 / 传标书」的中转页。
+  // 「返回当前项目的审查」仅在当前项目确可审查时给出——否则不给，避免对未生成正文的在途项目
+  // 给一个点了会空转回入口的死链（整页跳转带 ?view=project）。
+  if (viewParam === "entry")
     return (
       <ReviewEntry
         onBack={projectId && info && !stepPrereq(info, "review") ? () => { window.location.href = "/risk?view=project" } : undefined}
       />
     )
+  // 没有当前项目：只能传文件（选项目那张卡在中转页里，由上面的次要入口进）
+  if (!projectId) return <RejectUploadPanel onPickExisting={goEntry} />
 
   // 项目状态/审查报告加载中：数据未就绪绝不裸露「开始废标体检」计费按钮
   if (!info || dataLoading) return <StepPlaceholder text={dataLoading ? "正在加载审查报告…" : "正在加载项目…"} delayMs={250} />
@@ -126,20 +131,26 @@ function RejectReview() {
   // - 前序（标书生成）未完成 → 不再引导「前往标书生成」，直接给独立审查入口：标书审查是独立能力，
   //   上传线下标书 / 选已有标书即可审查，不强制先在库内生成。
   // - 前序已就绪 → 给显式体检按钮（明示消耗）+ 顶部独立审查入口条。
+  // 该步未跑（用户要求：入口就是双上传面板）：
+  // - 前序（标书生成）未完成 → 只有上传面板：审查是独立能力，不强制先在库内生成正文。
+  // - 前序已就绪 → 面板之上再给一张「直接审查当前项目」的卡：本项目的招标文件与正文都在库里，
+  //   不该逼用户把已有的东西重传一遍（六步流水线的正常下一步，丢了就断链）。
   if (!real) {
-    if (stepPrereq(info, "review")) return <ReviewEntry />
+    const gap = stepPrereq(info, "review")
     return (
       <div className="flex flex-col gap-3">
-      <EntryBar onOpen={() => { window.location.href = "/risk" }} />
-      <div className="rounded-2xl border border-border bg-card">
-        <StepRunCta
-          title="废标风险审查"
-          desc="AI 逐条比对招标要求与标书内容，生成健康分、风险项与整改建议"
-          costText={`消耗 ${reviewCost} 积分`}
-          actionLabel="开始废标体检"
-          onRun={() => void start()}
-        />
-      </div>
+        {!gap && (
+          <div className="rounded-2xl border border-border bg-card">
+            <StepRunCta
+              title="审查当前项目"
+              desc="直接取本项目的招标文件与已生成正文逐条比对，生成健康分、风险项与整改建议（无需重新上传）"
+              costText={`消耗 ${reviewCost} 积分`}
+              actionLabel="开始废标体检"
+              onRun={() => void start()}
+            />
+          </div>
+        )}
+        <RejectUploadPanel onPickExisting={goEntry} />
       </div>
     )
   }
@@ -147,7 +158,7 @@ function RejectReview() {
   const { score, overview, riskItems, passed, adviceLocked } = deriveRisk(real)
   return (
     <div className="flex flex-col gap-6">
-        <EntryBar onOpen={() => { window.location.href = "/risk" }} />
+        <EntryBar onOpen={goEntry} />
         <AiNotice />
         {/* 健康分 */}
         <div className="flex flex-col items-center gap-5 rounded-3xl border border-border bg-card p-8 sm:flex-row sm:gap-8">

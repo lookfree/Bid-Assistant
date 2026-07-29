@@ -1,6 +1,6 @@
 "use client"
 
-import { ChevronRight, Palette, Presentation, Sparkles } from "lucide-react"
+import { ChevronRight, FolderOpen, Palette, Presentation, Sparkles, Upload } from "lucide-react"
 import { CreditEstimate } from "@/components/credit-estimate"
 
 export type Duration = 10 | 15 | 20
@@ -46,6 +46,7 @@ export function EmptyState({
 
           <DurationSection duration={duration} onDuration={onDuration} />
           <TemplateSection styleName={styleName} refPpt={refPpt} onOpenTemplates={onOpenTemplates} />
+          <OtherBidSection />
           <GenerateAction cost={cost} balance={balance} balanceLoading={balanceLoading} generating={generating} onGenerate={onGenerate} />
           <p className="mt-3 text-[11px] text-muted-foreground">生成后可自由编辑幻灯与口播稿；导出 PPTX 另按导出口径消耗积分</p>
         </div>
@@ -102,6 +103,28 @@ function TemplateSection({
       <p className="mt-2 text-[11px] text-muted-foreground">
         可套用企业自有模板或参考历史述标 PPT（会员专享）
       </p>
+    </div>
+  )
+}
+
+/* 述标别的标书：默认对当前项目述标（本卡片），这里是两个次要入口——
+   跳独立入口页并指明落在哪张卡（?view=entry&focus=pick|upload），不再让用户先过一道中转选择页。 */
+function OtherBidSection() {
+  const go = (focus: "pick" | "upload") => () => {
+    window.location.href = `/present?view=entry&focus=${focus}`
+  }
+  const cls =
+    "inline-flex items-center gap-2 rounded-xl border border-border bg-background px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:border-primary/40"
+  return (
+    <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+      <button onClick={go("pick")} className={cls}>
+        <FolderOpen className="size-4 text-muted-foreground" />
+        从我的标书选择
+      </button>
+      <button onClick={go("upload")} className={cls}>
+        <Upload className="size-4 text-muted-foreground" />
+        上传标书文件
+      </button>
     </div>
   )
 }

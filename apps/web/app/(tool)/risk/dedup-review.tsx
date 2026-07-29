@@ -18,7 +18,7 @@ import {
 import Link from "next/link"
 import { CreditEstimate } from "@/components/credit-estimate"
 import { ApiError } from "@/lib/api-client"
-import { uploadFile, uploadErrorMessage, type UploadedFile } from "@/lib/files"
+import { uploadFile, uploadErrorMessage, uploadHint, ACCEPT_BID, type UploadedFile } from "@/lib/files"
 import { creditCostValue } from "@/lib/membership-view"
 import { useMembership } from "@/lib/use-membership"
 import { runDedupe, type DedupeDim, type DedupeResult, type DedupeStrategy } from "@/lib/risk-api"
@@ -322,13 +322,13 @@ function BidUploader({
         <span className="text-sm text-muted-foreground">
           <span className="font-medium text-primary">点击选择</span> 2 - 3 份投标文件
         </span>
-        <span className="text-xs text-muted-foreground">PDF / Word（.docx）· 单文件 ≤ 100 MB</span>
+        <span className="text-xs text-muted-foreground">{uploadHint(ACCEPT_BID)}</span>
       </button>
       <input
         ref={inputRef}
         type="file"
         multiple
-        accept=".pdf,.docx"
+        accept={ACCEPT_BID}
         className="hidden"
         onChange={(e) => {
           const files = Array.from(e.target.files ?? [])

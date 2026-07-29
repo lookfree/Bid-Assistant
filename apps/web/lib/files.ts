@@ -6,6 +6,43 @@ import { ApiError } from "./api-client"
 
 export type UploadedFile = { fileId: string; key: string; name: string }
 
+/* ==================== 全系统上传口径（唯一真相） ====================
+ * 大小上限与可选格式一律从这里取，各入口不要再各自写死——查重页曾标「≤ 100 MB」而
+ * 服务端 50MB 直接拒（用户传完才被 400，白等一场），模板入口曾放行 .ppt 而服务端白名单
+ * 只认 .pptx/.potx。服务端权威：apps/api 的 FILE_MAX_SIZE_MB（默认 50）与
+ * services/files.ts 的 SUPPORTED_EXTS；这里是**展示口径**，改服务端时同步改这里。 */
+
+/** 单文件大小上限（MB），与 API 的 FILE_MAX_SIZE_MB 默认值一致。 */
+export const UPLOAD_MAX_MB = 50
+
+/** 投标文件/标书：正文类文档。 */
+export const ACCEPT_BID = ".pdf,.docx,.doc"
+/** 招标文件：可能带清单/报价表格，故比标书多收 Excel。 */
+export const ACCEPT_TENDER = ".pdf,.docx,.doc,.xlsx,.xls"
+/** 述标 PPT 母版与参考稿（服务端白名单不含 .ppt，别放行）。 */
+export const ACCEPT_PPT = ".pptx,.potx"
+/** 资质证照等图片附件。 */
+export const ACCEPT_IMAGE = ".png,.jpg,.jpeg"
+
+// 扩展名 → 展示名。同族合并（docx/doc 都叫 Word），避免「Word（.docx）、Word（.doc）」的啰嗦文案。
+const EXT_FAMILY: Record<string, string> = {
+  pdf: "PDF", docx: "Word", doc: "Word", xlsx: "Excel", xls: "Excel",
+  pptx: "PPT", potx: "PPT", png: "图片", jpg: "图片", jpeg: "图片",
+}
+
+/** 上传提示文案（全系统统一句式）：「支持 PDF、Word、Excel · 单文件最大 50MB」。
+ *  multiple=true 时追加「· 可一次选择多个文件」。 */
+export function uploadHint(accept: string, opts: { multiple?: boolean } = {}): string {
+  const families: string[] = []
+  for (const ext of accept.split(",")) {
+    const fam = EXT_FAMILY[ext.trim().replace(/^\./, "")]
+    if (fam && !families.includes(fam)) families.push(fam)
+  }
+  const parts = [`支持 ${families.join("、")}`, `单文件最大 ${UPLOAD_MAX_MB}MB`]
+  if (opts.multiple) parts.push("可一次选择多个文件")
+  return parts.join(" · ")
+}
+
 export async function uploadFile(file: File): Promise<UploadedFile> {
   const contentType = file.type || "application/octet-stream"
   // presign 响应含 MinIO 对象 key（后端以 key 定位文件，如查重 fileKeys / 项目 fileKey）
@@ -33,7 +70,7 @@ export function uploadErrorMessage(e: unknown, fallback = "上传失败，请重
   if (e instanceof ApiError) {
     if (e.code === "unsupported_file_type")
       return "不支持的文件类型：请上传 PDF / Word / Excel / PPT 或图片（png/jpg）。若文件名以 .crdownload 结尾，说明浏览器尚未下载完成，请等原文件下载完再上传"
-    if (e.code === "file_too_large") return "文件过大，超出上传大小上限"
+    if (e.code === "file_too_large") return `文件过大：单文件最大 ${UPLOAD_MAX_MB}MB`
   }
   return fallback
 }
