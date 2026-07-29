@@ -18,5 +18,7 @@ export function presentable(p: ProjectListItem): boolean {
 /** 废标审查可选：招标文件与投标文件**是一体的**（用户口径：不允许单独拿投标文件做废标审查）——
  *  废标体检就是拿招标要求逐条比对投标内容，缺了招标文件无从判定，跑起来只是白扣积分。 */
 export function reviewable(p: ProjectListItem): boolean {
-  return p.hasBid !== false && (p.tenderCount ?? 0) > 0 && HAS_BID_STEPS.includes(p.currentStep)
+  // 失败方向与 presentable 一致：字段缺失（web 先于 api 发版 / 旧缓存）视为未知而放行，
+  // 只有后端明确回了 0 份招标文件才排除——否则整个列表会静默空掉，比列多了更糟。
+  return p.hasBid !== false && p.tenderCount !== 0 && HAS_BID_STEPS.includes(p.currentStep)
 }

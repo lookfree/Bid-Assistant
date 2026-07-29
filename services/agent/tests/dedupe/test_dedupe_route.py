@@ -193,3 +193,28 @@ async def test_dedupe_flags_documents_with_no_extractable_text(monkeypatch):
     note = res["pairs"][0]["note"]
     assert "未见明显围标特征" not in note
     assert "扫描件.docx" in note and "未提取到可比对文本" in note
+
+
+async def test_dedupe_unavailable_pair_is_not_green(monkeypatch):
+    """比不成时不能给绿色：前端的徽标/进度条/大标题都看 tone，只改 note 的话页面照样
+    一片「未检测到高雷同组合」，假放行仍在（评审指出的第二层）。"""
+    _fake_store(monkeypatch, {"u/a.docx": _docx(_A), "u/b.docx": _docx([])})
+    res = await dedupe(DedupeBody(files=[DedupeFile(key="u/a.docx", label="A.docx"),
+                                         DedupeFile(key="u/b.docx", label="扫描件.docx")],
+                                  dims=["text"]))
+    pair = res["pairs"][0]
+    assert pair["tone"] != "success" and pair["unavailable"] is True
+    assert res["overall"]["unavailable_pairs"] == 1
+
+
+async def test_dedupe_baseline_emptied_doc_is_not_called_a_scan(monkeypatch):
+    """整份都是招标原文 → 基线扣完后无句可比。这时说「未提取到可比对文本，请换可复制文字的版本」
+    是误诊，给出的下一步动作也是错的（评审实测）。"""
+    tender = ["投标人须具备独立法人资格并提供营业执照副本复印件加盖公章。",
+              "投标人近三年内无重大违法记录并提供书面声明。"]
+    _fake_store(monkeypatch, {"u/a.docx": _docx(tender), "u/b.docx": _docx(_A), "u/t.docx": _docx(tender)})
+    res = await dedupe(DedupeBody(files=[DedupeFile(key="u/a.docx", label="全是招标原文.docx"),
+                                         DedupeFile(key="u/b.docx", label="B.docx")],
+                                  tender_key="u/t.docx", dims=["text", "baseline"]))
+    note = res["pairs"][0]["note"]
+    assert "扫描件" not in note and "与招标文件高度相似" in note

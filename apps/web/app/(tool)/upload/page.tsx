@@ -45,8 +45,8 @@ type UploadFile = {
   file?: File // 原始 File：失败后单文件「重试」重传用（格式拦截项不存，重试无意义）
 }
 
-// 与后端 presign 白名单一致
-const SUPPORTED_EXTS = new Set(["pdf", "docx", "xlsx", "doc", "xls"])
+// 与全系统上传口径同源（lib/files.ts 是唯一真相，勿在此另立白名单）
+const SUPPORTED_EXTS = new Set(ACCEPT_TENDER.split(",").map((e) => e.trim().replace(/^\./, "")))
 
 // 已传完文件跨页留存（列表是组件内存态，切菜单即丢；文件本体已在存储，只需记住条目）。
 // 只存 done 项（uploading/error 依赖内存里的 File 对象，无法恢复）；建项目成功后清除。
@@ -102,7 +102,7 @@ function putWithProgress(url: string, file: File, onProgress: (pct: number) => v
 function uploadErrorText(e: unknown): string {
   if (e instanceof ApiError) {
     if (e.code === "file_too_large") return `文件过大：单文件最大 ${UPLOAD_MAX_MB}MB`
-    if (e.code === "unsupported_file_type") return "文件格式不支持，仅支持 PDF / DOCX / XLSX / DOC / XLS"
+    if (e.code === "unsupported_file_type") return `文件格式不支持（${uploadHint(ACCEPT_TENDER)}）`
     return "上传服务异常，请点击重试"
   }
   if (e instanceof Error && e.message === "network") return "网络异常，请检查网络后点击重试"
@@ -172,7 +172,7 @@ export default function UploadPage() {
           ...prev,
           {
             id, name: file.name, size: file.size, progress: 0, status: "error",
-            errorText: "仅支持 PDF / DOCX / XLSX / DOC / XLS",
+            errorText: `格式不支持（${uploadHint(ACCEPT_TENDER)}）`,
           },
         ])
         continue

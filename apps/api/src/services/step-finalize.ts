@@ -239,7 +239,10 @@ export async function sweepStuckSteps(
         .select({ currentStep: bidProjects.currentStep, kind: bidProjects.kind })
         .from(bidProjects)
         .where(eq(bidProjects.id, row.projectId))
-      if (proj && (proj.currentStep === row.step || (row.step === "export" && proj.currentStep === "present"))) {
+      // 与 advanceGuard 同集：export 可从 review（跳过体检）/present（跳过述标）两处推进——
+    // 这里漏一个，进程在「行已 done、项目未推进」之间死掉的窗口就再也修不回来（永远 running）
+    if (proj && (proj.currentStep === row.step
+      || (row.step === "export" && ["review", "present"].includes(proj.currentStep)))) {
         const next = nextStepFor(row.step as Step, proj.kind ?? "bid")
         await getDb()
           .update(bidProjects)

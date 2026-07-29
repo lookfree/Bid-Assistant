@@ -24,11 +24,13 @@ export type DedupePair = {
   tone: "destructive" | "warning" | "success"
   note: string
   hits: DedupeHit[]
+  /** 该对比不成（任一侧无可比文本）：0% 不代表"不像"，前端必须区分展示 */
+  unavailable?: boolean
 }
 
 export type DedupeResult = {
   pairs: DedupePair[]
-  overall: { maxScore: number; highPairs: number }
+  overall: { maxScore: number; highPairs: number; unavailablePairs?: number }
   dimsRun: DedupeDim[]
 }
 

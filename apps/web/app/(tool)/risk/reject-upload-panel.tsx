@@ -3,7 +3,7 @@
 import { useRef, useState } from "react"
 import { Brain, EyeOff, Flame, FolderOpen, Loader2, Lock, Upload, X, Zap } from "lucide-react"
 import { createReviewProject, setCurrentProjectId } from "@/lib/project"
-import { uploadFile, uploadErrorMessage, uploadHint, ACCEPT_BID, ACCEPT_TENDER } from "@/lib/files"
+import { uploadFile, uploadErrorMessage, uploadHint, checkFiles, ACCEPT_BID, ACCEPT_TENDER } from "@/lib/files"
 
 /** 废标风险审查的默认入口：招标文件 + 投标文件双上传区（用户指定的版式）。
  *  **两份都必传**（用户口径：废标审查是拿招标要求逐条比对投标文件，两者是一体的，
@@ -127,10 +127,15 @@ function DropZone({
 }) {
   const ref = useRef<HTMLInputElement>(null)
   const [over, setOver] = useState(false)
-  // 追加而非替换：分册标书往往分两次选（先选商务标再选技术标），替换会让用户以为第一份没传上
+  const [reject, setReject] = useState<string | null>(null)
+  // 追加而非替换：分册标书往往分两次选（先选商务标再选技术标），替换会让用户以为第一份没传上。
+  // 先做类型/大小/份数校验：拖拽绕过 accept，不在这里拦就要等全部直传完再被服务端 400。
   const add = (list: FileList | null) => {
     const picked = Array.from(list ?? [])
-    if (picked.length) onPick([...files, ...picked])
+    if (!picked.length) return
+    const bad = checkFiles(picked, accept, files.length)
+    setReject(bad)
+    if (!bad) onPick([...files, ...picked])
   }
 
   return (
@@ -177,6 +182,7 @@ function DropZone({
       )}
       <p className="mt-1 text-[11px] text-muted-foreground">{hint}</p>
       <p className="mt-1 text-[11px] text-muted-foreground">{uploadHint(accept)}</p>
+      {reject && <p className="mt-1 text-[11px] font-medium text-destructive">{reject}</p>}
       <input
         ref={ref}
         type="file"

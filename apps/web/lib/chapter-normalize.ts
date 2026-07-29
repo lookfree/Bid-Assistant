@@ -52,10 +52,21 @@ function renumberHierHeadings(html: string, n: number): string {
   return html.replace(HIER_NO, (_all, pre: string, _num: string, tail: string) => `${pre}${n}${tail}`)
 }
 
+/** 提纲内部 id 泄漏进标题（生产实测：写手把「t3.1」当编号抄进标题，导出与目录里全是 t2.3/t3.1）。
+ *  只剥**本章自己的 id**、且其后必须紧跟点分/连字号数字——按 [tb]\d 通配去剥会把中文标书里
+ *  极常见的「T3 航站楼」「B1 层车库」吃成「3 航站楼」「1 层车库」。与 sanitize.py 的
+ *  _id_prefix_re 同一套规则，改语义须两侧同步。 */
+function stripIdPrefix(html: string, chapterId: string): string {
+  if (!/^[a-zA-Z]{1,2}[0-9]{1,3}$/.test(chapterId)) return html
+  const digits = chapterId.replace(/[^0-9]/g, "")
+  const re = new RegExp(`(<h[1-6][^>]*>\\s*(?:<[^>]+>\\s*)*)${chapterId}(?=[.\\-][0-9])`, "gi")
+  return html.replace(re, (_all, pre: string) => `${pre}${digits}`)
+}
+
 /** 归一化入口：确定性；章号解析不出数字时层级编号不动。 */
-export function normalizeChapterHtml(html: string, no: string, title: string): string {
+export function normalizeChapterHtml(html: string, no: string, title: string, chapterId = ""): string {
   if (!html) return html
-  const out = dropLeadingChapterHeading(html, title)
+  const out = dropLeadingChapterHeading(stripIdPrefix(html, chapterId), title)
   const n = chapterOrdinal(no)
   return n === null ? out : renumberHierHeadings(out, n)
 }

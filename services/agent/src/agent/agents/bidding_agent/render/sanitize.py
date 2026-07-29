@@ -69,13 +69,15 @@ _HEADING_ANY = re.compile(r"<h([1-6])[^>]*>(.*?)</h\1>", re.I | re.S)
 # 层级编号前缀（N.M 或 N.M.K…，可被行内标签包住）：首段改写为当前章号
 _HIER_NO = re.compile(r"(<h[234][^>]*>\s*(?:<[^>]+>\s*)*)([0-9]{1,2})((?:[.．][0-9]{1,3})+)", re.I)
 _BARE_NO_TEXT = re.compile(r"^[0-9]{1,2}[、\s]")      # 裸编号小节（"2 实施"）——存在即整章不改编号
-# 提纲内部 id 泄漏进标题（生产实测：导出成「t3.1 升级改造部署实施方案」，目录里全是 t2.3/t3.1）：
-# 章 id 形如 t1/b2，子项 id 形如 t3.1/t3-1，写手把它当编号抄进了标题。只吃掉打头的 t/b 字母，
-# 后面的数字是真编号要留；须紧跟数字且其后是分隔符或中文，"b2b服务方案"这类不动。
-_ID_PREFIX = re.compile(
-    r"(<h[1-6][^>]*>\s*(?:<[^>]+>\s*)*)[tb](?=[0-9]{1,2}(?:[.\-][0-9]{1,3})*(?:[\s、.．)）]|[\u4e00-\u9fa5]))",
-    re.I,
-)
+def _id_prefix_re(chapter_id: str) -> "tuple[re.Pattern[str], str] | None":
+    r"""提纲内部 id 泄漏进标题（生产实测：导出成「t3.1 升级改造部署实施方案」，目录里全是 t2.3/t3.1）。
+    只剥**本章自己的 id**、且其后必须紧跟点分/连字号数字（t3.1 / t3-1 这种"被当编号抄进标题"的形态）。
+    早先按 [tb]\d 通配去剥，会把中文标书里极常见的「T3 航站楼」「B1 层车库」吃成「3 航站楼」「1 层车库」——
+    还会连锁触发 _BARE_NO_TEXT 让整章编号不再重排、并让章级标题被误删（评审实测三处损伤）。"""
+    if not re.fullmatch(r"[a-zA-Z]{1,2}[0-9]{1,3}", chapter_id or ""):
+        return None
+    digits = re.sub(r"[^0-9]", "", chapter_id)   # t3 → 3：只摘掉字母，编号数字是真编号要留
+    return re.compile(rf"(<h[1-6][^>]*>\s*(?:<[^>]+>\s*)*){re.escape(chapter_id)}(?=[.\-][0-9])", re.I), digits
 
 
 def _drop_leading_chapter_heading(html: str, title: str) -> str:
@@ -123,14 +125,16 @@ def _renumber_hier_headings(html: str, n: int) -> str:
     return _HIER_NO.sub(lambda m: f"{m.group(1)}{n}{m.group(3)}", html)
 
 
-def normalize_chapter_html(html: str, no: str, title: str) -> str:
+def normalize_chapter_html(html: str, no: str, title: str, chapter_id: str = "") -> str:
     """章正文与提纲对齐：剥内嵌旧章级标题 + 小节层级编号首段跟随当前章号。
     确定性、宁留勿删/宁不动勿改错（规范形态下幂等）；no 解析不出数字时编号不动。
     导出渲染与前端编辑器装载共用同一套规则
     （前端 TS 版见 apps/web/lib/chapter-normalize.ts，改语义须两侧同步）。"""
     if not html:
         return html
-    out = _ID_PREFIX.sub(lambda m: m.group(1), html)   # 先摘掉 id 前缀，后续编号判定才看得到真编号
+    # 先摘掉本章 id 前缀，后续编号判定才看得到真编号（chapter_id 缺省则整步跳过，行为与旧版一致）
+    id_rule = _id_prefix_re(chapter_id)
+    out = id_rule[0].sub(lambda m: m.group(1) + id_rule[1], html) if id_rule else html
     out = _drop_leading_chapter_heading(out, title)
     n = chapter_ordinal(no)
     if n is not None:

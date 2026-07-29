@@ -74,3 +74,18 @@ export function uploadErrorMessage(e: unknown, fallback = "上传失败，请重
   }
   return fallback
 }
+
+/** 每次提交最多带几份文件（与 API 的 keyList max(10) 对齐；超了服务端 400 且不说是哪一条） */
+export const UPLOAD_MAX_FILES = 10
+
+/** 选文件时的前置校验：类型/大小/份数。返回 null=通过，否则是给用户看的原因。
+ *  拖拽会绕过 input 的 accept，不在这里拦就要等全部直传完成、服务端 400 之后才知道白等一场。 */
+export function checkFiles(picked: File[], accept: string, already = 0): string | null {
+  const exts = accept.split(",").map((e) => e.trim().toLowerCase())
+  const bad = picked.find((f) => !exts.some((e) => f.name.toLowerCase().endsWith(e)))
+  if (bad) return `「${bad.name}」格式不支持（${uploadHint(accept)}）`
+  const tooBig = picked.find((f) => f.size > UPLOAD_MAX_MB * 1024 * 1024)
+  if (tooBig) return `「${tooBig.name}」超过 ${UPLOAD_MAX_MB}MB，请压缩或拆分后再传`
+  if (already + picked.length > UPLOAD_MAX_FILES) return `最多 ${UPLOAD_MAX_FILES} 份，请先移除多余文件`
+  return null
+}

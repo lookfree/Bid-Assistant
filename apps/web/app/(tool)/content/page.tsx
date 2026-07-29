@@ -496,7 +496,7 @@ export default function ContentPage() {
               /* 装载时与提纲对齐（剥内嵌旧章标题/编号跟随章号，与导出同规则）：只影响用户
                  打开的这一章，编辑保存后自然收敛——绝不在建树时改写未打开章（整份回写会把
                  未经用户过目的改动落库，评审 F5） */
-              html={normalizeChapterHtml(stripDocumentShell(active.html), active.no, active.title)}
+              html={normalizeChapterHtml(stripDocumentShell(active.html), active.no, active.title, active.id)}
               scrollRef={editorScrollRef}
               onBlurSave={saveEditor}
               onEditor={setEditor}

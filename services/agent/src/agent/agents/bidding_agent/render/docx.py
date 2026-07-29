@@ -329,7 +329,7 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
         # 防御清洗：库存章节可能带完整文档壳（<head><style>...），不剥会把样式文本吐进正文；
         # 再与提纲对齐（剥内嵌旧章标题 + 小节编号跟随当前章号）——标书必须按用户设置后的提纲出
         body = strip_document_shell(chapters.get(ch.get("id", ""), ""))
-        body = normalize_chapter_html(body, ch.get("no", ""), ch.get("title", ""))
+        body = normalize_chapter_html(body, ch.get("no", ""), ch.get("title", ""), ch.get("id", ""))
         if body:
             _emit_html(doc, body)
         else:

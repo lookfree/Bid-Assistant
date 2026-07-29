@@ -81,3 +81,17 @@ def test_graph_has_standalone_present_edges():
     edges = {(e.source, e.target) for e in g.get_graph().edges}
     assert ("__start__", "present") in edges  # 无招标文件直接述标（线下标书）
     assert ("read", "present") in edges       # 有招标文件先读标，读完直达述标（跳过提纲/正文/审查）
+
+
+def test_content_routes_to_export_when_review_is_skipped():
+    """跳过废标体检直出（用户口径「体检 60 积分，不想查的不该被强收」）：
+    content 之后的出边必须是**条件边**——写成静态边时，停在 content 的检查点无论请求哪一步
+    都会先跑 review 节点：用户点的是导出，实跑的是一轮审查大模型，产物写成 export 步结果、
+    导出费照扣、docx 根本没渲染（评审用真实 langgraph 复现过）。"""
+    from agent.agents.bidding_agent.graph import _route_after_content, _route_after_export
+
+    assert _route_after_content({"run_input": {"step": "export"}}) == "export"
+    assert _route_after_content({"run_input": {"step": "review"}}) == "review"
+    assert _route_after_content({}) == "review"          # 未指定=按流水线正常走体检
+    # 跳过体检直出的项目事后仍要能补跑体检，否则那个项目的废标体检永远买不到
+    assert _route_after_export({"run_input": {"step": "review"}}) == "review"

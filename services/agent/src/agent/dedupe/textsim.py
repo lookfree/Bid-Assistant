@@ -8,8 +8,19 @@ import re
 
 _SENT_SPLIT = re.compile(r"[。！？；!?;\n]+")
 _WS = re.compile(r"\s+")
-# 行尾出现这些字符 = 这一行自身已断句，不是被硬换行截断的
-_LINE_ENDS = "。！？；：!?;:，,、）)】」』"
+# 行尾出现这些字符 = 这一行自身已断句，不是被硬换行截断的。
+# **不含逗号顿号冒号**：_SENT_SPLIT 不在它们处断句，docx 侧会把它们留在句中；
+# 而中文避头尾排版恰恰最爱把「，」推到行尾——把它当行尾就等于这个 fix 在最常见的形态下失效
+# （实测：断行落在逗号后，同一份内容 docx×PDF 只有 31.8%，评审用 5 段样本实测直接 0%）。
+_LINE_ENDS = "。！？；!?;）)】」』"
+# pypdf 输出没有制表符，表格靠多个空格对齐：两处以上「≥2 连续空格」即判为表格行，自成一个单元。
+# 不认它就会把整张报价表粘成一坨，同一张表的相似度从 1.00 掉到 0.06（评审实测的回归）。
+_TABLE_ROW = re.compile(r"\S(?: {2,}\S+){2,}")
+# 页码/页眉这类噪声行：先丢再粘，否则会被焊进正文句首（评审实测句首多出「…目录1…」）
+_NOISE_LINE = re.compile(r"^[\s\d第页/共.-]{1,8}$")
+# 粘接长度上限：英文附录的句号不在断句集里，不设上限会把整份附件粘成一个几十万字符的「句子」
+# （评审实测 4 万行 → 单句 2.6MB，且逐次字符串拼接是 O(n²)）
+_GLUE_CAP = 400
 
 
 def _merge_hard_wraps(clauses: list[dict]) -> list[str]:
@@ -20,10 +31,17 @@ def _merge_hard_wraps(clauses: list[dict]) -> list[str]:
     lines: list[str] = []
     for c in clauses:
         t = (c.get("text") or "").strip()
-        if not t:
+        if not t or _NOISE_LINE.match(t):
             continue
         prev = lines[-1] if lines else ""
-        if prev and "\t" not in t and "\t" not in prev and prev[-1] not in _LINE_ENDS:
+        glueable = (
+            prev
+            and len(prev) < _GLUE_CAP
+            and prev[-1] not in _LINE_ENDS
+            and not _TABLE_ROW.search(t)
+            and not _TABLE_ROW.search(prev)
+        )
+        if glueable:
             lines[-1] = prev + t
         else:
             lines.append(t)

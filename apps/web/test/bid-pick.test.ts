@@ -27,9 +27,12 @@ describe("reviewable：招标文件与投标文件是一体的", () => {
   it("两者齐备才可选", () => {
     expect(reviewable(p({ currentStep: "review", tenderCount: 2 }))).toBe(true)
   })
-  it("缺招标文件不可选（废标体检要逐条比对招标要求，缺了无从判定）", () => {
+  it("明确没有招标文件时不可选（废标体检要逐条比对招标要求，缺了无从判定）", () => {
     expect(reviewable(p({ currentStep: "review", tenderCount: 0 }))).toBe(false)
-    expect(reviewable(p({ currentStep: "review", tenderCount: undefined }))).toBe(false)
+  })
+  it("字段缺失（web 先于 api 发版/旧缓存）视为未知而放行——整列表空掉比列多了更糟", () => {
+    expect(reviewable(p({ currentStep: "review", tenderCount: undefined }))).toBe(true)
+    expect(reviewable(p({ currentStep: "review", hasBid: undefined, tenderCount: undefined }))).toBe(true)
   })
   it("缺投标文件不可选；正文还没生成的项目也不列", () => {
     expect(reviewable(p({ hasBid: false }))).toBe(false)

@@ -34,6 +34,14 @@ def _route_after_read(state):
     return _route_by_step(state, "outline")
 
 
+def _route_after_content(state):
+    """废标体检（review）是可跳过的付费步（用户口径「不想查的人不该被强收 60 积分」）：
+    正文写完后本 run 显式请求 export 就直达 export。**这条边必须是条件边**——写成静态边时，
+    停在 content 后的检查点无论请求哪一步都会先跑 review 节点：用户点的是导出，实际跑的是
+    一轮审查大模型，产物写成 export 步结果、导出费照扣、docx 根本没渲染（评审实测复现）。"""
+    return "export" if _requested_step(state) == "export" else "review"
+
+
 def _route_after_review(state):
     """述标（present）是独立可选步：review 后本 run 显式请求 export 时直达 export，
     不再强制先跑述标（用户口径：下载标书不要求完成述标生成）。"""
@@ -42,9 +50,10 @@ def _route_after_review(state):
 
 def _route_after_export(state):
     """export 后按请求路由：present=补跑述标（补跑后重导出可带 PPT）；export=重渲文件
-    （渲染器升级/模板调整后重出）；其余结束。"""
+    （渲染器升级/模板调整后重出）；review=补跑废标体检（跳过体检直出的项目事后想查——
+    不给这条边，那个项目的体检就永远买不到了）；其余结束。"""
     step = _requested_step(state)
-    return step if step in ("present", "export") else END
+    return step if step in ("present", "export", "review") else END
 
 
 def build_bidding_workflow(ctx):
@@ -60,9 +69,10 @@ def build_bidding_workflow(ctx):
     g.add_conditional_edges(START, _route_entry, {"read": "read", "review": "review", "present": "present"})
     g.add_conditional_edges("read", _route_after_read, {"outline": "outline", "review": "review", "present": "present"})
     g.add_edge("outline", "content")
-    g.add_edge("content", "review")
+    g.add_conditional_edges("content", _route_after_content, {"review": "review", "export": "export"})
     g.add_conditional_edges("review", _route_after_review, {"present": "present", "export": "export"})
     g.add_edge("present", "export")
-    g.add_conditional_edges("export", _route_after_export, {"present": "present", "export": "export", END: END})
+    g.add_conditional_edges("export", _route_after_export,
+                            {"present": "present", "export": "export", "review": "review", END: END})
     # 每个节点产出后暂停 → App 在对应原型页确认后发新 run 续跑
     return g.compile(checkpointer=ctx.checkpointer, interrupt_after=NODE_ORDER)

@@ -78,12 +78,20 @@ def test_same_content_across_docx_and_pdf_scores_high():
 
 
 def test_merge_hard_wraps_keeps_table_rows_and_finished_lines_apart():
-    """只粘「被换行截断」的行：表格行（含 \\t）与已断句的行各自独立，
-    否则整张表会被糊成一句，反而把无关内容判成相似。"""
+    """只粘「被换行截断」的行。已断句的行、表格行各自独立——pypdf 输出**没有制表符**，
+    表格靠多个空格对齐，按 \\t 判表格等于没判：评审实测同一张报价表的相似度从 1.00 掉到 0.06。"""
     from agent.dedupe.textsim import _merge_hard_wraps
 
     assert _merge_hard_wraps([{"text": "我方承诺按期交付。"}, {"text": "项目经理驻场。"}]) == [
         "我方承诺按期交付。", "项目经理驻场。",
     ]
-    assert _merge_hard_wraps([{"text": "序号\t名称"}, {"text": "1\t服务器"}]) == ["序号\t名称", "1\t服务器"]
+    # pypdf 形态的表格行（空格对齐）
+    assert _merge_hard_wraps([{"text": "1  服务器  10台  国产"}, {"text": "2  交换机  4台  国产"}]) == [
+        "1  服务器  10台  国产", "2  交换机  4台  国产",
+    ]
     assert _merge_hard_wraps([{"text": "本项目服务期为"}, {"text": "三年整。"}]) == ["本项目服务期为三年整。"]
+    # 逗号不是行尾终止符（_SENT_SPLIT 不在此断句）：中文避头尾最爱把「，」推到行尾，
+    # 把它当行尾这个修复在最常见的形态下就完全失效
+    assert _merge_hard_wraps([{"text": "我方承诺按期交付，"}, {"text": "并保证质量。"}]) == ["我方承诺按期交付，并保证质量。"]
+    # 页码/页眉噪声先丢再粘，否则被焊进正文句首
+    assert _merge_hard_wraps([{"text": "1"}, {"text": "我方承诺按期交付。"}]) == ["我方承诺按期交付。"]

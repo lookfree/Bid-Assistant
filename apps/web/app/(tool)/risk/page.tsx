@@ -139,6 +139,18 @@ function RejectReview() {
     const gap = stepPrereq(info, "review")
     return (
       <div className="flex flex-col gap-3">
+        {/* 刚传完文件建好项目、正在读标时回到本页，原来只剩一张空白上传面板——
+            用户会以为"刚才没传成功"再传一遍，等于重复付一次读标钱。明确告诉他项目在哪。 */}
+        {gap && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-primary/30 gradient-brand-soft px-4 py-3 text-sm">
+            <span className="text-foreground">
+              当前项目「{info?.project.name ?? "我的标书"}」还差一步：{gap.label}完成后即可体检，无需重新上传
+            </span>
+            <a href={gap.href} className="shrink-0 rounded-lg gradient-brand px-3 py-1.5 text-xs font-semibold text-white">
+              前往{gap.label}
+            </a>
+          </div>
+        )}
         {!gap && (
           <div className="rounded-2xl border border-border bg-card">
             <StepRunCta

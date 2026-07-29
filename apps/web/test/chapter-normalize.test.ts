@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, it, test } from "bun:test"
 import { normalizeChapterHtml } from "@/lib/chapter-normalize"
 
 // 与 agent 侧 render/sanitize.py 的 normalize_chapter_html 同一套规则（改语义须两侧同步）
@@ -62,5 +62,20 @@ describe("normalizeChapterHtml 误伤防护", () => {
     expect(normalizeChapterHtml(mixed, "第七章", "某章")).toBe(mixed)
     const bare = "<h3>2.1 步骤</h3><p>x</p><h2>2 实施</h2>"
     expect(normalizeChapterHtml(bare, "第三章", "施工方案")).toBe(bare)
+  })
+})
+
+describe("提纲 id 泄漏进标题（与 sanitize.py 同一套规则）", () => {
+  it("只剥本章自己的 id，且其后必须紧跟点分数字；编号数字保留", () => {
+    expect(normalizeChapterHtml("<h3>t3.1 升级改造部署实施方案</h3>", "第三章", "X", "t3")).toContain(
+      "<h3>3.1 升级改造部署实施方案</h3>",
+    )
+  })
+  it("中文标书常见的「T3 航站楼」「B1 层」一个字都不能动", () => {
+    expect(normalizeChapterHtml("<h3>T3 航站楼弱电系统方案</h3>", "第五章", "X", "t3")).toContain("T3 航站楼")
+    expect(normalizeChapterHtml("<h4>B1 层车库照明</h4>", "第二章", "X", "b1")).toContain("B1 层车库")
+  })
+  it("没传章 id 时整步跳过（与旧行为一致）", () => {
+    expect(normalizeChapterHtml("<h3>t3.1 项目理解</h3>", "第三章", "X")).toContain("t3.1")
   })
 })

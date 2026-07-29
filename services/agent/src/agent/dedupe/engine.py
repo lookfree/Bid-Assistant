@@ -79,10 +79,17 @@ def compare_pair(a: DocFeatures, b: DocFeatures, dims: list[str], strategy: str)
     score = 0.0
     text_unavailable = "text" in dims and not (a.sentences and b.sentences)
     if text_unavailable:
-        # 提不出文字（扫描件/图片版 PDF）却报「未见明显围标特征」= 假放行，用户据此认定没问题
-        blank = "、".join(d.label for d in (a, b) if not d.sentences)
-        notes.append(f"「{blank}」未提取到可比对文本（扫描件/图片版 PDF 暂不支持），"
-                     "本次文本比对不成立，请换用可复制文字的版本重试")
+        # 提不出文字却报「未见明显围标特征」= 假放行，用户据此认定两份标书没问题。
+        # 两种成因要分开说，给出的下一步动作完全不同（评审：把「全是招标原文」误诊成扫描件，
+        # 让用户去换「可复制文字的版本」，建议本身就是错的）。
+        blank = [d for d in (a, b) if not d.sentences]
+        names = "、".join(d.label for d in blank)
+        if any(d.baseline_removed for d in blank):
+            notes.append(f"「{names}」的内容与招标文件高度相似，按法定引用全部扣除后已无可比内容，"
+                         "无法据此判断是否雷同")
+        else:
+            notes.append(f"「{names}」未提取到可比对文本（扫描件/图片版 PDF 暂不支持），"
+                         "本次文本比对不成立，请换用可复制文字的版本重试")
     elif "text" in dims:
         text_score, pairs = match_sentences(a.sentences, b.sentences, cfg["k"], cfg["sent_th"])
         hits += _text_hits(a.sentences, b.sentences, pairs)
@@ -105,9 +112,14 @@ def compare_pair(a: DocFeatures, b: DocFeatures, dims: list[str], strategy: str)
     final = min(100, round(score))
     tone = ("destructive" if final >= cfg["destructive"]
             else "warning" if final >= cfg["warning"] else "success")
+    # 比不成时绝不给绿色：前端的徽标/进度条/大标题都看 tone，只改 note 的话页面照样一片
+    # 「未检测到高雷同组合」，假放行仍在（评审指出 tone 仍是 success）。
+    if text_unavailable:
+        tone = "warning"
     lead = "文本比对未完成" if text_unavailable else _TONE_LEAD[tone]
     note = f"{lead}：{'；'.join(notes)}" if notes else lead
-    return {"a": a.label, "b": b.label, "score": final, "tone": tone, "note": note, "hits": hits}
+    return {"a": a.label, "b": b.label, "score": final, "tone": tone, "note": note,
+            "hits": hits, "unavailable": text_unavailable}
 
 
 def run_dedupe(docs: list[DocFeatures], dims: list[str], strategy: str) -> dict:
@@ -117,4 +129,6 @@ def run_dedupe(docs: list[DocFeatures], dims: list[str], strategy: str) -> dict:
     pairs = [compare_pair(a, b, dims, strategy) for a, b in combinations(docs, 2)]
     max_score = max((p["score"] for p in pairs), default=0)
     high = sum(1 for p in pairs if p["score"] >= cfg["destructive"])
-    return {"pairs": pairs, "overall": {"max_score": max_score, "high_pairs": high}}
+    # unavailable_pairs 让前端把大标题从「未检测到高雷同组合」换成「部分文件无法比对」
+    return {"pairs": pairs, "overall": {"max_score": max_score, "high_pairs": high,
+                                        "unavailable_pairs": sum(1 for p in pairs if p.get("unavailable"))}}

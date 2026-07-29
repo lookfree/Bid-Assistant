@@ -483,7 +483,11 @@ function DedupeResults({
   onReset: () => void
 }) {
   const { overall, pairs, dimsRun } = result
-  const overallTone = overall.highPairs > 0 ? "destructive" : overall.maxScore >= 40 ? "warning" : "success"
+  // 「比不成」和「不像」都是 0%，但结论完全相反：任一对无可比文本时不给绿色、不说"未检测到"，
+  // 否则用户拿着一份根本没读进去的扫描件当"查过了、没问题"（评审指出的假放行）
+  const unavailable = overall.unavailablePairs ?? 0
+  const overallTone =
+    overall.highPairs > 0 ? "destructive" : overall.maxScore >= 40 || unavailable > 0 ? "warning" : "success"
   const tc = toneClass(overallTone)
   return (
     <div className="flex flex-col gap-6">
@@ -510,12 +514,20 @@ function DedupeResults({
           <div className="flex items-center justify-center gap-2 sm:justify-start">
             <Flame className={`size-5 ${tc.icon}`} />
             <p className="text-base font-semibold text-foreground">
-              {overall.highPairs > 0 ? `检测到 ${overall.highPairs} 组高雷同投标，疑似围标串标风险` : "未检测到高雷同组合"}
+              {overall.highPairs > 0
+                ? `检测到 ${overall.highPairs} 组高雷同投标，疑似围标串标风险`
+                : unavailable > 0
+                  ? `有 ${unavailable} 组无法比对，本次结果不能作为"无雷同"的依据`
+                  : "未检测到高雷同组合"}
             </p>
           </div>
           <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
             已按所选维度对上传文件两两交叉比对{dimsRun.includes("baseline") ? "，并扣除招标同源段落" : ""}。
-            {overall.highPairs > 0 ? "建议重点核查高相似度组合的命中片段。" : "如仍有疑虑，可换用严格策略复查。"}
+            {overall.highPairs > 0
+              ? "建议重点核查高相似度组合的命中片段。"
+              : unavailable > 0
+                ? "见下方各组说明：换用可复制文字的版本后重新查重，才能得到有效结论。"
+                : "如仍有疑虑，可换用严格策略复查。"}
           </p>
         </div>
       </div>
@@ -543,7 +555,7 @@ function PairCard({ pair }: { pair: DedupeResult["pairs"][number] }) {
       </div>
       <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
         <div
-          className={`h-full rounded-full ${pair.tone === "destructive" ? "bg-destructive" : pair.tone === "warning" ? "bg-warning" : "bg-success"}`}
+          className={`h-full rounded-full ${pair.unavailable ? "bg-muted-foreground/40" : pair.tone === "destructive" ? "bg-destructive" : pair.tone === "warning" ? "bg-warning" : "bg-success"}`}
           style={{ width: `${Math.min(100, Math.max(0, pair.score))}%` }}
         />
       </div>

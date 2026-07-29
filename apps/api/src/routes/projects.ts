@@ -614,7 +614,9 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     //   ① export 在 review/present/done 时均可跑——review 时=跳过废标体检直出（用户口径:
     //     体检 60 积分,不想查的人不该被强收；风险自负,前端弹层已明示）；present 时=跳过述标
     //     直出文件；done 时=重渲重出（渲染器升级/模板调整后,已完成项目才能重新出文件）；
-    //   ② present 在 done 后可补跑（先导出后补述标,补完重导出可带 PPT）。
+    //   ② present 在 done 后可补跑（先导出后补述标,补完重导出可带 PPT）；
+    //   ③ review 在 done 后可补跑（跳过体检直出的项目事后想查——不放行的话那个项目的废标体检
+    //     永远买不到,审查页还会亮一个必 409 的计费按钮）。agent 侧 _route_after_export 有对应边。
     // spec328 审查专用项目：read/review 走既定流程；present 独立于审查报告——有线下标书就能随时
     // 述标（用户口径「想述标就述标」），任何 currentStep/status 下都放行、不占 currentStep（agent 侧
     // present 节点用 bid_file_key 确定性解析出正文，且跑在独立线程——见上方 createRun 注释）；export
@@ -628,7 +630,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         ? step === "read"
         : step === p.currentStep ||
           (step === "export" && ["review", "present", "done"].includes(p.currentStep)) ||
-          (step === "present" && p.currentStep === "done"))
+          (["present", "review"].includes(step) && p.currentStep === "done"))
     if (!allowed) return c.json({ error: "out_of_order", expected: p.currentStep }, 409)
 
     // 一项目同一时刻只许一个在途 run（审查修正 2026-07-23）：述标/导出解耦后 present 与 export
