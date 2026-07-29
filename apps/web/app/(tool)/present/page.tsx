@@ -113,7 +113,18 @@ export default function PresentPage() {
   const enterProject = viewParam !== "entry" && !!projectId
 
   /* deck 就绪 = present 步已有真实结果（编辑/保存/导出入口只在此后出现） */
-  const deckReady = !!realDeck
+  const hasDeck = !!realDeck
+  /* 用户口径：菜单点进来一律先看生成卡；本项目已有述标时卡上给一个跳转链接。
+     只有显式 ?view=deck（点了那个链接）或**本次刚生成完**才直接进结果页——刚付过钱的人
+     当然要立刻看到成品，但从菜单进来不该跳过那张卡（它同时是换标书/改时长模板的入口）。 */
+  const [deckView, setDeckView] = useState(
+    () => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("view") === "deck",
+  )
+  const generatedHere = useRef(false)
+  useEffect(() => {
+    if (realDeck && generatedHere.current) setDeckView(true)
+  }, [realDeck])
+  const deckReady = hasDeck && deckView
 
   /* 当前预览样式：套用企业模板时优先，否则用内置预设 */
   const style = enterpriseStyle ?? slideStyles.find((s) => s.id === styleId)!
@@ -182,6 +193,7 @@ export default function PresentPage() {
   }
   /* ---------------- 生成大纲（用户显式点击才跑，透传当前时长/模板） ---------------- */
   function runGenerate() {
+    generatedHere.current = true
     void start(presentRunBody())
   }
 
@@ -531,6 +543,7 @@ export default function PresentPage() {
           styleName={style.name}
           refPpt={refPpt}
           onOpenTemplates={() => setTplOpen(true)}
+          existingDeck={hasDeck ? { pages: slides.length, onOpen: () => setDeckView(true) } : undefined}
         />
       ) : (
         <div className="flex min-h-0 flex-1">

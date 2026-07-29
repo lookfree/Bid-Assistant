@@ -18,6 +18,7 @@ export function EmptyState({
   styleName,
   refPpt,
   onOpenTemplates,
+  existingDeck,
 }: {
   duration: Duration
   onDuration: (d: Duration) => void
@@ -31,6 +32,8 @@ export function EmptyState({
   styleName: string
   refPpt: string | null
   onOpenTemplates: () => void
+  /** 本项目已生成过述标：卡上给「查看已生成」的入口（用户口径：菜单进来先看卡，已生成的给链接跳过去） */
+  existingDeck?: { pages: number; onOpen: () => void }
 }) {
   return (
     <div className="flex flex-1 items-center justify-center overflow-y-auto p-4">
@@ -40,6 +43,20 @@ export function EmptyState({
             <Presentation className="size-7 text-primary" />
           </div>
           <h2 className="mt-4 text-lg font-bold text-foreground">一键生成述标大纲</h2>
+          {existingDeck && (
+            <button
+              onClick={existingDeck.onOpen}
+              className="mx-auto mt-3 flex w-full max-w-md items-center justify-between gap-2 rounded-xl border border-primary/30 gradient-brand-soft px-4 py-2.5 text-left"
+            >
+              <span className="text-sm font-medium text-primary">
+                本项目已生成述标演示（{existingDeck.pages} 页）
+              </span>
+              <span className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-primary">
+                查看 / 编辑
+                <ChevronRight className="size-3.5" />
+              </span>
+            </button>
+          )}
           <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted-foreground">
             默认取当前项目已生成的标书内容（技术标 + 商务标），按评分点提炼为封面、项目理解、技术亮点、团队、业绩、服务承诺、报价、风险防控等演示页。
           </p>
@@ -47,8 +64,19 @@ export function EmptyState({
           <DurationSection duration={duration} onDuration={onDuration} />
           <TemplateSection styleName={styleName} refPpt={refPpt} onOpenTemplates={onOpenTemplates} />
           <OtherBidSection />
-          <GenerateAction cost={cost} balance={balance} balanceLoading={balanceLoading} generating={generating} onGenerate={onGenerate} />
-          <p className="mt-3 text-[11px] text-muted-foreground">生成后可自由编辑幻灯与口播稿；导出 PPTX 另按导出口径消耗积分</p>
+          <GenerateAction
+            cost={cost}
+            balance={balance}
+            balanceLoading={balanceLoading}
+            generating={generating}
+            onGenerate={onGenerate}
+            regenerate={!!existingDeck}
+          />
+          <p className="mt-3 text-[11px] text-muted-foreground">
+            {existingDeck
+              ? "重新生成会按当前时长与模板重出一份，覆盖现有述标，并再消耗一次积分"
+              : "生成后可自由编辑幻灯与口播稿；导出 PPTX 另按导出口径消耗积分"}
+          </p>
         </div>
       </div>
     </div>
@@ -136,12 +164,15 @@ function GenerateAction({
   balanceLoading,
   generating,
   onGenerate,
+  regenerate,
 }: {
   cost: number
   balance: number
   balanceLoading: boolean
   generating: boolean
   onGenerate: () => void
+  /** 已有述标：按钮说「重新生成」——同样收费，写「生成」会被当成"打开已有的" */
+  regenerate?: boolean
 }) {
   return (
     <div className="mt-6">
@@ -160,7 +191,7 @@ function GenerateAction({
           balance={balance}
           unitLabel="次"
           showSupportable={false}
-          actionLabel={`生成述标大纲（消耗 ${cost} 积分）`}
+          actionLabel={`${regenerate ? "重新生成述标大纲" : "生成述标大纲"}（消耗 ${cost} 积分）`}
           onConfirm={onGenerate}
         />
       )}
