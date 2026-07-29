@@ -52,14 +52,12 @@ export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // ?focus=pick|upload：从工具页卡片里的两个次要入口跳进来时，直接把对应的卡片滚到视野并高亮，
-  // 否则用户点了「上传标书文件」却落在页顶，还要自己找哪张卡是上传（两张卡并排，第一眼分不出）。
+  // ?focus=pick|upload：**只渲染用户点进来的那一张**（用户口径：从我的标书点进来就只看列表——
+  // 上传入口在工具页首屏本来就有，再并排摆一张是重复且分散注意）。
+  // 不带 focus（没有当前项目直接落到本页）才两张都给：那时用户还没表达意图，两条路都要留。
   const focus = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("focus")
-  const ring = (self: "pick" | "upload") => (focus === self ? " ring-2 ring-primary/40" : "")
-  useEffect(() => {
-    if (!focus) return
-    document.getElementById(`entry-${focus}`)?.scrollIntoView({ block: "center" })
-  }, [focus])
+  const showPick = focus !== "upload"
+  const showUpload = focus !== "pick"
 
   return (
     <div className="flex flex-col gap-3">
@@ -68,8 +66,9 @@ export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
           {backLabel}
         </button>
       )}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <section id="entry-pick" className={`rounded-2xl border border-border bg-card p-5${ring("pick")}`}>
+      <div className={`grid gap-4${showPick && showUpload ? " lg:grid-cols-2" : ""}`}>
+        {showPick && (
+        <section className="rounded-2xl border border-border bg-card p-5">
           <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
             <FolderOpen className="size-4 text-primary" />
             {pickTitle}
@@ -101,7 +100,8 @@ export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
             )}
           </div>
         </section>
-        <UploadBidCard {...props} highlight={focus === "upload"} />
+        )}
+        {showUpload && <UploadBidCard {...props} />}
       </div>
     </div>
   )
@@ -109,7 +109,6 @@ export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
 
 /** 上传线下标书卡：标书必传；bidOnly 时不提供招标文件、直接去 noTenderHref。 */
 function UploadBidCard({
-  highlight,
   noTenderHref,
   uploadTitle,
   uploadDesc,
@@ -118,7 +117,7 @@ function UploadBidCard({
   tenderRequired,
   submitLabel,
   submitLabelWithTender,
-}: StandaloneBidEntryProps & { highlight?: boolean }) {
+}: StandaloneBidEntryProps) {
   const bidRef = useRef<HTMLInputElement>(null)
   const tenderRef = useRef<HTMLInputElement>(null)
   const [bidFiles, setBidFiles] = useState<File[]>([])
@@ -159,7 +158,7 @@ function UploadBidCard({
   )
 
   return (
-    <section id="entry-upload" className={`rounded-2xl border border-border bg-card p-5${highlight ? " ring-2 ring-primary/40" : ""}`}>
+    <section className="rounded-2xl border border-border bg-card p-5">
       <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
         <UploadCloud className="size-4 text-primary" />
         {uploadTitle}
