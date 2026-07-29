@@ -39,6 +39,28 @@ function isBizQueryRejection(err: unknown): boolean {
   return err instanceof Error && err.message.includes("收钱吧查询失败")
 }
 
+/** 通道明确答「这单我这儿没有/已过期」（收钱吧 EG11 等）——足以判定它不会再有结果。
+ *  **必须比 isBizQueryRejection 更窄**：终端停用、凭据失效等原因会让**每笔**查询都业务拒绝，
+ *  若据此收敛，真实已付的单会被误判失败（用户付了钱拿不到积分）。故只认这一类答复。
+ *  文案随通道版本可能变化，线上冒烟时按真实错误码校准。 */
+const ORDER_ABSENT_HINTS = ["EG11", "订单号不存在", "订单不存在"]
+function isOrderAbsentAtProvider(err: unknown): boolean {
+  return err instanceof Error && ORDER_ABSENT_HINTS.some((h) => err.message.includes(h))
+}
+
+/** 账龄够不够收敛（给迟到回调留门）。 */
+const agedForConverge = (order: { createdAt: Date }): boolean =>
+  Date.now() - order.createdAt.getTime() >= UNKNOWN_CONVERGE_MIN_AGE_MS
+
+/** 收敛 unknown → failed：对账唯一允许的订单写动作。条件 UPDATE 幂等，
+ *  且绝不覆盖期间被迟到回调改成 paid 的单。 */
+async function convergeUnknownToFailed(orderId: string): Promise<void> {
+  await getDb()
+    .update(paymentOrders)
+    .set({ status: "failed" })
+    .where(and(eq(paymentOrders.id, orderId), eq(paymentOrders.status, "unknown")))
+}
+
 /** 逐单核对：本地终态 vs 通道终态。返回本单新落差异数。 */
 async function reconcileOrder(
   order: typeof paymentOrders.$inferSelect,
@@ -55,6 +77,14 @@ async function reconcileOrder(
       // 本地已结算而通道查无此单：单边账（最可疑的一类）
       return recordDiff({ billDate: date, diffType: "provider_missing", subject: tradeNo, tradeNo, orderId: order.id, localValue: order.status }, alert)
     }
+    // unknown + 通道明确「查无此单/已过期」+ 满账龄 → 收敛 failed（与「查询成功且答 failed」同一归宿）。
+    // 230 实测教训：旧代码的业务拒绝分支只认 paid/refunded，unknown 掉进下面的「网络类」分支，
+    // 于是每天问一次通道、每天丢掉答案，单子永远卡在「结果待核对」堆积（3 笔卡了 6 天）。
+    // 扫码未付是常态，不落差异（状态从「结果待核对」变「支付失败」本身就是运营可见的信号）。
+    if (order.status === "unknown" && isOrderAbsentAtProvider(err) && agedForConverge(order)) {
+      await convergeUnknownToFailed(order.id)
+      return 0
+    }
     console.error(`[reconcile] 查询失败（网络类，下轮重试）order=${order.id}`, err)
     return 0
   }
@@ -67,12 +97,9 @@ async function reconcileOrder(
         alert,
       )
     }
-    if (r.status === "failed" && Date.now() - order.createdAt.getTime() >= UNKNOWN_CONVERGE_MIN_AGE_MS) {
-      // 对账唯一允许的订单写动作：满 24h 且通道明确失败 → 收敛 failed（条件 UPDATE 幂等）
-      await getDb()
-        .update(paymentOrders)
-        .set({ status: "failed" })
-        .where(and(eq(paymentOrders.id, order.id), eq(paymentOrders.status, "unknown")))
+    if (r.status === "failed" && agedForConverge(order)) {
+      // 满账龄且通道明确失败 → 收敛 failed（与 catch 里「查无此单」走同一收敛函数，口径不分叉）
+      await convergeUnknownToFailed(order.id)
     }
     return 0
   }

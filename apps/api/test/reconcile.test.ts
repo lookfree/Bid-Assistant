@@ -103,6 +103,32 @@ describe("spec306 对账（只读核对，差异落表幂等）", () => {
     expect((await getDb().select().from(paymentOrders).where(eq(paymentOrders.id, oFresh.id)))[0]!.status).toBe("unknown") // 24h 内不关门
   })
 
+  it("unknown 遇通道明确「查无此单/已过期」→ 满 24h 收敛 failed；新鲜的不收敛；凭据类业务拒绝不误收敛", async () => {
+    // 230 生产实录（2026-07-23 三笔扫码未付的单卡了 6 天）：收钱吧对 unknown 单答
+    // 「200 订单号不存在或超过可处理时间[EG11]」——这是**业务答复**不是网络故障，但旧代码的
+    // 业务拒绝分支只认 paid/refunded，unknown 掉进「网络类下轮重试」，于是每天问一次、每天丢答案，
+    // 永远卡在「结果待核对」堆积。
+    const absent = "收钱吧查询失败: 200 订单号不存在或超过可处理时间[EG11]"
+    const oOld = await mkOrder("unknown", 500)                                  // 2 天前：该收敛
+    const oNew = await mkOrder("unknown", 500, { createdAt: new Date() })       // 刚建：留门
+    const oCred = await mkOrder("unknown", 500)                                 // 凭据/终端类拒绝：绝不收敛
+    await runReconcile(BILL_DATE, {
+      provider: mockProvider({
+        [oOld.clientSn]: new Error(absent),
+        [oNew.clientSn]: new Error(absent),
+        // 若终端被停用等原因导致**每笔**查询都业务拒绝,据此收敛会把真实已付单误判失败(用户付了钱
+        // 拿不到积分)——故只认「查无此单」这一类答复,其余业务拒绝一律继续重试。
+        [oCred.clientSn]: new Error("收钱吧查询失败: 400 终端未激活"),
+      }),
+      alertHook: quiet,
+    })
+    const st = async (id: string) => (await getDb().select().from(paymentOrders).where(eq(paymentOrders.id, id)))[0]!.status
+    expect(await st(oOld.id)).toBe("failed")
+    expect(await st(oNew.id)).toBe("unknown")
+    expect(await st(oCred.id)).toBe("unknown")
+    expect(await diffsOf(oOld.id)).toHaveLength(0) // 扫码未付是常态,不该刷差异噪音（状态流转本身即信号）
+  })
+
   it("本地已结算而通道查无（业务级拒绝）→ provider_missing；网络类异常跳过不落差异", async () => {
     const oMissing = await mkOrder("paid", 300, { providerTradeNo: "T-pm" })
     const oNet = await mkOrder("paid", 300, { providerTradeNo: "T-net" })
