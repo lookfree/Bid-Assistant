@@ -151,10 +151,14 @@ function RejectReview() {
             </a>
           </div>
         )}
-        {!gap && (
+        {/* 「审查当前项目」只在**显式选了项目之后**出现（?view=project，从「从我的标书选择」进来）。
+            默认落地页不摆它：用户口径「不要有审查当前项目，统一走从我的标书选择」——
+            默认页只有上传面板 + 一个去列表的入口，路径唯一，不会一进来就对着一个不知是哪份标书的
+            60 积分按钮。 */}
+        {!gap && viewParam === "project" && (
           <div className="rounded-2xl border border-border bg-card">
             <StepRunCta
-              title="审查当前项目"
+              title={`审查「${info?.project.name ?? "当前项目"}」`}
               desc="直接取本项目的招标文件与已生成正文逐条比对，生成健康分、风险项与整改建议（无需重新上传）"
               costText={`消耗 ${reviewCost} 积分`}
               actionLabel="开始废标体检"
@@ -162,7 +166,14 @@ function RejectReview() {
             />
           </div>
         )}
-        <RejectUploadPanel onPickExisting={goEntry} />
+        {viewParam === "project" ? (
+          // 选定项目后不再摆上传面板（此处只该做一件事）；但要留一条回列表的路，否则换标书只能按浏览器后退
+          <button onClick={goEntry} className="self-center text-xs font-medium text-primary hover:underline">
+            ← 换一份标书审查
+          </button>
+        ) : (
+          <RejectUploadPanel onPickExisting={goEntry} />
+        )}
       </div>
     )
   }
