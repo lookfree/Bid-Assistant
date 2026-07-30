@@ -167,6 +167,14 @@ describe("PATCH /api/projects/:id/steps/:step 编辑回写", () => {
       ["present", deck({ template: "pink" })], // template 只能 blue/tech/gov
       ["present", deck({ slides: [] })], // slides 不能为空
       ["present", deck({ slides: [{ id: "s-1", title: "x", kind: "intro" }] })], // kind 越界
+      // 述标结构性升级：新版式的坏形状同样挡在入口——留到导出阶段才炸就晚了
+      ["present", deck({ slides: [{ id: "s-1", title: "x", kind: "content", layout: "waterfall" }] })], // layout 越界
+      ["present", deck({ slides: [{ id: "s-1", title: "x", kind: "content", layout: "chart",
+        chart: { type: "pie", categories: ["A", "B", "C"], series: [{ name: "n", values: [1, 2] }] } }] })], // values 与 categories 不等长
+      ["present", deck({ slides: [{ id: "s-1", title: "x", kind: "content", layout: "chart",
+        chart: { type: "pie", categories: ["A"], series: [{ name: "n1", values: [1] }, { name: "n2", values: [2] }] } }] })], // 饼图多系列
+      ["present", deck({ slides: [{ id: "s-1", title: "x", kind: "content", layout: "comparison",
+        stats: [{ value: "a", label: "1" }, { value: "b", label: "2" }, { value: "c", label: "3" }] }] })], // stats 超 2 张
     ]
     for (const [step, result] of cases) {
       const res = await patch(projectId2, step, { result }, tokenA)
@@ -191,6 +199,33 @@ describe("PATCH /api/projects/:id/steps/:step 编辑回写", () => {
       .where(and(eq(projectSteps.projectId, projectId2), eq(projectSteps.step, "present")))
     expect(JSON.stringify(row!.result)).toContain('"要点"') // passthrough：未知键不被校验吞掉
     expect((row!.result as { duration: number }).duration).toBe(20)
+  })
+
+  it("present 步：section 分隔页与图表/对比版式的数据能存进去（保存不能把它们吞掉）", async () => {
+    // 生产隐患：编辑器「保存述标」是整份 slides 回写。若 kind 枚举缺 section，任何含分隔页的述标
+    // 一点保存就 400；若 layout/chart/stats 不在 schema 里，一次保存就把图表页降级成空白 bullets 页
+    // （导出的 PPT 里图表凭空消失，用户只会觉得"图表怎么没了"）。
+    const edited = deck({
+      slides: [
+        { id: "s-0", title: "封面", kind: "cover" },
+        { id: "s-1", title: "技术方案", kind: "section", bullets: ["核心能力"] },
+        { id: "s-2", title: "团队构成", kind: "content", layout: "chart", scoring: "团队 20 分",
+          chart: { type: "pie", categories: ["高级", "中级"], series: [{ name: "人数", values: [3, 6] }] } },
+        { id: "s-3", title: "业绩对比", kind: "content", layout: "comparison", bullets: ["近三年 5 个项目"],
+          stats: [{ value: "72 小时", label: "较招标要求提前完成" }] },
+      ],
+    })
+    const res = await patch(projectId2, "present", { result: edited }, tokenA)
+    expect(res.status).toBe(200)
+    const [row] = await getDb()
+      .select()
+      .from(projectSteps)
+      .where(and(eq(projectSteps.projectId, projectId2), eq(projectSteps.step, "present")))
+    const stored = row!.result as { slides: Array<Record<string, unknown>> }
+    expect(stored.slides[1]!.kind).toBe("section")
+    expect(stored.slides[2]!.layout).toBe("chart")
+    expect(stored.slides[2]!.chart).toBeTruthy()      // 图表数据没被吞
+    expect(stored.slides[3]!.stats).toHaveLength(1)   // 数字卡片没被吞
   })
 
   it("非法 step（read/export/未知）→ 400 bad_step", async () => {

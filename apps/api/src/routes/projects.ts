@@ -73,8 +73,31 @@ const outlineChapterSchema = z
   })
   .passthrough()
 
+// 图表页数据：categories 与每个 series.values 长度必须一致——不一致会让 python-pptx 渲染时
+// 数据错位（agent SlideChart 同样校验）。这里挡在 PATCH 入口，别让坏形状留到导出才炸。
+const slideChartSchema = z
+  .object({
+    type: z.enum(["column", "bar", "pie", "line"]),
+    categories: z.array(z.string()).min(1),
+    series: z.array(z.object({ name: z.string(), values: z.array(z.number()) }).passthrough()).min(1),
+  })
+  .passthrough()
+  .refine((c) => c.series.every((s) => s.values.length === c.categories.length), {
+    message: "series.values 长度必须与 categories 一致",
+  })
+  .refine((c) => c.type !== "pie" || c.series.length === 1, { message: "饼图只能有一个 series" })
+
 const slideSchema = z
-  .object({ id: z.string(), title: z.string(), kind: z.enum(["cover", "content", "end"]) })
+  .object({
+    id: z.string(),
+    title: z.string(),
+    // section = 章节分隔页（述标结构性升级）。漏了它，任何含分隔页的述标一点「保存」就 400。
+    kind: z.enum(["cover", "section", "content", "end"]),
+    // 版式与其数据：编辑器必须原样透传，否则保存一次就把图表页/对比页降级成空白 bullets 页
+    layout: z.enum(["bullets", "chart", "comparison"]).optional(),
+    stats: z.array(z.object({ value: z.string(), label: z.string() }).passthrough()).max(2).optional(),
+    chart: slideChartSchema.nullable().optional(),
+  })
   .passthrough()
 
 const STEP_RESULT_SCHEMAS: Record<(typeof EDITABLE_STEPS)[number], z.ZodTypeAny> = {

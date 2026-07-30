@@ -48,6 +48,7 @@ import { EmptyState, DURATIONS, type Duration } from "./empty-state"
 import { NotReadyCard } from "./not-ready-card"
 import { TemplatePicker } from "./template-picker"
 import { SlidePreview } from "./slide-preview"
+import { LayoutDataEditor } from "./layout-editor"
 import { PresentEntry } from "./present-entry"
 
 // agent DeckSpec（camelCase）：slides/qa 与原型 Slide/QA 同构
@@ -679,6 +680,10 @@ export default function PresentPage() {
                       </div>
                     ))}
                   </div>
+
+                  {/* 版式数据（图表页/对比页）：这三个字段必须能编且能存——「保存述标」整份回写，
+                      读不到就等于保存一次把图表页降级成空白页 */}
+                  <LayoutDataEditor slide={active} onChange={(patch) => updateSlide(active.id, patch)} />
 
                   {/* 演讲备注 / 口播稿：随述标生成（80 积分/次）一并交付，不设会员墙——与读标/提纲/正文一致 */}
                   <div className="mt-5">
