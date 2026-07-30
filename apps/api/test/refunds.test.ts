@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto"
 import { and, eq, inArray, lt } from "drizzle-orm"
 import { getDb, closeDb } from "../src/db/client"
 import { users, plans, paymentOrders, refunds, creditTransactions, reconcileDiffs } from "../src/db/schema"
-import { createRefund, type RefundProvider } from "../src/services/refunds"
+import { createRefund, refundRequestNo, type RefundProvider } from "../src/services/refunds"
 import { scanStuckRefunds } from "../src/services/reconcile"
 import { getBalance, grant, hold, settle } from "../src/services/credits"
 import { seedConfigs } from "../src/services/config"
@@ -55,7 +55,11 @@ describe("spec306 退款编排（pending→done/failed，事务落账+扣回积�
     )
     expect(res.status).toBe("done")
     expect(calls[0]!.clientSn).toBe(order.clientSn) // 按我方订单号退款
-    expect(calls[0]!.refundSn).toBe(res.refundId) // 通道侧幂等键 = 退款单 id
+    // 生产实测：refundSn 直传 refunds.id（36 字符 UUID）会被收钱吧以「refund_request_no
+    // …不可超过31字符」拒绝——每一笔退款都会以此失败，此前误判为通道拒绝。现在传的是
+    // 从 refundId 派生的定长压缩值（"rf"+29 位十六进制=31 字符），同一退款单可重算复现。
+    expect(calls[0]!.refundSn).toBe(refundRequestNo(res.refundId))
+    expect(calls[0]!.refundSn.length).toBeLessThanOrEqual(31)
 
     const [r] = await getDb().select().from(refunds).where(eq(refunds.id, res.refundId))
     expect(r!.status).toBe("done")
@@ -188,5 +192,14 @@ describe("spec306 退款编排（pending→done/failed，事务落账+扣回积�
       .from(creditTransactions)
       .where(and(eq(creditTransactions.userId, userId), lt(creditTransactions.amount, 0)))
     expect(negatives).toHaveLength(0)
+  })
+})
+
+describe("refundRequestNo：收钱吧 refund_request_no 31 字符硬上限", () => {
+  it("标准 UUID（36 字符）压缩到 31 字符以内，且同一 id 可重算复现", () => {
+    const id = "12241d58-55f1-446a-af2b-e27d451debcc"
+    const out = refundRequestNo(id)
+    expect(out.length).toBeLessThanOrEqual(31)
+    expect(out).toBe(refundRequestNo(id)) // 纯函数：同一退款单每次重算得到同一个值，通道侧幂等键才稳定
   })
 })

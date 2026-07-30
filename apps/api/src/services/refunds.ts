@@ -17,6 +17,15 @@ import type { Tx } from "./credits"
 //   多次部分退款按**累计比例**计算（每笔=round(总入账×累计退款比例)−已扣回），取整误差不随笔数放大；
 // - 扣回超过当前余额（用户已花掉）默认拒绝，操作员确认后带 allowNegativeBalance 强制（余额转负，审计可见）。
 
+/** 收钱吧 refund_request_no 硬性上限 31 字符——refunds.id 是标准 UUID（36 字符，含连字符），
+ *  直传必被通道拒绝：生产实测每一笔退款都以 "refund_request_no退款序列号必填，不可超过31字符" 失败，
+ *  此前误当成"通道拒绝"，实际是我们自己传参超长，通道压根没进到业务判定。
+ *  与 payment-orders.ts 生成 clientSn 同一手法：短前缀 + 自身 UUID 十六进制截断（"rf" + 29 位 = 31），
+ *  纯函数、只吃 refundId，同一退款单每次重算得到同一个值，通道侧幂等键因此稳定可重放。 */
+export function refundRequestNo(refundId: string): string {
+  return `rf${refundId.replace(/-/g, "").slice(0, 29)}`
+}
+
 /** 退款只需要 refund 能力：Pick 收窄，便于注入 mock。 */
 export type RefundProvider = Pick<PaymentProvider, "refund">
 
@@ -146,7 +155,7 @@ export async function createRefund(
   let outcome: "ok" | "rejected" | "ambiguous" = "ok"
   let providerError: string | undefined
   try {
-    const res = await deps.provider.refund({ clientSn: order.clientSn, refundSn: refundId, amountCents: input.amountCents })
+    const res = await deps.provider.refund({ clientSn: order.clientSn, refundSn: refundRequestNo(refundId), amountCents: input.amountCents })
     outcome = res.ok ? "ok" : "rejected"
     providerError = res.reason
   } catch (e) {
