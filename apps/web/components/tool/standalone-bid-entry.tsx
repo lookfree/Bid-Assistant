@@ -15,7 +15,12 @@ export type StandaloneBidEntryProps = {
   pickDesc: string
   emptyHint: string
   isSelectable: (p: ProjectListItem) => boolean
+  /** 尚未跑过本步时的标记，如「可审查」「可述标」 */
   readyLabel: string
+  /** 本步的 key 与已跑过时的标记（如 review/「已审查」）：只看 currentStep 会标错——
+   *  审查跑完 currentStep 就推进到 present，那份标书仍会显示「可审查」（用户实测）。 */
+  doneStep: "review" | "present"
+  doneLabel: string
   uploadTitle: string
   uploadDesc: string
   /** true=只传标书、不提供招标文件（述标用）：直接去 noTenderHref，不走 /read 对照绕路。 */
@@ -35,7 +40,8 @@ export type StandaloneBidEntryProps = {
  *  ① 选择「我的标书」里符合条件的项目直接操作（走既有流程）；
  *  ② 上传线下标书（bidOnly=false 时可附招标文件先读标；bidOnly=true 只传标书直接操作）。 */
 export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
-  const { onBack, backLabel, noTenderHref, pickTitle, pickDesc, emptyHint, isSelectable, readyLabel, switchToUploadLabel } = props
+  const { onBack, backLabel, noTenderHref, pickTitle, pickDesc, emptyHint, isSelectable, readyLabel,
+    switchToUploadLabel, doneStep, doneLabel } = props
   const [projects, setProjects] = useState<ProjectListItem[]>([])
   const [loadingList, setLoadingList] = useState(true)
 
@@ -95,7 +101,7 @@ export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
                 >
                   <span className="min-w-0 truncate text-sm text-foreground">{p.name}</span>
                   <span className="ml-2 shrink-0 text-[11px] text-muted-foreground">
-                    {p.currentStep === "done" ? "已完成" : readyLabel}
+                    {p.doneSteps?.includes(doneStep) ? doneLabel : p.currentStep === "done" ? "已完成" : readyLabel}
                   </span>
                 </button>
               ))

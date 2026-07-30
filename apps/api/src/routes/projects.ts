@@ -531,6 +531,16 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       getDb().select({ n: sql<number>`count(*)` }).from(bidProjects).where(where),
     )
     const totalSteps = STEP_ORDER.length
+    // 各项目已完成的步（一次分组查询）：列表要标「已审查 / 已述标」，光看 currentStep 会标错——
+    // 审查跑完 currentStep 就推进到 present，那份标书在选择列表里仍显示「可审查」（用户实测）。
+    const doneRows = items.length
+      ? await getDb()
+          .select({ projectId: projectSteps.projectId, step: projectSteps.step })
+          .from(projectSteps)
+          .where(and(inArray(projectSteps.projectId, items.map((p) => p.id)), eq(projectSteps.status, "done")))
+      : []
+    const doneByProject = new Map<string, string[]>()
+    for (const r of doneRows) doneByProject.set(r.projectId, [...(doneByProject.get(r.projectId) ?? []), r.step])
     return c.json(
       pagedBody(pg, {
         items: items.map((p) => ({
@@ -547,6 +557,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
           // 是否已有可用的投标文件：述标/审查的选择列表据此过滤——列出没有标书的项目
           // 只会让用户选中后空转，甚至触发一次白扣积分的运行。
           hasBid: p.kind === "review" ? !!p.bidFileKey : ["review", "present", "export", "done"].includes(p.currentStep),
+          doneSteps: doneByProject.get(p.id) ?? [],
           createdAt: p.createdAt,
         })),
         total,

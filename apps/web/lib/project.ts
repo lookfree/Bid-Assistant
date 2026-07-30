@@ -132,6 +132,9 @@ export type ProjectListItem = {
   tenderCount?: number
   /** 已有可用的投标文件（生成到正文之后，或线下上传的标书）：述标/审查选择列表据此过滤 */
   hasBid?: boolean
+  /** 已完成的步（read/outline/content/review/present/export）：列表据此标「已审查 / 已述标」——
+   *  只看 currentStep 会标错，审查跑完 currentStep 就走到 present 了 */
+  doneSteps?: string[]
   createdAt: string
 }
 
