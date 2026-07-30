@@ -263,3 +263,20 @@ def test_new_layouts_fit_inside_a_four_by_three_master():
         if sh.left is not None and sh.width is not None and sh.left + sh.width > prs.slide_width + Emu(9144)
     ]
     assert overflow == [], f"有形状超出母版页宽: {overflow}"
+
+
+def test_chart_renders_even_when_the_model_omitted_the_layout_key():
+    """端到端守住那次事故：deck 里带 chart 数据但 layout 缺省成 bullets 时，导出必须仍然渲出
+    真实图表对象，而不是把数据丢掉只画要点（用户实际拿到的就是后者）。
+    存量 deck 重新导出也走这条路径——库里已有的坏形状导出即自愈，无需重新生成。"""
+    deck = DeckSpec(title="述标", slides=[
+        {"id": "s1", "title": "项目实施进度与团队配置", "kind": "content",
+         "bullets": ["到货验收后 15 日内完成安装调试"],
+         "chart": {"type": "column", "categories": ["安装", "调试", "培训"],
+                   "series": [{"name": "工期(天)", "values": [5, 7, 3]}]}},
+    ])
+    assert deck.slides[0].layout == "chart"          # 数据即意图
+    prs = Presentation(io.BytesIO(render_pptx(deck)))
+    charts = [sh for sh in prs.slides[0].shapes if sh.has_chart]
+    assert len(charts) == 1, "图表数据在，导出就必须有真实图表对象"
+    assert list(charts[0].chart.plots[0].categories) == ["安装", "调试", "培训"]

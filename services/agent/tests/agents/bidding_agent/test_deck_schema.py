@@ -106,3 +106,26 @@ def test_bullets_is_required_in_the_llm_tool_schema():
     # 承载内容的字段要有 description：模型读工具 schema 比读提示词更认真
     assert slide["properties"]["bullets"].get("description")
     assert slide["properties"]["scoring"].get("description")
+
+
+def test_layout_is_derived_from_the_payload_the_model_actually_sent():
+    """生产事故（2026-07-30，step 41a13d7f）：模型给了 chart 数据和 stats 卡片，却没给 layout 键
+    → pydantic 填上默认 "bullets" → 渲染层按 layout 分派，图表与数字卡片被静默丢弃，
+    用户拿到一份"一个图表都没有"的 PPT，而数据其实好好躺在库里。
+    与 bullets 同一类根因（有默认值、无描述的字段模型会跳过），但这里不能靠"改必填"解决：
+    layout 漏填就整单拒会新增一种失败模式。数据本身才是可靠的意图证据——有 chart 就是图表页。"""
+    from agent.agents.bidding_agent.schemas import Slide, SlideDraft
+
+    chart = {"type": "column", "categories": ["一阶段", "二阶段"],
+             "series": [{"name": "工期(天)", "values": [15, 30]}]}
+    stats = [{"value": "8 小时", "label": "到场时限"}]
+
+    # 渲染层的 Slide：存量 deck 重新导出时也要能纠正（用户已生成的那份就是这个形状）
+    assert Slide(id="s1", title="进度", kind="content", bullets=["按期交付"], chart=chart).layout == "chart"
+    assert Slide(id="s2", title="对比", kind="content", bullets=["差异"], stats=stats).layout == "comparison"
+    # 骨架层的 SlideDraft：纠正必须发生在 _content_needs_substance 之前，否则 chart 页会被误判为缺 bullets
+    assert SlideDraft(id="s3", title="进度", kind="content", bullets=[], chart=chart).layout == "chart"
+    # 模型显式选了版式就不覆盖
+    assert Slide(id="s4", title="要点", kind="content", layout="bullets", bullets=["纯要点"]).layout == "bullets"
+    # 非 content 页不纠正（封面不会因为带了残留数据变成图表页）
+    assert Slide(id="s5", title="封面", kind="cover", chart=chart).layout == "bullets"

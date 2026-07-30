@@ -213,6 +213,24 @@ class StatItem(BaseModel):
     label: str = Field(min_length=1)
 
 
+def derive_layout(slide) -> None:
+    """按模型实际给出的数据纠正 layout（就地改 slide）。
+    生产事故（2026-07-30 step 41a13d7f）：模型给足了 chart 数据与 stats 卡片却没给 layout 键 →
+    默认值 "bullets" → 渲染层按 layout 分派，图表与数字卡片被静默丢弃，用户拿到"一个图表都没有"
+    的 PPT，而数据其实好好存在库里。与 bullets 同一类根因（有默认值的字段模型会跳过），但这里
+    不能靠改必填解决——layout 漏填就整单拒会凭空多一种失败模式。数据本身才是可靠的意图证据：
+    带了 chart 就是图表页，带了 stats + 左栏要点就是对比页。
+    只在 layout 仍是默认值时纠正，模型显式选了版式一律尊重；非 content 页不动（封面/分隔页
+    不该因为带了残留数据变成图表页）。放在 Slide 上，存量 deck 重新导出即自愈。"""
+    if slide.kind != "content" or slide.layout != "bullets":
+        return
+    if slide.chart is not None:
+        slide.layout = "chart"
+    elif slide.stats and any(b.strip() for b in slide.bullets):
+        # comparison 左栏要点必填：没要点就别升级成对比页，留在 bullets 让空内容校验照常拦下
+        slide.layout = "comparison"
+
+
 class Slide(BaseModel):
     id: str
     title: str
@@ -226,6 +244,11 @@ class Slide(BaseModel):
     layout: Literal["bullets", "chart", "comparison"] = "bullets"
     stats: list[StatItem] = Field(default_factory=list)   # comparison 版式的右栏数字卡片
     chart: SlideChart | None = None                        # chart 版式的图表数据
+
+    @model_validator(mode="after")
+    def _derive_layout(self):
+        derive_layout(self)
+        return self
 
 
 class QA(BaseModel):
@@ -259,9 +282,19 @@ class SlideDraft(BaseModel):
                     "content 页必填 3–5 条（chart 版式可只给 1–2 条结论式说明）；"
                     "cover/section/end 页给空数组 []")
     kind: Literal["cover", "section", "content", "end"] = "content"
-    layout: Literal["bullets", "chart", "comparison"] = "bullets"
+    layout: Literal["bullets", "chart", "comparison"] = Field(
+        default="bullets",
+        description="本页版式：bullets=纯要点；chart=图表页（同时给 chart 字段）；"
+                    "comparison=左要点右数字卡片（同时给 stats 字段）。给了 chart/stats 就要选对应版式")
     stats: list[StatItem] = Field(default_factory=list)
     chart: SlideChart | None = None
+
+    # 顺序要紧：pydantic 的 after 校验器按定义顺序跑，layout 必须先按数据纠正，
+    # 否则模型漏给 layout 的图表页会在下面被误判成「缺少 bullets」而遭拒。
+    @model_validator(mode="after")
+    def _derive_layout(self):
+        derive_layout(self)
+        return self
 
     @model_validator(mode="after")
     def _content_needs_substance(self):
