@@ -109,8 +109,6 @@ export default function PresentPage() {
     if (DURATIONS.includes(realDeck.duration as Duration)) setDuration(realDeck.duration as Duration)
     if (slideStyles.some((s) => s.id === realDeck.template)) setStyleId(realDeck.template as StyleId)
   }, [realDeck])
-  /* 只有显式 ?view=entry（卡片里的两个次要入口）或压根没有当前项目，才去独立入口页 */
-  const enterProject = viewParam !== "entry" && !!projectId
 
   /* deck 就绪 = present 步已有真实结果（编辑/保存/导出入口只在此后出现） */
   const hasDeck = !!realDeck
@@ -369,18 +367,37 @@ export default function PresentPage() {
   // 独立入口页：只有用户从卡片里点了「从我的标书选择 / 上传标书文件」（?view=entry），
   // 或压根没有当前项目时才到这里。「返回当前项目的述标」仅在当前项目确可述标时给出——
   // 否则不给，避免对未就绪项目给一个点了会空转回入口的死链。
-  if (!enterProject || !projectId)
+  // 显式要选标书（卡上两个按钮跳来的 ?view=entry）才给列表/上传页
+  if (viewParam === "entry")
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
         <FlowNav current="present" info={info} />
         <StepPageHeader icon={Presentation} title="述标演示" desc="一键把标书提炼成述标/答辩 PPT，含演讲备注与预计问答" />
-        {!projectId && (
-          <p className="mb-3 rounded-xl border border-border bg-card px-4 py-2.5 text-sm text-muted-foreground">
-            还没有选中的标书——先选一份已有的，或上传线下标书；选完直接进入述标生成页。
-          </p>
-        )}
         <PresentEntry
           onBack={projectId && info && !stepPrereq(info, "present") ? () => { window.location.href = "/present?view=project" } : undefined}
+        />
+      </div>
+    )
+
+  // 没有当前项目：**仍然是这张卡**（用户口径「没有我的项目的时候也是这个入口」），
+  // 只是不渲染计费按钮——没有标书可生成；选标书走卡上那两个按钮。
+  if (!projectId)
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
+        <FlowNav current="present" info={null} />
+        <StepPageHeader icon={Presentation} title="述标演示" desc="一键把标书提炼成述标/答辩 PPT，含演讲备注与预计问答" />
+        <EmptyState
+          duration={duration}
+          onDuration={changeDuration}
+          cost={presentCost}
+          balance={balance}
+          balanceLoading={membershipLoading}
+          generating={false}
+          onGenerate={() => {}}
+          styleName={style.name}
+          refPpt={refPpt}
+          onOpenTemplates={() => setTplOpen(true)}
+          noProject
         />
       </div>
     )

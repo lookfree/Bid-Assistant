@@ -19,6 +19,7 @@ export function EmptyState({
   refPpt,
   onOpenTemplates,
   existingDeck,
+  noProject,
 }: {
   duration: Duration
   onDuration: (d: Duration) => void
@@ -34,6 +35,9 @@ export function EmptyState({
   onOpenTemplates: () => void
   /** 本项目已生成过述标：卡上给「查看已生成」的入口（用户口径：菜单进来先看卡，已生成的给链接跳过去） */
   existingDeck?: { pages: number; onOpen: () => void }
+  /** 还没有选中的标书：仍然停在这张卡（用户口径「没有我的项目的时候也是这个入口」），
+   *  但不渲染计费按钮——没有标书可生成，亮出来点了只会失败。选标书走卡上那两个按钮。 */
+  noProject?: boolean
 }) {
   // 居中用子元素的 my-auto，而不是父级 items-center：flex 居中 + 溢出滚动的经典冲突——
   // 内容高于容器时 items-center 会把顶部推到滚动区之外，用户既看不到标题也滚不上去
@@ -67,14 +71,21 @@ export function EmptyState({
           <DurationSection duration={duration} onDuration={onDuration} />
           <TemplateSection styleName={styleName} refPpt={refPpt} onOpenTemplates={onOpenTemplates} />
           <OtherBidSection />
-          <GenerateAction
-            cost={cost}
-            balance={balance}
-            balanceLoading={balanceLoading}
-            generating={generating}
-            onGenerate={onGenerate}
-            regenerate={!!existingDeck}
-          />
+          {noProject ? (
+            <p className="mt-6 rounded-xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+              还没有选中的标书——用上面的「从我的标书选择」挑一份，或「上传标书文件」传一份线下标书，
+              选好后回到本页即可一键生成。
+            </p>
+          ) : (
+            <GenerateAction
+              cost={cost}
+              balance={balance}
+              balanceLoading={balanceLoading}
+              generating={generating}
+              onGenerate={onGenerate}
+              regenerate={!!existingDeck}
+            />
+          )}
           <p className="mt-3 text-[11px] text-muted-foreground">
             {existingDeck
               ? "重新生成会按当前时长与模板重出一份，覆盖现有述标，并再消耗一次积分"
