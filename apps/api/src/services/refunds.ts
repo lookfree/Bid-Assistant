@@ -124,7 +124,10 @@ async function settleRefundDone(tx: Tx, order: Order, refundId: string, input: R
  * ③ 明确成功 → done 落账（订单翻转/扣回积分同事务）；明确业务拒绝 → failed；
  *    **抛错（网络/超时等歧义结果）→ 保持 pending**，由 scanStuckRefunds 落差异转人工。
  */
-export async function createRefund(rawInput: RefundInput, deps: { provider: RefundProvider }): Promise<{ refundId: string; status: "done" | "failed" | "pending" }> {
+export async function createRefund(
+  rawInput: RefundInput,
+  deps: { provider: RefundProvider },
+): Promise<{ refundId: string; status: "done" | "failed" | "pending"; reason?: string }> {
   const input = InputSchema.parse(rawInput)
   const { order, refundId, doneBefore, replayedStatus } = await validateAndCreatePending(input)
   if (replayedStatus) return { refundId, status: replayedStatus } // 幂等重放：返回既有退款结果，不再走通道/扣回
@@ -143,7 +146,9 @@ export async function createRefund(rawInput: RefundInput, deps: { provider: Refu
   let outcome: "ok" | "rejected" | "ambiguous" = "ok"
   let providerError: string | undefined
   try {
-    outcome = (await deps.provider.refund({ clientSn: order.clientSn, refundSn: refundId, amountCents: input.amountCents })).ok ? "ok" : "rejected"
+    const res = await deps.provider.refund({ clientSn: order.clientSn, refundSn: refundId, amountCents: input.amountCents })
+    outcome = res.ok ? "ok" : "rejected"
+    providerError = res.reason
   } catch (e) {
     outcome = "ambiguous"
     providerError = (e as Error).message
@@ -153,12 +158,12 @@ export async function createRefund(rawInput: RefundInput, deps: { provider: Refu
     // 通道可能已退款：不标 failed（防换 refundSn 重试双退）；pending 占额度，scanStuckRefunds 转人工
     console.error(`[refund] 通道结果不明（保持 pending 待人工核对）refund=${refundId}`, providerError)
     auditLog({ operator: input.operator, action: "refund.ambiguous", orderId: order.id, before: { orderStatus: order.status }, after: { refundId, refundStatus: "pending", error: providerError } })
-    return { refundId, status: "pending" }
+    return { refundId, status: "pending", reason: providerError }
   }
   if (outcome === "rejected") {
     await getDb().update(refunds).set({ status: "failed" }).where(and(eq(refunds.id, refundId), eq(refunds.status, "pending")))
-    auditLog({ operator: input.operator, action: "refund.failed", orderId: order.id, before: { orderStatus: order.status }, after: { refundId, refundStatus: "failed" } })
-    return { refundId, status: "failed" }
+    auditLog({ operator: input.operator, action: "refund.failed", orderId: order.id, before: { orderStatus: order.status }, after: { refundId, refundStatus: "failed", error: providerError } })
+    return { refundId, status: "failed", reason: providerError }
   }
 
   const clawed = await getDb().transaction((tx) => settleRefundDone(tx, order, refundId, input, doneBefore))

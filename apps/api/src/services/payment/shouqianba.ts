@@ -96,7 +96,13 @@ export function makeShouqianbaProvider(deps: ShouqianbaDeps): PaymentProvider {
         refund_request_no: refundSn, // 通道侧幂等键：同号重复请求不重复退
         refund_amount: String(amountCents),
       })
-      return { ok: json.result_code === "200" && json.biz_response?.result_code === "REFUND_SUCCESS" }
+      const biz = json.biz_response
+      const ok = json.result_code === "200" && biz?.result_code === "REFUND_SUCCESS"
+      if (ok) return { ok: true }
+      // 原因优先取业务层 error_message，回落到两层 result_code（不带原因回去，运营只看到一句"退款失败"）
+      const reason = biz?.error_message
+        || `result_code=${json.result_code}/${biz?.result_code ?? "-"}`
+      return { ok: false, reason }
     },
 
     parseCallback(rawBody, authorization): CallbackParse {

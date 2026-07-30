@@ -54,7 +54,7 @@ export function refundsRouter(resolveProvider: () => RefundProvider | undefined)
         action: "refund.write",
         target: `order:${parsed.data.orderId}`,
         before: { status: "paid" },
-        after: { refundId: res.refundId, status: res.status, amountCents: parsed.data.amount },
+        after: { refundId: res.refundId, status: res.status, amountCents: parsed.data.amount, reason: res.reason },
       })
     } catch (e) {
       console.error(`[admin-refund] 审计写入失败（退款已成功，不影响结果）order=${parsed.data.orderId}`, e)

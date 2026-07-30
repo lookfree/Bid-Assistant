@@ -140,17 +140,22 @@ export function OrdersClient() {
 
   async function refund(orderId: string, amountCents: number, reason: string, idempotencyKey: string) {
     try {
-      await adminApi.orders.refund({
-        orderId,
-        amountCents,
-        reason,
-        idempotencyKey,
-      })
-      toast.success(`已发起退款：${orderId}`)
+      // 通道拒绝时接口是 200 + {status:"failed"}（HTTP 层没出错）：必须按 status 分支。
+      // 原来无条件弹「已发起退款」——退款其实失败、订单仍是已支付，运营以为退成功了（生产实测）。
+      const res = await adminApi.orders.refund({ orderId, amountCents, reason, idempotencyKey })
+      if (res.status === "done") {
+        toast.success("退款成功", { description: "订单状态已更新为已退款，积分按比例扣回。" })
+      } else if (res.status === "pending") {
+        toast.warning("通道结果不明，已转人工核对", {
+          description: `请勿重复发起（可能已退款）。${res.reason ?? ""}`,
+        })
+      } else {
+        toast.error("退款失败，订单状态未变", { description: res.reason ?? "通道拒绝，未返回原因" })
+      }
       setSelected(null)
       await load()
-    } catch {
-      toast.error("退款失败")
+    } catch (e) {
+      toast.error("退款请求未成功", { description: e instanceof Error ? e.message : "请重试" })
     }
   }
 

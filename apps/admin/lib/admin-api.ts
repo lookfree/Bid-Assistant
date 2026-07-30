@@ -66,7 +66,7 @@ export const adminApi = {
     detail: (id: string) => req<ApiOrder & { refunds: unknown[] }>(`/orders/${id}`),
     // 后端 RefundBody 字段是 amount（=分）+ idempotencyKey（幂等去重）；此处映射 amountCents→amount。
     refund: (body: { orderId: string; amountCents: number; reason: string; idempotencyKey: string }) =>
-      req<{ refundId: string; status: string }>("/refunds", {
+      req<{ refundId: string; status: "done" | "failed" | "pending"; reason?: string }>("/refunds", {
         method: "POST",
         body: JSON.stringify({ orderId: body.orderId, amount: body.amountCents, reason: body.reason, idempotencyKey: body.idempotencyKey }),
       }),

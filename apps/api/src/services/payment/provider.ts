@@ -34,7 +34,9 @@ export interface PaymentProvider {
   /** 查询交易终态（轮询/对账共用）。 */
   query(clientSn: string): Promise<PaymentResult>
   /** 退款（支持部分退款；refundSn 幂等）。业务失败返回 ok:false，不抛。 */
-  refund(opts: { clientSn: string; refundSn: string; amountCents: number }): Promise<{ ok: boolean }>
+  /** 退款。ok=false 时 reason 给通道的拒绝原因（错误码/文案）——不带回原因，运营在后台只会看到
+   *  一句"退款失败"，既不知道为什么也不知道下一步该做什么（生产实测：以为退成功了）。 */
+  refund(opts: { clientSn: string; refundSn: string; amountCents: number }): Promise<{ ok: boolean; reason?: string }>
   /** 回调验签 + 报文解析归一（路由只消费 PaymentResult，不接触通道线格式；验签失败 bad_signature）。 */
   parseCallback(rawBody: string, authorization: string): CallbackParse
 }

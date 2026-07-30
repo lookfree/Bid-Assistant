@@ -38,6 +38,8 @@ const okProvider = (calls: Array<{ clientSn: string; refundSn: string; amountCen
   },
 })
 const failProvider: RefundProvider = { refund: async () => ({ ok: false }) }
+// 带原因的拒绝：通道拒绝必须把原因带回运营后台，否则界面只能说一句"退款失败"
+const failWithReason: RefundProvider = { refund: async () => ({ ok: false, reason: "REFUND_REJECT 超过可退期限" }) }
 
 describe("spec306 退款编排（pending→done/failed，事务落账+扣回积分）", () => {
   it("全额退款：done + 订单 refunded + 按 ref=order 扣回已入账积分（负向 refund_clawback）", async () => {
@@ -137,6 +139,19 @@ describe("spec306 退款编排（pending→done/failed，事务落账+扣回积�
     expect((await getDb().select().from(refunds).where(eq(refunds.id, res.refundId)))[0]!.status).toBe("failed")
     expect((await getDb().select().from(paymentOrders).where(eq(paymentOrders.id, order.id)))[0]!.status).toBe("paid")
     expect(await getBalance(userId)).toBe(500)
+  })
+
+  it("通道拒绝要把原因带回调用方（运营后台据此提示，否则只能显示一句「退款失败」）", async () => {
+    const userId = await mkUser()
+    const order = await mkPaidOrder(userId, 100)
+    const res = await createRefund(
+      { orderId: order.id, amountCents: 100, reason: "用户申请", operator: "ops_dave" },
+      { provider: failWithReason },
+    )
+    expect(res.status).toBe("failed")
+    expect(res.reason).toContain("超过可退期限")
+    // 订单保持已支付：退款没成功就绝不能翻成已退款（生产实测：界面报成功、状态没变，运营以为退成功了）
+    expect((await getDb().select().from(paymentOrders).where(eq(paymentOrders.id, order.id)))[0]!.status).toBe("paid")
   })
 
   it("护栏：非 paid 单拒绝；超额拒绝；累计（含在途 pending）超额拒绝", async () => {
