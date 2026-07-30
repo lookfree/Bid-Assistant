@@ -33,7 +33,11 @@ describe("spec310 用户页", () => {
   })
 
   it("运营备注：可写可清空、能被搜索命中、只落后台字段", async () => {
-    const u = await makeUserWithNickname(regU)   // 无昵称：后台显示"未命名用户"，正是要备注的场景
+    // makeUserWithNickname 不传昵称时会自动生成占位昵称，不是真的空；
+    // 微信/手机注册无昵称（后台显示"未命名用户"，正是要备注的场景）要直接插 nickname: null
+    const [row] = await getDb().insert(users).values({ nickname: null }).returning()
+    const u = row!.id
+    regU(u)
     const tag = `安几科技-王敏-${Date.now()}`
     const set = await setUserNote(u, tag, "ops_alice")
     expect(set.adminNote).toBe(tag)
