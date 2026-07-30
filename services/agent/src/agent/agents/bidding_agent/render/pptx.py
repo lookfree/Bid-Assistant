@@ -118,29 +118,91 @@ def _title_row(slide, title: str, tokens: dict) -> None:
     _rect(slide, _MARGIN, Inches(1.15), _CONTENT_W, Pt(1), tokens["accent"])
 
 
-def _bullets_box(slide, bullets: list[str], tokens: dict) -> None:
-    """要点文本框：每条要点独立段落，手动 “• ” 前缀，16pt，段后距 10pt，自动换行。"""
-    tf = slide.shapes.add_textbox(_MARGIN, Inches(1.4), _CONTENT_W, Inches(4.7)).text_frame
+_CARD_GAP = Inches(0.16)
+_CARD_MAX_H = Inches(1.3)
+_BADGE = Inches(0.34)
+
+
+def _body_band(slide) -> tuple[int, int]:
+    """正文区上下沿：下沿按页高算，给底部的评分点角标/页码留出 1.2in（母版页高不同也不会压住）。"""
+    _, _, sh = _content_box(slide)
+    return Inches(1.45), sh - Inches(1.2)
+
+
+def _card_geometry(n: int, top: int, bottom: int) -> tuple[int, int]:
+    """n 张卡片在 [top, bottom] 内的 (高度, 起始 y)：等分但封顶，整体垂直居中。
+    封顶是为了 2 条要点时不出现两张 2.4in 的巨块；居中是为了消灭「内容挤在顶部、下面 60%
+    全白」——用户原话「太素」，一半原因就是这片空白（4 条要点只占顶部约 25%）。"""
+    area = bottom - top
+    h = min(_CARD_MAX_H, int((area - (n - 1) * _CARD_GAP) / n))
+    stack = n * h + (n - 1) * _CARD_GAP
+    return h, top + int((area - stack) / 2)
+
+
+def _bullet_card(slide, left, top, width, height, idx: int, text: str, tokens: dict) -> None:
+    """单条要点卡片：浅底圆角块 + 左侧强调色序号徽章 + 垂直居中的要点文字。
+    比裸文字列表多出层次与节奏，且全部是原生形状——用户仍可在 PowerPoint 里逐个改。"""
+    card = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, left, top, width, height)
+    card.fill.solid()
+    card.fill.fore_color.rgb = tokens["tint"]
+    card.line.fill.background()
+    badge = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, left + Inches(0.18),
+                                   top + int((height - _BADGE) / 2), _BADGE, _BADGE)
+    badge.fill.solid()
+    badge.fill.fore_color.rgb = tokens["accent"]
+    badge.line.fill.background()
+    btf = badge.text_frame
+    btf.margin_left = btf.margin_right = btf.margin_top = btf.margin_bottom = 0
+    bp = btf.paragraphs[0]
+    bp.text = str(idx)
+    bp.alignment = PP_ALIGN.CENTER
+    brun = bp.runs[0] if bp.runs else bp.add_run()
+    brun.font.size = Pt(13)
+    brun.font.bold = True
+    brun.font.color.rgb = tokens["white"]
+    tf = card.text_frame
     tf.word_wrap = True
-    for i, bullet in enumerate(bullets):
-        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-        p.text = f"• {bullet}"
-        p.space_after = Pt(10)
-        run = p.runs[0]
-        run.font.size = Pt(16)
-        run.font.color.rgb = tokens["text"]
+    tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+    tf.margin_left, tf.margin_right = Inches(0.72), Inches(0.2)
+    p = tf.paragraphs[0]
+    p.text = text
+    p.alignment = PP_ALIGN.LEFT
+    run = p.runs[0] if p.runs else p.add_run()
+    run.font.size = Pt(14)
+    run.font.color.rgb = tokens["text"]
+
+
+def _bullets_box(slide, bullets: list[str], tokens: dict, *, left=None, width=None) -> None:
+    """要点区：逐条渲成编号卡片，等距铺开并整体垂直居中（对比页左栏传 left/width 复用同款卡片）。"""
+    items = [b for b in bullets if b.strip()]
+    if not items:
+        return
+    box_left, box_w, _ = _content_box(slide)
+    left = box_left if left is None else left
+    width = box_w if width is None else width
+    top, bottom = _body_band(slide)
+    h, y0 = _card_geometry(len(items), top, bottom)
+    for i, text in enumerate(items):
+        _bullet_card(slide, left, y0 + i * (h + _CARD_GAP), width, h, i + 1, text, tokens)
 
 
 def _chip_width(text: str) -> int:
-    """评分点角标自适应宽度：按字符数 * 0.11in 估算，夹在 [2.5in, 9in] 之间。"""
-    return int(Inches(max(2.5, min(9.0, 0.11 * len(text)))))
+    """评分点角标自适应宽度。
+    原按 0.11in/字符估算，中文下少算三分之一：12pt 中文字符实际约 0.167in 宽，30 字标签
+    估 3.3in、实需 ~4.7in——文字比框宽 1.4in，而形状文字默认居中且 word_wrap=False，
+    多出的部分往两边各溢出 0.7in，左边正好顶着页边距把「评」字推出画面（用户实测每页都被裁）。
+    改为按字符类型估宽（CJK/全角 0.17in、ASCII 0.085in）再留 0.4in 内边距。"""
+    w = sum(0.17 if ord(c) > 0x2E80 else 0.085 for c in text)
+    return int(Inches(max(2.5, min(9.0, w + 0.4))))
 
 
 def _scoring_chip(slide, scoring: str, tokens: dict) -> None:
-    """底部左侧圆角矩形评分点角标：浅底色 + 细强调边框 + 强调色文字。"""
+    """底部左侧圆角矩形评分点角标：浅底色 + 细强调边框 + 强调色文字。
+    宽度夹到正文可用宽以内、纵向按页高定位——死写 6.55in 在页高不同的客户母版上会漂。"""
     text = f"评分点｜{scoring}"
-    width = _chip_width(text)
-    shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, _MARGIN, Inches(6.55), width, Inches(0.5))
+    left, content_w, sh = _content_box(slide)
+    width = min(_chip_width(text), content_w)
+    shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, left, sh - Inches(0.95), width, Inches(0.5))
     shape.fill.solid()
     shape.fill.fore_color.rgb = tokens["tint"]
     shape.line.color.rgb = tokens["accent"]
@@ -152,7 +214,8 @@ def _scoring_chip(slide, scoring: str, tokens: dict) -> None:
     tf.margin_right = Inches(0.15)
     p = tf.paragraphs[0]
     p.text = text
-    run = p.runs[0]
+    p.alignment = PP_ALIGN.LEFT   # 居中会让溢出往两边跑，左侧首字被推出画面
+    run = p.runs[0] if p.runs else p.add_run()
     run.font.size = Pt(12)
     run.font.color.rgb = tokens["accent"]
 
@@ -166,20 +229,26 @@ def _page_number(slide, n: int, total: int, tokens: dict) -> None:
               [f"{n} / {total}"], size=10, color=tokens["muted"], align=PP_ALIGN.RIGHT)
 
 
-def _render_section(slide, s: Slide, tokens: dict, n: int, total: int) -> None:
+def _render_section(slide, s: Slide, tokens: dict, n: int, total: int, seq: int = 1) -> None:
     """章节分隔页（述标结构性升级）：满屏主色块 + 居中大标题 + 可选一句过渡副标题（取 bullets[0]）。
     评审实测教训：所有正文页长得一模一样，评委翻到第 8 页都不知道"讲到哪个部分了"——
     按评分维度分组（项目理解/技术方案/团队业绩/服务承诺与报价/风险防控）时每组开头插一张，
     给整套述标制造视觉节奏。不对应具体评分点，不挂 scoring 角标。"""
     sw, sh = _slide_size(slide)
     _rect(slide, 0, 0, sw, sh, tokens["primary"])
-    _textbox(slide, Inches(1.0), sh * 0.40, sw - Inches(2.0), Inches(1.2),
-              [s.title], size=36, color=tokens["white"], bold=True, align=PP_ALIGN.CENTER)
+    # 大号序号：只有一行居中标题时整页太空（用户反馈「太素」），用一个压在标题上方的
+    # 淡色大数字撑住版面，同时给评委一个"第几部分"的强锚点。
+    _textbox(slide, Inches(1.2), sh * 0.28, Inches(3.0), Inches(1.6),
+              [f"{seq:02d}"], size=72, color=_blend_toward(tokens["primary"], tokens["white"], 0.38),
+              bold=True)
+    _rect(slide, Inches(1.25), sh * 0.545, Inches(0.9), Pt(3), tokens["accent"])
+    _textbox(slide, Inches(1.2), sh * 0.575, sw - Inches(2.4), Inches(1.2),
+              [s.title], size=34, color=tokens["white"], bold=True)
     if s.bullets:
         kicker_color = _blend_toward(tokens["white"], tokens["accent"], 0.25)
         # 同图表页：分隔页的过渡语也全部渲染，不静默丢弃第二句
-        _textbox(slide, Inches(1.5), sh * 0.55, sw - Inches(3.0), Inches(0.8),
-                  s.bullets, size=16, color=kicker_color, align=PP_ALIGN.CENTER)
+        _textbox(slide, Inches(1.25), sh * 0.72, sw - Inches(2.5), Inches(0.8),
+                  s.bullets, size=15, color=kicker_color)
     _page_number(slide, n, total, tokens)
 
 
@@ -277,15 +346,7 @@ def _render_comparison_body(slide, s: Slide, tokens: dict) -> None:
     gap = Inches(0.3)
     right_left = left + left_w + gap
     right_w = content_w - left_w - gap
-    tf = slide.shapes.add_textbox(left, Inches(1.4), left_w, Inches(4.7)).text_frame
-    tf.word_wrap = True
-    for i, bullet in enumerate(s.bullets):
-        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-        p.text = f"• {bullet}"
-        p.space_after = Pt(10)
-        run = p.runs[0]
-        run.font.size = Pt(15)
-        run.font.color.rgb = tokens["text"]
+    _bullets_box(slide, s.bullets, tokens, left=left, width=left_w)   # 左栏与要点页同款编号卡片
     n = len(s.stats)
     card_h = Inches(2.1) if n == 2 else Inches(3.0)
     gap_v = Inches(0.3)
@@ -360,14 +421,15 @@ def _render_blank(deck: DeckSpec, template: str | None) -> bytes:
     prs.slide_width, prs.slide_height = _SLIDE_W, _SLIDE_H
     blank = prs.slide_layouts[6]
     total = sum(1 for s in deck.slides if s.kind != "cover")
-    n = 0
+    n = sec = 0
     for s in deck.slides:
         slide = prs.slides.add_slide(blank)
         if s.kind == "cover":
             _render_cover(slide, s, tokens)
         elif s.kind == "section":
             n += 1
-            _render_section(slide, s, tokens, n, total)
+            sec += 1
+            _render_section(slide, s, tokens, n, total, sec)
         elif s.kind == "end":
             n += 1
             _render_end(slide, s, deck, tokens, n, total)
@@ -507,7 +569,7 @@ def _render_on_master(deck: DeckSpec, template: str | None, master_bytes: bytes)
     _clear_slides(prs)
     title_layout, content_layout = _pick_layouts(prs)
     total = sum(1 for s in deck.slides if s.kind != "cover")
-    n = 0
+    n = sec = 0
     for s in deck.slides:
         if s.kind == "cover":
             slide = prs.slides.add_slide(title_layout)
@@ -516,8 +578,9 @@ def _render_on_master(deck: DeckSpec, template: str | None, master_bytes: bytes)
             # 章节分隔页需要整页满色块自绘，客户母版的占位符不适合这种版式——沿用 title_layout
             # 只借它的页面尺寸/主题环境，视觉内容完全自绘（与空白设计路径一致）。
             n += 1
+            sec += 1
             slide = prs.slides.add_slide(title_layout)
-            _render_section(slide, s, tokens, n, total)
+            _render_section(slide, s, tokens, n, total, sec)
         elif s.kind == "end":
             n += 1
             slide = prs.slides.add_slide(title_layout)

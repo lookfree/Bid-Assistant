@@ -46,15 +46,20 @@ def test_cover_has_primary_band_and_40pt_title():
 
 
 def test_content_slide_bullets_and_scoring_chip():
+    """要点从「单文本框 + • 前缀」改成逐条编号卡片（用户反馈整页太素、下半页全白）：
+    一条要点一张卡，卡上有序号徽章，文字 14pt。全部是原生形状，仍可在 PowerPoint 里逐个改。"""
     data = render_pptx(_deck())
     prs = Presentation(io.BytesIO(data))
     content = prs.slides[1]
-    body = next(sh for sh in content.shapes
-                if sh.has_text_frame and sh.text_frame.paragraphs[0].text.startswith("• "))
-    paras = body.text_frame.paragraphs
-    assert len(paras) == 3
-    for p in paras:
-        assert p.runs[0].font.size.pt == 16
+    cards = [sh for sh in content.shapes
+             if sh.has_text_frame and sh.text_frame.text in
+             ("7×24 值守", "分级 SLA", "故障 30 分钟响应")]
+    assert len(cards) == 3
+    for card in cards:
+        assert card.text_frame.paragraphs[0].runs[0].font.size.pt == 14
+    badges = [sh for sh in content.shapes
+              if sh.has_text_frame and sh.text_frame.text in ("1", "2", "3")]
+    assert len(badges) == 3, "每张卡片要有序号徽章"
     chip = next(sh for sh in content.shapes
                 if sh.has_text_frame and "评分点｜" in sh.text_frame.text)
     assert chip.text_frame.text == "评分点｜技术方案 50 分"
@@ -280,3 +285,51 @@ def test_chart_renders_even_when_the_model_omitted_the_layout_key():
     charts = [sh for sh in prs.slides[0].shapes if sh.has_chart]
     assert len(charts) == 1, "图表数据在，导出就必须有真实图表对象"
     assert list(charts[0].chart.plots[0].categories) == ["安装", "调试", "培训"]
+
+
+def _shapes_of(prs, idx=0):
+    return list(prs.slides[idx].shapes)
+
+
+def test_scoring_chip_is_wide_enough_for_chinese_and_never_bleeds_left():
+    """用户实测：每一页左下角的评分点角标渲成「分点｜…」——「评」字被切在画面外。
+    _chip_width 按 0.11in/字符估宽，而 12pt 中文字符实际约 0.167in：30 字标签估 3.3in、
+    实需 ~4.7in，形状文字默认居中且 word_wrap=False，多出的 1.4in 往两边各溢出 0.7in，
+    左边正好顶着页边距。宽度要按字符类型估，且文字左对齐——溢出只能往右，不能吃掉首字。"""
+    from pptx.enum.text import PP_ALIGN
+    from agent.agents.bidding_agent.render.pptx import _chip_width
+    from pptx.util import Inches, Pt
+
+    scoring = "★交货时间/地点/方式、★质保期、★知识产权与保密要求"
+    text = f"评分点｜{scoring}"
+    cjk = sum(1 for c in text if ord(c) > 0x2E80)
+    # 12pt 中文 ≈ 12pt 宽 = 1/6 in；估宽必须覆盖真实文字宽度，否则必然溢出
+    assert _chip_width(text) >= Inches(cjk / 6.0), "中文角标估宽不足，文字会溢出框外"
+
+    deck = DeckSpec(title="述标", slides=[
+        {"id": "s1", "title": "核心需求", "kind": "content", "bullets": ["要点"], "scoring": scoring},
+    ])
+    prs = Presentation(io.BytesIO(render_pptx(deck)))
+    chips = [sh for sh in _shapes_of(prs)
+             if sh.has_text_frame and sh.text_frame.text.startswith("评分点")]
+    assert chips, "评分点角标没渲出来"
+    chip = chips[0]
+    assert chip.left >= 0
+    assert chip.text_frame.paragraphs[0].alignment == PP_ALIGN.LEFT, "居中会让溢出吃掉左侧首字"
+
+
+def test_bullets_fill_the_slide_instead_of_hugging_the_top():
+    """用户反馈「太素」的一半原因：4 条要点只占顶部约 25%，下面 60% 是纯白。
+    要点区固定 top=1.4in、顶对齐，内容少时下方全空。改成卡片等距铺开并整体垂直居中后，
+    最后一张卡片必须越过页面中线，页面才不会头重脚轻。"""
+    deck = DeckSpec(title="述标", slides=[
+        {"id": "s1", "title": "核心需求理解", "kind": "content", "scoring": "技术方案 15 分",
+         "bullets": ["承诺 30 日内交付", "3 年免费质保", "原厂全新正品", "全部★条款无偏离"]},
+    ])
+    prs = Presentation(io.BytesIO(render_pptx(deck)))
+    mid = prs.slide_height / 2
+    bodies = [sh for sh in _shapes_of(prs)
+              if sh.has_text_frame and "质保" in sh.text_frame.text]
+    assert bodies, "要点没渲出来"
+    lowest = max(sh.top + sh.height for sh in bodies)
+    assert lowest > mid, "要点全挤在上半页，下面一大片空白"
