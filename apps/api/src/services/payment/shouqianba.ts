@@ -99,9 +99,14 @@ export function makeShouqianbaProvider(deps: ShouqianbaDeps): PaymentProvider {
       const biz = json.biz_response
       const ok = json.result_code === "200" && biz?.result_code === "REFUND_SUCCESS"
       if (ok) return { ok: true }
-      // 原因优先取业务层 error_message，回落到两层 result_code（不带原因回去，运营只看到一句"退款失败"）
-      const reason = biz?.error_message
+      const reason = biz?.error_message || json.error_message
         || `result_code=${json.result_code}/${biz?.result_code ?? "-"}`
+      if (!biz?.error_message && !json.error_message) {
+        // 生产实测：result_code=400 且顶层/业务层 error_message 都是空——通道这次连原因都没给，
+        // 落到最后一级兜底文案，运营还是不知道为什么。打出完整原始报文，下次失败直接看日志定位，
+        // 别再猜字段名（上一版猜的 biz.error_message 就猜错了，两次重试都是同一个空原因）。
+        console.error(`[refund] 收钱吧退款被拒且无原因文案，原始响应=${JSON.stringify(json)}`)
+      }
       return { ok: false, reason }
     },
 

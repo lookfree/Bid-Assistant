@@ -106,7 +106,26 @@ describe("refund", () => {
 
   it("网关业务失败 → ok:false（不抛，调用方决定重试/告警）", async () => {
     const { provider } = makeProvider([{ result_code: "200", biz_response: { result_code: "FAIL", error_message: "余额不足" } }])
-    expect((await provider.refund({ clientSn: "o", refundSn: "r", amountCents: 1 })).ok).toBe(false)
+    const r = await provider.refund({ clientSn: "o", refundSn: "r", amountCents: 1 })
+    expect(r.ok).toBe(false)
+    expect(r.reason).toBe("余额不足") // 业务层拒绝：原因在 biz_response.error_message
+  })
+
+  it("顶层 result_code≠200（请求级错误）：原因在顶层 error_message，不在 biz_response 里", async () => {
+    // 生产实测：签名/参数/终端类错误没有 biz_response，只有顶层 result_code + error_message
+    const { provider } = makeProvider([{ result_code: "400", error_message: "terminal not activated" }])
+    const r = await provider.refund({ clientSn: "o", refundSn: "r", amountCents: 1 })
+    expect(r.ok).toBe(false)
+    expect(r.reason).toBe("terminal not activated")
+  })
+
+  it("通道两层都没给原因：兜底文案至少带上 result_code，不是空字符串", async () => {
+    // 生产实测复现：两次真实重试都拿到裸 {result_code:"400"}，无任何文字——运营看到的原因是
+    // "result_code=400/-"。这种情况打日志（见 shouqianba.ts console.error），此处只保证兜底不崩、不空。
+    const { provider } = makeProvider([{ result_code: "400" }])
+    const r = await provider.refund({ clientSn: "o", refundSn: "r", amountCents: 1 })
+    expect(r.ok).toBe(false)
+    expect(r.reason).toBe("result_code=400/-")
   })
 })
 
