@@ -714,7 +714,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     // 误导排障。两条路径都在占步位/预扣之前，「不占步位不预扣」的性质对二者同等成立。
     let holdAmount: number | undefined
     try {
-      holdAmount = await resolveStepHoldAmount(step)
+      holdAmount = await resolveStepHoldAmount(step, gen.targetChars)
     } catch (e) {
       if (!(e instanceof ContentTiersConfigError)) throw e
       return c.json({ error: "content_tiers_not_configured" }, 400)

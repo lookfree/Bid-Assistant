@@ -118,8 +118,14 @@ describe("billing-stub → 真账本门面（spec302）", () => {
       { maxChars: 150_000, cost: 80 },
       { maxChars: null, cost: 260 },
     ])
-    expect(await resolveStepHoldAmount("content")).toBe(260) // 预扣取最大价，防结算少补扣穿
+    expect(await resolveStepHoldAmount("content")).toBe(260) // 不传目标字数：兜底取最大价（旧调用/export）
     expect(await resolveStepHoldAmount("read")).toBeUndefined() // 其余步按 credit_cost.<step>
+
+    // 用户口径 2026-07-30：选了「≤5万字 40 积分」那档，账上有 40 就该能开跑——
+    // 此前无论选哪档都固定预扣 260，余额 100 选最低档反而弹「积分不足」，与弹层文案自相矛盾
+    expect(await resolveStepHoldAmount("content", 10_000)).toBe(40)   // 落在低档
+    expect(await resolveStepHoldAmount("content", 100_000)).toBe(80)  // 落在中档
+    expect(await resolveStepHoldAmount("content", 400_000)).toBe(260) // 落在顶档，与不传等价
     await grant(userId, 600, { idempotencyKey: `gc-${userId}` })
 
     // 低档：总字数 3 万 → 结算 40，退 220
