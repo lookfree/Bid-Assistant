@@ -52,12 +52,12 @@ export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // ?focus=pick|upload：**只渲染用户点进来的那一张**（用户口径：从我的标书点进来就只看列表——
-  // 上传入口在工具页首屏本来就有，再并排摆一张是重复且分散注意）。
-  // 不带 focus（没有当前项目直接落到本页）才两张都给：那时用户还没表达意图，两条路都要留。
+  // **任何时候只显示一张卡**（用户口径：两卡并排那页不需要了）。
+  // ?focus=upload → 上传卡；其余（含没有当前项目、直接落到本页）→ 标书列表，
+  // 列表底部留一个换到上传的入口，路径一条都不丢。
   const focus = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("focus")
-  const showPick = focus !== "upload"
-  const showUpload = focus !== "pick"
+  const showUpload = focus === "upload"
+  const base = noTenderHref.split("?")[0]
 
   return (
     <div className="flex flex-col gap-3">
@@ -66,8 +66,8 @@ export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
           {backLabel}
         </button>
       )}
-      <div className={`grid gap-4${showPick && showUpload ? " lg:grid-cols-2" : ""}`}>
-        {showPick && (
+      <div className="grid gap-4">
+        {!showUpload && (
         <section className="rounded-2xl border border-border bg-card p-5">
           <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
             <FolderOpen className="size-4 text-primary" />
@@ -99,6 +99,13 @@ export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
               ))
             )}
           </div>
+          <a
+            href={`${base}?view=entry&focus=upload`}
+            className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-border py-2.5 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+          >
+            <UploadCloud className="size-3.5" />
+            没有可用的标书？改为上传线下标书
+          </a>
         </section>
         )}
         {showUpload && <UploadBidCard {...props} />}
