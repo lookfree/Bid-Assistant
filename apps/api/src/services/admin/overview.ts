@@ -1,11 +1,13 @@
 import { and, eq, gte, sql } from "drizzle-orm"
 import { getDb } from "../../db/client"
-import { users, subscriptions, paymentOrders, creditTransactions, bidProjects } from "../../db/schema"
+import { users, subscriptions, paymentOrders, creditTransactions, bidProjects, refunds } from "../../db/schema"
 
 // 概览指标聚合（spec310）：并行聚合 SQL，单次往返多查。
 export interface OverviewMetrics {
   totalUsers: number
   payingUsers: number
+  /** 累计实收（已支付订单额 − 已完成退款额）：退了的钱不能算收入 */
+  totalRevenueCents: number
   todayRevenueCents: number
   creditTxCount: number
   creditTxSumToday: number
@@ -16,13 +18,28 @@ export async function computeOverview(): Promise<OverviewMetrics> {
   const db = getDb()
   const todayStart = new Date()
   todayStart.setHours(0, 0, 0, 0)
-  const [[u], [p], [rev], [tx], [proj]] = await Promise.all([
+  // 营收一律按**实收**算：已支付订单额减去已完成退款额。只 sum 订单会把退掉的钱算进收入——
+  // 全额退款的订单虽然会翻成 refunded 而不再计入，但**部分退款的订单仍是 paid**（有意如此，
+  // 剩余额度还能继续退），那部分退款不减掉就是虚增。今日同理，按退款发生当天减。
+  const [[u], [p], [totalRev], [totalRefund], [rev], [todayRefund], [tx], [proj]] = await Promise.all([
     db.select({ n: sql<number>`count(*)` }).from(users),
     db.select({ n: sql<number>`count(distinct ${subscriptions.userId})` }).from(subscriptions).where(eq(subscriptions.status, "active")),
     db
       .select({ s: sql<number>`coalesce(sum(${paymentOrders.amountCents}),0)` })
       .from(paymentOrders)
+      .where(eq(paymentOrders.status, "paid")),
+    db
+      .select({ s: sql<number>`coalesce(sum(${refunds.amountCents}),0)` })
+      .from(refunds)
+      .where(eq(refunds.status, "done")),
+    db
+      .select({ s: sql<number>`coalesce(sum(${paymentOrders.amountCents}),0)` })
+      .from(paymentOrders)
       .where(and(eq(paymentOrders.status, "paid"), gte(paymentOrders.createdAt, todayStart))),
+    db
+      .select({ s: sql<number>`coalesce(sum(${refunds.amountCents}),0)` })
+      .from(refunds)
+      .where(and(eq(refunds.status, "done"), gte(refunds.createdAt, todayStart))),
     db
       .select({ c: sql<number>`count(*)`, s: sql<number>`coalesce(sum(${creditTransactions.amount}),0)` })
       .from(creditTransactions)
@@ -32,7 +49,8 @@ export async function computeOverview(): Promise<OverviewMetrics> {
   return {
     totalUsers: Number(u!.n),
     payingUsers: Number(p!.n),
-    todayRevenueCents: Number(rev!.s),
+    totalRevenueCents: Number(totalRev!.s) - Number(totalRefund!.s),
+    todayRevenueCents: Number(rev!.s) - Number(todayRefund!.s),
     creditTxCount: Number(tx!.c),
     creditTxSumToday: Number(tx!.s),
     activeProjects: Number(proj!.n),

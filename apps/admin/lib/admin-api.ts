@@ -146,7 +146,16 @@ export type ApiUser = { id: string; status: string; nickname: string | null; cre
 export type ApiUserDetail = ApiUser & { subscription: { planId: string; status: string; currentPeriodEnd?: string } | null; balance: number }
 export type ApiOrder = { id: string; userId: string; type: string; amountCents: number; status: string; provider: string | null; payway: string | null; providerTradeNo: string | null; createdAt: string }
 export type ApiLedgerTx = { id: string; userId: string; type: string; amount: number; ref: string | null; createdAt: string; expireAt: string | null }
-export type ApiOverview = { totalUsers: number; payingUsers: number; todayRevenueCents: number; creditTxCount: number; creditTxSumToday: number; activeProjects: number }
+export type ApiOverview = {
+  totalUsers: number
+  payingUsers: number
+  /** 累计实收（已支付订单额 − 已完成退款额） */
+  totalRevenueCents: number
+  todayRevenueCents: number
+  creditTxCount: number
+  creditTxSumToday: number
+  activeProjects: number
+}
 export type ApiTrendPoint = { date: string; revenue: number; credits: number }
 export type ApiAdmin = { id: string; username: string; role: string; status: string; createdAt?: string }
 export type ApiAuditLog = { id: string; operator: string; action: string; target: string | null; before: unknown; after: unknown; createdAt: string }

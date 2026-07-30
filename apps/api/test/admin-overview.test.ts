@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto"
 import { eq, inArray } from "drizzle-orm"
 import { computeOverview, computeTrend } from "../src/services/admin/overview"
 import { getDb, closeDb } from "../src/db/client"
-import { users, plans, subscriptions, paymentOrders, creditTransactions, bidProjects } from "../src/db/schema"
+import { users, plans, subscriptions, paymentOrders, refunds, creditTransactions, bidProjects } from "../src/db/schema"
 import { makeUserWithNickname, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB（跑法：./test-on-mbp.sh test/admin-overview.test.ts）
@@ -34,6 +34,24 @@ describe("spec310 概览聚合", () => {
     expect(o.todayRevenueCents).toBeGreaterThanOrEqual(1000)
     expect(o.creditTxCount).toBeGreaterThanOrEqual(1)
     expect(o.activeProjects).toBeGreaterThanOrEqual(1)
+    expect(o.totalRevenueCents).toBeGreaterThanOrEqual(1000)   // 看板「总营收」
+  })
+
+  it("营收按实收算：部分退款的订单仍是 paid，那部分必须从总营收/今日营收里减掉", async () => {
+    const u = await makeUserWithNickname((id) => madeUsers.push(id))
+    const before = await computeOverview()
+    const [order] = await getDb()
+      .insert(paymentOrders)
+      .values({ userId: u, type: "recharge", amountCents: 5000, status: "paid", clientSn: `t-${randomUUID()}`, idempotencyKey: `ov-${randomUUID()}` })
+      .returning()
+    // 部分退款 2000：订单**有意保持 paid**（剩余额度还能继续退），只 sum 订单就会虚增 2000
+    await getDb().insert(refunds).values({ orderId: order!.id, amountCents: 2000, status: "done", operator: "ops" })
+    // 另一条 failed 的退款不该被减掉（钱没退出去）
+    await getDb().insert(refunds).values({ orderId: order!.id, amountCents: 1000, status: "failed", operator: "ops" })
+
+    const after = await computeOverview()
+    expect(after.totalRevenueCents - before.totalRevenueCents).toBe(3000)
+    expect(after.todayRevenueCents - before.todayRevenueCents).toBe(3000)
   })
 
   it("趋势时序：不因 to_char 时区绑参撞 GROUP BY 报错，且当日营收/积分入桶", async () => {

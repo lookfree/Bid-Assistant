@@ -7,7 +7,6 @@ import {
   Users,
   UserCheck,
   Coins,
-  FolderKanban,
 } from "lucide-react"
 
 import { KpiCard } from "@/components/admin/kpi-card"
@@ -43,30 +42,25 @@ export default function OverviewPage() {
     <div className="flex flex-col gap-6">
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         <KpiCard
-          title="今日营收"
-          value={loading ? "—" : `¥${((data?.todayRevenueCents ?? 0) / 100).toLocaleString()}`}
+          title="总营收"
+          value={loading ? "—" : `¥${((data?.totalRevenueCents ?? 0) / 100).toLocaleString()}`}
           icon={Wallet}
+          hint="已支付订单额扣除已完成退款"
           emphasize
         />
         <KpiCard
-          title="总用户"
-          value={fmt(data?.totalUsers)}
-          icon={Users}
+          title="今日营收"
+          value={loading ? "—" : `¥${((data?.todayRevenueCents ?? 0) / 100).toLocaleString()}`}
+          icon={Wallet}
+          hint="同样已扣除今日退款"
         />
-        <KpiCard
-          title="付费用户"
-          value={fmt(data?.payingUsers)}
-          icon={UserCheck}
-        />
+        <KpiCard title="总用户" value={fmt(data?.totalUsers)} icon={Users} />
+        <KpiCard title="付费用户" value={fmt(data?.payingUsers)} icon={UserCheck} hint="当前有效订阅用户数" />
         <KpiCard
           title="今日积分流水"
           value={fmt(data?.creditTxSumToday)}
           icon={Coins}
-        />
-        <KpiCard
-          title="活跃项目"
-          value={fmt(data?.activeProjects)}
-          icon={FolderKanban}
+          hint={loading ? undefined : `${data?.creditTxCount ?? 0} 笔的净额`}
         />
       </div>
 
