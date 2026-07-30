@@ -247,8 +247,17 @@ class SlideDraft(BaseModel):
     """述标骨架页：Slide 去掉 notes（最大最易崩的自由文本字段），两段式第一段产出（spec205.1 Fix2）。"""
     id: str
     title: str
-    scoring: str = ""
-    bullets: list[str] = Field(default_factory=list)
+    # bullets 必填、scoring 带 description：模型读工具 schema 比读提示词认真得多。
+    # 生产事故（run 61e62f63）：这两个字段原是「可选且无描述」，模型连续 3 次提交的 14 页 deck 里
+    # 两个键各出现 0 次，只给标题 —— 而同期 stats/chart（有嵌套 docstring + 提示词 JSON 示例）每页都给。
+    # 其它节点承载内容的字段（ReadItem.title/value、RiskFinding.title/level）本就都是必填，从没这毛病。
+    # bullets 本就被下方 _content_needs_substance 强制非空，改必填只是让模型看见这条既有要求，
+    # 不新增失败模式；scoring 无校验器强制，故仍留默认值，只补描述（改必填会把漏填升级成整单被拒）。
+    scoring: str = Field(default="", description="本页对应的评分点（含★项优先标出）；section/cover/end 页给空串")
+    bullets: list[str] = Field(
+        description="本页要点，每条一句话讲清一个具体做法/参数/指标。"
+                    "content 页必填 3–5 条（chart 版式可只给 1–2 条结论式说明）；"
+                    "cover/section/end 页给空数组 []")
     kind: Literal["cover", "section", "content", "end"] = "content"
     layout: Literal["bullets", "chart", "comparison"] = "bullets"
     stats: list[StatItem] = Field(default_factory=list)

@@ -8,7 +8,7 @@ from agent.agents.bidding_agent.nodes.present import make_present_node
 
 
 _DRAFT_ARGS = {"title": "述标", "duration": 15, "template": "gov", "slides": [
-    {"id": "s0", "title": "封面", "kind": "cover"},
+    {"id": "s0", "title": "封面", "kind": "cover", "bullets": []},
     {"id": "s1", "title": "运维体系", "bullets": ["7×24"], "kind": "content"},
 ], "qa": [{"q": "可用性？", "a": "99.9%"}]}
 
@@ -357,8 +357,8 @@ def test_chart_only_content_page_does_not_trip_the_empty_deck_guard(monkeypatch,
     monkeypatch.setattr(common_mod, "storage", _Storage())
 
     chart_draft = {"title": "述标", "duration": 15, "template": "blue", "slides": [
-        {"id": "s0", "title": "封面", "kind": "cover"},
-        {"id": "s1", "title": "团队构成", "kind": "content", "layout": "chart", "scoring": "团队 20 分",
+        {"id": "s0", "title": "封面", "kind": "cover", "bullets": []},
+        {"id": "s1", "title": "团队构成", "kind": "content", "layout": "chart", "bullets": [], "scoring": "团队 20 分",
          "chart": {"type": "pie", "categories": ["高级", "中级"], "series": [{"name": "人数", "values": [3, 6]}]}},
     ], "qa": [{"q": "团队稳定性？", "a": "核心成员合作 5 年以上"}]}
     notes = {"notes": [{"id": "s0", "notes": "开场"}, {"id": "s1", "notes": "团队中 60% 为中级工程师"}]}
