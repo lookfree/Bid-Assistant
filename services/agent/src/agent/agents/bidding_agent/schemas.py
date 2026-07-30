@@ -1,4 +1,5 @@
 from __future__ import annotations
+import re
 from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
@@ -175,6 +176,10 @@ class RiskReport(BaseModel):
         return self
 
 
+# 类别名尾部的单位标注，如「质保期(月)」「合同额（万元）」；半角/全角括号都认。
+_UNIT_RE = re.compile(r"[（(]([^（()）]*)[)）]\s*$")
+
+
 class ChartSeries(BaseModel):
     name: str
     values: list[float]
@@ -186,6 +191,18 @@ class SlideChart(BaseModel):
     type: Literal["column", "bar", "pie", "line"] = "column"
     categories: list[str]
     series: list[ChartSeries]
+
+    @model_validator(mode="after")
+    def _units_consistent(self):
+        """类别自带单位且互不相同 → 拒。生产实测：响应时限(h)=1、质保期(月)=36 画在同一根轴上，
+        36 的柱子把 1 小时那根压成看不见的线，评委实际只看得到一项。单位未标注时无从判断，不管。"""
+        units = {m.group(1).strip() for c in self.categories
+                 if (m := _UNIT_RE.search(c)) and m.group(1).strip()}
+        if len(units) > 1:
+            raise ValueError(
+                f"同一张图表的类别单位不一致（{'、'.join(sorted(units))}）：量纲不同画在一根轴上，"
+                "大数会把小数压成看不见的线。请拆成两张图，或改用 comparison 版式的数字卡片")
+        return self
 
     @model_validator(mode="after")
     def _shape_consistent(self):
@@ -333,6 +350,29 @@ class DeckDraft(BaseModel):
     enterprise_template_id: str | None = None
     slides: list[SlideDraft]
     qa: list[QA] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _dividers_earn_their_place(self):
+        _sections_have_content(self.slides)
+        return self
+
+
+def _sections_have_content(slides: list) -> None:
+    """每张 section 后面必须跟至少 2 张 content 页。
+    生产实测：14 页里 5 页是纯标题分隔页、内容页只有 7 张，评委翻两页就撞见一张大蓝页。
+    提示词早写了页数区间，模型照做了总页数却拿分隔页凑数——页数约束管不住结构，得单独判。"""
+    for i, sl in enumerate(slides):
+        if sl.kind != "section":
+            continue
+        following = 0
+        for nxt in slides[i + 1:]:
+            if nxt.kind != "content":
+                break
+            following += 1
+        if following < 2:
+            raise ValueError(
+                f"分隔页「{sl.title}」后面只有 {following} 张正文页，至少 2 张——"
+                "分隔页不承载内容，不能拿它凑页数；请合并章节或给这一章补足正文页")
 
 
 class SlideNote(BaseModel):

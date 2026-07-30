@@ -129,3 +129,50 @@ def test_layout_is_derived_from_the_payload_the_model_actually_sent():
     assert Slide(id="s4", title="要点", kind="content", layout="bullets", bullets=["纯要点"]).layout == "bullets"
     # 非 content 页不纠正（封面不会因为带了残留数据变成图表页）
     assert Slide(id="s5", title="封面", kind="cover", chart=chart).layout == "bullets"
+
+
+def test_every_section_divider_needs_real_content_after_it():
+    """用户实测：14 页里 5 页是纯标题分隔页，内容页只有 7 张——评委翻两页就撞见一张大蓝页。
+    提示词早写了页数区间，模型照做了总页数却拿分隔页凑数，所以要在结构上兜一道：
+    每张 section 后面必须跟至少 2 张 content 页，否则分隔页就是在灌水。"""
+    import pytest
+    from pydantic import ValidationError
+    from agent.agents.bidding_agent.schemas import DeckDraft
+
+    def deck(kinds):
+        return {"slides": [
+            {"id": f"s{i}", "title": f"页{i}", "kind": k, "bullets": ["要点"] if k == "content" else []}
+            for i, k in enumerate(kinds)]}
+
+    # 分隔页后面只有 1 张内容页 → 拒
+    with pytest.raises(ValidationError, match="至少 2 张"):
+        DeckDraft(**deck(["cover", "section", "content", "section", "content", "end"]))
+    # 分隔页后面直接是结束页 → 拒（挂了个标题却什么都没讲）
+    with pytest.raises(ValidationError, match="至少 2 张"):
+        DeckDraft(**deck(["cover", "section", "content", "content", "section", "end"]))
+    # 每张分隔页后 2 张以上内容页 → 通过
+    DeckDraft(**deck(["cover", "section", "content", "content", "section", "content", "content", "end"]))
+    # 没有分隔页的短 deck 不受影响
+    DeckDraft(**deck(["cover", "content", "content", "end"]))
+
+
+def test_chart_categories_must_share_one_unit():
+    """用户实测那张条形图：响应时限(h)=1、到场时限(h)=8、质保期(月)=36、巡检间隔(月)=6 画在同一根轴上，
+    36 的柱子把 1 小时那根压成一条看不见的线——评委实际只看得到一项，另外三项白画。
+    类别自带单位且互相不同时直接拒，让模型拆成两张图或改用数字卡片。单位没标注就不管（无从判断）。"""
+    import pytest
+    from pydantic import ValidationError
+    from agent.agents.bidding_agent.schemas import SlideChart
+
+    with pytest.raises(ValidationError, match="单位"):
+        SlideChart(type="bar", categories=["响应时限(h)", "到场时限(h)", "质保期(月)", "巡检间隔(月)"],
+                   series=[{"name": "承诺", "values": [1, 8, 36, 6]}])
+    # 同单位放行
+    SlideChart(type="bar", categories=["响应时限(h)", "到场时限(h)"],
+               series=[{"name": "承诺", "values": [1, 8]}])
+    # 全角括号同样识别
+    with pytest.raises(ValidationError, match="单位"):
+        SlideChart(categories=["合同额（万元）", "项目数（个）"],
+                   series=[{"name": "近三年", "values": [800, 12]}])
+    # 没标注单位 → 不管
+    SlideChart(categories=["高级", "中级", "初级"], series=[{"name": "人数", "values": [3, 6, 4]}])
