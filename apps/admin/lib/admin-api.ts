@@ -59,6 +59,9 @@ export const adminApi = {
     unban: (id: string) => req<{ ok: true }>(`/users/${id}/unban`, { method: "POST" }),
     grantCredits: (id: string, body: { amount: number; reason: string; idempotencyKey: string }) =>
       req<{ balance: number }>(`/users/${id}/credits`, { method: "POST", body: JSON.stringify(body) }),
+    /** 运营备注（后台专用，C 端看不到）：空串=清空 */
+    setNote: (id: string, note: string) =>
+      req<{ adminNote: string | null }>(`/users/${id}/note`, { method: "PATCH", body: JSON.stringify({ note }) }),
   },
   orders: {
     list: (p: { status?: string; type?: string; userId?: string; page?: number; pageSize?: number } = {}) =>
@@ -142,7 +145,7 @@ export const adminApi = {
 }
 
 export type Paged<T> = { items: T[]; total: number; page: number; pageSize: number; hasMore: boolean }
-export type ApiUser = { id: string; status: string; nickname: string | null; createdAt: string; phone: string | null; tier: string | null; balance: number }
+export type ApiUser = { id: string; status: string; nickname: string | null; adminNote: string | null; createdAt: string; phone: string | null; tier: string | null; balance: number }
 export type ApiUserDetail = ApiUser & { subscription: { planId: string; status: string; currentPeriodEnd?: string } | null; balance: number }
 export type ApiOrder = { id: string; userId: string; type: string; amountCents: number; status: string; provider: string | null; payway: string | null; providerTradeNo: string | null; createdAt: string }
 export type ApiLedgerTx = { id: string; userId: string; type: string; amount: number; ref: string | null; createdAt: string; expireAt: string | null }

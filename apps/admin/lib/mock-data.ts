@@ -14,6 +14,8 @@ export interface UserRow {
   id: string
   phone: string
   name: string
+  /** 运营备注（后台专用）：微信/手机注册常无昵称，后台靠它认人；C 端不展示 */
+  adminNote?: string | null
   company: string
   registeredAt: string
   tier: MemberTier

@@ -15,6 +15,7 @@ export async function listUsers(opts: { q?: string; page?: number; pageSize?: nu
   const where = opts.q
     ? or(
         ilike(users.nickname, `%${opts.q}%`),
+        ilike(users.adminNote, `%${opts.q}%`),   // 运营备注也参与搜索：备注了"是谁"就该能按它搜到
         inArray(
           users.id,
           db.select({ id: userIdentities.userId }).from(userIdentities).where(ilike(userIdentities.identifier, `%${opts.q}%`)),
@@ -48,6 +49,17 @@ export async function listUsers(opts: { q?: string; page?: number; pageSize?: nu
     items: items.map((u) => ({ ...u, phone: phoneMap.get(u.id) ?? null, tier: tierMap.get(u.id) ?? null, balance: balMap.get(u.id) ?? 0 })),
     total,
   }
+}
+
+/** 设置/清空运营备注（后台专用，不影响 C 端展示）。空串按清空处理，避免留下空白备注。 */
+export async function setUserNote(id: string, note: string, operator: string) {
+  const db = getDb()
+  const [before] = await db.select({ adminNote: users.adminNote }).from(users).where(eq(users.id, id))
+  if (!before) throw new Error("用户不存在")
+  const value = note.trim() || null
+  await db.update(users).set({ adminNote: value }).where(eq(users.id, id))
+  await writeAudit({ operator, action: "user.note", target: `user:${id}`, before, after: { adminNote: value } })
+  return { adminNote: value }
 }
 
 export async function getUserDetail(id: string) {

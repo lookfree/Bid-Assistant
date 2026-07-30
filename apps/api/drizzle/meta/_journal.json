@@ -260,6 +260,13 @@
       "when": 1784822775678,
       "tag": "0036_bid_file_keys",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1784822776678,
+      "tag": "0037_user_admin_note",
+      "breakpoints": true
     }
   ]
 }

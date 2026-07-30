@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bu
 import { eq } from "drizzle-orm"
 import { Hono } from "hono"
 import { adminRoutes } from "../src/routes/admin"
-import { listUsers, banUser, unbanUser, adminGrantCredits } from "../src/services/admin/admin-users"
+import { listUsers, setUserNote, banUser, unbanUser, adminGrantCredits } from "../src/services/admin/admin-users"
 import { getDb, closeDb } from "../src/db/client"
 import { users, adminUsers, adminAuditLogs } from "../src/db/schema"
 import { makeUserWithNickname, makeAdminSession, TEST_TIMEOUT_MS } from "./repos/helpers"
@@ -30,6 +30,22 @@ describe("spec310 用户页", () => {
     const r = await listUsers({ q: tag, page: 1, pageSize: 10 })
     expect(r.total).toBe(1)
     expect(r.items[0]!.id).toBe(a)
+  })
+
+  it("运营备注：可写可清空、能被搜索命中、只落后台字段", async () => {
+    const u = await makeUserWithNickname(regU)   // 无昵称：后台显示"未命名用户"，正是要备注的场景
+    const tag = `安几科技-王敏-${Date.now()}`
+    const set = await setUserNote(u, tag, "ops_alice")
+    expect(set.adminNote).toBe(tag)
+
+    // 备注了"是谁"，就该能按它搜到（否则备注只能靠肉眼翻页找）
+    const found = await listUsers({ q: tag, page: 1, pageSize: 10 })
+    expect(found.total).toBe(1)
+    expect(found.items[0]!.id).toBe(u)
+    expect(found.items[0]!.nickname).toBeNull()   // 备注不写进 nickname：C 端展示不受影响
+
+    // 空串=清空，不留空白备注
+    expect((await setUserNote(u, "   ", "ops_alice")).adminNote).toBeNull()
   })
 
   it("封禁/解封 + 审计前后值", async () => {

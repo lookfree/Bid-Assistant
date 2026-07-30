@@ -35,7 +35,7 @@ import {
 } from "@/components/admin/status-badges"
 import { UserDetailSheet } from "@/components/admin/users/user-detail-sheet"
 import type { UserRow, MemberTier, AccountStatus } from "@/lib/mock-data"
-import { adminApi, type ApiUser } from "@/lib/admin-api"
+import { adminApi, AdminApiError, type ApiUser } from "@/lib/admin-api"
 
 const PAGE_SIZE = 8
 
@@ -49,6 +49,7 @@ function apiUserToRow(u: ApiUser): UserRow {
     id: u.id,
     phone: u.phone ?? "-",
     name: u.nickname ?? "未命名用户",
+    adminNote: u.adminNote ?? null,
     company: "-",
     registeredAt: u.createdAt?.slice(0, 10) ?? "-",
     tier,
@@ -91,6 +92,7 @@ export function UsersClient() {
         !kw ||
         u.phone.includes(kw) ||
         u.name.includes(kw) ||
+        (u.adminNote ?? "").includes(kw) ||
         u.company.includes(kw) ||
         u.id.includes(kw)
       const matchTier = tier === "all" || u.tier === tier
@@ -199,12 +201,18 @@ export function UsersClient() {
                   className="cursor-pointer"
                   onClick={() => setSelected(u)}
                 >
-                  <TableCell>
-                    <div className="flex flex-col">
-                      <span className="font-medium">{u.name}</span>
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    <div className="flex flex-col gap-0.5">
+                      <span className="font-medium">{u.adminNote || u.name}</span>
                       <span className="text-xs text-muted-foreground">
-                        {u.phone} · {u.company}
+                        {u.phone}
+                        {u.adminNote && u.name !== u.adminNote ? ` · ${u.name}` : ""}
                       </span>
+                      <NoteEditor
+                        userId={u.id}
+                        note={u.adminNote ?? ""}
+                        onSaved={(v) => setData((rows) => rows.map((r) => (r.id === u.id ? { ...r, adminNote: v } : r)))}
+                      />
                     </div>
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">
@@ -268,5 +276,63 @@ export function UsersClient() {
         onToggleBan={toggleBan}
       />
     </Card>
+  )
+}
+
+/** 行内运营备注编辑（后台专用字段，C 端不展示）：微信/手机注册的用户没有昵称，
+ *  后台列表只能显示"未命名用户"，运营需要能标注"这是谁"。备注非空时优先当名字显示。
+ *  整格 stopPropagation：这一格里的点击不该顺带打开右侧详情抽屉。 */
+function NoteEditor({ userId, note, onSaved }: { userId: string; note: string; onSaved: (v: string | null) => void }) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState(note)
+  const [saving, setSaving] = useState(false)
+
+  async function save() {
+    if (saving) return
+    setSaving(true)
+    try {
+      const res = await adminApi.users.setNote(userId, value)
+      onSaved(res.adminNote)
+      setEditing(false)
+      toast.success(res.adminNote ? "备注已保存" : "备注已清空")
+    } catch (e) {
+      const perm = e instanceof AdminApiError && e.status === 403
+      toast.error(perm ? "无权限：需要 user.write 权限" : "备注保存失败，请重试")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!editing) {
+    return (
+      <button
+        onClick={() => { setValue(note); setEditing(true) }}
+        className="self-start text-[11px] text-primary hover:underline"
+      >
+        {note ? "改备注" : "加备注"}
+      </button>
+    )
+  }
+  return (
+    <div className="mt-1 flex items-center gap-1">
+      <Input
+        autoFocus
+        value={value}
+        maxLength={60}
+        placeholder="如：安几科技-王敏"
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") void save()
+          if (e.key === "Escape") setEditing(false)
+        }}
+        className="h-7 w-44 text-xs"
+      />
+      <Button size="sm" className="h-7 px-2 text-xs" disabled={saving} onClick={() => void save()}>
+        保存
+      </Button>
+      <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setEditing(false)}>
+        取消
+      </Button>
+    </div>
   )
 }
