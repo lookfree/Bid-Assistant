@@ -206,9 +206,11 @@ class SlideChart(BaseModel):
 
 class StatItem(BaseModel):
     """关键数字卡片（layout=comparison 专用）：value 是展示用短文本（可带单位/符号，不要求纯数字，
-    如"7×24""较限价低 8%""12 年"），label 是对该数字的一句话说明。"""
-    value: str
-    label: str
+    如"7×24""较限价低 8%""12 年"），label 是对该数字的一句话说明。
+    两者都不许为空：空卡片在 PPT 上就是一个没内容的方框，且渲染层历史上会因此崩过
+    （空串产生不出 run）——与 App PATCH 的 slideSchema 同集。"""
+    value: str = Field(min_length=1)
+    label: str = Field(min_length=1)
 
 
 class Slide(BaseModel):

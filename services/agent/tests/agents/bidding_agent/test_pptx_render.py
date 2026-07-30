@@ -200,3 +200,66 @@ def test_new_layouts_render_on_enterprise_master_too():
     assert any(sh.has_chart for sl in prs.slides for sh in sl.shapes)
     assert any(sh.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE and sh.auto_shape_type == MSO_SHAPE.ROUNDED_RECTANGLE
                for sl in prs.slides for sh in sl.shapes)
+
+
+# ---- 评审回归：渲染层绝不能因为"内容形状特殊"整份崩掉 ----
+
+def test_blank_stat_card_does_not_crash_the_render():
+    """空串赋给 paragraph.text 不产生 run，取 runs[0] 会 IndexError → 付费导出确定性失败且重试
+    无效（评审实测复现）。入口现在拒绝空卡片（StatItem 与 App PATCH 都要求非空），但**渲染层
+    仍须自己防御**：库里可能已有旧数据，且导出每次都会重渲存量 deck——渲染层崩掉就再也导不出来。
+    因此用 model_construct 绕过校验直接构造"历史脏数据"形状。"""
+    from agent.agents.bidding_agent.schemas import StatItem
+    blank = StatItem.model_construct(value="", label="")
+    deck = DeckSpec(title="述标", slides=[
+        {"id": "s1", "title": "对比", "kind": "content", "layout": "comparison", "bullets": ["要点"]},
+    ])
+    deck.slides[0].stats = [blank]
+    prs = Presentation(io.BytesIO(render_pptx(deck)))
+    assert len(prs.slides) == 1
+
+
+def test_many_category_pie_does_not_crash_the_render():
+    """报价构成/岗位分布这类饼图 7 个类别很常见。配色的混合比例不封顶会算出 >255 的通道值，
+    RGBColor 直接抛 ValueError → 整个 present run 在模型已经花完钱之后失败（评审实测复现）。"""
+    deck = DeckSpec(title="述标", slides=[
+        {"id": "s1", "title": "报价构成", "kind": "content", "layout": "chart",
+         "chart": {"type": "pie", "categories": [f"项{i}" for i in range(9)],
+                   "series": [{"name": "金额", "values": [1.0] * 9}]}},
+    ])
+    prs = Presentation(io.BytesIO(render_pptx(deck)))
+    assert any(sh.has_chart for sh in prs.slides[0].shapes)
+
+
+def test_chart_page_renders_every_bullet_not_just_the_first():
+    """提示词允许图表页带 1-2 句结论，编辑器也保存全部要点——只画 bullets[0] 等于用户写的
+    第二句在 PPT 里凭空消失且毫无提示（评审）。"""
+    deck = DeckSpec(title="述标", slides=[
+        {"id": "s1", "title": "团队", "kind": "content", "layout": "chart",
+         "bullets": ["第一句结论", "第二句结论"],
+         "chart": {"type": "pie", "categories": ["高级"], "series": [{"name": "人数", "values": [3]}]}},
+    ])
+    prs = Presentation(io.BytesIO(render_pptx(deck)))
+    texts = " ".join(_all_texts(prs))
+    assert "第一句结论" in texts and "第二句结论" in texts
+
+
+def test_new_layouts_fit_inside_a_four_by_three_master():
+    """企业母版路径沿用客户自己的页面尺寸。新版式若按死写的 16:9 常量绘制，4:3 母版（10in 宽）
+    下图表会被推出页面 2.63in（约四分之一被裁），页码则每页都跑到页面外（评审实测复现）。"""
+    master = _tiny_master(width_in=10.0, height_in=7.5)
+    deck = DeckSpec(title="述标", slides=[
+        {"id": "sec", "title": "技术方案", "kind": "section", "bullets": ["过渡语"]},
+        {"id": "s1", "title": "业绩", "kind": "content", "layout": "chart",
+         "chart": {"type": "column", "categories": ["A", "B"], "series": [{"name": "n", "values": [1, 2]}]}},
+        {"id": "s2", "title": "对比", "kind": "content", "layout": "comparison",
+         "bullets": ["要点"], "stats": [{"value": "72 小时", "label": "提前完成"}]},
+    ])
+    prs = Presentation(io.BytesIO(render_pptx(deck, master_bytes=master)))
+    assert prs.slide_width == Inches(10.0)
+    overflow = [
+        sh.left + sh.width
+        for sl in prs.slides for sh in sl.shapes
+        if sh.left is not None and sh.width is not None and sh.left + sh.width > prs.slide_width + Emu(9144)
+    ]
+    assert overflow == [], f"有形状超出母版页宽: {overflow}"

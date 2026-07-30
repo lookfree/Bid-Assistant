@@ -1,5 +1,6 @@
 "use client"
 
+import { useState } from "react"
 import { Plus, X } from "lucide-react"
 import type { Slide, SlideChart, StatItem } from "@/lib/present"
 
@@ -32,6 +33,29 @@ function withCategoryCount(chart: SlideChart, next: string[], addedAt?: number):
   }
 }
 
+/** 数值单元格：本地保留输入草稿，只在能解析成有限数时才提交。
+ *  直接受控绑数字会打不出小数/负数——input[type=number] 在 "12." "-" 这类中间态下 .value 返回
+ *  空串，若把空串映射成 0 并立刻回写，用户刚敲的内容会被 React 重渲抹掉（合同额 12.5 输到
+ *  小数点就被重置成 0）。values 是 float，小数本来就该支持。失焦时补回合法值，避免留空态。 */
+function NumberCell({ value, onCommit }: { value: number; onCommit: (n: number) => void }) {
+  const [draft, setDraft] = useState<string | null>(null)
+  return (
+    <input
+      type="number"
+      step="any"
+      value={draft ?? String(value)}
+      onChange={(e) => {
+        const raw = e.target.value
+        setDraft(raw)
+        const num = Number(raw)
+        if (raw !== "" && Number.isFinite(num)) onCommit(num)
+      }}
+      onBlur={() => setDraft(null)}   // 回到受控值：中间态（空/"-"）不会留在界面上
+      className={`w-24 ${inputCls} tabular-nums`}
+    />
+  )
+}
+
 function ChartEditor({ chart, onChange }: { chart: SlideChart; onChange: (c: SlideChart) => void }) {
   const removeCategory = (i: number) => {
     if (chart.categories.length <= 1) return // 至少留一项：categories 空了图表就无法渲染
@@ -45,10 +69,7 @@ function ChartEditor({ chart, onChange }: { chart: SlideChart; onChange: (c: Sli
     const next = [...chart.categories, "新类别"]
     onChange(withCategoryCount(chart, next, next.length - 1))
   }
-  const setValue = (si: number, ci: number, raw: string) => {
-    // 允许清空后重填：空串按 0 存（不写 NaN，NaN 进 JSON 会变 null 并让后端校验失败）
-    const num = raw === "" ? 0 : Number(raw)
-    if (!Number.isFinite(num)) return
+  const setValue = (si: number, ci: number, num: number) => {
     onChange({
       ...chart,
       series: chart.series.map((s, i) =>
@@ -147,12 +168,7 @@ function ChartEditor({ chart, onChange }: { chart: SlideChart; onChange: (c: Sli
                 </td>
                 {chart.series.map((s, si) => (
                   <td key={si} className="py-1 pl-2">
-                    <input
-                      type="number"
-                      value={s.values[ci] ?? 0}
-                      onChange={(e) => setValue(si, ci, e.target.value)}
-                      className={`w-24 ${inputCls} tabular-nums`}
-                    />
+                    <NumberCell value={s.values[ci] ?? 0} onCommit={(n) => setValue(si, ci, n)} />
                   </td>
                 ))}
                 <td className="py-1 pl-2">
@@ -222,7 +238,9 @@ function StatsEditor({ stats, onChange }: { stats: StatItem[]; onChange: (s: Sta
         ))}
       </div>
       {stats.length === 0 && (
-        <p className="mt-1 text-xs text-muted-foreground">对比版式右栏至少要 1 张卡片，否则保存会被拒绝。</p>
+        <p className="mt-1 text-xs text-destructive">
+          对比版式右栏至少要 1 张卡片——现在保存会被拒绝（400），请先添加或把本页版式改回要点。
+        </p>
       )}
     </div>
   )

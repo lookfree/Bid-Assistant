@@ -95,10 +95,25 @@ const slideSchema = z
     kind: z.enum(["cover", "section", "content", "end"]),
     // 版式与其数据：编辑器必须原样透传，否则保存一次就把图表页/对比页降级成空白 bullets 页
     layout: z.enum(["bullets", "chart", "comparison"]).optional(),
-    stats: z.array(z.object({ value: z.string(), label: z.string() }).passthrough()).max(2).optional(),
+    // value/label 必须非空：空串在渲染层产生不出 run，导出时会崩（评审实测）；渲染层已加防御，
+    // 但空卡片本身也是没意义的产物，挡在入口才是对的。
+    stats: z
+      .array(z.object({ value: z.string().min(1), label: z.string().min(1) }).passthrough())
+      .max(2)
+      .optional(),
     chart: slideChartSchema.nullable().optional(),
   })
   .passthrough()
+  // comparison 页必须真有右栏卡片（与 agent SlideDraft._content_needs_substance 的 1-2 张同集）：
+  // stats 为空数组时校验放行、渲染却走 else 分支退化成普通要点页——用户保存成功、导出后发现
+  // 对比版式没了，且没有任何提示。
+  .refine((s) => s.kind !== "content" || s.layout !== "comparison" || (s.stats?.length ?? 0) >= 1, {
+    message: "comparison 版式右栏至少需要 1 张数字卡片",
+  })
+  // 同理：chart 页没有 chart 数据会静默退化成空白页
+  .refine((s) => s.kind !== "content" || s.layout !== "chart" || s.chart != null, {
+    message: "chart 版式必须带 chart 数据",
+  })
 
 const STEP_RESULT_SCHEMAS: Record<(typeof EDITABLE_STEPS)[number], z.ZodTypeAny> = {
   outline: z.object({ chapters: z.array(outlineChapterSchema) }).passthrough(),

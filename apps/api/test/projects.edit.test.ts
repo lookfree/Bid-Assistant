@@ -175,6 +175,12 @@ describe("PATCH /api/projects/:id/steps/:step 编辑回写", () => {
         chart: { type: "pie", categories: ["A"], series: [{ name: "n1", values: [1] }, { name: "n2", values: [2] }] } }] })], // 饼图多系列
       ["present", deck({ slides: [{ id: "s-1", title: "x", kind: "content", layout: "comparison",
         stats: [{ value: "a", label: "1" }, { value: "b", label: "2" }, { value: "c", label: "3" }] }] })], // stats 超 2 张
+      // 空串卡片会让渲染层取不到 run（导出崩，且是付费步之后才崩）；空数组则静默退化成普通要点页
+      ["present", deck({ slides: [{ id: "s-1", title: "x", kind: "content", layout: "comparison",
+        bullets: ["要点"], stats: [{ value: "", label: "" }] }] })], // 卡片内容不能为空串
+      ["present", deck({ slides: [{ id: "s-1", title: "x", kind: "content", layout: "comparison",
+        bullets: ["要点"], stats: [] }] })], // comparison 至少 1 张卡片
+      ["present", deck({ slides: [{ id: "s-1", title: "x", kind: "content", layout: "chart" }] })], // chart 版式缺 chart 数据
     ]
     for (const [step, result] of cases) {
       const res = await patch(projectId2, step, { result }, tokenA)

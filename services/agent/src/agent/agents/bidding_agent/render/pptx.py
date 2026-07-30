@@ -31,6 +31,25 @@ _MARGIN = Inches(0.7)
 _CONTENT_W = _SLIDE_W - 2 * _MARGIN
 
 
+def _slide_size(slide) -> tuple[int, int]:
+    """该幻灯片所属演示文稿的真实页面尺寸（EMU）。
+    企业母版路径**沿用客户自己的页面尺寸**（_render_on_master 不改 slide_width/height），
+    死写 16:9 常量在 4:3 母版（10in 宽）上会把图表推出页面 2.63in——约四分之一被裁掉
+    （评审实测复现）。取不到就退回 16:9 常量，与空白设计路径一致。"""
+    try:
+        pres = slide.part.package.presentation_part.presentation
+        return pres.slide_width, pres.slide_height
+    except Exception:      # noqa: BLE001 拿不到尺寸绝不能让整份述标渲染失败
+        logger.warning("读取母版页面尺寸失败，按 16:9 常量绘制", exc_info=True)
+        return _SLIDE_W, _SLIDE_H
+
+
+def _content_box(slide) -> tuple[int, int, int]:
+    """(左边距, 正文可用宽, 页高)：新增版式（分隔页/图表/对比）统一用它算几何，别再取全局常量。"""
+    w, h = _slide_size(slide)
+    return _MARGIN, w - 2 * _MARGIN, h
+
+
 def _tokens_for(template: str | None, deck_template: str) -> dict:
     """模板名 → 完整 token 表（含共用色）；非法模板名回退 deck.template，再回退 blue。"""
     key = template if template in _TEMPLATE_TOKENS else deck_template
@@ -139,8 +158,11 @@ def _scoring_chip(slide, scoring: str, tokens: dict) -> None:
 
 
 def _page_number(slide, n: int, total: int, tokens: dict) -> None:
-    """底部右侧页码 “n / total”，10pt 弱化灰。"""
-    _textbox(slide, _SLIDE_W - Inches(1.6), Inches(6.65), Inches(1.2), Inches(0.4),
+    """底部右侧页码 “n / total”，10pt 弱化灰。
+    位置按幻灯片真实尺寸算：原来死写 16:9 常量，在 4:3 客户母版（10in 宽）上每一页的页码都被
+    推出页面右侧近 3in（本次结构升级的三种版式都带页码，问题从"偶发"变成"每页必现"）。"""
+    sw, sh = _slide_size(slide)
+    _textbox(slide, sw - Inches(1.6), sh - Inches(0.85), Inches(1.2), Inches(0.4),
               [f"{n} / {total}"], size=10, color=tokens["muted"], align=PP_ALIGN.RIGHT)
 
 
@@ -149,13 +171,15 @@ def _render_section(slide, s: Slide, tokens: dict, n: int, total: int) -> None:
     评审实测教训：所有正文页长得一模一样，评委翻到第 8 页都不知道"讲到哪个部分了"——
     按评分维度分组（项目理解/技术方案/团队业绩/服务承诺与报价/风险防控）时每组开头插一张，
     给整套述标制造视觉节奏。不对应具体评分点，不挂 scoring 角标。"""
-    _rect(slide, 0, 0, _SLIDE_W, _SLIDE_H, tokens["primary"])
-    _textbox(slide, Inches(1.0), Inches(3.0), _SLIDE_W - Inches(2.0), Inches(1.2),
+    sw, sh = _slide_size(slide)
+    _rect(slide, 0, 0, sw, sh, tokens["primary"])
+    _textbox(slide, Inches(1.0), sh * 0.40, sw - Inches(2.0), Inches(1.2),
               [s.title], size=36, color=tokens["white"], bold=True, align=PP_ALIGN.CENTER)
     if s.bullets:
         kicker_color = _blend_toward(tokens["white"], tokens["accent"], 0.25)
-        _textbox(slide, Inches(1.5), Inches(4.15), _SLIDE_W - Inches(3.0), Inches(0.5),
-                  [s.bullets[0]], size=16, color=kicker_color, align=PP_ALIGN.CENTER)
+        # 同图表页：分隔页的过渡语也全部渲染，不静默丢弃第二句
+        _textbox(slide, Inches(1.5), sh * 0.55, sw - Inches(3.0), Inches(0.8),
+                  s.bullets, size=16, color=kicker_color, align=PP_ALIGN.CENTER)
     _page_number(slide, n, total, tokens)
 
 
@@ -169,12 +193,14 @@ _CHART_TYPE_MAP = {
 
 def _chart_colors(tokens: dict, n: int) -> list[RGBColor]:
     """图表配色取模板 token（主色/强调色），不用 Office 默认彩虹色——保持和封面/标题条同一套
-    视觉语言。third+ 色用主色向白混合出的浅色阶，n 通常 ≤5（评分维度/团队岗位很少超过这个数）。"""
-    base = [tokens["primary"], tokens["accent"]]
-    colors = list(base)
+    视觉语言。third+ 色用主色向白混合出的浅色阶。
+    混合比例必须封顶：ratio > 1 会算出 >255 的通道值让 RGBColor 直接抛错——报价构成、岗位分布
+    这类饼图 7 个类别很常见，不封顶就是「渲染整个 run 失败」（评审实测复现）。
+    封顶后色阶会重复，仍比崩掉强；类别再多本来也该合并小项，不是配色问题。"""
+    colors = [tokens["primary"], tokens["accent"]]
     i = 0
     while len(colors) < n:
-        colors.append(_blend_toward(tokens["primary"], _SHARED["white"], 0.25 + 0.2 * i))
+        colors.append(_blend_toward(tokens["primary"], _SHARED["white"], min(0.85, 0.25 + 0.2 * i)))
         i += 1
     return colors[:n]
 
@@ -188,8 +214,9 @@ def _render_chart_body(slide, chart: SlideChart, tokens: dict) -> None:
     for series in chart.series:
         data.add_series(series.name, series.values)
     chart_type = _CHART_TYPE_MAP.get(chart.type, XL_CHART_TYPE.COLUMN_CLUSTERED)
+    left, content_w, _ = _content_box(slide)
     area_top, area_h = Inches(1.4), Inches(4.15)
-    frame = slide.shapes.add_chart(chart_type, _MARGIN, area_top, _CONTENT_W, area_h, data)
+    frame = slide.shapes.add_chart(chart_type, left, area_top, content_w, area_h, data)
     gchart = frame.chart
     plot = gchart.plots[0]
     plot.has_data_labels = True
@@ -226,29 +253,31 @@ def _stat_card(slide, left, top, width, height, item: StatItem, tokens: dict) ->
     tf.word_wrap = True
     tf.vertical_anchor = MSO_ANCHOR.MIDDLE
     tf.margin_left = tf.margin_right = Inches(0.15)
-    p0 = tf.paragraphs[0]
-    p0.text = item.value
-    p0.alignment = PP_ALIGN.CENTER
-    r0 = p0.runs[0]
-    r0.font.size = Pt(30)
-    r0.font.bold = True
-    r0.font.color.rgb = tokens["primary"]
-    p1 = tf.add_paragraph()
-    p1.text = item.label
-    p1.alignment = PP_ALIGN.CENTER
-    r1 = p1.runs[0]
-    r1.font.size = Pt(12)
-    r1.font.color.rgb = tokens["muted"]
+    # 空串赋给 paragraph.text 不会产生 run，直接取 runs[0] 会 IndexError——编辑器「添加卡片」
+    # 的初始值就是空串，用户没填就保存，之后每次导出都确定性崩（评审实测复现）。
+    # 与 _textbox 同一防御写法：没有 run 就补一个。渲染层只保证不崩，「不许留空」由入口校验负责。
+    def _line(text: str, size: int, bold: bool, color: RGBColor, first: bool) -> None:
+        p = tf.paragraphs[0] if first else tf.add_paragraph()
+        p.text = text
+        p.alignment = PP_ALIGN.CENTER
+        run = p.runs[0] if p.runs else p.add_run()
+        run.font.size = Pt(size)
+        run.font.bold = bold
+        run.font.color.rgb = color
+
+    _line(item.value, 30, True, tokens["primary"], first=True)
+    _line(item.label, 12, False, tokens["muted"], first=False)
 
 
 def _render_comparison_body(slide, s: Slide, tokens: dict) -> None:
     """对比页主体：左栏要点（招标要求/传统方案的说明）+ 右栏 1-2 张数字大卡片（我方承诺/本方案的
     冲击力数字）。招标要求 vs 我方承诺、传统方案 vs 本方案这类内容用它，比堆一排项目符号更有说服力。"""
-    left_w = _CONTENT_W * 0.56
+    left, content_w, _ = _content_box(slide)
+    left_w = content_w * 0.56
     gap = Inches(0.3)
-    right_left = _MARGIN + left_w + gap
-    right_w = _CONTENT_W - left_w - gap
-    tf = slide.shapes.add_textbox(_MARGIN, Inches(1.4), left_w, Inches(4.7)).text_frame
+    right_left = left + left_w + gap
+    right_w = content_w - left_w - gap
+    tf = slide.shapes.add_textbox(left, Inches(1.4), left_w, Inches(4.7)).text_frame
     tf.word_wrap = True
     for i, bullet in enumerate(s.bullets):
         p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
@@ -271,8 +300,11 @@ def _render_content(slide, s: Slide, tokens: dict, n: int, total: int) -> None:
     if s.layout == "chart" and s.chart:
         _render_chart_body(slide, s.chart, tokens)
         if s.bullets:
-            _textbox(slide, _MARGIN, Inches(5.65), _CONTENT_W, Inches(0.5),
-                      [s.bullets[0]], size=13, color=tokens["muted"])
+            # 全部渲染而非只取 [0]：提示词允许图表页带 1-2 句结论式说明，编辑器也保存全部要点，
+            # 只画第一条等于用户写的第二句在 PPT 里凭空消失且毫无提示（评审）。
+            note_left, note_w, _ = _content_box(slide)
+            _textbox(slide, note_left, Inches(5.6), note_w, Inches(0.6),
+                      s.bullets, size=13, color=tokens["muted"])
     elif s.layout == "comparison" and s.stats:
         _render_comparison_body(slide, s, tokens)
     elif s.bullets:
@@ -434,8 +466,11 @@ def _render_content_on_master(slide, s: Slide, tokens: dict, n: int, total: int)
     if s.layout == "chart" and s.chart:
         _render_chart_body(slide, s.chart, tokens)
         if s.bullets:
-            _textbox(slide, _MARGIN, Inches(5.65), _CONTENT_W, Inches(0.5),
-                      [s.bullets[0]], size=13, color=tokens["muted"])
+            # 全部渲染而非只取 [0]：提示词允许图表页带 1-2 句结论式说明，编辑器也保存全部要点，
+            # 只画第一条等于用户写的第二句在 PPT 里凭空消失且毫无提示（评审）。
+            note_left, note_w, _ = _content_box(slide)
+            _textbox(slide, note_left, Inches(5.6), note_w, Inches(0.6),
+                      s.bullets, size=13, color=tokens["muted"])
     elif s.layout == "comparison" and s.stats:
         _render_comparison_body(slide, s, tokens)
     elif s.bullets:
