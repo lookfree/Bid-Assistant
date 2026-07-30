@@ -2,11 +2,13 @@ from __future__ import annotations
 import io
 import logging
 from pptx import Presentation
+from pptx.chart.data import CategoryChartData
 from pptx.dml.color import RGBColor
+from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
 from pptx.enum.shapes import MSO_SHAPE, PP_PLACEHOLDER
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Inches, Pt
-from agent.agents.bidding_agent.schemas import DeckSpec, Slide
+from agent.agents.bidding_agent.schemas import DeckSpec, Slide, SlideChart, StatItem
 
 logger = logging.getLogger(__name__)
 
@@ -142,10 +144,138 @@ def _page_number(slide, n: int, total: int, tokens: dict) -> None:
               [f"{n} / {total}"], size=10, color=tokens["muted"], align=PP_ALIGN.RIGHT)
 
 
-def _render_content(slide, s: Slide, tokens: dict, n: int, total: int) -> None:
-    """正文页：标题行 + 要点 + 评分点角标（可空）+ 页码。"""
-    _title_row(slide, s.title, tokens)
+def _render_section(slide, s: Slide, tokens: dict, n: int, total: int) -> None:
+    """章节分隔页（述标结构性升级）：满屏主色块 + 居中大标题 + 可选一句过渡副标题（取 bullets[0]）。
+    评审实测教训：所有正文页长得一模一样，评委翻到第 8 页都不知道"讲到哪个部分了"——
+    按评分维度分组（项目理解/技术方案/团队业绩/服务承诺与报价/风险防控）时每组开头插一张，
+    给整套述标制造视觉节奏。不对应具体评分点，不挂 scoring 角标。"""
+    _rect(slide, 0, 0, _SLIDE_W, _SLIDE_H, tokens["primary"])
+    _textbox(slide, Inches(1.0), Inches(3.0), _SLIDE_W - Inches(2.0), Inches(1.2),
+              [s.title], size=36, color=tokens["white"], bold=True, align=PP_ALIGN.CENTER)
     if s.bullets:
+        kicker_color = _blend_toward(tokens["white"], tokens["accent"], 0.25)
+        _textbox(slide, Inches(1.5), Inches(4.15), _SLIDE_W - Inches(3.0), Inches(0.5),
+                  [s.bullets[0]], size=16, color=kicker_color, align=PP_ALIGN.CENTER)
+    _page_number(slide, n, total, tokens)
+
+
+_CHART_TYPE_MAP = {
+    "column": XL_CHART_TYPE.COLUMN_CLUSTERED,
+    "bar": XL_CHART_TYPE.BAR_CLUSTERED,
+    "pie": XL_CHART_TYPE.PIE,
+    "line": XL_CHART_TYPE.LINE_MARKERS,
+}
+
+
+def _chart_colors(tokens: dict, n: int) -> list[RGBColor]:
+    """图表配色取模板 token（主色/强调色），不用 Office 默认彩虹色——保持和封面/标题条同一套
+    视觉语言。third+ 色用主色向白混合出的浅色阶，n 通常 ≤5（评分维度/团队岗位很少超过这个数）。"""
+    base = [tokens["primary"], tokens["accent"]]
+    colors = list(base)
+    i = 0
+    while len(colors) < n:
+        colors.append(_blend_toward(tokens["primary"], _SHARED["white"], 0.25 + 0.2 * i))
+        i += 1
+    return colors[:n]
+
+
+def _render_chart_body(slide, chart: SlideChart, tokens: dict) -> None:
+    """图表页主体：真实 PowerPoint 图表对象（python-pptx add_chart），不是图片——评委可在
+    PowerPoint 里直接编辑数值/改样式，这是"原生深度"而非"糊一张图上去"的关键差异。
+    数据标签常开：评委扫一眼数字就懂，不用眯眼看坐标轴刻度。"""
+    data = CategoryChartData()
+    data.categories = chart.categories
+    for series in chart.series:
+        data.add_series(series.name, series.values)
+    chart_type = _CHART_TYPE_MAP.get(chart.type, XL_CHART_TYPE.COLUMN_CLUSTERED)
+    area_top, area_h = Inches(1.4), Inches(4.15)
+    frame = slide.shapes.add_chart(chart_type, _MARGIN, area_top, _CONTENT_W, area_h, data)
+    gchart = frame.chart
+    plot = gchart.plots[0]
+    plot.has_data_labels = True
+    plot.data_labels.font.size = Pt(11)
+    plot.data_labels.font.color.rgb = tokens["text"]
+    if chart.type == "pie":
+        # 饼图只有一个 series，逐扇区（point）上色；多系列图逐 series 上色
+        colors = _chart_colors(tokens, len(chart.categories))
+        for i, point in enumerate(plot.series[0].points):
+            point.format.fill.solid()
+            point.format.fill.fore_color.rgb = colors[i % len(colors)]
+        gchart.has_legend = True
+    else:
+        colors = _chart_colors(tokens, len(chart.series))
+        for i, series in enumerate(plot.series):
+            series.format.fill.solid()
+            series.format.fill.fore_color.rgb = colors[i % len(colors)]
+        gchart.has_legend = len(chart.series) > 1
+    if gchart.has_legend:
+        gchart.legend.position = XL_LEGEND_POSITION.BOTTOM
+        gchart.legend.include_in_layout = False
+
+
+def _stat_card(slide, left, top, width, height, item: StatItem, tokens: dict) -> None:
+    """关键数字大卡片：浅底色圆角矩形，大字号数字（主色）+ 一行说明（弱化灰）。
+    comparison 版式的右栏专用——把最有冲击力的对比数字从要点文字里摘出来放大，
+    比埋在项目符号列表里更有说服力。"""
+    shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, left, top, width, height)
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = tokens["tint"]
+    shape.line.color.rgb = tokens["accent"]
+    shape.line.width = Pt(0.75)
+    tf = shape.text_frame
+    tf.word_wrap = True
+    tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+    tf.margin_left = tf.margin_right = Inches(0.15)
+    p0 = tf.paragraphs[0]
+    p0.text = item.value
+    p0.alignment = PP_ALIGN.CENTER
+    r0 = p0.runs[0]
+    r0.font.size = Pt(30)
+    r0.font.bold = True
+    r0.font.color.rgb = tokens["primary"]
+    p1 = tf.add_paragraph()
+    p1.text = item.label
+    p1.alignment = PP_ALIGN.CENTER
+    r1 = p1.runs[0]
+    r1.font.size = Pt(12)
+    r1.font.color.rgb = tokens["muted"]
+
+
+def _render_comparison_body(slide, s: Slide, tokens: dict) -> None:
+    """对比页主体：左栏要点（招标要求/传统方案的说明）+ 右栏 1-2 张数字大卡片（我方承诺/本方案的
+    冲击力数字）。招标要求 vs 我方承诺、传统方案 vs 本方案这类内容用它，比堆一排项目符号更有说服力。"""
+    left_w = _CONTENT_W * 0.56
+    gap = Inches(0.3)
+    right_left = _MARGIN + left_w + gap
+    right_w = _CONTENT_W - left_w - gap
+    tf = slide.shapes.add_textbox(_MARGIN, Inches(1.4), left_w, Inches(4.7)).text_frame
+    tf.word_wrap = True
+    for i, bullet in enumerate(s.bullets):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        p.text = f"• {bullet}"
+        p.space_after = Pt(10)
+        run = p.runs[0]
+        run.font.size = Pt(15)
+        run.font.color.rgb = tokens["text"]
+    n = len(s.stats)
+    card_h = Inches(2.1) if n == 2 else Inches(3.0)
+    gap_v = Inches(0.3)
+    top0 = Inches(1.4)
+    for i, item in enumerate(s.stats):
+        _stat_card(slide, right_left, top0 + i * (card_h + gap_v), right_w, card_h, item, tokens)
+
+
+def _render_content(slide, s: Slide, tokens: dict, n: int, total: int) -> None:
+    """正文页：标题行 + 版式化主体（bullets/chart/comparison）+ 评分点角标（可空）+ 页码。"""
+    _title_row(slide, s.title, tokens)
+    if s.layout == "chart" and s.chart:
+        _render_chart_body(slide, s.chart, tokens)
+        if s.bullets:
+            _textbox(slide, _MARGIN, Inches(5.65), _CONTENT_W, Inches(0.5),
+                      [s.bullets[0]], size=13, color=tokens["muted"])
+    elif s.layout == "comparison" and s.stats:
+        _render_comparison_body(slide, s, tokens)
+    elif s.bullets:
         _bullets_box(slide, s.bullets, tokens)
     if s.scoring:
         _scoring_chip(slide, s.scoring, tokens)
@@ -203,6 +333,9 @@ def _render_blank(deck: DeckSpec, template: str | None) -> bytes:
         slide = prs.slides.add_slide(blank)
         if s.kind == "cover":
             _render_cover(slide, s, tokens)
+        elif s.kind == "section":
+            n += 1
+            _render_section(slide, s, tokens, n, total)
         elif s.kind == "end":
             n += 1
             _render_end(slide, s, deck, tokens, n, total)
@@ -290,14 +423,22 @@ def _render_cover_on_master(slide, s: Slide, tokens: dict) -> None:
 
 
 def _render_content_on_master(slide, s: Slide, tokens: dict, n: int, total: int) -> None:
-    """正文页（母版路径）：标题/正文优先落母版占位符，缺失则退回空白设计同款绘制；
-    评分点角标和页码母版版式不会自带，恒定自绘（配色取模板 token 的强调色，和母版视觉融合）。"""
+    """正文页（母版路径）：标题优先落母版占位符，缺失则退回空白设计同款绘制。
+    图表/对比版式的主体客户母版不会自带对应占位符，恒定自绘（同评分点角标/页码的既有做法）；
+    只有 bullets 版式才尝试母版正文占位符，缺失同样退回空白设计同款绘制。"""
     title_ph = _title_placeholder(slide)
     if title_ph is not None:
         title_ph.text_frame.text = s.title
     else:
         _title_row(slide, s.title, tokens)
-    if s.bullets:
+    if s.layout == "chart" and s.chart:
+        _render_chart_body(slide, s.chart, tokens)
+        if s.bullets:
+            _textbox(slide, _MARGIN, Inches(5.65), _CONTENT_W, Inches(0.5),
+                      [s.bullets[0]], size=13, color=tokens["muted"])
+    elif s.layout == "comparison" and s.stats:
+        _render_comparison_body(slide, s, tokens)
+    elif s.bullets:
         body_ph = _body_placeholder(slide)
         if body_ph is not None:
             _fill_body_bullets(body_ph, s.bullets)
@@ -336,6 +477,12 @@ def _render_on_master(deck: DeckSpec, template: str | None, master_bytes: bytes)
         if s.kind == "cover":
             slide = prs.slides.add_slide(title_layout)
             _render_cover_on_master(slide, s, tokens)
+        elif s.kind == "section":
+            # 章节分隔页需要整页满色块自绘，客户母版的占位符不适合这种版式——沿用 title_layout
+            # 只借它的页面尺寸/主题环境，视觉内容完全自绘（与空白设计路径一致）。
+            n += 1
+            slide = prs.slides.add_slide(title_layout)
+            _render_section(slide, s, tokens, n, total)
         elif s.kind == "end":
             n += 1
             slide = prs.slides.add_slide(title_layout)

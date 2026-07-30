@@ -345,3 +345,24 @@ def test_present_never_delivers_a_title_only_deck(monkeypatch, submit_gateway):
                      gateway=submit_gateway({"submit_deck_draft": empty, "submit_slide_notes": notes}))
     with pytest.raises(RuntimeError, match="未产出任何页面要点|未通过 submit_deck_draft"):
         asyncio.run(make_present_node(ctx)({"chapters": {"t1": "<p>正文</p>"}, "read": {}}))
+
+
+def test_chart_only_content_page_does_not_trip_the_empty_deck_guard(monkeypatch, submit_gateway):
+    """回归：结构性升级前的兜底判据是 not any(sl.bullets for sl in content_pages)——一份全是
+    chart 版式、bullets 都是空列表的合法述标（数据本身就是内容，不需要凑 bullets）会被这条
+    旧判据误判为"全空"直接失败。新判据必须按版式识别 chart 页的实质内容，不能只看 bullets。"""
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+
+    chart_draft = {"title": "述标", "duration": 15, "template": "blue", "slides": [
+        {"id": "s0", "title": "封面", "kind": "cover"},
+        {"id": "s1", "title": "团队构成", "kind": "content", "layout": "chart", "scoring": "团队 20 分",
+         "chart": {"type": "pie", "categories": ["高级", "中级"], "series": [{"name": "人数", "values": [3, 6]}]}},
+    ], "qa": [{"q": "团队稳定性？", "a": "核心成员合作 5 年以上"}]}
+    notes = {"notes": [{"id": "s0", "notes": "开场"}, {"id": "s1", "notes": "团队中 60% 为中级工程师"}]}
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-1",
+                     gateway=submit_gateway({"submit_deck_draft": chart_draft, "submit_slide_notes": notes}))
+    out = asyncio.run(make_present_node(ctx)({"chapters": {"t1": "<p>正文</p>"}, "read": {}}))
+    assert out["artifacts"]["pptx"] == "artifacts/proj-1/present.pptx"

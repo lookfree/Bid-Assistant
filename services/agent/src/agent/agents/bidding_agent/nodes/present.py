@@ -16,10 +16,26 @@ def _plain(html: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html)).strip()
 
 
+def _slide_notes_context(s) -> dict:
+    """单页喂给口播稿段的上下文：bullets 之外，chart/comparison 版式必须把具体数字摊开给模型——
+    否则它手里只有标题+评分点，写不出真实数字的讲稿（评委看到图表，讲稿却在打太极，图表页
+    就白放了）。"""
+    ctx: dict = {"id": s.id, "title": s.title, "scoring": s.scoring, "bullets": s.bullets, "layout": s.layout}
+    if s.layout == "chart" and s.chart:
+        ctx["chart_data"] = {
+            "type": s.chart.type,
+            "categories": s.chart.categories,
+            "series": [{"name": ser.name, "values": ser.values} for ser in s.chart.series],
+        }
+    if s.stats:
+        ctx["stats"] = [{"value": it.value, "label": it.label} for it in s.stats]
+    return ctx
+
+
 def _notes_user_msg(draft: DeckDraft, duration: int) -> str:
-    """骨架页只喂 id/title/scoring/bullets（不含 qa/template），紧凑输入供口播稿段逐页写 notes。"""
-    skeleton = [{"id": s.id, "title": s.title, "scoring": s.scoring, "bullets": s.bullets}
-                for s in draft.slides]
+    """骨架页喂 id/title/scoring/bullets/layout（不含 qa/template），chart/comparison 版式
+    额外带上具体数值，紧凑输入供口播稿段逐页写 notes。"""
+    skeleton = [_slide_notes_context(s) for s in draft.slides]
     return (f"为以下每页幻灯片写口播稿。时长 {duration} 分钟。\n"
             f"{json.dumps(skeleton, ensure_ascii=False)}\n"
             "用 submit_slide_notes 一次性提交，notes 数组每项 {id, notes}，id 必须与输入页 id 一一对应。")
@@ -81,11 +97,21 @@ def make_present_node(ctx):
             "submit_slide_notes", SlideNotes, "提交每页口播稿")
         await publish_phase(ctx, "述标·渲染 PPT 文件")
         deck = _merge_deck(draft, slide_notes)
-        # 兜底（schema 校验之外再守一道）：正文页一条要点都没有 = 一份只有标题的空 PPT。
-        # 这种东西交付出去还扣 80 积分，比失败更糟——直接抛错让 run 失败，App 侧全额退款可重试。
-        content_pages = [sl for sl in deck.slides if sl.kind == "content"]
-        if content_pages and not any(sl.bullets for sl in content_pages):
-            raise RuntimeError("述标骨架未产出任何页面要点（只有标题），已终止并退还积分，请重试")
+        # 兜底（schema 校验之外再守一道，与 SlideDraft._content_needs_substance 同一判据）：
+        # 三种版式各自的"实质内容"形状不同，只看 bullets 会把 chart 版式（可以 0 bullets，
+        # 数据本身就是内容）误判为空——原判据是 not any(bullets)，chart 页当合法证据用不了，
+        # 逐页判断才不会漏判/误判。交付一份没内容的页面还扣 80 积分比失败更糟：
+        # 直接抛错让 run 失败，App 侧全额退款可重试。
+        def _lacks_substance(sl: Slide) -> bool:
+            if sl.layout == "chart":
+                return sl.chart is None
+            if sl.layout == "comparison":
+                return not any(b.strip() for b in sl.bullets) or not sl.stats
+            return not any(b.strip() for b in sl.bullets)
+
+        empty_titles = [sl.title for sl in deck.slides if sl.kind == "content" and _lacks_substance(sl)]
+        if empty_titles:
+            raise RuntimeError(f"述标骨架有页面没有实质内容（{'、'.join(empty_titles)}），已终止并退还积分，请重试")
         if template:
             deck.template = template   # 客户指定优先：模型没照办也强制生效
         if enterprise_key:

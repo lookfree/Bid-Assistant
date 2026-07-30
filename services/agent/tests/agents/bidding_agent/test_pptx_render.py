@@ -1,7 +1,7 @@
 import io
 from pptx import Presentation
 from pptx.dml.color import RGBColor
-from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.shapes import MSO_SHAPE, MSO_SHAPE_TYPE
 from pptx.util import Emu, Inches
 from agent.agents.bidding_agent.schemas import DeckSpec
 from agent.agents.bidding_agent.render.pptx import render_pptx, _TEMPLATE_TOKENS
@@ -125,3 +125,78 @@ def test_render_on_master_malformed_bytes_falls_back_to_blank():
     prs = Presentation(io.BytesIO(data))
     assert len(prs.slides) == 3
     assert prs.slide_width == Emu(12192000)      # 回退空白设计：强制 16:9
+
+
+# ---- 述标结构性升级：章节分隔页 / 图表页 / 对比页（三种新版式） ----
+
+def _rich_deck():
+    return DeckSpec(title="述标", slides=[
+        {"id": "s0", "title": "封面", "bullets": ["客户：某局"], "kind": "cover"},
+        {"id": "sec", "title": "技术方案", "bullets": ["核心能力与差异化优势"], "kind": "section"},
+        {"id": "s1", "title": "团队构成", "kind": "content", "layout": "chart", "scoring": "团队 20 分",
+         "bullets": ["60% 为中级及以上职称"],
+         "chart": {"type": "pie", "categories": ["高级", "中级", "初级"],
+                   "series": [{"name": "人数", "values": [3, 6, 4]}]}},
+        {"id": "s2", "title": "业绩对比", "kind": "content", "layout": "comparison", "scoring": "业绩 15 分",
+         "bullets": ["近三年同类项目 5 个", "合同额年增长 30%"],
+         "stats": [{"value": "72 小时", "label": "较招标要求提前完成"},
+                   {"value": "0 起", "label": "质量投诉记录"}]},
+        {"id": "s3", "title": "结语", "kind": "end"},
+    ])
+
+
+def test_section_slide_is_full_color_with_centered_title():
+    """章节分隔页：满屏主色块 + 居中大标题，不挂评分点角标（它是过渡页，不对应具体得分点）。"""
+    data = render_pptx(_rich_deck())
+    prs = Presentation(io.BytesIO(data))
+    section = prs.slides[1]
+    rects = [sh for sh in section.shapes if sh.shape_type == MSO_SHAPE.RECTANGLE]
+    assert any(r.width == prs.slide_width and r.height == prs.slide_height for r in rects)
+    texts = [sh.text_frame.text for sh in section.shapes if sh.has_text_frame]
+    assert "技术方案" in texts
+    assert not any("评分点｜" in t for t in texts)
+
+
+def test_chart_slide_renders_a_real_editable_chart_not_an_image():
+    """图表页：真实 PowerPoint 图表对象（python-pptx add_chart），评委能在 PPT 里直接编辑数值——
+    这正是相对"糊一张图片上去"的核心差异，也是本次结构升级要验证的主张。"""
+    data = render_pptx(_rich_deck())
+    prs = Presentation(io.BytesIO(data))
+    chart_slide = prs.slides[2]
+    chart_shapes = [sh for sh in chart_slide.shapes if sh.has_chart]
+    assert len(chart_shapes) == 1
+    chart = chart_shapes[0].chart
+    assert list(chart.plots[0].categories) == ["高级", "中级", "初级"]
+    assert [s.name for s in chart.series] == ["人数"]
+    assert list(chart.series[0].values) == [3, 6, 4]
+    # 评分点角标仍在——图表版式不能因为换了主体就丢了述标的核心标注
+    texts = [sh.text_frame.text for sh in chart_slide.shapes if sh.has_text_frame]
+    assert any("评分点｜团队 20 分" in t for t in texts)
+
+
+def test_comparison_slide_has_left_bullets_and_right_stat_cards():
+    """对比页：左栏要点 + 右栏 1-2 张数字大卡片，两栏都要有——这是招标要求 vs 我方承诺、
+    传统方案 vs 本方案这类内容该用的版式，比堆一排项目符号更有说服力。"""
+    data = render_pptx(_rich_deck())
+    prs = Presentation(io.BytesIO(data))
+    cmp_slide = prs.slides[3]
+    texts = [sh.text_frame.text for sh in cmp_slide.shapes if sh.has_text_frame]
+    assert any("近三年同类项目 5 个" in t for t in texts)
+    # shape_type 对所有自选图形都返回 AUTO_SHAPE，具体形状要看 auto_shape_type
+    # （auto_shape_type 对非自选图形直接抛 ValueError，不是返回 None，得先判 shape_type）
+    cards = [sh for sh in cmp_slide.shapes
+             if sh.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE and sh.auto_shape_type == MSO_SHAPE.ROUNDED_RECTANGLE]
+    card_texts = {c.text_frame.text for c in cards}
+    assert any("72 小时" in t and "较招标要求提前完成" in t for t in card_texts)
+    assert any("0 起" in t and "质量投诉记录" in t for t in card_texts)
+
+
+def test_new_layouts_render_on_enterprise_master_too():
+    """企业母版路径：章节分隔页/图表页/对比页都是自绘主体（客户模板不会自带这些占位符），
+    不因为换了母版就整段消失或报错——同评分点角标/页码「母版不自带、恒定自绘」的既有约定。"""
+    data = render_pptx(_rich_deck(), master_bytes=_tiny_master())
+    prs = Presentation(io.BytesIO(data))
+    assert len(prs.slides) == 5
+    assert any(sh.has_chart for sl in prs.slides for sh in sl.shapes)
+    assert any(sh.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE and sh.auto_shape_type == MSO_SHAPE.ROUNDED_RECTANGLE
+               for sl in prs.slides for sh in sl.shapes)

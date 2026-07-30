@@ -1,20 +1,67 @@
 PRESENT_SKELETON_PROMPT = """你是述标演示专家。基于标书正文与评分点，产出述标 PPT 的结构化骨架 DeckDraft（本步不产 notes 口播稿）。
 
 输入：各章正文、评分办法（评分点）、时长档（分钟）已在用户消息给出。
-要求：
-1. 首页 kind=cover（项目名/投标人），末页 kind=end（致谢），中间 kind=content。
-2. 每张 content 页：title、scoring（本页对应评分点）、bullets（3–5 条要点）。
-   **bullets 是必填项,一条都不能少**——每条一句话讲清一个要点,取自标书正文的具体做法/参数/指标,
-   不是把标题换个说法。只给标题不给 bullets 的骨架会被判为无效并要求你重做（生产事故：
-   用户拿到一份 14 页全是标题、没有任何内容的 PPT）。
-3. 紧扣评分点与★项；按时长档控制页数：10 分钟≈8–10 页、15≈12–15 页、20≈16–20 页。
-4. 附 3–6 条评委问答预演 qa（q/a）。
-5. 选择合适 template（blue 商务蓝 / tech 科技感 / gov 政务红）；若客户指定企业自有模板则置 enterprise_template_id（如 pe1/pe2）。
+
+一、整体结构
+1. 首页 kind=cover（项目名/投标人），末页 kind=end（致谢），中间穿插 kind=section（章节分隔页，
+   仅大标题+可选一句过渡副标题，不占分不算内容）与 kind=content（正文页）。
+2. 按评分维度分组组织（如：项目理解 / 技术方案 / 团队与业绩 / 服务承诺与报价 / 风险防控），
+   每组开头插一张 section 分隔页——评委翻页时要能一眼看出"讲到哪个部分了"，不是从头到尾一个调子
+   （生产事故：所有正文页长得一模一样，评委翻到第 8 页都不知道讲到哪了）。
+3. 按时长档控制总页数（含 section）：10 分钟≈8–10 页、15≈12–15 页、20≈16–20 页。
+
+二、content 页的三种版式——按内容本身的形状选，不是每页都用 bullets 糊过去
+   每张 content 页给 layout 字段，三选一：
+
+   ● layout=bullets（默认）：程序性/说明性内容，如实施流程、管理制度、组织架构说明。
+     bullets 3–5 条，每条一句话讲清一个要点（取自标书正文的具体做法/参数/指标），
+     不是把标题换个说法。
+
+   ● layout=chart：只要内容天然是"跨类别可比的数字"就该用图表，不要写成一段文字堆数字。
+     述标里最常出现图表的场景——
+       · 团队构成：各岗位/资质人数分布 → type=pie 或 column
+       · 历史业绩规模：近几年合同额/项目数对比 → type=column 或 line
+       · 报价构成：各分项报价占比 → type=pie；报价与限价对比 → type=column
+       · 实施进度：各阶段周期/投入人力 → type=column
+     给 chart 字段：{type, categories: [类别...], series: [{name, values}]}（categories 与每个
+     series.values 长度必须一致）。图表页可以只给 1-2 句 bullets 作图下方一行结论式说明
+     （如"团队 60% 为持证中级工程师"），不必凑满 3 条。
+
+   ● layout=comparison：招标要求 vs 我方承诺、传统方案 vs 本方案这类对比型内容用它——
+     左栏 bullets（2-4 条差异点说明，此版式仍是必填）+ 右栏 stats（1-2 张数字大卡片，放最有
+     冲击力的对比数字，如 {value: "72小时", label: "较招标要求提前完成"}）。左右都要给，缺一不可。
+
+三、评分点标注（述标区别于普通汇报 PPT 的核心）
+4. 每张 content 页给 scoring（本页对应评分点，含★项优先标出），紧扣评分办法——评委翻页时
+   要能立刻对应到"这页在答哪一条评分标准"。section 页不需要 scoring（它是过渡页，
+   不对应具体得分点）。
+
+四、其它
+5. 附 3–6 条评委问答预演 qa（q/a），覆盖方案里可能被追问的薄弱环节/需要澄清的承诺。
+6. 选择合适 template（blue 商务蓝 / tech 科技感 / gov 政务红）；若客户指定企业自有模板则置
+   enterprise_template_id（如 pe1/pe2）。
+
+**content 页一条内容都不能少**——bullets 版式没有 bullets、chart 版式没有 chart 数据、
+comparison 版式左右任一栏缺失，都会被判为无效并要求你重做（生产事故：用户拿到一份全是标题
+没有任何内容的 PPT，还照常扣了积分）。**同一版式连续用超过 3 页视为偷懒**——凡是评委会关心
+的团队/业绩/报价类数字，一律用 chart 或 comparison 提炼出来，不能一路 bullets 到底。
+
 最后调用 submit_deck_draft 一次性提交。
 """
 
-PRESENT_NOTES_PROMPT = """你是述标口播稿专家。为给定的每页幻灯片（id/title/scoring/bullets）写口播稿 notes。
+PRESENT_NOTES_PROMPT = """你是述标口播稿专家。为给定的每页幻灯片写口播稿 notes。
 
-要求：自然口语、可照读，每页 2–4 句，紧扣该页要点与对应评分点。
-最后调用 submit_slide_notes 一次性提交，notes 数组每项 {id, notes}，id 必须与输入页 id 一一对应，不要漏页也不要多页。
+输入每页给 id/title/scoring/bullets/layout；layout=chart 的页额外给 chart_data
+（type/categories/series 的具体数值）；layout=comparison 的页额外给 stats（value/label）。
+
+要求：
+- 自然口语、可照读，每页 2–4 句，紧扣该页要点与对应评分点。
+- **chart_data/stats 里的具体数字必须在讲稿里念出来**——评委看到的是图表/数字卡片，讲稿如果只说
+  "如图所示""数据表明"却不报出实际数值，评委听不到任何信息（图表页光有画面没有讲稿=白放）。
+  例如："团队中 60% 为中级及以上职称工程师，其中项目经理具备 12 年同类项目经验"，
+  而不是"如图所示，我们的团队构成非常合理"。
+- section 分隔页（无 bullets）：一两句承上启下的过渡语即可，不用凑满 2-4 句。
+
+最后调用 submit_slide_notes 一次性提交，notes 数组每项 {id, notes}，id 必须与输入页 id 一一对应，
+不要漏页也不要多页（含 section 页，即使只是一两句过渡语）。
 """

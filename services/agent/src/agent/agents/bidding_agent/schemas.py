@@ -175,13 +175,55 @@ class RiskReport(BaseModel):
         return self
 
 
+class ChartSeries(BaseModel):
+    name: str
+    values: list[float]
+
+
+class SlideChart(BaseModel):
+    """述标图表页数据（layout=chart 专用）：团队构成/历史业绩规模/报价构成/实施进度这类
+    "跨类别可比数字"，交给 python-pptx 渲染成真实可编辑的 PowerPoint 图表对象（不是图片）。"""
+    type: Literal["column", "bar", "pie", "line"] = "column"
+    categories: list[str]
+    series: list[ChartSeries]
+
+    @model_validator(mode="after")
+    def _shape_consistent(self):
+        if not self.categories:
+            raise ValueError("图表 categories 不能为空")
+        if not self.series:
+            raise ValueError("图表 series 不能为空")
+        if self.type == "pie" and len(self.series) != 1:
+            raise ValueError("饼图（pie）只能有一个 series，多个系列请用 column/bar")
+        for s in self.series:
+            if len(s.values) != len(self.categories):
+                raise ValueError(
+                    f"series「{s.name}」的 values 长度({len(s.values)}) 与 categories 长度"
+                    f"({len(self.categories)}) 不一致"
+                )
+        return self
+
+
+class StatItem(BaseModel):
+    """关键数字卡片（layout=comparison 专用）：value 是展示用短文本（可带单位/符号，不要求纯数字，
+    如"7×24""较限价低 8%""12 年"），label 是对该数字的一句话说明。"""
+    value: str
+    label: str
+
+
 class Slide(BaseModel):
     id: str
     title: str
     scoring: str = ""                              # 本页对应评分点（可空）
     bullets: list[str] = Field(default_factory=list)
     notes: str = ""                                # 口播稿/讲稿
-    kind: Literal["cover", "content", "end"] = "content"
+    kind: Literal["cover", "section", "content", "end"] = "content"
+    # 述标结构性升级（三种 content 版式，见 prompts/present.py 的选择准则）：
+    # bullets（默认，程序性说明）/ chart（跨类别可比数字，真实图表对象）/
+    # comparison（招标要求 vs 承诺、传统方案 vs 本方案，左栏要点+右栏数字大卡片）。
+    layout: Literal["bullets", "chart", "comparison"] = "bullets"
+    stats: list[StatItem] = Field(default_factory=list)   # comparison 版式的右栏数字卡片
+    chart: SlideChart | None = None                        # chart 版式的图表数据
 
 
 class QA(BaseModel):
@@ -205,14 +247,36 @@ class SlideDraft(BaseModel):
     title: str
     scoring: str = ""
     bullets: list[str] = Field(default_factory=list)
-    kind: Literal["cover", "content", "end"] = "content"
+    kind: Literal["cover", "section", "content", "end"] = "content"
+    layout: Literal["bullets", "chart", "comparison"] = "bullets"
+    stats: list[StatItem] = Field(default_factory=list)
+    chart: SlideChart | None = None
 
     @model_validator(mode="after")
-    def _content_needs_bullets(self):
-        """正文页必须有要点。bullets 原是「可选带默认空列表」，模型只给标题就静默通过——
-        生产实测 14 页全空：用户拿到一份只有标题的 PPT，80 积分照扣（封面/尾页本就无要点，不校验）。
-        校验失败会触发强制提交重试，与 SlideNotes.notes 的 min_length=1 同一范式。"""
-        if self.kind == "content" and not [b for b in self.bullets if b.strip()]:
+    def _content_needs_substance(self):
+        """content 页必须有实质内容——不同版式的「实质内容」形状不同,只判断「有没有」，
+        「对不对」交给各自的 model_validator（SlideChart 已校验 categories/series 一致性）：
+        - bullets（默认）：至少 1 条非空要点；
+        - chart：必须给 chart 数据；
+        - comparison：左栏 bullets + 右栏 1-2 张 stats 缺一不可。
+        cover/section/end 不要求（section 是过渡页，标题即内容）。
+        生产实测教训：bullets 原是「可选带默认空列表」，模型只给标题就静默通过——
+        14 页全空，用户拿到一份只有标题的 PPT，80 积分照扣。校验失败会触发强制提交重试，
+        与 SlideNotes.notes 的 min_length=1 同一范式。"""
+        if self.kind != "content":
+            return self
+        has_bullets = bool([b for b in self.bullets if b.strip()])
+        if self.layout == "chart":
+            if self.chart is None:
+                raise ValueError(f"「{self.title}」选了 chart 版式却没给 chart 数据")
+        elif self.layout == "comparison":
+            if not has_bullets:
+                raise ValueError(f"「{self.title}」选了 comparison 版式，左栏 bullets 不能为空")
+            if not (1 <= len(self.stats) <= 2):
+                raise ValueError(
+                    f"「{self.title}」选了 comparison 版式，右栏 stats 需要 1-2 项，实际 {len(self.stats)} 项"
+                )
+        elif not has_bullets:
             raise ValueError(f"content 页「{self.title}」缺少 bullets：每页必须给 3–5 条要点")
         return self
 

@@ -40,3 +40,51 @@ def test_content_slide_without_bullets_is_rejected():
     SlideDraft(id="s1", title="项目名称", kind="cover")                      # 封面无要点合法
     SlideDraft(id="s4", title="致谢", kind="end")                            # 尾页同理
     SlideDraft(id="s5", title="方案框架", kind="content", bullets=["分层解耦，网关统一鉴权"])
+
+
+def test_section_kind_needs_no_bullets_or_scoring():
+    """章节分隔页（结构性升级）：只是过渡页，不要求 bullets/scoring——与 cover/end 同规则。"""
+    from agent.agents.bidding_agent.schemas import SlideDraft
+    SlideDraft(id="sec", title="技术方案", kind="section")  # 不抛错
+
+
+def test_chart_layout_requires_chart_data():
+    from pydantic import ValidationError
+    import pytest
+    from agent.agents.bidding_agent.schemas import SlideDraft
+    with pytest.raises(ValidationError, match="chart 版式却没给 chart 数据"):
+        SlideDraft(id="s1", title="团队构成", kind="content", layout="chart")
+
+
+def test_chart_series_length_must_match_categories():
+    """生产事故预防：categories 3 个、values 只给 2 个会让 python-pptx 渲染时数据错位或报错——
+    在骨架校验阶段就拒绝，不要留到渲染层才炸。"""
+    from pydantic import ValidationError
+    import pytest
+    from agent.agents.bidding_agent.schemas import SlideChart
+    with pytest.raises(ValidationError, match="values 长度"):
+        SlideChart(categories=["高级", "中级", "初级"], series=[{"name": "人数", "values": [3, 6]}])
+
+
+def test_pie_chart_rejects_multiple_series():
+    from pydantic import ValidationError
+    import pytest
+    from agent.agents.bidding_agent.schemas import SlideChart
+    with pytest.raises(ValidationError, match="饼图"):
+        SlideChart(type="pie", categories=["A", "B"],
+                   series=[{"name": "s1", "values": [1, 2]}, {"name": "s2", "values": [3, 4]}])
+
+
+def test_comparison_layout_requires_both_bullets_and_one_or_two_stats():
+    from pydantic import ValidationError
+    import pytest
+    from agent.agents.bidding_agent.schemas import SlideDraft
+    with pytest.raises(ValidationError, match="左栏 bullets 不能为空"):
+        SlideDraft(id="s1", title="对比", kind="content", layout="comparison",
+                   stats=[{"value": "72小时", "label": "提前完成"}])
+    with pytest.raises(ValidationError, match="1-2 项"):
+        SlideDraft(id="s2", title="对比", kind="content", layout="comparison", bullets=["差异点"],
+                   stats=[{"value": "a", "label": "1"}, {"value": "b", "label": "2"}, {"value": "c", "label": "3"}])
+    # 合法：左右都给，且 stats 在 1-2 项范围内 —— 不抛错
+    SlideDraft(id="s3", title="对比", kind="content", layout="comparison", bullets=["差异点"],
+               stats=[{"value": "72小时", "label": "提前完成"}])
