@@ -45,6 +45,7 @@ import { stepPrereq, useStep } from "@/lib/use-step"
 import { artifactDownload, triggerDownload, patchErrorMessage, patchStep, runStep } from "@/lib/project"
 import { AiPanel } from "./ai-panel"
 import { EmptyState, DURATIONS, type Duration } from "./empty-state"
+import { NotReadyCard } from "./not-ready-card"
 import { TemplatePicker } from "./template-picker"
 import { SlidePreview } from "./slide-preview"
 import { PresentEntry } from "./present-entry"
@@ -375,7 +376,7 @@ export default function PresentPage() {
         <StepPageHeader icon={Presentation} title="述标演示" desc="一键把标书提炼成述标/答辩 PPT，含演讲备注与预计问答" />
         {!projectId && (
           <p className="mb-3 rounded-xl border border-border bg-card px-4 py-2.5 text-sm text-muted-foreground">
-            还没有选中的标书——先从下面选一份（或上传线下标书），选完就直接进入述标生成页。
+            还没有选中的标书——先选一份已有的，或上传线下标书；选完直接进入述标生成页。
           </p>
         )}
         <PresentEntry
@@ -740,40 +741,3 @@ export default function PresentPage() {
     </div>
   )
 }
-
-/** 当前项目还不能述标：保持在这张卡的位置上说清楚差哪一步，并留两个换标书的入口。
- *  不渲染任何计费按钮——后端此时也不放行，亮出来点了就是 409。 */
-function NotReadyCard({ projectName, gap }: { projectName: string; gap: { href: string; label: string } }) {
-  const cls =
-    "inline-flex items-center gap-2 rounded-xl border border-border bg-background px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:border-primary/40"
-  return (
-    <div className="flex justify-center p-4">
-      <div className="my-auto w-full max-w-xl py-8">
-        <div className="rounded-2xl border border-border bg-card p-6 text-center sm:p-8">
-          <div className="mx-auto flex size-14 items-center justify-center rounded-2xl gradient-brand-soft">
-            <Presentation className="size-7 text-primary" />
-          </div>
-          <h2 className="mt-4 text-lg font-bold text-foreground">一键生成述标大纲</h2>
-          <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted-foreground">
-            述标取的是标书正文（技术标 + 商务标）。当前项目「{projectName}」还没走到这一步，
-            先完成「{gap.label}」，回来即可一键生成。
-          </p>
-          <div className="mt-5 flex justify-center">
-            <Link href={gap.href} className="inline-flex items-center gap-2 rounded-xl gradient-brand px-5 py-2.5 text-sm font-semibold text-white">
-              前往{gap.label}
-            </Link>
-          </div>
-          <p className="mt-5 text-xs text-muted-foreground">或者述标别的标书：</p>
-          <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
-            <a href="/present?view=entry&focus=pick" className={cls}>从我的标书选择</a>
-            <a href="/present?view=entry&focus=upload" className={cls}>上传标书文件</a>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-/* 独立述标入口条：挂着项目时也能一键切到「述标其它标书/上传线下标书」（同 risk 页 EntryBar 一致的理由：
-   防止用户以为述标只能对当前项目跑）。 */
-

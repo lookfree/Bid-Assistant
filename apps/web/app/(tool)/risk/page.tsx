@@ -86,7 +86,7 @@ function RejectReview() {
   const [viewParam] = useState(
     () => (typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("view")),
   )
-  const goEntry = () => { window.location.href = "/risk?view=entry&focus=pick" }
+  const goEntry = () => { window.location.href = "/risk?view=entry" }
   const { projectId, info, data: real, dataLoading, running, phase, error, errorAction, start } = useStep<RealRisk>("review")
   const { overview: membershipOverview } = useMembership()
   const reviewCost = creditCostValue(membershipOverview, "review", 60)

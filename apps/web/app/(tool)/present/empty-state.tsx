@@ -138,17 +138,17 @@ function TemplateSection({
   )
 }
 
-/* 述标别的标书：默认对当前项目述标（本卡片），这里是两个次要入口——
-   跳独立入口页并指明落在哪张卡（?view=entry&focus=pick|upload），不再让用户先过一道中转选择页。 */
-function OtherBidSection() {
-  const go = (focus: "pick" | "upload") => () => {
-    window.location.href = `/present?view=entry&focus=${focus}`
+/** 述标别的标书：默认对当前项目述标，这里是两个次要入口。导出给 not-ready-card 复用——
+ *  两屏上的同一组按钮各写一份会长得不一样（评审）。列表是入口页的默认视图，故 pick 不带 focus。 */
+export function OtherBidSection() {
+  const go = (focus?: "upload") => () => {
+    window.location.href = focus ? `/present?view=entry&focus=${focus}` : "/present?view=entry"
   }
   const cls =
     "inline-flex items-center gap-2 rounded-xl border border-border bg-background px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:border-primary/40"
   return (
     <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-      <button onClick={go("pick")} className={cls}>
+      <button onClick={go()} className={cls}>
         <FolderOpen className="size-4 text-muted-foreground" />
         从我的标书选择
       </button>

@@ -630,8 +630,10 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         ? step === "read"
         : step === p.currentStep ||
           (step === "export" && ["review", "present", "done"].includes(p.currentStep)) ||
-          // 述标同样不依赖体检报告（与 export 同理）：正文写完就能述标，不必先花 60 积分体检
-          (step === "present" && ["review", "done"].includes(p.currentStep)) ||
+          // 述标同样不依赖体检报告（与 export 同理）：正文写完就能述标，不必先花 60 积分体检。
+          // export 也要放行——述标跑完 currentStep 就推进到 export，那之后页面上的「重新生成述标」
+          // 若不放行就是个点了必 409 的计费按钮（agent 侧 _route_after_export 有对应边）。
+          (step === "present" && ["review", "export", "done"].includes(p.currentStep)) ||
           (step === "review" && p.currentStep === "done"))
     if (!allowed) return c.json({ error: "out_of_order", expected: p.currentStep }, 409)
 

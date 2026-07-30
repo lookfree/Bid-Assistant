@@ -8,11 +8,13 @@ import type { ProjectListItem } from "@/lib/project"
 const HAS_BID_STEPS = ["review", "present", "export", "done"]
 
 /** 述标可选：只能选**已经有投标文件**的项目（用户口径）。
- *  bid-kind 还要求走到 present 之后——currentStep='review' 时后端述标闸会 409（见 projects.ts 步序闸），
- *  列进来只会让用户选中后空转回入口。线下标书（kind='review'）不受此限：有标书就能随时述标。 */
+ *  正文写完（currentStep 到 review）即可——述标不依赖废标体检，后端步序闸与 stepPrereq 都已放行；
+ *  这里若还卡在 present 之后，最常见的「刚写完正文」项目会被挡在列表外，用户在
+ *  「从我的标书选择」里看到"暂无可直接述标的标书"，而它其实完全可以述标。
+ *  线下标书（kind='review'）不受此限：有标书就能随时述标。 */
 export function presentable(p: ProjectListItem): boolean {
   if (p.hasBid === false) return false
-  return p.kind === "review" || ["present", "export", "done"].includes(p.currentStep)
+  return p.kind === "review" || HAS_BID_STEPS.includes(p.currentStep)
 }
 
 /** 废标审查可选：招标文件与投标文件**是一体的**（用户口径：不允许单独拿投标文件做废标审查）——

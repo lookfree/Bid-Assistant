@@ -24,6 +24,8 @@ export type StandaloneBidEntryProps = {
   tenderHint?: string
   /** 招标文件必传（审查：废标体检要逐条比对招标要求，两者一体，缺一不可） */
   tenderRequired?: boolean
+  /** 列表卡底部「改为上传」的文案：各页要求不同（审查要连招标文件一起传），不能写死在共享组件里 */
+  switchToUploadLabel: string
   submitLabel: string
   /** 附了招标文件时的提交按钮文案（仅 !bidOnly 时可能用到）。 */
   submitLabelWithTender?: string
@@ -33,7 +35,7 @@ export type StandaloneBidEntryProps = {
  *  ① 选择「我的标书」里符合条件的项目直接操作（走既有流程）；
  *  ② 上传线下标书（bidOnly=false 时可附招标文件先读标；bidOnly=true 只传标书直接操作）。 */
 export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
-  const { onBack, backLabel, noTenderHref, pickTitle, pickDesc, emptyHint, isSelectable, readyLabel } = props
+  const { onBack, backLabel, noTenderHref, pickTitle, pickDesc, emptyHint, isSelectable, readyLabel, switchToUploadLabel } = props
   const [projects, setProjects] = useState<ProjectListItem[]>([])
   const [loadingList, setLoadingList] = useState(true)
 
@@ -52,12 +54,12 @@ export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // **任何时候只显示一张卡**（用户口径：两卡并排那页不需要了）。
-  // ?focus=upload → 上传卡；其余（含没有当前项目、直接落到本页）→ 标书列表，
-  // 列表底部留一个换到上传的入口，路径一条都不丢。
-  const focus = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("focus")
-  const showUpload = focus === "upload"
-  const base = noTenderHref.split("?")[0]
+  // **任何时候只显示一张卡**（用户口径：两卡并排那页不需要了）。?focus=upload 只作**初值**，
+  // 之后在组件内切换：整页跳转会重跑鉴权、重拉项目列表，为一次纯 UI 切换付这个代价没道理，
+  // 而且跳过去就只剩上传卡、没有回列表的路（评审：单向的"路径不丢"等于走进死胡同）。
+  const [showUpload, setShowUpload] = useState(
+    () => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("focus") === "upload",
+  )
 
   return (
     <div className="flex flex-col gap-3">
@@ -66,7 +68,7 @@ export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
           {backLabel}
         </button>
       )}
-      <div className="grid gap-4">
+      <div>
         {!showUpload && (
         <section className="rounded-2xl border border-border bg-card p-5">
           <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
@@ -99,16 +101,26 @@ export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
               ))
             )}
           </div>
-          <a
-            href={`${base}?view=entry&focus=upload`}
+          <button
+            onClick={() => setShowUpload(true)}
             className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-border py-2.5 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
           >
             <UploadCloud className="size-3.5" />
-            没有可用的标书？改为上传线下标书
-          </a>
+            {switchToUploadLabel}
+          </button>
         </section>
         )}
-        {showUpload && <UploadBidCard {...props} />}
+        {showUpload && (
+          <div className="flex flex-col gap-2">
+            <UploadBidCard {...props} />
+            <button
+              onClick={() => setShowUpload(false)}
+              className="self-center text-xs font-medium text-primary hover:underline"
+            >
+              ← 返回，从我的标书里选
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

@@ -15,6 +15,7 @@ export function ReviewEntry({ onBack }: { onBack?: () => void } = {}) {
       pickDesc="选择已生成正文、且有招标文件的项目（废标体检要逐条比对招标要求，两者缺一不可）"
       emptyHint="暂无可直接体检的标书（需同时有招标文件与投标文件），可在下方上传后审查"
       isSelectable={reviewable}
+      switchToUploadLabel="没有合适的项目？改为上传线下标书 + 对应招标文件"
       readyLabel="可审查"
       uploadTitle="审查线下标书"
       uploadDesc="上传线下制作的投标文件与对应招标文件，逐条对照做废标体检（两者一体，缺一不可）"

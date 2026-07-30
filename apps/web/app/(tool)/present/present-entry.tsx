@@ -15,6 +15,7 @@ export function PresentEntry({ onBack }: { onBack?: () => void } = {}) {
       pickDesc="选择已有投标文件的项目（已生成正文的项目，或上传的线下标书）"
       emptyHint="暂无可直接述标的标书，可先上传线下标书述标"
       isSelectable={presentable}
+      switchToUploadLabel="没有可用的标书？改为上传线下标书"
       readyLabel="可述标"
       uploadTitle="述标线下标书"
       uploadDesc="上传线下制作的投标文件，一键生成述标/答辩 PPT（含演讲备注与预计问答）"
