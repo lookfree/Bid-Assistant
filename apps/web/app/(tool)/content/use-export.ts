@@ -60,10 +60,12 @@ export function useExport(opts: {
   const pagesSuffix = (r: { pdfPages?: number } | null | undefined): string =>
     typeof r?.pdfPages === "number" && r.pdfPages > 0 ? `（实际 ${r.pdfPages} 页）` : ""
 
-  /** 本项目此前已成功导出过 ⇒ 本次是重渲，服务端不再计费（首次收费口径见 projects.ts）。
-   *  据此免掉余额门与费用文案——欠费用户也必须能把改过的正文重新出成文件。
-   *  并上本会话的 hasExported：info 走 30s 缓存，刚导出完那次不至于还显示要扣费。 */
-  const freeRerender = hasExported || !!info?.steps.some((s) => s.step === "export" && s.status === "done")
+  /** 本次导出服务端是否免费（口径见 services/export-dirty.ts）：内容改过就收费，
+   *  未改动的重复下载免费。必须与服务端同口径——前端若仍按旧的「导出过就免费」判断，
+   *  用户改完正文、余额为 0 时会跳过付费墙直奔 402，只看到一句「导出失败」。
+   *  并上本会话的 hasExported：info 走 30s 缓存，刚导出完那次不至于还显示要扣费。
+   *  字段缺失（老接口）时按收费处理——宁可多显示一次费用，也不误显示免费。 */
+  const freeRerender = hasExported || info?.project.exportDirty === false
 
   function onExportEntry() {
     // 余额加载中不做付费墙判定（按钮已禁用，双保险防按 balance=0 误弹）

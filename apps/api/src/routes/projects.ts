@@ -17,6 +17,7 @@ import { ensureChecklistTemplate } from "../services/checklist-template"
 import { ragRunInput } from "../services/rag-config"
 import { generationRunInput } from "../services/generation-config"
 import { getEntitlements, featureLocked, lockRiskAdvice } from "../services/entitlements"
+import { markExportDirty, shouldChargeExport } from "../services/export-dirty"
 import { createAdviceScrubber } from "../services/sse-scrub"
 import { getConfig } from "../services/config"
 import { credentialsRunInput, type CredentialInput } from "../services/credentials"
@@ -270,17 +271,6 @@ async function exportCredentials(userId: string): Promise<{ credentials?: Creden
 }
 
 /** 取该项目某步最新 done 行（result 现值 = 编辑过即编辑后；snake 原样）。 */
-/** 本项目此前是否成功导出过——决定本次导出是否计费（首次收费、重渲免费）。
- *  只取 id 不碰 result 列：这是每次点导出的必经路径（slim 教训）。 */
-async function hasExportedBefore(projectId: string): Promise<boolean> {
-  const [row] = await getDb()
-    .select({ id: projectSteps.id })
-    .from(projectSteps)
-    .where(and(eq(projectSteps.projectId, projectId), eq(projectSteps.step, "export"), eq(projectSteps.status, "done")))
-    .limit(1)
-  return !!row
-}
-
 async function latestDoneStep(projectId: string, step: string) {
   const [row] = await getDb()
     .select()
@@ -773,11 +763,11 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     if (s === "recovered") return c.json({ error: "step_already_done" }, 409) // 刚被对账收尾:刷新即见结果
     if (!s) return c.json({ error: "step_already_running" }, 409)
 
-    // 重新导出不计费（用户口径 2026-07-28）：导出是**确定性渲染**步（无 LLM、不烧模型钱），
-    // 前端改为每次点导出都按最新正文重渲——此前「已有产物就直接下载」让在线编辑、AI 改写、
-    // 提纲调整、渲染器升级全都拿不到（下载到旧文件，可能拿去投标）。既然同一份内容会反复重渲，
-    // 就不能反复收费：首次导出照收 credit_cost.export，之后一律免费（也不看余额，欠费也能重出）。
-    const freeRerender = step === "export" && (await hasExportedBefore(p.id))
+    // 导出计费按脏标记（用户口径 2026-07-31「章节修改不收费，内容改过后重新导出收费」）：
+    // 前端每点一次导出都按最新正文重渲，所以不能按次收费——手滑重点一下就多扣一笔；
+    // 也不能像此前那样「首次收费、之后一律免费」——改完正文再导出拿新文件就白拿了。
+    // 折中即脏标记：改提纲/正文置脏，成功导出清净；净态下重复下载同一份免费（也不看余额）。
+    const freeRerender = step === "export" && !(await shouldChargeExport(p.id))
     const hold = freeRerender
       ? { ok: true as const, holdId: undefined, hold: 0 }
       : await preDeduct(userId, step, s.id, holdAmount)
@@ -938,6 +928,8 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       else s.enterprise_template_id = cur
     }
     await getDb().update(projectSteps).set({ result: stored }).where(eq(projectSteps.id, row.id))
+    // 改了提纲/正文 → 下次导出要重新收费（present 的 deck 编辑不影响标书产物，不置脏）
+    if (step === "outline" || step === "content") await markExportDirty(p.id)
     return c.json({ ok: true })
   })
 
@@ -1004,6 +996,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         const chapters = { ...((fresh?.result as Record<string, unknown>) ?? {}), [chapterId]: html }
         await tx.update(projectSteps).set({ result: chapters }).where(eq(projectSteps.id, contentRow.id))
       })
+      await markExportDirty(p.id)   // 改写本身不收费，但正文变了，下次导出要收费
     } catch (e) {
       throw e
     }

@@ -1,5 +1,6 @@
 import { and, desc, eq, gt, inArray, lt } from "drizzle-orm"
 import { getDb } from "../db/client"
+import { markExportDirty, clearExportDirty } from "./export-dirty"
 import { bidProjects, creditTransactions, projectSteps } from "../db/schema"
 import * as billing from "./billing-stub"
 import { failStepAndRefund, STUCK_STEP_MAX_AGE_MS } from "./stuck-steps"
@@ -104,6 +105,11 @@ export async function finalizeStepSuccess(opts: {
     .where(and(eq(projectSteps.id, opts.stepId), eq(projectSteps.status, "running")))
     .returning({ id: projectSteps.id })
   if (flipped.length === 0) return null
+  // 导出计费脏标记（2026-07-31 口径）：放在共享收尾核心里，SSE / 409 自愈 / 对账 Cron 三条收尾
+  // 路径共用同一处，避免只在其中一条清净导致「有的路径重复收费、有的免单」。
+  // 重跑提纲/正文 = 内容变了 → 置脏；导出成功 → 清净。
+  if (opts.step === "outline" || opts.step === "content") await markExportDirty(opts.projectId)
+  else if (opts.step === "export") await clearExportDirty(opts.projectId)
   return await settleAndAdvance({
     stepId: opts.stepId, projectId: opts.projectId, step: opts.step, result: opts.result,
     hold: opts.holdId ? { holdId: opts.holdId, heldAmount: opts.heldAmount } : null,

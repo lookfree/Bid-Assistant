@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, jsonb, integer, index } from "drizzle-orm/pg-core"
+import { pgTable, uuid, text, jsonb, integer, boolean, index } from "drizzle-orm/pg-core"
 import { id, createdAt } from "./columns"
 import { users } from "./users"
 
@@ -23,6 +23,11 @@ export const bidProjects = pgTable(
     bidFileKeys: jsonb("bid_file_keys").$type<string[]>(),
     status: text("status").notNull().default("draft"), // draft/running/done
     currentStep: text("current_step").notNull().default("read"),
+    // 导出计费脏标记（2026-07-31 产品口径「章节修改不收费、内容改过后重新导出收费」）：
+    // 改提纲/正文（编辑回写、AI 改写、重跑该步）置 true，成功导出后置 false。
+    // 默认 true=从未导出过的项目首次导出照收。用标记而非内容哈希：导出是每次点击的必经路径，
+    // 哈希要把整本正文读出来算，与「导出路径不碰 result 列」的既有教训冲突。
+    exportDirty: boolean("export_dirty").notNull().default(true),
     createdAt: createdAt(),
   },
   (t) => ({ userIdx: index("bid_projects_user_idx").on(t.userId) }),

@@ -96,6 +96,9 @@ export type ProjectInfo = {
     kind?: "bid" | "review" // spec328：审查专用项目（工具页据此改导航,不进生成流水线）
     // 已选投标包件（spec324，多包件招标才有；单包/未选包为 null，outline 及之后步骤行为不变）
     selectedPackage: { id: string; name: string } | null
+    // 导出计费脏标记（2026-07-31 口径）：内容改过 → 下次导出收费；未改动 → 重复下载免费。
+    // 前端据此决定要不要设余额门与显示费用；老接口没这个字段时按收费处理（保守，不会误显示免费）。
+    exportDirty?: boolean
   }
   steps: ProjectStep[]
   // 同一招标文件的兄弟项目里已生成大纲的包 id（一包一份投标文件）：选包卡置灰不可再选；旧缓存可能缺省
