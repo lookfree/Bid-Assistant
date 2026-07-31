@@ -17,6 +17,7 @@ import { ensureChecklistTemplate } from "../services/checklist-template"
 import { ragRunInput } from "../services/rag-config"
 import { generationRunInput } from "../services/generation-config"
 import { getEntitlements, featureLocked, lockRiskAdvice } from "../services/entitlements"
+import { resultShapeOk, SHAPE_MISMATCH_ERROR } from "../services/step-result-shape"
 import { markExportDirty, shouldChargeExport } from "../services/export-dirty"
 import { createAdviceScrubber } from "../services/sse-scrub"
 import { getConfig } from "../services/config"
@@ -842,7 +843,15 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
   ) {
     const { project, stepRow, step, runId, hold } = ctx
     const run = await getRun(runId) // 该步结构化结果（snake_case）
-    const failed = run.status !== "succeeded"
+    // 形状守卫（2026-07-31 生产事故）：agent 说 succeeded 不等于跑对了步。图的静态边曾让续跑
+    // 越界跑下一节点，把**下一步**的结果当本步结果回传——export 的产物快照落进 present 行、
+    // 盖住真 deck、还标 done 净扣 80 积分，用户白屏且不知为何。图已改条件边，这里再堵落库这关：
+    // 主干字段都没有 = 这一步没产出该产的东西 = 失败 → 走失败分支全额退款（「失败必退」铁律）。
+    const shapeBad = run.status === "succeeded" && !resultShapeOk(step, run.result)
+    if (shapeBad) {
+      console.warn(`[step-shape] ${step} 结果形状不符，按失败处理 step=${stepRow.id} run=${runId}`)
+    }
+    const failed = run.status !== "succeeded" || shapeBad
     // 成功走共享收尾核心（step-finalize：条件翻转+结算+推进,与 409 自愈/对账 Cron 同一条路,
     // 天然幂等——对账 Cron 并发收尾同一行时只有一方翻转成功,绝不双结算）；
     // 失败全额退还（净 0）+ 置 failed。
@@ -895,6 +904,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       event: "step.done",
       data: JSON.stringify({
         step, cost, status: failed ? "failed" : "done",
+        ...(shapeBad ? { error: SHAPE_MISMATCH_ERROR } : {}),
         result: await resultForUser(step, run.result ?? null, project.userId),
       }),
     })

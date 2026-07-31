@@ -50,6 +50,17 @@ def _route_after_review(state):
     return "export" if _requested_step(state) == "export" else "present"
 
 
+def _route_after_present(state):
+    """述标后按本 run 显式请求路由。**这条边必须是条件边**——写成静态边时，停在 present 之后的
+    检查点在下一次 run 续跑时无条件跑 export：用户点的是「重新生成述标」，实际跑的是导出，
+    export 的产物快照 {pdf,docx,pptx,pdfPages} 被当成 present 步结果存进 present 行，
+    前端 realDeck.slides 变 undefined → 述标页整页崩（2026-07-31 项目 8edb7ff2 实测复现）。
+    与 _route_after_content 当年那次是同一类问题：那条修了，这条漏了。
+    取值与 _route_after_export 对齐（present 重跑 / export 导出 / review 补跑体检），其余结束。"""
+    step = _requested_step(state)
+    return step if step in ("present", "export", "review") else END
+
+
 def _route_after_export(state):
     """export 后按请求路由：present=补跑述标（补跑后重导出可带 PPT）；export=重渲文件
     （渲染器升级/模板调整后重出）；review=补跑废标体检（跳过体检直出的项目事后想查——
@@ -59,7 +70,9 @@ def _route_after_export(state):
 
 
 def build_bidding_workflow(ctx):
-    """投标工作流：6 节点串联 + review/export 两处条件边，每个节点后 interrupt（每步一个 run）。
+    """投标工作流：6 节点串联，除 outline→content 外全部条件边，每个节点后 interrupt（每步一个 run）。
+    静态边在「检查点停在该节点之后」时会让续跑越界跑下一节点，把下一节点的结果当本步结果回传——
+    content→review、present→export 都因此出过生产事故，故新增边一律用条件边。
     checkpointer 来自 ctx（PostgresSaver，§4.7），保证同 thread_id 续 BiddingState。"""
     g = StateGraph(BiddingState)
     g.add_node("read", make_read_node(ctx))
@@ -74,7 +87,8 @@ def build_bidding_workflow(ctx):
     g.add_conditional_edges("content", _route_after_content,
                             {"review": "review", "export": "export", "present": "present"})
     g.add_conditional_edges("review", _route_after_review, {"present": "present", "export": "export"})
-    g.add_edge("present", "export")
+    g.add_conditional_edges("present", _route_after_present,
+                            {"present": "present", "export": "export", "review": "review", END: END})
     g.add_conditional_edges("export", _route_after_export,
                             {"present": "present", "export": "export", "review": "review", END: END})
     # 每个节点产出后暂停 → App 在对应原型页确认后发新 run 续跑

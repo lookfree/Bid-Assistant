@@ -20,6 +20,7 @@ export function EmptyState({
   onOpenTemplates,
   existingDeck,
   noProject,
+  brokenDeck,
 }: {
   duration: Duration
   onDuration: (d: Duration) => void
@@ -38,6 +39,9 @@ export function EmptyState({
   /** 还没有选中的标书：仍然停在这张卡（用户口径「没有我的项目的时候也是这个入口」），
    *  但不渲染计费按钮——没有标书可生成，亮出来点了只会失败。选标书走卡上那两个按钮。 */
   noProject?: boolean
+  /** 存库结果不是 deck（下游依赖的 slides 缺失）：明确报错，不静默当作「还没生成」——
+   *  静默的话用户只会再点一次生成、再扣一次钱，而问题一直隐身（生产实测就是这个形状让本页白屏）。 */
+  brokenDeck?: boolean
 }) {
   // 居中用子元素的 my-auto，而不是父级 items-center：flex 居中 + 溢出滚动的经典冲突——
   // 内容高于容器时 items-center 会把顶部推到滚动区之外，用户既看不到标题也滚不上去
@@ -50,6 +54,12 @@ export function EmptyState({
             <Presentation className="size-7 text-primary" />
           </div>
           <h2 className="mt-4 text-lg font-bold text-foreground">一键生成述标大纲</h2>
+          {brokenDeck && (
+            <p className="mx-auto mt-3 w-full max-w-md rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-2.5 text-left text-xs leading-relaxed text-destructive">
+              本项目上次述标的结果异常（缺少幻灯片数据），已无法打开。重新生成即可恢复；
+              若重试后仍是这样，请把项目名发给我们排查，不要反复重试以免重复消耗积分。
+            </p>
+          )}
           {existingDeck && (
             <button
               onClick={existingDeck.onOpen}

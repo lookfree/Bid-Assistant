@@ -96,3 +96,27 @@ def test_content_routes_to_export_when_review_is_skipped():
     assert _route_after_content({}) == "review"          # 未指定=按流水线正常走体检
     # 跳过体检直出的项目事后仍要能补跑体检，否则那个项目的废标体检永远买不到
     assert _route_after_export({"run_input": {"step": "review"}}) == "review"
+
+
+def test_route_after_present_is_conditional_not_a_static_edge():
+    """生产事故（2026-07-31，项目 8edb7ff2）：present→export 是**静态边**，而检查点停在 present 之后，
+    下一次 run 续跑时无条件跑 export——用户点的是「重新生成述标」，实际跑的是导出：
+    export 的产物快照 {pdf,docx,pptx,pdfPages} 被当成 present 步结果存进 present 行，
+    前端 realDeck.slides 成了 undefined，述标页整页崩（Uncaught TypeError: reading '0'）。
+    与 _route_after_content 当年那次是同一类，那次修了、这条漏了。"""
+    from langgraph.graph import END
+    from agent.agents.bidding_agent.graph import _route_after_present
+
+    assert _route_after_present({"run_input": {"step": "present"}}) == "present"   # 重新生成述标
+    assert _route_after_present({"run_input": {"step": "export"}}) == "export"     # 述标后导出
+    assert _route_after_present({"run_input": {"step": "review"}}) == "review"     # 补跑体检
+    assert _route_after_present({"run_input": {}}) == END                          # 没请求就停，绝不越界跑 export
+
+
+def test_present_edge_is_registered_as_conditional():
+    """光有路由函数不够——边本身必须注册成条件边，否则函数写了也不生效。"""
+    import inspect
+    from agent.agents.bidding_agent import graph as g
+    src = inspect.getsource(g.build_bidding_workflow)
+    assert 'g.add_edge("present", "export")' not in src, "present→export 仍是静态边"
+    assert "_route_after_present" in src

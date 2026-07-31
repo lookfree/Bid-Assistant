@@ -95,8 +95,12 @@ export default function PresentPage() {
      只由用户点击「生成述标大纲」（CreditEstimate 确认条，明示消耗）才跑，
      生成调用透传当前时长/模板（POST steps/present body {duration, template}）。 */
   const { projectId, info, data: realDeck, dataLoading, running: stepRunning, phase, error: stepError, errorAction: stepErrorAction, start } = useStep<RealDeck>("present")
+  /* 存库结果不是 deck（slides 不是数组）：**不能静默当作没有 deck**——那样用户只会再点一次生成、
+     再扣一次钱，而问题一直隐身。生产实测就是这个形状（present 行装了 export 的产物快照）让本页
+     白屏；白屏很难看，但它是当时唯一把问题顶出水面的东西，所以这里换成**明确报错**而不是消音。 */
+  const deckBroken = !!realDeck && !Array.isArray(realDeck.slides)
   useEffect(() => {
-    if (!realDeck) return
+    if (!realDeck || !Array.isArray(realDeck.slides)) return
     setSlides(realDeck.slides)
     setActiveId(realDeck.slides[0]?.id ?? "")
     // 选择器与后端已存 deck 对齐（保存/下次生成据此透传）
@@ -105,7 +109,7 @@ export default function PresentPage() {
   }, [realDeck])
 
   /* deck 就绪 = present 步已有真实结果（编辑/保存/导出入口只在此后出现） */
-  const hasDeck = !!realDeck
+  const hasDeck = !!realDeck && !deckBroken
   /* 用户口径：菜单点进来一律先看生成卡；本项目已有述标时卡上给一个跳转链接。
      只有显式 ?view=deck（点了那个链接）或**本次刚生成完**才直接进结果页——刚付过钱的人
      当然要立刻看到成品，但从菜单进来不该跳过那张卡（它同时是换标书/改时长模板的入口）。 */
@@ -372,6 +376,7 @@ export default function PresentPage() {
         <FlowNav current="present" info={null} />
         <StepPageHeader icon={Presentation} title="述标演示" desc="一键把标书提炼成述标/答辩 PPT，含演讲备注与预计问答" />
         <EmptyState
+          brokenDeck={deckBroken}
           duration={duration}
           onDuration={changeDuration}
           cost={presentCost}
@@ -536,6 +541,7 @@ export default function PresentPage() {
       {/* 主体：未生成 → 显式生成入口（明示消耗）；已生成 → 编辑器（前序未完成已在上方独立入口拦截） */}
       {!deckReady ? (
         <EmptyState
+          brokenDeck={deckBroken}
           duration={duration}
           onDuration={changeDuration}
           cost={presentCost}
