@@ -150,7 +150,7 @@ read 节点收尾
 **Files:**
 - Add: `agents/bidding_agent/nodes/classify.py`（分类调用；**两种摘要构造**：读标结论摘要 / 上传标书正文摘要；失败吞掉返回 `[]`）
 - Add: `agents/bidding_agent/prompts/classify.py`（三类定义、判据不足必须返回空、横跨两类时主类别在前、必须回证据条款）
-- Modify: `schemas.py`（`BidCategory{value: list[Literal[...]], confidence: Literal["high","medium","low"], reason: str, evidence_clause_ids: list[str]}` + `ReadResult.bid_category: BidCategory | None = None`）
+- Modify: `schemas.py`（新增独立的 `BidCategory{value, confidence, reason, evidence_clause_ids}`，**不要挂到 `ReadResult` 上**——挂上去就等于混进 `submit_read_result` 的工具 schema，正是本 Task 第 1 条要躲的坑）
 - Modify: `nodes/read.py:283`（返回处并入；`packages` 长度 > 1 直接跳过调用）
 - Modify: `nodes/review.py`（无读标结论时在节点开头分类）
 - Test: 三类各一份代表性摘要判对；横跨两类 ⇒ 返回 2 个值且主类别在前；判据不足 → `[]`；
@@ -158,7 +158,7 @@ read 节点收尾
   证据条款 id 必须来自摘要中出现过的 id（防模型编 id）；
   **无招标文件的自查项目 ⇒ 走上传标书正文摘要、且在审查之前完成**
 
-- [ ] Task A（提交 `feat(agent): bid category classification at read completion`）
+- [x] Task A（提交 `feat(agent): bid category classification at read completion`）
 
 ## Task B: Agent — 五个注入点与知识接口（**知识内容见 spec335，本 Task 只做机制**）
 
@@ -230,12 +230,12 @@ body 只有 `read_result` + `model`。所以 body 增可选 `bid_category`，由
   `/generate/checklist` 传 `bid_category` 与仅靠回落两条路径各一例；
   **知识表为空 ⇒ 各处消息与改动前逐字节一致**
 
-- [ ] Task B（提交 `feat(agent): category knowledge injection points`）
+- [x] Task B（提交 `feat(agent): category knowledge injection points`）
 
 ## Task C: App API — bid_category 列 + 确认接口 + 纠偏记录 + 下发
 
 **Files:**
-- Modify: `db/schema/bid-projects.ts`（`bidCategory: jsonb("bid_category").$type<string[]>()` 可空）+ 手写迁移 0036
+- Modify: `db/schema/bid-projects.ts`（`bidCategory: jsonb("bid_category").$type<string[]>()` 可空）+ 手写迁移 0040
 - Add: `db/schema/` 纠偏表 `bid_category_corrections`（project_id / detected / confirmed / confidence / created_at）
 - Modify: `routes/projects.ts`
   - 新 `PATCH /:id/category` body `{category: string[]}`（zod：数组、长度 1–2、元素为三值枚举、去重）设置，裸 `null` 清除（照抄 `PATCH /:id/package`，`projects.ts:466`）
@@ -259,7 +259,7 @@ body 只有 `read_result` + `model`。所以 body 增可选 `bid_category`，由
   **未确认时下发判定值、确认后下发确认值** / 重跑读标后项目行分类不变 / 改判写纠偏记录、同判不写 /
   **有效值解析不触碰 result 整列**
 
-- [ ] Task C（提交 `feat(api): project bid category, correction log and run input`）
+- [x] Task C（提交 `feat(api): project bid category, correction log and run input`）
 
 ## Task D: Web — 分类卡 + 项目概况标签
 
@@ -272,7 +272,7 @@ body 只有 `read_result` + `model`。所以 body 增可选 `bid_category`，由
 - Modify: 项目卡/概况处展示分类标签（只读）
 - Test: tsc + `bun test`；空判定 / 单类 / 双类三态渲染；线下标书（无招标文件）在 `/risk` 页渲染分类卡
 
-- [ ] Task D（提交 `feat(web): bid category card`）
+- [x] Task D（提交 `feat(web): bid category card`）
 
 ## Task E: 运营侧 — 纠偏样本可见
 
@@ -281,7 +281,7 @@ body 只有 `read_result` + `model`。所以 body 增可选 `bid_category`，由
 - 用途：定期看「哪类标判错了、错成什么」，据此改分类提示词。**没有这一步，判定质量就没有反馈回路。**
 - Test: 列表接口鉴权 + 分页
 
-- [ ] Task E（提交 `feat(admin): bid category correction review`）
+- [x] Task E（提交 `feat(admin): bid category correction review`）
 
 ## 验证口径
 
@@ -340,3 +340,21 @@ agent / api / web 三门禁绿。**本 spec 的验收不依赖 spec335 的知识
 两条结论：① **词表天然带编写者的行业口音**——手头那版偏物业后勤类（物业管理/保安/保洁/餐饮/护工），
 而我们语料 12 份里 11 份是 IT 采购，一份**网络攻防演练**标居然命中了「物业管理」；② 关键词对全文打分，
 导致同一份 4 包招标文件的「包件一」与「包件四」得分逐位相同——**方法本身拿不到包级输入**。
+
+
+## 实现记录（2026-08-01 落地）
+
+五个 Task 全部完成，门禁：agent `494 passed`、web `141 pass` + `tsc` 干净、api 分类相关
+`10 pass` + admin `3 pass` + `tsc` 干净。**与方案不符、以实现为准的三处：**
+
+1. **`BidCategory` 不挂 `ReadResult`。** 方案 Files 一栏原写 `ReadResult.bid_category: BidCategory | None`，
+   与同一 Task 第 1 条「不塞进 `submit_read_result`」**直接矛盾**——挂到 `ReadResult` 上，
+   `convert_to_openai_tool` 就会把它带进读标的提交工具 schema。实际按 `doc_sections` 的成例做：
+   独立 schema + 并进结果 dict。已回改方案原文。
+2. **迁移号 0040**（方案写的 0036 已被占用）。
+3. **`category_scope(categories, purpose)` 收的是分类数组本身**，不是 `run_input`——
+   `package_scope(run_input)` 那个形态在这里不合用：审查节点的分类可能来自读标结果或现判，
+   不一定在 `run_input` 里。
+
+**顺带修掉的既有测试**：`test_read_node_multifile.py` 三处 `len(gw.chats)` 断言改成只数读标轮
+（`_read_rounds`）——分类多了一次模型调用，而那三条断言想说的是「读标提交了几次」。

@@ -62,7 +62,7 @@
 
 > 首条最值得优先转正：它与服务标那条**填法正好相反**，填反直接废标，是三分法最硬的价值点。
 
-- [ ] Task A（提交 `feat(agent): goods category knowledge`）
+- [x] Task A（提交 `feat(agent): goods category knowledge`）
 
 ## Task B: 服务标知识
 
@@ -100,7 +100,7 @@
   管理费给区间）。
 - status：`待验证`（来自二手合规分析，需核一手法规口径）。
 
-- [ ] Task B（提交 `feat(agent): services category knowledge`）
+- [x] Task B（提交 `feat(agent): services category knowledge`）
 
 ## Task C: 工程标知识
 
@@ -132,7 +132,7 @@
 | 施工组织设计四大块齐全（施工方案 + 进度计划 + 质量保证 + 安全文明施工） | 待验证 | 通行做法 | — |
 | 安全文明施工措施完整 | 待验证 | 通行做法 | — |
 
-- [ ] Task C（提交 `feat(agent): engineering category knowledge`）
+- [x] Task C（提交 `feat(agent): engineering category knowledge`）
 
 ## Task D: 行业资质补丁表
 
@@ -157,7 +157,7 @@
 > 这张表当前**基本用不上**——IT 类的资质条目（等保测评、CCRC 信息安全服务资质、涉密信息系统集成资质等）
 > 需要另行整理，是本 Task 最有价值的增量。
 
-- [ ] Task D（提交 `feat(agent): industry qualification patches`）
+- [x] Task D（提交 `feat(agent): industry qualification patches`）
 
 ## Task E: 逐条转正（持续任务）
 
@@ -187,3 +187,14 @@
 - **资质类核不到现行依据就不上线**：本文件第一版就混进过一条 2018 年已废止的（物业资质）。
 - **必备章节按主类别、必查项主次都给**（混合标处理，与 spec334 一致）：提纲结构只能有一套，
   查多了只多看一眼、漏了是废标。
+
+
+## 实现记录（2026-08-01 落地）
+
+Task A–D 已落 `prompts/categories.py`：**33 条分类知识 + 9 条行业补丁**，全部 `unverified`，
+因此一律渲染成「通常……请核对本次招标文件是否有此要求」，没有一条以「必须」的口吻出现。
+三条自检测试钉住了这个性质：条目格式合法、无已废止资质、随包条目全部非 verified。
+
+**物业服务企业资质整条未入表**（方案里是划线保留的一行）——代码表里留着一条永不生效的死数据，
+不如在注释里写清为什么不能加。Task E（逐条转正）是持续任务，尚未开始：转正一条要核到现行法规
+原文或我们自己的真实标书，二手清单不算依据。
