@@ -32,3 +32,6 @@ apps/*/.next/
 **/.pytest_cache/
 **/.ruff_cache/
 *.pyc
+
+# 标书模板素材（322MB 二进制 doc/pdf，本地参考用）：仓库可能公开，进了历史就删不掉
+docs/标书模板汇总/
