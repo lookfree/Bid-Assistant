@@ -138,11 +138,19 @@ export function OrdersClient() {
     }
   }
 
-  async function refund(orderId: string, amountCents: number, reason: string, idempotencyKey: string) {
+  /* 扣回护栏被触发时暂存本次请求，供操作员确认后原参重发（幂等键沿用，不会双退）。
+     后端设计就是「拒绝 → 操作员确认后携 allowNegativeBalance 重试」，但后台一直没有这个出口，
+     于是充值送的积分一旦被用户花掉，这笔订单就永远退不了（同一订单连续 4 次 422，生产实测）。 */
+  const [clawbackConfirm, setClawbackConfirm] = useState<
+    { orderId: string; amountCents: number; reason: string; idempotencyKey: string; why: string } | null
+  >(null)
+
+  async function refund(orderId: string, amountCents: number, reason: string, idempotencyKey: string,
+                        allowNegativeBalance = false) {
     try {
       // 通道拒绝时接口是 200 + {status:"failed"}（HTTP 层没出错）：必须按 status 分支。
       // 原来无条件弹「已发起退款」——退款其实失败、订单仍是已支付，运营以为退成功了（生产实测）。
-      const res = await adminApi.orders.refund({ orderId, amountCents, reason, idempotencyKey })
+      const res = await adminApi.orders.refund({ orderId, amountCents, reason, idempotencyKey, allowNegativeBalance })
       if (res.status === "done") {
         toast.success("退款成功", { description: "订单状态已更新为已退款，积分按比例扣回。" })
       } else if (res.status === "pending") {
@@ -153,9 +161,16 @@ export function OrdersClient() {
         toast.error("退款失败，订单状态未变", { description: res.reason ?? "通道拒绝，未返回原因" })
       }
       setSelected(null)
+      setClawbackConfirm(null)
       await load()
     } catch (e) {
-      toast.error("退款请求未成功", { description: e instanceof Error ? e.message : "请重试" })
+      const why = e instanceof Error ? e.message : "请重试"
+      // 扣回护栏：不是终点，而是要操作员确认。给出原因 + 确认入口，别让运营对着 422 干瞪眼。
+      if (!allowNegativeBalance && why.includes("allowNegativeBalance")) {
+        setClawbackConfirm({ orderId, amountCents, reason, idempotencyKey, why })
+        return
+      }
+      toast.error("退款请求未成功", { description: why })
     }
   }
 
@@ -275,6 +290,34 @@ export function OrdersClient() {
         onOpenChange={(open) => !open && setSelected(null)}
         onRefund={refund}
       />
+
+      {/* 扣回护栏的二次确认：把服务端的原因原样摆出来，操作员确认后原参重发（幂等键不变，不会双退）。 */}
+      <Dialog open={!!clawbackConfirm} onOpenChange={(open) => !open && setClawbackConfirm(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>需要确认：积分扣不回来</DialogTitle>
+            <DialogDescription>
+              退款要按比例扣回当初随充值送出的积分，但该用户已经把积分消费掉了。
+              继续退款会让该用户的积分余额变成负数（后续消费需先充回）。
+            </DialogDescription>
+          </DialogHeader>
+          <p className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-xs leading-relaxed text-destructive">
+            {clawbackConfirm?.why}
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setClawbackConfirm(null)}>取消</Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                const c = clawbackConfirm
+                if (c) void refund(c.orderId, c.amountCents, c.reason, c.idempotencyKey, true)
+              }}
+            >
+              确认退款（允许负余额）
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   )
 }

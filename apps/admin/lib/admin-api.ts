@@ -9,7 +9,9 @@ const baseUrl = process.env.NEXT_PUBLIC_ADMIN_API_BASE_URL ?? "/admin-api"
 // 供需要按错误码区分提示的调用方（如模型管理保存）使用；无法解析时为 undefined。
 export class AdminApiError extends Error {
   constructor(public status: number, public code?: string) {
-    super(`admin api ${status}`)
+    // message 优先用服务端给的原因：退款等接口把可读中文原因放在 body.error，
+    // 只显示「admin api 422」等于把唯一有用的信息丢掉，运营根本不知道该怎么办（生产实测）。
+    super(code || `admin api ${status}`)
   }
 }
 
@@ -68,10 +70,17 @@ export const adminApi = {
       req<Paged<ApiOrder>>(`/orders${qs(p)}`),
     detail: (id: string) => req<ApiOrder & { refunds: unknown[] }>(`/orders/${id}`),
     // 后端 RefundBody 字段是 amount（=分）+ idempotencyKey（幂等去重）；此处映射 amountCents→amount。
-    refund: (body: { orderId: string; amountCents: number; reason: string; idempotencyKey: string }) =>
+    // allowNegativeBalance：退款要按比例扣回当初送出的积分，用户已消费时扣不动——后端护栏默认拒绝
+    // 并要求操作员显式确认。此前后台没有这个出口，于是「充值送的积分一旦被花掉，这笔订单永远退不了」
+    // （生产实测：同一订单连续 4 次 422）。
+    refund: (body: { orderId: string; amountCents: number; reason: string; idempotencyKey: string; allowNegativeBalance?: boolean }) =>
       req<{ refundId: string; status: "done" | "failed" | "pending"; reason?: string }>("/refunds", {
         method: "POST",
-        body: JSON.stringify({ orderId: body.orderId, amount: body.amountCents, reason: body.reason, idempotencyKey: body.idempotencyKey }),
+        body: JSON.stringify({
+          orderId: body.orderId, amount: body.amountCents, reason: body.reason,
+          idempotencyKey: body.idempotencyKey,
+          ...(body.allowNegativeBalance ? { allowNegativeBalance: true } : {}),
+        }),
       }),
   },
   ledger: {
