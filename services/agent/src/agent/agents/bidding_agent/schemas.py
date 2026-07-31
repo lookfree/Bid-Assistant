@@ -192,17 +192,10 @@ class SlideChart(BaseModel):
     categories: list[str]
     series: list[ChartSeries]
 
-    @model_validator(mode="after")
-    def _units_consistent(self):
-        """类别自带单位且互不相同 → 拒。生产实测：响应时限(h)=1、质保期(月)=36 画在同一根轴上，
-        36 的柱子把 1 小时那根压成看不见的线，评委实际只看得到一项。单位未标注时无从判断，不管。"""
-        units = {m.group(1).strip() for c in self.categories
-                 if (m := _UNIT_RE.search(c)) and m.group(1).strip()}
-        if len(units) > 1:
-            raise ValueError(
-                f"同一张图表的类别单位不一致（{'、'.join(sorted(units))}）：量纲不同画在一根轴上，"
-                "大数会把小数压成看不见的线。请拆成两张图，或改用 comparison 版式的数字卡片")
-        return self
+    def declared_units(self) -> set[str]:
+        """类别名里显式标注的单位集合（未标注的类别不计入）。"""
+        return {m.group(1).strip() for c in self.categories
+                if (m := _UNIT_RE.search(c)) and m.group(1).strip()}
 
     @model_validator(mode="after")
     def _shape_consistent(self):
@@ -352,9 +345,23 @@ class DeckDraft(BaseModel):
     qa: list[QA] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _dividers_earn_their_place(self):
+    def _structure_is_sound(self):
         _sections_have_content(self.slides)
+        _charts_use_one_unit(self.slides)
         return self
+
+
+def _charts_use_one_unit(slides: list) -> None:
+    """同一张图的类别单位必须一致。生产实测：响应时限(h)=1、质保期(月)=36 画在同一根轴上，
+    36 的柱子把 1 小时那根压成看不见的线，评委实际只看得到一项，另外三项白画。
+    **只在生成阶段判**：这条曾放在 SlideChart 上，而 SlideChart 被 Slide 共用 → DeckSpec 一起收紧
+    → 库里已有的混单位图表再也导不出来（2026-07-31 实测 /render/deck 500）。新规则只拦新产出的坏图。"""
+    for sl in slides:
+        units = sl.chart.declared_units() if sl.chart is not None else set()
+        if len(units) > 1:
+            raise ValueError(
+                f"「{sl.title}」的图表类别单位不一致（{'、'.join(sorted(units))}）：量纲不同画在一根轴上，"
+                "大数会把小数压成看不见的线。请拆成两张图，或改用 comparison 版式的数字卡片")
 
 
 def _sections_have_content(slides: list) -> None:

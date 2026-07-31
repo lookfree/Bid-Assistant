@@ -156,23 +156,35 @@ def test_every_section_divider_needs_real_content_after_it():
     DeckDraft(**deck(["cover", "content", "content", "end"]))
 
 
-def test_chart_categories_must_share_one_unit():
+def test_chart_categories_must_share_one_unit_at_generation_time():
     """用户实测那张条形图：响应时限(h)=1、到场时限(h)=8、质保期(月)=36、巡检间隔(月)=6 画在同一根轴上，
     36 的柱子把 1 小时那根压成一条看不见的线——评委实际只看得到一项，另外三项白画。
-    类别自带单位且互相不同时直接拒，让模型拆成两张图或改用数字卡片。单位没标注就不管（无从判断）。"""
+    只在**生成阶段**（DeckDraft）拒，让模型拆成两张图或改用数字卡片；单位没标注就不管（无从判断）。"""
     import pytest
     from pydantic import ValidationError
-    from agent.agents.bidding_agent.schemas import SlideChart
+    from agent.agents.bidding_agent.schemas import DeckDraft
+
+    def draft(cats, vals):
+        return {"slides": [{"id": "s1", "title": "图", "kind": "content", "layout": "chart", "bullets": [],
+                            "chart": {"type": "bar", "categories": cats,
+                                      "series": [{"name": "承诺", "values": vals}]}}]}
 
     with pytest.raises(ValidationError, match="单位"):
-        SlideChart(type="bar", categories=["响应时限(h)", "到场时限(h)", "质保期(月)", "巡检间隔(月)"],
-                   series=[{"name": "承诺", "values": [1, 8, 36, 6]}])
-    # 同单位放行
-    SlideChart(type="bar", categories=["响应时限(h)", "到场时限(h)"],
-               series=[{"name": "承诺", "values": [1, 8]}])
-    # 全角括号同样识别
-    with pytest.raises(ValidationError, match="单位"):
-        SlideChart(categories=["合同额（万元）", "项目数（个）"],
-                   series=[{"name": "近三年", "values": [800, 12]}])
-    # 没标注单位 → 不管
-    SlideChart(categories=["高级", "中级", "初级"], series=[{"name": "人数", "values": [3, 6, 4]}])
+        DeckDraft(**draft(["响应时限(h)", "到场时限(h)", "质保期(月)", "巡检间隔(月)"], [1, 8, 36, 6]))
+    DeckDraft(**draft(["响应时限(h)", "到场时限(h)"], [1, 8]))            # 同单位放行
+    with pytest.raises(ValidationError, match="单位"):                    # 全角括号同样识别
+        DeckDraft(**draft(["合同额（万元）", "项目数（个）"], [800, 12]))
+    DeckDraft(**draft(["高级", "中级", "初级"], [3, 6, 4]))               # 没标注单位 → 不管
+
+
+def test_stored_decks_with_mixed_units_still_render():
+    """生产事故（2026-07-31）：单位检查放在 SlideChart 上，而 SlideChart 被 Slide 共用 →
+    DeckSpec 一起收紧 → 库里已有的混单位图表**再也导不出来**（实测 /render/deck 500）。
+    新规则只该拦住新生成的坏图，绝不能让存量 deck 变成永久导不出。"""
+    from agent.agents.bidding_agent.schemas import DeckSpec
+    deck = DeckSpec(title="存量", slides=[
+        {"id": "s1", "title": "质保承诺", "kind": "content", "layout": "chart", "bullets": ["说明"],
+         "chart": {"type": "bar", "categories": ["响应时限(h)", "质保期(月)"],
+                   "series": [{"name": "承诺", "values": [1, 36]}]}},
+    ])
+    assert deck.slides[0].chart is not None
