@@ -3,22 +3,29 @@
 import { useEffect, useRef, useState } from "react"
 import { X } from "lucide-react"
 
-/* 添加标题弹窗：标题名称（必填）+ 写作说明（选填）。
+/* 提纲标题弹窗（新增与编辑共用）：标题名称（必填）+ 写作说明（选填）。
    说明不是备注——它会随提纲一并保存，并进入正文生成的提示词，用来指导这一节写什么
-   （如「重点写对本院场景的理解，强调涉密合规」）。此前只能行内改个标题名，
-   用户想表达的写作意图没有任何地方可放。 */
-export function AddItemDialog({
+   （如「重点写对本院场景的理解，强调涉密合规」）。
+   编辑也走这里而不是行内改名：已有节点同样需要补写作说明，两个入口用同一个表单，
+   用户不必先猜「说明要去哪儿填」。 */
+export function OutlineItemDialog({
+  mode,
   levelName,
+  initialLabel = "",
+  initialDesc = "",
   onCancel,
   onConfirm,
 }: {
-  /** 当前要新增的层级名（子项/小节/细分项/明细项），用于标题文案 */
+  mode: "add" | "edit"
+  /** 层级名（子项/小节/细分项/明细项），用于标题文案 */
   levelName: string
+  initialLabel?: string
+  initialDesc?: string
   onCancel: () => void
   onConfirm: (label: string, desc: string) => void
 }) {
-  const [label, setLabel] = useState("")
-  const [desc, setDesc] = useState("")
+  const [label, setLabel] = useState(initialLabel)
+  const [desc, setDesc] = useState(initialDesc)
   const inputRef = useRef<HTMLInputElement>(null)
 
   // 打开即聚焦标题输入框：这个弹窗的唯一必填项就是它，少一次点击
@@ -42,7 +49,7 @@ export function AddItemDialog({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={`新增${levelName}`}
+        aria-label={`${mode === "add" ? "新增" : "编辑"}${levelName}`}
         className="relative z-10 w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-2xl"
       >
         <button
@@ -55,7 +62,7 @@ export function AddItemDialog({
 
         <h2 className="flex items-center gap-2 text-base font-bold text-foreground">
           <span className="h-4 w-1 rounded-full bg-primary" aria-hidden />
-          新增{levelName}
+          {mode === "add" ? "新增" : "编辑"}{levelName}
         </h2>
 
         <label className="mt-5 block text-sm font-medium text-foreground" htmlFor="outline-add-label">

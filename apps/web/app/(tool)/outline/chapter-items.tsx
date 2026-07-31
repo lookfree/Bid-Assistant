@@ -10,45 +10,11 @@ import { useEffect, useState } from "react"
 import { Check, CornerDownRight, GripVertical, ListTree, MapPin, Pencil, Plus, Sparkles, Trash2, X } from "lucide-react"
 import type { OutlineItem } from "@/lib/bid-types"
 import { MAX_OUTLINE_DEPTH, reorderWithin } from "@/lib/outline-edit"
-import { AddItemDialog } from "./add-item-dialog"
+import { OutlineItemDialog } from "./item-dialog"
 
 type Drag = { id: string; parentId: string } // parentId = 祖先 id 链 join("/")，空串=顶层
 
 /** 编辑态单行（各级共用；depth 决定缩进，与展示态对齐）。 */
-function EditRow({ child, depth = 1, draft, setDraft, onSave, onCancel }: {
-  child: boolean
-  depth?: number
-  draft: string
-  setDraft: (v: string) => void
-  onSave: () => void
-  onCancel: () => void
-}) {
-  return (
-    <div
-      style={child ? { marginLeft: `${(depth - 1) * 1.5}rem` } : undefined}
-      className="flex items-center gap-2 rounded-lg border border-primary bg-primary/5 px-2.5 py-1.5"
-    >
-      {child ? <CornerDownRight className="size-3.5 shrink-0 text-primary/60" /> : <ListTree className="size-3.5 shrink-0 text-primary/60" />}
-      <input
-        autoFocus
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") onSave()
-          if (e.key === "Escape") onCancel()
-        }}
-        className="min-w-0 flex-1 rounded-md border border-border bg-card px-2 py-1 text-sm text-foreground outline-none focus:border-primary"
-      />
-      <button onClick={onSave} className="rounded-md p-1 text-success hover:bg-success/10" aria-label="保存">
-        <Check className="size-4" />
-      </button>
-      <button onClick={onCancel} className="rounded-md p-1 text-muted-foreground hover:bg-muted" aria-label="取消">
-        <X className="size-4" />
-      </button>
-    </div>
-  )
-}
-
 export function ChapterItems({
   items,
   activeItem,
@@ -71,12 +37,8 @@ export function ChapterItems({
   /** 页面开章标题编辑时 bump,本组件收敛自身编辑态 */
   closeEditToken?: unknown
 }) {
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [draft, setDraft] = useState("")
   const [drag, setDrag] = useState<Drag | null>(null)
   const [overId, setOverId] = useState<string | null>(null) // 悬停中的同层目标（顶部插入线）
-
-  useEffect(() => setEditingId(null), [closeEditToken])
 
   /** 对某一层做变换：path=祖先 id 链（空=顶层）。递归下钻，支持到五级（MAX_OUTLINE_DEPTH）。 */
   const mutateLevel = (path: string[], fn: (list: OutlineItem[]) => OutlineItem[]) => {
@@ -88,34 +50,40 @@ export function ChapterItems({
     onChange(walk(items, path))
   }
 
-  const startEdit = (item: OutlineItem) => {
-    onEditStart?.()
-    setEditingId(item.id)
-    setDraft(item.label)
-  }
-
-  const saveLabel = (id: string, path: string[]) => {
-    const text = draft.trim()
-    setEditingId(null)
-    setDraft("")
-    if (!text) return
-    mutateLevel(path, (list) => list.map((it) => (it.id === id ? { ...it, label: text } : it)))
-  }
-
   /** 各级新增项的默认名（depth 从 1=节 起算，与提纲编号层级一一对应）。 */
   const LEVEL_NAME = ["", "新增子项", "新增小节", "新增细分项", "新增明细项"]
 
-  /* 新增改走弹窗：除了标题名，还要能填「这一节写什么」的说明——它随提纲保存并进入
-     正文生成提示词。此前是直接插一个「新增子项」再行内改名，用户的写作意图无处可放。 */
-  const [adding, setAdding] = useState<{ path: string[]; levelName: string } | null>(null)
-  const add = (path: string[]) =>
-    setAdding({ path, levelName: LEVEL_NAME[Math.min(path.length + 1, LEVEL_NAME.length - 1)]! })
+  /* 新增与编辑共用一个弹窗：除标题名外还要能填「这一节写什么」的说明——它随提纲保存并进入
+     正文生成提示词。此前新增是插一个占位项再行内改名、编辑只能改名，用户的写作意图无处可放；
+     已有节点同样需要补说明，所以铅笔也走这里，两个入口一个表单。 */
+  const [dialog, setDialog] = useState<
+    { mode: "add"; path: string[]; levelName: string }
+    | { mode: "edit"; path: string[]; levelName: string; item: OutlineItem }
+    | null
+  >(null)
+  const levelNameAt = (depth: number) => LEVEL_NAME[Math.min(depth, LEVEL_NAME.length - 1)]!
 
-  const confirmAdd = (label: string, desc: string) => {
-    if (!adding) return
+  // 页面开始编辑章标题时收起本组件的弹窗（同时编辑两处会让用户分不清在改哪个）
+  useEffect(() => setDialog(null), [closeEditToken])
+
+  const add = (path: string[]) =>
+    setDialog({ mode: "add", path, levelName: levelNameAt(path.length + 1) })
+
+  const startEdit = (item: OutlineItem, path: string[], depth: number) => {
     onEditStart?.()
-    mutateLevel(adding.path, (list) => [...list, { id: genId(), label, desc, isNew: true }])
-    setAdding(null)
+    setDialog({ mode: "edit", path, levelName: levelNameAt(depth), item })
+  }
+
+  const confirmDialog = (label: string, desc: string) => {
+    if (!dialog) return
+    if (dialog.mode === "add") {
+      onEditStart?.()
+      mutateLevel(dialog.path, (list) => [...list, { id: genId(), label, desc, isNew: true }])
+    } else {
+      const id = dialog.item.id
+      mutateLevel(dialog.path, (list) => list.map((it) => (it.id === id ? { ...it, label, desc } : it)))
+    }
+    setDialog(null)
   }
 
   /** 同层放置：drag 与目标同一父路径才接受。dropId=null 落到层尾。 */
@@ -214,7 +182,7 @@ export function ChapterItems({
               <CornerDownRight className="size-3.5" />
             </button>
           )}
-          <button onClick={() => startEdit(item)} className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="编辑标题">
+          <button onClick={() => startEdit(item, path, depth)} className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="编辑标题与说明">
             <Pencil className="size-3.5" />
           </button>
           <button onClick={() => mutateLevel(path, (list) => list.filter((it) => it.id !== item.id))} className="rounded-md p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive" aria-label="删除本项">
@@ -225,19 +193,7 @@ export function ChapterItems({
     )
   }
 
-  const renderRow = (item: OutlineItem, path: string[], depth: number) =>
-    editingId === item.id ? (
-      <EditRow
-        child={depth > 1}
-        depth={depth}
-        draft={draft}
-        setDraft={setDraft}
-        onSave={() => saveLabel(item.id, path)}
-        onCancel={() => setEditingId(null)}
-      />
-    ) : (
-      row(item, path, depth)
-    )
+  const renderRow = (item: OutlineItem, path: string[], depth: number) => row(item, path, depth)
 
   /** 递归渲染一层（含该层尾部落点）。depth 从 1（节）起算，最深到 MAX_OUTLINE_DEPTH-1。 */
   const renderLevel = (list: OutlineItem[], path: string[], depth: number) => (
@@ -275,11 +231,14 @@ export function ChapterItems({
       >
         <Plus className="size-4" />
       </button>
-      {adding && (
-        <AddItemDialog
-          levelName={adding.levelName}
-          onCancel={() => setAdding(null)}
-          onConfirm={confirmAdd}
+      {dialog && (
+        <OutlineItemDialog
+          mode={dialog.mode}
+          levelName={dialog.levelName}
+          initialLabel={dialog.mode === "edit" ? dialog.item.label : ""}
+          initialDesc={dialog.mode === "edit" ? (dialog.item.desc ?? "") : ""}
+          onCancel={() => setDialog(null)}
+          onConfirm={confirmDialog}
         />
       )}
     </>
