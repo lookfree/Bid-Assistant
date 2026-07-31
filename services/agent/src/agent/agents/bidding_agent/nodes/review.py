@@ -6,6 +6,7 @@ from agent.agents.bidding_agent.nodes.common import slim_read, filter_read_by_pa
 from agent.agents.bidding_agent.nodes.classify import EMPTY as EMPTY_CATEGORY, classify_from_chapters
 from agent.agents.bidding_agent.schemas import RiskReport
 from agent.agents.bidding_agent.prompts.review import REVIEW_SYSTEM_PROMPT
+from agent.agents.bidding_agent.prompts.categories import category_scope, industry_patches
 
 
 _CHAPTER_CAP = 4000  # 每章喂给审查模型的正文上限（合规要点集中在前部；整本不截会顶穿上下文窗）
@@ -65,6 +66,11 @@ def make_review_node(ctx):
             payload["required_structure"] = structure
         mode_note = "" if read_state else _SELF_CHECK_NOTE
         user = f"招标与投标材料：\n{json.dumps(payload, ensure_ascii=False)}{mode_note}\n请审查并提交体检报告。"
+        # 分类必查项（spec334）：**主次类别都取**——查多了只多看一眼，漏一条是废标。
+        # 行业资质补丁在读标条目（有招标文件）或标书正文（自查）上做字面匹配，不拿全文匹配：
+        # 补丁词是资质类术语，只出现在需求与资格条款里，全文匹配只增噪声和成本。
+        user += category_scope(category.get("value"), "review")
+        user += industry_patches(json.dumps(payload["read"] or chapters, ensure_ascii=False))
         result = await run_submit_agent(
             ctx, REVIEW_SYSTEM_PROMPT, user,
             "submit_risk_report", RiskReport, "提交审查报告")

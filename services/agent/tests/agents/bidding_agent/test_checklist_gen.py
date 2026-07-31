@@ -71,12 +71,16 @@ def test_route_normalizes_group_ids(monkeypatch):
     from agent.routes import generate as gen_mod
     from agent.agents.bidding_agent.schemas import ChecklistGen
 
-    async def _fake_gen(ctx, read_result):
+    seen: dict = {}
+
+    async def _fake_gen(ctx, read_result, bid_category=None):
+        seen["bid_category"] = bid_category
         return ChecklistGen.model_validate(_GEN)
     monkeypatch.setattr(gen_mod, "generate_checklist", _fake_gen)
     monkeypatch.setattr(gen_mod, "build_gateway", lambda _o: None)
-    body = gen_mod.GenerateChecklistBody(read_result=_READ)
+    body = gen_mod.GenerateChecklistBody(read_result=_READ, bid_category=["goods"])
     res = asyncio.run(gen_mod.generate_checklist_route(body))
+    assert seen["bid_category"] == ["goods"]   # spec334：body 的分类必须透传到生成侧
     assert [g["id"] for g in res["groups"]] == ["1", "2"]
     assert res["groups"][0]["title"] == "资格与资质"
 

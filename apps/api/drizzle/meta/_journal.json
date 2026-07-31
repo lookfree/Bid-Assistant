@@ -281,6 +281,13 @@
       "when": 1784822778678,
       "tag": "0039_export_dirty_at",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1784822779678,
+      "tag": "0040_bid_category",
+      "breakpoints": true
     }
   ]
 }

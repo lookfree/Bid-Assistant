@@ -99,10 +99,33 @@ export type ProjectInfo = {
     // 导出计费脏标记（2026-07-31 口径）：内容改过 → 下次导出收费；未改动 → 重复下载免费。
     // 前端据此决定要不要设余额门与显示费用；老接口没这个字段时按收费处理（保守，不会误显示免费）。
     exportDirty?: boolean
+    // 标书分类**用户确认值**（spec334）。三态：null/缺省=没表态（回落系统判定值）；
+    // 非空数组=用户选定（首元素为主类别）；**空数组=用户明确不用分类**。
+    bidCategory?: BidCategoryValue[] | null
   }
   steps: ProjectStep[]
   // 同一招标文件的兄弟项目里已生成大纲的包 id（一包一份投标文件）：选包卡置灰不可再选；旧缓存可能缺省
   takenPackageIds?: string[]
+  // 系统判定值（含置信度与证据条款）：前端据此把「系统判定 / 你已改判」两态说清楚。
+  // 只有非 slim 的详情才回；slim 回的是已生效的 effectiveCategory。
+  detectedCategory?: DetectedCategory | null
+  effectiveCategory?: BidCategoryValue[]
+}
+
+// 标书分类（spec334）：《政府采购法》的货物/服务/工程三分法。**注意别和 content 页的 `bidType`
+// （技术标/商务标/全文）混为一谈**，那是另一个维度。
+export const BID_CATEGORIES = ["goods", "services", "engineering"] as const
+export type BidCategoryValue = (typeof BID_CATEGORIES)[number]
+export const BID_CATEGORY_LABEL: Record<BidCategoryValue, string> = {
+  goods: "货物标",
+  services: "服务标",
+  engineering: "工程标",
+}
+export type DetectedCategory = {
+  value: BidCategoryValue[]
+  confidence?: string
+  reason?: string
+  evidenceClauseIds?: string[]
 }
 
 const KEY = "bid.projectId"
@@ -363,4 +386,16 @@ export function triggerDownload(url: string): void {
   document.body.appendChild(a)
   a.click()
   a.remove()
+}
+
+/** 确认/改判标书分类（spec334）。传 null 清除（回落系统判定值）；传空数组=明确不用分类。 */
+export async function setProjectCategory(
+  projectId: string,
+  category: BidCategoryValue[] | null,
+): Promise<void> {
+  await api.request(`/api/projects/${projectId}/category`, {
+    method: "PATCH",
+    body: JSON.stringify(category),
+  })
+  invalidateProjectCache(projectId)
 }

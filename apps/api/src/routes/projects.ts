@@ -3,7 +3,7 @@ import { streamSSE } from "hono/streaming"
 import { z } from "zod"
 import { eq, and, desc, sql, inArray, ne, isNotNull } from "drizzle-orm"
 import { getDb } from "../db/client"
-import { bidProjects, projectSteps, projectFiles, libraryItems } from "../db/schema"
+import { bidProjects, projectSteps, projectFiles, libraryItems, BID_CATEGORIES } from "../db/schema"
 import type { User } from "../db/schema"
 import { authMiddleware } from "../middleware/auth"
 import { getUserId } from "../lib/auth-user"
@@ -18,6 +18,7 @@ import { ragRunInput } from "../services/rag-config"
 import { generationRunInput } from "../services/generation-config"
 import { getEntitlements, featureLocked, lockRiskAdvice } from "../services/entitlements"
 import { resultShapeOk, SHAPE_MISMATCH_ERROR } from "../services/step-result-shape"
+import { detectedCategory, effectiveCategory, logCategoryCorrection } from "../services/bid-category"
 import { markExportDirty, shouldChargeExport } from "../services/export-dirty"
 import { createAdviceScrubber } from "../services/sse-scrub"
 import { getConfig } from "../services/config"
@@ -142,6 +143,14 @@ const createBodySchema = z.union([
 
 // 选包请求体（spec324）：裸 body——{id,name} 设置该包，JSON null 清除（不用 {package:...} 包一层）。
 const packageBodySchema = z.union([z.object({ id: z.string().min(1), name: z.string().min(1) }), z.null()])
+
+// 分类请求体（spec334）：裸数组设置，JSON null 清除（回落判定值）。
+// **允许空数组**——那是「用户明确不用分类」这一态，与 null（没表态）语义不同，不可合并。
+// 最多两个值、首元素为主类别；去重在 zod 之后做（transform），避免 ["goods","goods"] 被当成两类。
+const categoryBodySchema = z.union([
+  z.array(z.enum(BID_CATEGORIES)).max(2).transform((v) => [...new Set(v)]),
+  z.null(),
+])
 
 // 独立审查建项（spec328）：线下标书必传,招标文件可选（附了做对照审查,否则通用自查）。
 // 两侧都收数组（商务标/技术标常分册出卷,招标文件也常有补遗/答疑）；单文件形状保留兼容——
@@ -493,6 +502,21 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     return c.json({ ok: true, selectedPackage: parsed.data })
   })
 
+  // 标书分类确认/改判（spec334）：裸数组设置，JSON null 清除。不设「锁」——分类只影响提示词、
+  // 不改已产出的结构，改判后重跑即生效；不像选包那样中途换会产出错乱文件。
+  r.patch("/:id/category", async (c) => {
+    const id = c.req.param("id")
+    if (!isUuid(id)) return c.json({ error: "not_found" }, 404) // 非 uuid 直接 404，避免 PG 22P02 → 500
+    const p = await ownedProject(id, c.get("user").id)
+    if (!p) return c.json({ error: "not_found" }, 404)
+    const parsed = categoryBodySchema.safeParse(await c.req.json().catch(() => undefined))
+    if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
+    // 纠偏样本：只在「系统判过、且用户改成了别的」时记——判定为空时的选择不是纠偏（见服务层注释）
+    if (parsed.data) await logCategoryCorrection(p.id, await detectedCategory(p.id), parsed.data)
+    await getDb().update(bidProjects).set({ bidCategory: parsed.data }).where(eq(bidProjects.id, p.id))
+    return c.json({ ok: true, bidCategory: parsed.data })
+  })
+
   // 步骤进度事件流（只读、不计费、不占步位）：任何步骤在跑时前端订阅这条，实时看到中间进度
   // （正文逐章 chapter.progress / 读标分段 node 事件 / 审查运行…）。中继 agent 的 run stream，
   // 它从头回放持久事件，所以停留、切回、刷新都能立即接上进度；无 running run → 立即 idle 结束。
@@ -712,6 +736,9 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       if (Array.isArray(read?.pkgs) && read.pkgs.length > 1) return c.json({ error: "package_required" }, 400)
     }
 
+    // spec334：本次生效的分类。read 步不查——那一步产出判定值，查了也用不上（见下方 run_input 注释）。
+    const runCategory = step === "read" ? [] : effectiveCategory(p.bidCategory, await detectedCategory(p.id))
+
     // spec315a 契约 3：input 扩为五键——run_input（本 run 参数）+ state_overrides（已存/已编辑结果回灌 state）。
     // 组装必须在占位行/预扣**之前**完成（它不依赖 hold）：若放在预扣之后，DB 抖动抛错会让 hold 冻结、
     // running 占位行永久卡死（部分唯一索引让重试恒 409）。这里抛错只是普通 500，无任何残留。
@@ -737,6 +764,9 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         ...(step === "content" && gen.targetChars ? { target_chars: gen.targetChars } : {}),
         ...(step === "content" ? await generationRunInput() : {}),
         ...(step === "export" && gen.format ? { format: gen.format } : {}),
+        // spec334 标书分类：有效值 = 确认值 ?? 判定值。read 步不带——判定正是在那一步产生的，
+        // 带上去会让节点跳过判定、把上一轮的结论钉死，重跑读标就再也刷不出新判定。
+        ...(step !== "read" && runCategory.length ? { bid_category: runCategory } : {}),
       },
       state_overrides: await guardedOverrides(p.id, step as Step, userId),
     }
@@ -1045,10 +1075,13 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       const latestSlim = new Map<string, (typeof rows)[number]>()
       for (const s of rows) latestSlim.set(s.step, s)
       // takenPackageIds：兄弟项目已生成大纲的包（选包卡置灰用）；两个小索引查询，毫秒级，不破 slim
+      // effectiveCategory：项目卡/概况的分类标签走 slim，只回确认值会让「已按判定值生成」的项目
+      // 不显示标签——**显示与实际生效的不一致**。它只取 result 里的一个 JSON 键，不碰整列，不破 slim。
       return c.json({
         project: p,
         steps: [...latestSlim.values()].map((s) => ({ ...s, result: null })),
         takenPackageIds: await takenPackageIds(c.get("user").id, p.tenderFileKey, p.id),
+        effectiveCategory: effectiveCategory(p.bidCategory, await detectedCategory(p.id)),
       })
     }
     // 失败重试会给同一步留下多行历史（自愈槽位只约束 running 唯一）——每步只回最新一行，
@@ -1067,6 +1100,9 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         steps.map(async (s) => ({ ...s, result: await resultForUser(s.step, s.result, c.get("user").id) })),
       ),
       takenPackageIds: await takenPackageIds(c.get("user").id, p.tenderFileKey, p.id),
+      // spec334：判定值单独回一份（含置信度与证据条款），前端才能把「系统判定 / 你已改判」
+      // 两态说清楚——只回 project.bidCategory 的话，用户看不出这个类别是谁定的、凭什么定的。
+      detectedCategory: await detectedCategory(p.id),
     })
   })
 

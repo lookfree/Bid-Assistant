@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage
 from agent.models.usage import UsageCallback
 from agent.framework.create_agent import build_create_agent
 from agent.agents.bidding_agent.nodes.common import slim_read, package_scope, filter_read_by_package
+from agent.agents.bidding_agent.prompts.categories import category_scope
 from agent.agents.bidding_agent.prompts.content import (
     CONTENT_PLANNER_PROMPT, CHAPTER_WRITER_PROMPT, REWRITE_PROMPT, DEVIATION_TABLE_GUIDE, TEMPLATE_GUIDE)
 from agent.rag import retrieve as rag_retrieve
@@ -368,10 +369,15 @@ def make_content_node(ctx):
     虚拟 FS 是默认 StateBackend、不开 execute；一章未产出即失败（run failed 可重试）。"""
     async def content_node(state):
         model = ctx.gateway.get_chat(provider=None) if ctx.gateway else None
+        # 分类落笔要点（spec334）**必须拼进子写手的 system_prompt**，不能只加在规划轮的用户消息里：
+        # 真正落笔的是子写手，规划轮只是派活；靠它转述等于把要点的存亡押在模型愿不愿意复述上——
+        # 提纲 desc 就是这么丢过的（CONTENT_PLANNER_PROMPT 里那句「必须原样转述」是事后补的）。
+        cats = (state.get("run_input") or {}).get("bid_category")
+        writer_prompt = CHAPTER_WRITER_PROMPT + category_scope(cats, "writing")
         deep = create_deep_agent(
             model=model, tools=[], system_prompt=CONTENT_PLANNER_PROMPT,
             subagents=[{"name": "chapter_writer", "description": "写指定一章的标书正文 HTML",
-                        "system_prompt": CHAPTER_WRITER_PROMPT}],
+                        "system_prompt": writer_prompt}],
         )
         # 读标依据走 slim_read（与 outline/review 一致）：read result 已并入全文分句 doc_sections
         # 与逐条 source_quote（token 大头），原样 dumps 会把整份招标原文灌进规划轮直接顶穿上下文。
@@ -392,6 +398,7 @@ def make_content_node(ctx):
         mid = ("\n\n".join(mid_parts) + "\n\n") if mid_parts else ""
         user = f"{head}\n\n{mid}请逐章生成正文，每章写入 chapters/<章id>.html。"
         user += package_scope(state.get("run_input"))  # 选包时追加范围约束（spec324）
+        user += category_scope(cats, "planning")       # 章节层面的写作要点（spec334，只取主类别）
         # 逐章进度:从 outline 取章 id→标题,写完一章推一条 chapter.progress(前端实时勾选)。
         chapters_meta = {c.get("id"): c.get("title", c.get("id"))
                          for c in outline.get("chapters", []) if c.get("id")}

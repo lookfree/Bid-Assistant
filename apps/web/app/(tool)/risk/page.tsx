@@ -30,6 +30,8 @@ import { toneClasses } from "./shared"
 
 type Tab = "reject" | "dedup" | "checklist"
 
+import { CategoryCard } from "../category-card"
+
 export default function ReviewPage() {
   const [tab, setTab] = useState<Tab>("reject")
 
@@ -183,6 +185,16 @@ function RejectReview() {
     <div className="flex flex-col gap-6">
         <EntryBar onOpen={goEntry} />
         <AiNotice />
+        {/* 标书分类（spec334）：**只在没有招标文件的线下自查项目上渲染**——那类项目不跑读标、
+            没有读标页，分类是在审查节点开头现判的，用户只能在这里改判。有招标文件的项目在读标页改。 */}
+        {!info.project.tenderFileKey && (
+          <CategoryCard
+            projectId={projectId}
+            confirmed={info.project.bidCategory}
+            detected={info.detectedCategory}
+            applyHint="已保存，重跑审查后生效"
+          />
+        )}
         {/* 健康分 */}
         <div className="flex flex-col items-center gap-5 rounded-3xl border border-border bg-card p-8 sm:flex-row sm:gap-8">
           <div className="flex size-28 shrink-0 flex-col items-center justify-center rounded-full gradient-brand-soft">

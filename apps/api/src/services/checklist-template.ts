@@ -1,7 +1,8 @@
 import { and, desc, eq } from "drizzle-orm"
 import { getDb } from "../db/client"
-import { projectChecklists, projectSteps, type ChecklistGroup } from "../db/schema"
+import { bidProjects, projectChecklists, projectSteps, type ChecklistGroup } from "../db/schema"
 import * as client from "./agent-client"
+import { detectedCategory, effectiveCategory } from "./bid-category"
 
 // 定制审核表模板（spec333）：读标结论 → 模型生成分组核对项 → 存 project_checklists.template。
 // 计费归属读标步（本模块 best-effort，不预扣不结算）；agent 依旧 money-blind。
@@ -50,7 +51,14 @@ export async function ensureChecklistTemplate(
     if (!read) return null // 无读标结果（独立审查未传招标文件）→ 默认 36
     const model = await getModel()
     if (!model) return null // 模型未配置：best-effort 不报错、不占步位，回落默认 36
-    const { groups } = await generate(read, model)
+    // spec334 分类：审核表按类补该类的投递前核对项。这条是同步接口没有 run_input，只能随 body 发。
+    const [proj] = await getDb()
+      .select({ bidCategory: bidProjects.bidCategory })
+      .from(bidProjects)
+      .where(eq(bidProjects.id, projectId))
+      .limit(1)
+    const category = effectiveCategory(proj?.bidCategory, await detectedCategory(projectId))
+    const { groups } = await generate(read, model, category)
     if (!groups?.length) return null
     // upsert：只写 template（items 由 PUT 单独维护，互不覆盖）；(user,project) 唯一约束命中。
     await getDb()

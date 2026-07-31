@@ -4,6 +4,7 @@ from agent.framework.create_agent import run_submit_agent
 from agent.agents.bidding_agent.nodes.common import slim_read, package_scope, filter_read_by_package, publish_phase
 from agent.agents.bidding_agent.schemas import Outline
 from agent.agents.bidding_agent.prompts.outline import OUTLINE_SYSTEM_PROMPT
+from agent.agents.bidding_agent.prompts.categories import category_scope
 
 
 def _structure_skeleton(items: list[dict]) -> str:
@@ -29,6 +30,8 @@ def make_outline_node(ctx):
         if structure:
             user += _structure_skeleton(structure)
         user += package_scope(state.get("run_input"))
+        # 分类必备章节（spec334）：只取主类别——提纲结构只能有一套，两套会膨胀出重复骨架
+        user += category_scope((state.get("run_input") or {}).get("bid_category"), "chapters")
         result = await run_submit_agent(
             ctx, OUTLINE_SYSTEM_PROMPT, user,
             "submit_outline", Outline, "提交提纲")

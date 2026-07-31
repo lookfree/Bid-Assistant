@@ -82,6 +82,8 @@ import { StepPrereqGuide } from "@/components/tool/step-prereq-guide"
 import { AiNotice } from "@/components/tool/ai-notice"
 
 
+import { CategoryCard } from "../category-card"
+
 export default function ReadPage() {
   const { projectId, info, data: real, dataLoading, running, phase, error, errorAction, start } = useStep<RealRead>("read")
   // 线下标书审查项目（无招标文件）不适用读标：绝不亮计费按钮（点了必 409）
@@ -387,6 +389,17 @@ export default function ReadPage() {
           onClone={(pkg) => void handleClone(pkg)}
           cloning={cloneState === "cloning"}
           cloneError={cloneState === "error" ? "创建新项目失败，请重试" : null}
+        />
+      )}
+
+      {/* 标书分类（spec334）：**在选包卡下方**——多包件时判定发生在选包之前，系统不判，
+          用户要按「所投的那个包」选类型，先选包再选类型才是对的顺序 */}
+      {projectId && info && (
+        <CategoryCard
+          projectId={projectId}
+          confirmed={info.project.bidCategory}
+          detected={info.detectedCategory}
+          multiPackage={packages.length > 1}
         />
       )}
 

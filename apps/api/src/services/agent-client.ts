@@ -293,9 +293,13 @@ export async function renderReadReport(payload: Record<string, unknown>): Promis
 export async function generateChecklist(
   readResult: Record<string, unknown>,
   model?: AgentModelSelection,
+  bidCategory?: string[],
 ): Promise<{ groups: Array<{ id: string; title: string; items: string[] }> }> {
   const body: Record<string, unknown> = { read_result: readResult }
   if (model) body.model = model
+  // spec334：这条是同步接口、没有 run_input，分类只能走 body。**必须显式下发有效值**——
+  // agent 侧虽然也会回落 read_result.bid_category，但那是判定值，用户改判后的确认值不在里面。
+  if (bidCategory?.length) body.bid_category = bidCategory
   return postSync("/generate/checklist", body)
 }
 

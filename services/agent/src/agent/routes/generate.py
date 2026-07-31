@@ -20,6 +20,7 @@ router = APIRouter()
 class GenerateChecklistBody(BaseModel):
     read_result: dict = Field(default_factory=dict)  # 读标结论（project_meta/categories/risk_summary/required_structure…）
     model: RunModelOverride | None = None            # App 下发的模型选择（覆盖 env 默认，同 rewrite）
+    bid_category: list[str] | None = None            # spec334 有效值（确认值 ?? 判定值）；缺省回落 read_result 里的判定值
 
 
 def _group_id(i: int) -> str:
@@ -35,7 +36,7 @@ async def generate_checklist_route(body: GenerateChecklistBody):
     ctx = RunContext(run_id=str(uuid.uuid4()), agent_type="bidding_agent", thread_id="",
                      gateway=build_gateway(body.model.model_dump() if body.model else None))
     try:
-        result = await generate_checklist(ctx, body.read_result)
+        result = await generate_checklist(ctx, body.read_result, body.bid_category)
     except Exception as e:  # noqa: BLE001 LLM/网关/未提交 → 502 可读错误，App 侧回落默认 36
         return JSONResponse({"error": str(e)}, status_code=502)
     groups = [{"id": _group_id(i), "title": g.title, "items": g.items}
