@@ -7,7 +7,7 @@
 // - 结构性修改统一经 onChange 交回页面（位置编号重排/保存由页面链路负责）
 // - 与页面章标题编辑互斥（评审二轮:重构曾丢互斥）:开编辑时回调 onEditStart,页面 bump closeEditToken 反向关这里
 import { useEffect, useState } from "react"
-import { CornerDownRight, GripVertical, ListTree, MapPin, Pencil, Plus, Sparkles, Trash2 } from "lucide-react"
+import { CornerDownRight, GripVertical, ListTree, MapPin, Pencil, Sparkles, Trash2 } from "lucide-react"
 import type { OutlineItem } from "@/lib/bid-types"
 import { MAX_OUTLINE_DEPTH, reorderWithin } from "@/lib/outline-edit"
 import { OutlineItemDialog } from "./item-dialog"
@@ -225,9 +225,9 @@ export function ChapterItems({
         {...tailDropProps([])}
         aria-label="添加子项"
         title="添加子项"
-        className="mt-2 flex w-full items-center justify-center rounded-lg border border-dashed border-border py-1.5 text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
+        className="mt-2 flex w-full items-center justify-center rounded-lg border border-dashed border-border py-1.5 text-base leading-none text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
       >
-        <Plus className="size-4" />
+        <span aria-hidden>➕</span>
       </button>
       {dialog && (
         <OutlineItemDialog

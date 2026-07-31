@@ -276,5 +276,8 @@ def test_outline_desc_is_marked_as_user_only_in_the_tool_schema():
     tool, _ = make_submit_tool("submit_outline", Outline, "提交提纲")
     item = convert_to_openai_tool(tool)["function"]["parameters"]["properties"]["chapters"]["items"]
     desc_field = item["properties"]["items"]["items"]["properties"]["desc"]
-    assert "留空" in (desc_field.get("description") or ""), "desc 字段没告诉模型要留空"
-    assert "desc" in OUTLINE_SYSTEM_PROMPT and "留空" in OUTLINE_SYSTEM_PROMPT
+    assert "留空" in (desc_field.get("description") or ""), "子项 desc 字段没告诉模型要留空"
+    # 章级同理：章的 desc 也会被写手当成用户的写作要求，模型填了就是冒充用户指令
+    chap_desc = item["properties"]["desc"]
+    assert "留空" in (chap_desc.get("description") or ""), "章级 desc 字段没告诉模型要留空"
+    assert "desc" in OUTLINE_SYSTEM_PROMPT and OUTLINE_SYSTEM_PROMPT.count("留空") >= 2

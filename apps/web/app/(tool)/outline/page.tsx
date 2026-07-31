@@ -15,9 +15,7 @@ import {
   ChevronDown,
   Pencil,
   Trash2,
-  Plus,
   Check,
-  X,
   Loader2,
   Save,
 } from "lucide-react"
@@ -37,9 +35,10 @@ import { patchErrorMessage, patchStep } from "@/lib/project"
 import { clauseLocationIn, groupDocSections, type DocSentence } from "@/lib/doc-sections"
 import { applyNumbering, chapterNo, deriveNumberMode, flattenItems, moveChapter, renumberItemsByPosition, serializeItems, type NumberMode } from "@/lib/outline-edit"
 import { ChapterItems } from "./chapter-items"
+import { OutlineItemDialog } from "./item-dialog"
 
 // agent Outline（camelCase）：chapters[{id,no,title,group,sourced,structureRef?,items[{id,label,clauseIds,isNew}]}]
-type RealChapter = BidChapter & { group: "tech" | "business"; structureRef?: string | null }
+type RealChapter = BidChapter & { group: "tech" | "business"; structureRef?: string | null; desc?: string }
 type RealOutline = { chapters: RealChapter[] }
 
 /* ---------------- 提纲数据（取自全流程共享数据源） ---------------- */
@@ -51,13 +50,16 @@ type Chapter = {
   sourced: boolean
   /** 对应投标文件构成项 id（spec321/322 偏离表与格式模板按它匹配）——编辑保存必须透传，丢了匹配会退化 */
   structureRef?: string | null
+  /** 用户手写的本章写作说明（与子项 desc 同义）：随提纲保存，作为该章写作要求进入正文生成提示词 */
+  desc?: string
   items: OutlineItem[]
 }
 
 const toOutline = (list: RealChapter[]): Chapter[] =>
-  list.map(({ id, no, title, sourced, structureRef, items }) => ({
+  list.map(({ id, no, title, sourced, structureRef, desc, items }) => ({
     id,
     no,
+    desc,
     title,
     sourced,
     structureRef,
@@ -129,6 +131,7 @@ export default function OutlinePage() {
         group,
         sourced: ch.sourced,
         structureRef: ch.structureRef ?? null,
+        desc: ch.desc ?? "",
         items: serializeItems(ch.items),
       }))
     try {
@@ -145,10 +148,6 @@ export default function OutlinePage() {
       setSaveState("error")
     }
   }
-
-  // 正在编辑的目标：条目或章节标题
-  const [editingChapter, setEditingChapter] = useState<string | null>(null)
-  const [draft, setDraft] = useState("")
 
   // 组显示顺序（全文视图/编号/保存共用）
   const groupSeq: { label: string; kind: "tech" | "business"; chapters: Chapter[] }[] = [
@@ -183,30 +182,20 @@ export default function OutlinePage() {
 
   /* 条目编辑/增删/拖拽已内聚到 ChapterItems 组件（三级提纲,评审需求） */
 
-  /* -------- 章节编辑（标题 + 序号都可改） -------- */
-  const [noDraft, setNoDraft] = useState("")
+  /* -------- 章节编辑（标题 + 序号 + 写作说明，走弹窗） -------- */
   // 章标题编辑与子项编辑互斥（评审二轮:重构曾丢互斥）——bump 让所有 ChapterItems 收敛编辑态
   const [itemEditReset, setItemEditReset] = useState(0)
-  function startEditChapter(ch: Chapter) {
-    setItemEditReset((n) => n + 1)
-    setEditingChapter(ch.id)
-    setDraft(ch.title)
-    setNoDraft(ch.no)
+  function startEditChapter(kind: "tech" | "business", ch: Chapter) {
+    setItemEditReset((n) => n + 1)   // 与子项编辑互斥：同时开两处会让用户分不清在改哪个
+    setChapterDialog({ mode: "edit", kind, chapter: ch })
   }
 
-  function saveChapter(kind: "tech" | "business", chapterId: string) {
-    const text = draft.trim()
-    if (!text) {
-      setEditingChapter(null)
-      return
-    }
-    const no = noDraft.trim()
+  function saveChapter(kind: "tech" | "business", chapterId: string, title: string, desc: string, no: string) {
+    const text = title.trim()
+    if (!text) return
     setter(kind)((prev) =>
-      prev.map((ch) => (ch.id === chapterId ? { ...ch, title: text, no: no || ch.no } : ch)),
+      prev.map((ch) => (ch.id === chapterId ? { ...ch, title: text, desc, no: no.trim() || ch.no } : ch)),
     )
-    setEditingChapter(null)
-    setDraft("")
-    setNoDraft("")
   }
 
   /** 结构变化（增/删/移动/换组顺序）后的统一落地：原编号严格符合某模式（连续/分组）就按该模式
@@ -231,9 +220,16 @@ export default function OutlinePage() {
     commitStructure({ ...cur, [kind]: cur[kind].filter((ch) => ch.id !== chapterId) })
   }
 
-  function addChapter(kind: "tech" | "business") {
+  /* 章节的新增与编辑都走弹窗，与子项同一套表单：标题 + 写作说明（编辑时多一个章节编号栏）。
+     此前新增是插占位再改名、编辑是行内改名+改编号，写作说明无处可填。 */
+  const [chapterDialog, setChapterDialog] = useState<
+    { mode: "add"; kind: "tech" | "business" }
+    | { mode: "edit"; kind: "tech" | "business"; chapter: Chapter }
+    | null
+  >(null)
+  function addChapter(kind: "tech" | "business", title: string, desc: string) {
     const cur = { tech: techChapters, business: businessChapters }
-    const added = { id: genId(), no: chapterNo(cur[kind].length + 1), title: "新增章节", sourced: false, items: [] }
+    const added = { id: genId(), no: chapterNo(cur[kind].length + 1), title, desc, sourced: false, items: [] }
     commitStructure({ ...cur, [kind]: [...cur[kind], added] })
   }
 
@@ -467,83 +463,43 @@ export default function OutlinePage() {
                     {group.chapters.map((chapter, chapterIdx) => (
                       <div key={chapter.id} className="rounded-xl border border-border bg-background p-3">
                         {/* 章节标题行 */}
-                        {editingChapter === chapter.id ? (
-                          <div className="flex items-center gap-2">
-                            {/* 序号可编辑（用户需求：部分标书要求自定义章节编号） */}
-                            <input
-                              value={noDraft}
-                              onChange={(e) => setNoDraft(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") saveChapter(group.kind, chapter.id)
-                                if (e.key === "Escape") setEditingChapter(null)
-                              }}
-                              placeholder="第一章"
-                              className="w-20 shrink-0 rounded-md border border-primary bg-card px-2 py-1 text-xs font-medium text-primary outline-none"
-                            />
-                            <input
-                              autoFocus
-                              value={draft}
-                              onChange={(e) => setDraft(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") saveChapter(group.kind, chapter.id)
-                                if (e.key === "Escape") setEditingChapter(null)
-                              }}
-                              className="min-w-0 flex-1 rounded-md border border-primary bg-card px-2 py-1 text-sm font-semibold text-foreground outline-none"
-                            />
+                        <div className="group flex flex-wrap items-center gap-2">
+                          <span className="text-xs font-medium text-primary">{chapter.no}</span>
+                          <h3 className="text-sm font-semibold text-foreground">{chapter.title}</h3>
+                          <div className="ml-auto flex items-center gap-0.5">
+                            {/* 组内上移/下移（在任意两章之间插入=新增后上移到位）；编号按当前模式自动跟随 */}
                             <button
-                              onClick={() => saveChapter(group.kind, chapter.id)}
-                              className="rounded-md p-1 text-success hover:bg-success/10"
-                              aria-label="保存章节标题"
+                              onClick={() => moveChapterIn(group.kind, chapter.id, -1)}
+                              disabled={chapterIdx === 0}
+                              className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+                              aria-label="上移章节"
                             >
-                              <Check className="size-4" />
+                              <ChevronUp className="size-3.5" />
                             </button>
                             <button
-                              onClick={() => setEditingChapter(null)}
-                              className="rounded-md p-1 text-muted-foreground hover:bg-muted"
-                              aria-label="取消"
+                              onClick={() => moveChapterIn(group.kind, chapter.id, 1)}
+                              disabled={chapterIdx === group.chapters.length - 1}
+                              className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+                              aria-label="下移章节"
                             >
-                              <X className="size-4" />
+                              <ChevronDown className="size-3.5" />
+                            </button>
+                            <button
+                              onClick={() => startEditChapter(group.kind, chapter)}
+                              className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                              aria-label="编辑章节标题"
+                            >
+                              <Pencil className="size-3.5" />
+                            </button>
+                            <button
+                              onClick={() => deleteChapter(group.kind, chapter.id)}
+                              className="rounded-md p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                              aria-label="删除章节"
+                            >
+                              <Trash2 className="size-3.5" />
                             </button>
                           </div>
-                        ) : (
-                          <div className="group flex flex-wrap items-center gap-2">
-                            <span className="text-xs font-medium text-primary">{chapter.no}</span>
-                            <h3 className="text-sm font-semibold text-foreground">{chapter.title}</h3>
-                            <div className="ml-auto flex items-center gap-0.5">
-                              {/* 组内上移/下移（在任意两章之间插入=新增后上移到位）；编号按当前模式自动跟随 */}
-                              <button
-                                onClick={() => moveChapterIn(group.kind, chapter.id, -1)}
-                                disabled={chapterIdx === 0}
-                                className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
-                                aria-label="上移章节"
-                              >
-                                <ChevronUp className="size-3.5" />
-                              </button>
-                              <button
-                                onClick={() => moveChapterIn(group.kind, chapter.id, 1)}
-                                disabled={chapterIdx === group.chapters.length - 1}
-                                className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
-                                aria-label="下移章节"
-                              >
-                                <ChevronDown className="size-3.5" />
-                              </button>
-                              <button
-                                onClick={() => startEditChapter(chapter)}
-                                className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                                aria-label="编辑章节标题"
-                              >
-                                <Pencil className="size-3.5" />
-                              </button>
-                              <button
-                                onClick={() => deleteChapter(group.kind, chapter.id)}
-                                className="rounded-md p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                                aria-label="删除章节"
-                              >
-                                <Trash2 className="size-3.5" />
-                              </button>
-                            </div>
-                          </div>
-                        )}
+                        </div>
 
                         {/* 子项树（节/小节两层:编辑/删除/添加小节/同层拖拽,评审需求） */}
                         <ChapterItems
@@ -552,7 +508,7 @@ export default function OutlinePage() {
                           locate={locate}
                           onItemClick={handleItemClick}
                           genId={genId}
-                          onEditStart={() => setEditingChapter(null)}
+                          onEditStart={() => setChapterDialog(null)}   // 与章节弹窗互斥，同时开两处用户分不清在改哪个
                           closeEditToken={itemEditReset}
                           onChange={(items) =>
                             // 结构性修改（拖拽/增删）后按位置重排层级编号（评审二轮 F6:1.2 排 1.1 前）
@@ -566,11 +522,12 @@ export default function OutlinePage() {
 
                     {/* 添加章节 */}
                     <button
-                      onClick={() => addChapter(group.kind)}
-                      className="flex items-center justify-center gap-1.5 rounded-xl border border-dashed border-border py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
+                      onClick={() => setChapterDialog({ mode: "add", kind: group.kind })}
+                      aria-label="添加章节"
+                      title="添加章节"
+                      className="flex items-center justify-center rounded-xl border border-dashed border-border py-2.5 text-lg leading-none text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
                     >
-                      <Plus className="size-4" />
-                      添加章节
+                      <span aria-hidden>➕</span>
                     </button>
                   </div>
                 </div>
@@ -592,6 +549,23 @@ export default function OutlinePage() {
           确认大纲，生成投标正文
           <ArrowRight className="size-4" />
         </Link>
+      )}
+
+      {chapterDialog && (
+        <OutlineItemDialog
+          mode={chapterDialog.mode}
+          levelName="章节"
+          initialLabel={chapterDialog.mode === "edit" ? chapterDialog.chapter.title : ""}
+          initialDesc={chapterDialog.mode === "edit" ? (chapterDialog.chapter.desc ?? "") : ""}
+          // 编辑时才给编号栏：新增的编号按当前章数自动排，不必让用户填
+          initialNo={chapterDialog.mode === "edit" ? chapterDialog.chapter.no : undefined}
+          onCancel={() => setChapterDialog(null)}
+          onConfirm={(title, desc, no) => {
+            if (chapterDialog.mode === "add") addChapter(chapterDialog.kind, title, desc)
+            else saveChapter(chapterDialog.kind, chapterDialog.chapter.id, title, desc, no ?? "")
+            setChapterDialog(null)
+          }}
+        />
       )}
     </div>
   )

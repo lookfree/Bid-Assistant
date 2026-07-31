@@ -139,6 +139,7 @@ class OutlineChapter(BaseModel):
     title: str
     group: Literal["tech", "business"]
     sourced: bool = True                          # 能否在招标文件索引到来源
+    desc: str = Field(default="", description="留空。该字段由用户在页面上手写，模型不要填写")
     items: list[OutlineItem] = Field(default_factory=list)
     structure_ref: str | None = None              # 对应 required_structure 项 id（spec321，可空）
 
