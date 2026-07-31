@@ -8,23 +8,13 @@ from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
 from pptx.enum.shapes import MSO_SHAPE, PP_PLACEHOLDER
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Inches, Pt
+from agent.agents.bidding_agent.render.styles import TEMPLATE_TOKENS, is_dark, on_primary, tokens_for
 from agent.agents.bidding_agent.schemas import DeckSpec, Slide, SlideChart, StatItem
 
 logger = logging.getLogger(__name__)
 
-# 共用色（不随模板变化）；模板专属色见 _TEMPLATE_TOKENS。
-_SHARED = {
-    "text": RGBColor(31, 41, 55),
-    "muted": RGBColor(107, 114, 128),
-    "white": RGBColor(255, 255, 255),
-}
-# 模板 → 设计 token（主色/强调色/浅底色）。企业自有母版走 render_pptx(master_bytes=...)：
+# 模板样式表（配色 + 版式结构开关）见 render/styles.py。企业自有母版走 render_pptx(master_bytes=...)：
 # 强调色/评分点角标/页码仍取这套 token，让自绘部分和母版主题不违和。
-_TEMPLATE_TOKENS = {
-    "blue": {"primary": RGBColor(31, 78, 155), "accent": RGBColor(59, 130, 246), "tint": RGBColor(234, 241, 251)},
-    "tech": {"primary": RGBColor(15, 118, 110), "accent": RGBColor(20, 184, 166), "tint": RGBColor(230, 246, 244)},
-    "gov": {"primary": RGBColor(153, 27, 27), "accent": RGBColor(220, 38, 38), "tint": RGBColor(252, 235, 235)},
-}
 
 _SLIDE_W, _SLIDE_H = Inches(13 + 1 / 3), Inches(7.5)  # 12192000 / 6858000 EMU：标准 16:9
 _MARGIN = Inches(0.7)
@@ -50,10 +40,13 @@ def _content_box(slide) -> tuple[int, int, int]:
     return _MARGIN, w - 2 * _MARGIN, h
 
 
-def _tokens_for(template: str | None, deck_template: str) -> dict:
-    """模板名 → 完整 token 表（含共用色）；非法模板名回退 deck.template，再回退 blue。"""
-    key = template if template in _TEMPLATE_TOKENS else deck_template
-    return {**_SHARED, **_TEMPLATE_TOKENS.get(key, _TEMPLATE_TOKENS["blue"])}
+def _paint_surface(slide, tokens: dict) -> None:
+    """深色模板铺满页底色（浅色模板不铺：空白版式本来就是白底，多画一层只会盖住母版元素）。
+    必须最先画——后画的形状才会叠在它上面。"""
+    if not is_dark(tokens):
+        return
+    sw, sh = _slide_size(slide)
+    _rect(slide, 0, 0, sw, sh, tokens["bg"])
 
 
 def _blend_toward(base: RGBColor, target: RGBColor, ratio: float) -> RGBColor:
@@ -71,6 +64,25 @@ def _rect(slide, left, top, width, height, fill_rgb, *, line_rgb=None, line_pt=N
     else:
         shape.line.color.rgb = line_rgb
         shape.line.width = line_pt or Pt(0.75)
+    return shape
+
+
+def _gradient_rect(slide, left, top, width, height, c1: RGBColor, c2: RGBColor, angle: float = 45.0):
+    """渐变矩形。纯色大色块是"代码画的"最明显的特征——同一块面积换成渐变，观感立刻接近
+    设计稿。python-pptx 原生支持渐变填充，产物仍是可编辑形状，不是图片。"""
+    shape = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, left, top, width, height)
+    shape.fill.gradient()
+    stops = shape.fill.gradient_stops
+    stops[0].color.rgb = c1
+    stops[0].position = 0.0
+    stops[1].color.rgb = c2
+    stops[1].position = 1.0
+    # 多于两个停靠点时把其余的并到末端，避免默认主题色混进来
+    for extra in list(stops)[2:]:
+        extra.color.rgb = c2
+        extra.position = 1.0
+    shape.fill.gradient_angle = angle
+    shape.line.fill.background()
     return shape
 
 
@@ -95,27 +107,80 @@ def _accent_bar(slide, accent_rgb):
     _rect(slide, 0, _SLIDE_H - Inches(0.06), _SLIDE_W, Inches(0.06), accent_rgb)
 
 
+def _cover_meta(slide, s: Slide, tokens: dict, top: int, sw: int) -> None:
+    """封面下部的投标人/时长信息条：左侧强调色竖标 + 文字，铺在浅底带上。
+    此前这块是纯白空白（整页下部 38% 什么都没有），是"代码画的"最扎眼的地方。"""
+    if not s.bullets:
+        return
+    strip_h = Inches(1.15)
+    _rect(slide, 0, top, sw, strip_h, tokens["tint"])
+    _rect(slide, Inches(0.9), top + Inches(0.28), Inches(0.06), Inches(0.58), tokens["accent"])
+    _textbox(slide, Inches(1.12), top + Inches(0.22), sw - Inches(2.0), strip_h - Inches(0.3),
+              s.bullets, size=13, color=tokens["text"] if not is_dark(tokens) else tokens["muted"])
+
+
 def _render_cover(slide, s: Slide, tokens: dict) -> None:
-    """封面页：上部 62% 主色色带（标题 40pt 加粗白 + “述标演示” 强调白），色带下方 bullets 作副标题/元信息行。"""
-    band_h = _SLIDE_H * 0.62
-    _rect(slide, 0, 0, _SLIDE_W, band_h, tokens["primary"])
-    _textbox(slide, Inches(0.9), Inches(1.0), _SLIDE_W - Inches(1.8), Inches(1.8),
-              [s.title], size=40, color=tokens["white"], bold=True)
-    kicker_color = _blend_toward(tokens["white"], tokens["accent"], 0.25)
-    _textbox(slide, Inches(0.9), Inches(2.85), Inches(6), Inches(0.5),
-              ["述标演示"], size=18, color=kicker_color)
-    if s.bullets:
-        _textbox(slide, Inches(0.9), band_h + Inches(0.25), _SLIDE_W - Inches(1.8), Inches(2.0),
-                  s.bullets, size=14, color=tokens["muted"])
+    """封面页。band（党政）走整幅居中 + 上下双线的庄重排法；其余走上部渐变色带 + 左对齐。
+    渐变而非纯色：同一块面积换成渐变，观感立刻从"代码画的"靠近设计稿。"""
+    sw, sh = _slide_size(slide)
+    deep = _blend_toward(tokens["primary"], RGBColor(0, 0, 0), 0.35)
+    if tokens.get("header") == "band":
+        _gradient_rect(slide, 0, 0, sw, sh, tokens["primary"], deep, angle=90.0)
+        _rect(slide, sw * 0.25, sh * 0.34, sw * 0.5, Pt(2), tokens["accent"])
+        _textbox(slide, Inches(1.0), sh * 0.38, sw - Inches(2.0), Inches(1.9),
+                  [s.title], size=38, color=on_primary(tokens), bold=True, align=PP_ALIGN.CENTER)
+        _rect(slide, sw * 0.35, sh * 0.60, sw * 0.3, Pt(1), _blend_toward(tokens["accent"], tokens["white"], 0.4))
+        # 副标题/信息行往**白**的方向调，不往强调色调：深红底上混进红色会越混越闷，
+        # 实测投标人那行几乎读不出来。保留一点色相即可，可读性优先。
+        _textbox(slide, Inches(1.0), sh * 0.63, sw - Inches(2.0), Inches(0.5),
+                  ["述标演示"], size=17, color=_blend_toward(tokens["white"], tokens["primary"], 0.18),
+                  align=PP_ALIGN.CENTER)
+        if s.bullets:
+            _textbox(slide, Inches(1.0), sh * 0.74, sw - Inches(2.0), Inches(1.0), s.bullets,
+                      size=13, color=_blend_toward(tokens["white"], tokens["primary"], 0.30),
+                      align=PP_ALIGN.CENTER)
+        _accent_bar(slide, tokens["accent"])
+        return
+    band_h = int(sh * 0.68)
+    _gradient_rect(slide, 0, 0, sw, band_h, deep, tokens["primary"], angle=45.0)
+    # 右侧竖向节奏条：贴边、等宽递浅的三道细条，给大色块层次而不抢标题。
+    # （此前是右下角一个浅色方块，渲出来像个游离色块而不是设计元素。）
+    for i in range(3):
+        _rect(slide, sw - Inches(1.5) + Inches(0.28) * i, 0, Inches(0.1), band_h,
+              _blend_toward(tokens["primary"], tokens["white"], 0.10 + 0.06 * i))
+    _rect(slide, Inches(0.9), Inches(1.05), Inches(0.9), Pt(3), tokens["accent"])   # 标题上方短强调线
+    _textbox(slide, Inches(0.9), Inches(1.3), sw - Inches(3.2), Inches(2.0),
+              [s.title], size=38, color=tokens["white"], bold=True)
+    _textbox(slide, Inches(0.9), band_h - Inches(1.25), Inches(6), Inches(0.5),
+              ["述标演示"], size=17, color=_blend_toward(tokens["white"], tokens["accent"], 0.3))
+    # 信息条贴底：悬在中间会让下方剩一大片无意义的白，贴底后留白成为一整段有意的呼吸区。
+    _cover_meta(slide, s, tokens, sh - Inches(1.15) - Inches(0.06), sw)
     _accent_bar(slide, tokens["accent"])
 
 
 def _title_row(slide, title: str, tokens: dict) -> None:
-    """正文页标题行：左侧主色小方块 + 标题文字，下接一条强调色分隔线。"""
-    _rect(slide, _MARGIN, Inches(0.62), Inches(0.18), Inches(0.18), tokens["primary"])
-    _textbox(slide, _MARGIN + Inches(0.3), Inches(0.5), _CONTENT_W - Inches(0.3), Inches(0.55),
+    """正文页标题行，按模板的 header 开关三选一——模板之间的区分主要就体现在这里：
+      sidebar（商务提案）左侧竖色条起标题，克制通用；
+      band（党政庄重）顶部通栏色带 + 居中反白标题，仪式感；
+      rule（技术数据）细线 + 左对齐标题，让位给图表。"""
+    left, content_w, _ = _content_box(slide)
+    style = tokens.get("header", "sidebar")
+    if style == "band":
+        sw, _ = _slide_size(slide)
+        _rect(slide, 0, 0, sw, Inches(1.1), tokens["primary"])
+        _textbox(slide, left, Inches(0.28), content_w, Inches(0.6),
+                  [title], size=24, color=on_primary(tokens), bold=True, align=PP_ALIGN.CENTER)
+        _rect(slide, 0, Inches(1.1), sw, Pt(3), tokens["accent"])
+        return
+    if style == "rule":
+        _textbox(slide, left, Inches(0.5), content_w, Inches(0.55),
+                  [title], size=24, color=tokens["text"], bold=True)
+        _rect(slide, left, Inches(1.15), content_w, Pt(1), tokens["accent"])
+        return
+    _rect(slide, left, Inches(0.5), Inches(0.09), Inches(0.52), tokens["primary"])   # 左侧竖色条
+    _textbox(slide, left + Inches(0.26), Inches(0.5), content_w - Inches(0.26), Inches(0.55),
               [title], size=24, color=tokens["text"], bold=True)
-    _rect(slide, _MARGIN, Inches(1.15), _CONTENT_W, Pt(1), tokens["accent"])
+    _rect(slide, left, Inches(1.15), content_w, Pt(1), tokens["accent"])
 
 
 _CARD_GAP = Inches(0.16)
@@ -145,7 +210,12 @@ def _bullet_card(slide, left, top, width, height, idx: int, text: str, tokens: d
     card = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, left, top, width, height)
     card.fill.solid()
     card.fill.fore_color.rgb = tokens["tint"]
-    card.line.fill.background()
+    if tokens.get("card") == "outline":
+        # 描边卡片：党政（浅底大面积色块太花）与深色技术模板（浅色块在深底上过于抢眼）都用它
+        card.line.color.rgb = tokens["accent"]
+        card.line.width = Pt(0.75)
+    else:
+        card.line.fill.background()
     badge = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, left + Inches(0.18),
                                    top + int((height - _BADGE) / 2), _BADGE, _BADGE)
     badge.fill.solid()
@@ -269,7 +339,7 @@ def _chart_colors(tokens: dict, n: int) -> list[RGBColor]:
     colors = [tokens["primary"], tokens["accent"]]
     i = 0
     while len(colors) < n:
-        colors.append(_blend_toward(tokens["primary"], _SHARED["white"], min(0.85, 0.25 + 0.2 * i)))
+        colors.append(_blend_toward(tokens["primary"], tokens["white"], min(0.85, 0.25 + 0.2 * i)))
         i += 1
     return colors[:n]
 
@@ -416,7 +486,7 @@ def _render_blank(deck: DeckSpec, template: str | None) -> bytes:
     """空白设计路径（改造前的 render_pptx 原样保留）：16:9，模板色系（blue/tech/gov）决定封面色带/
     标题小方块/分隔线/评分点角标/底部强调条的配色；页码统计 content+end 页（封面不计分母/不显示页码）；
     口播稿写入备注页。"""
-    tokens = _tokens_for(template, deck.template)
+    tokens = tokens_for(template, deck.template)
     prs = Presentation()
     prs.slide_width, prs.slide_height = _SLIDE_W, _SLIDE_H
     blank = prs.slide_layouts[6]
@@ -424,6 +494,7 @@ def _render_blank(deck: DeckSpec, template: str | None) -> bytes:
     n = sec = 0
     for s in deck.slides:
         slide = prs.slides.add_slide(blank)
+        _paint_surface(slide, tokens)      # 底色必须最先画，后续形状才叠在它上面
         if s.kind == "cover":
             _render_cover(slide, s, tokens)
         elif s.kind == "section":
@@ -564,12 +635,13 @@ def _render_on_master(deck: DeckSpec, template: str | None, master_bytes: bytes)
     """企业母版路径：加载客户 .pptx/.potx，清空母版自带示例页只留 masters/layouts/theme，
     再用母版自身版式承载我们的封面/正文/结束页（标题/正文占位符优先，缺失退回空白设计同款绘制）。
     不强制 16:9——沿用母版自身的页面尺寸（prs.slide_width/height 不改）。"""
-    tokens = _tokens_for(template, deck.template)
+    tokens = tokens_for(template, deck.template)
     prs = Presentation(io.BytesIO(master_bytes))
     _clear_slides(prs)
     title_layout, content_layout = _pick_layouts(prs)
     total = sum(1 for s in deck.slides if s.kind != "cover")
     n = sec = 0
+    # 母版路径不铺底色：客户母版自带背景/底纹/logo，盖上去等于把人家的设计糊掉。
     for s in deck.slides:
         if s.kind == "cover":
             slide = prs.slides.add_slide(title_layout)

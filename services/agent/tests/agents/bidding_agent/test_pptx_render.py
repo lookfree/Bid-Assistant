@@ -4,7 +4,8 @@ from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE, MSO_SHAPE_TYPE
 from pptx.util import Emu, Inches
 from agent.agents.bidding_agent.schemas import DeckSpec
-from agent.agents.bidding_agent.render.pptx import render_pptx, _TEMPLATE_TOKENS
+from agent.agents.bidding_agent.render.pptx import render_pptx
+from agent.agents.bidding_agent.render.styles import TEMPLATE_TOKENS as _TEMPLATE_TOKENS
 
 
 def _deck():
@@ -31,18 +32,28 @@ def test_slide_is_16_by_9():
     assert prs.slide_height == Emu(6858000)   # Inches(7.5)
 
 
-def test_cover_has_primary_band_and_40pt_title():
+def test_cover_uses_a_gradient_band_and_fills_the_lower_strip():
+    """封面此前是「纯色块 + 文字」，下部 38% 一片死白——最像"代码画的"的一页。
+    现在色带走渐变（同面积观感立刻靠近设计稿），下部由投标人信息条铺满。"""
+    from pptx.enum.dml import MSO_FILL
     deck = _deck()
-    data = render_pptx(deck, template="blue")
-    prs = Presentation(io.BytesIO(data))
+    prs = Presentation(io.BytesIO(render_pptx(deck, template="blue")))
     cover = prs.slides[0]
-    band_rects = [sh for sh in cover.shapes if sh.shape_type == MSO_SHAPE.RECTANGLE]
-    assert any(sh.fill.fore_color.rgb == _TEMPLATE_TOKENS["blue"]["primary"] for sh in band_rects)
+    grads = [sh for sh in cover.shapes
+             if sh.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE and sh.fill.type == MSO_FILL.GRADIENT]
+    assert grads, "封面色带没有用渐变"
+    stops = grads[0].fill.gradient_stops
+    assert stops[1].color.rgb == _TEMPLATE_TOKENS["blue"]["primary"]
+
     title_box = next(sh for sh in cover.shapes if sh.has_text_frame and sh.text_frame.text == "封面")
     run = title_box.text_frame.paragraphs[0].runs[0]
-    assert run.font.size.pt == 40
+    assert run.font.size.pt == 38
     assert run.font.bold is True
     assert run.font.color.rgb == RGBColor(0xFF, 0xFF, 0xFF)
+
+    # 下部信息条：_deck() 的封面带 bullets，必须落在色带下方且不是白底
+    meta = next(sh for sh in cover.shapes if sh.has_text_frame and "客户：某局" in sh.text_frame.text)
+    assert meta.top > prs.slide_height * 0.6
 
 
 def test_content_slide_bullets_and_scoring_chip():
@@ -333,3 +344,55 @@ def test_bullets_fill_the_slide_instead_of_hugging_the_top():
     assert bodies, "要点没渲出来"
     lowest = max(sh.top + sh.height for sh in bodies)
     assert lowest > mid, "要点全挤在上半页，下面一大片空白"
+
+
+def _deck_for_style():
+    return DeckSpec(title="述标", slides=[
+        {"id": "c", "title": "封面", "kind": "cover", "bullets": []},
+        {"id": "sec", "title": "第一部分 技术方案", "kind": "section", "bullets": []},
+        {"id": "s1", "title": "核心需求", "kind": "content", "scoring": "技术方案 20 分",
+         "bullets": ["要点一", "要点二", "要点三"]},
+        {"id": "e", "title": "感谢聆听", "kind": "end", "bullets": []},
+    ])
+
+
+def test_three_templates_differ_in_layout_not_only_colour():
+    """模板此前只差三个配色、版式完全一样，用户选来选去每页长得一模一样，等于没得选。
+    这条锁住「换模板必须换版式」：三套的正文页形状数/结构不能全都一致。"""
+    shapes = {}
+    for tpl in ("blue", "gov", "tech"):
+        prs = Presentation(io.BytesIO(render_pptx(_deck_for_style(), template=tpl)))
+        content = prs.slides[2]
+        shapes[tpl] = {
+            "n": len(content.shapes),
+            # 标题行处理：sidebar/band/rule 画出来的矩形数与尺寸不同
+            "rects": tuple(sorted((sh.width, sh.height) for sh in content.shapes
+                                  if sh.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE)),
+        }
+    assert len({v["rects"] for v in shapes.values()}) == 3, f"三套模板版式没有区分：{shapes}"
+
+
+def test_dark_template_paints_a_background_and_light_text():
+    """深色模板必须真的铺底色并把正文改成浅色——只改强调色的话，深色主题的字仍是深灰，
+    在白底上看不出区别，在深底上则糊成一片。"""
+    prs = Presentation(io.BytesIO(render_pptx(_deck_for_style(), template="tech")))
+    content = prs.slides[2]
+    slide_w, slide_h = prs.slide_width, prs.slide_height
+    full = [sh for sh in content.shapes
+            if sh.width == slide_w and sh.height == slide_h and sh.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE]
+    assert full, "深色模板没有铺满整页的底色块"
+    assert full[0].fill.fore_color.rgb == RGBColor(15, 23, 42)
+    body = [sh for sh in content.shapes if sh.has_text_frame and sh.text_frame.text == "要点一"]
+    assert body, "要点没渲出来"
+    colour = body[0].text_frame.paragraphs[0].runs[0].font.color.rgb
+    assert colour == RGBColor(226, 232, 240), f"深底上的正文色仍是浅底那套：{colour}"
+
+
+def test_light_templates_do_not_paint_a_background():
+    """浅色模板不铺整页底色：空白版式本来就是白底，多画一层只会让文件变大、还可能盖住母版元素。"""
+    for tpl in ("blue", "gov"):
+        prs = Presentation(io.BytesIO(render_pptx(_deck_for_style(), template=tpl)))
+        content = prs.slides[2]
+        full = [sh for sh in content.shapes
+                if sh.width == prs.slide_width and sh.height == prs.slide_height]
+        assert not full, f"{tpl} 不该铺整页底色"
