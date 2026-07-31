@@ -6,8 +6,8 @@
 
 **Architecture:** 与 spec324 选包同构，逐点复用其管线。`ReadResult` 增 `bid_category`（系统判定值 +
 置信度 + 证据条款，**读标收尾的一次轻量结构化模型调用**）；项目表增 `bid_category` 列（**用户确认值**，
-与判定值分开存）；App 在 outline 及之后各步的 `run_input` 带 `bid_category`；agent 在
-outline/content/review/checklist 四处按类注入知识块。未判定 / 未确认 ⇒ 全链路行为与今天逐字节一致。
+与判定值分开存）；App 在 outline 及之后各步的 `run_input` 带 `bid_category`；agent 在**五个注入点**
+（提纲 / 正文规划轮 / **正文子写手** / 审查 / 审核表接口）按类注入知识块。未判定 ⇒ 全链路行为与今天逐字节一致。
 
 ```
 read 节点收尾
@@ -19,11 +19,12 @@ read 节点收尾
    └─ 分类卡（**在选包卡下方**）
          └─ PATCH /projects/:id/category                 ← 用户确认/改判 → 项目行
          └─ 判定值 ≠ 确认值 ⇒ 记一条纠偏样本              ← 判定质量迭代的燃料
-run_input.bid_category  +  命中的行业关键词补丁
-   ├─ outline  ：该类必备章节自检清单（补漏，不覆盖招标文件构成清单）
-   ├─ content  ：该类写作要点 + 该类特有陷阱
-   ├─ review   ：该类必查项 + 命中行业关键词触发的资质必查项
-   └─ checklist：该类投递前核对项
+有效值 = 确认值 ?? 判定值  →  run_input.bid_category  +  命中的行业关键词补丁
+   ├─ outline           ：该类必备章节自检清单（补漏，不覆盖招标文件构成清单）
+   ├─ content 规划轮     ：章节层面的写作要点与陷阱
+   ├─ content 子写手     ：落笔层面的要点  ← **拼进 subagent 的 system_prompt，不靠规划轮转述**
+   ├─ review            ：该类必查项 + 行业资质补丁（须标注「经验≠明文要求」）
+   └─ /generate/checklist：该类投递前核对项  ← **是同步接口不是图节点，没有 run_input**
 ```
 
 ## Global Constraints
@@ -232,19 +233,52 @@ run_input.bid_category  +  命中的行业关键词补丁
 「管理费比例固定」，属变相最低限价——价格分实质失效、利润被锁死。审查须提示用户评估是否值得投；
 正文层面在偏离表/报价说明中保留调整空间的表述。
 
-**四个消费点的注入口径各不相同，不可用同一段文本糊过去：**
-- `nodes/outline.py`：「本标为<类>标，以下为该类通行必备章节；**招标文件构成清单已列出的以清单为准**，
-  清单未提及且提纲确实缺失的，补为独立章节」。
-- `nodes/content.py`：该类写作要点 + 特有陷阱；不列章节（章节由提纲决定）。
-- `nodes/review.py`：该类必查项 + 命中的行业补丁，并明确**「这些是行业经验必查项，不是本次招标的明文要求：
-  能对上招标条款的按高风险报，对不上的按中风险提醒」**——否则会把经验当红线，刷出一堆招标文件
-  根本没要求的「废标风险」，用户信错一次就再也不信体检报告。
-- checklist 生成侧（spec333）：该类投递前核对项，与既有「紧扣本招标文件具体要求」的口径并存。
+**五个注入点（不是四个，`content` 有两处），口径与注入方式各不相同：**
+
+| # | 消费点 | 代码位置 | 注入方式 | 注入内容 |
+|---|---|---|---|---|
+| 1 | 提纲 | `nodes/outline.py`，紧邻 `user += package_scope(...)` | user 消息追加 | 该类通行必备章节；**招标文件构成清单已列出的以清单为准**，清单未提及且提纲确实缺失的才补章 |
+| 2 | 正文·规划轮 | `nodes/content.py:394`（`package_scope` 同处） | user 消息追加 | 该类**章节层面**的写作要点与特有陷阱；不列章节（章节由提纲决定） |
+| 3 | **正文·子写手** | `nodes/content.py:373`，`subagents=[{... "system_prompt": CHAPTER_WRITER_PROMPT}]` | **直接拼进子写手 system_prompt** | 该类**落笔层面**的要点（如工程标每个分项方案须含工艺流程/质量控制/安全注意三件套） |
+| 4 | 审查 | `nodes/review.py` 的 `user` 拼接处 | user 消息追加 | 该类必查项 + 命中的行业资质补丁 |
+| 5 | 审核表 | **`routes/generate.py` 的 `POST /generate/checklist`**——**不是图节点** | body 新增可选字段 | 该类投递前核对项 |
+
+**#3 是本 Task 最容易做错、且错了会静默失效的一处。** `content` 是 deepagent：规划轮
+(`CONTENT_PLANNER_PROMPT`) 负责派活，真正落笔的是子写手 (`CHAPTER_WRITER_PROMPT`)。
+只把要点加在规划轮的 user 消息里，**能不能到子写手完全取决于规划轮肯不肯转述**——这正是
+`desc` 踩过的坑（`prompts/content.py` 里那句「必须原样转述给子写手…丢掉等于把用户的意图默默扔了」
+就是事后补的）。子写手的 `system_prompt` 是在节点内构造 `create_deep_agent` 时传入的，
+**可以动态拼接**，不必依赖转述。规划轮那份（#2）仍要给，但只负责章节层面的取舍。
+
+**#5 是接口而非节点。** `POST /generate/checklist` 同步无状态、不进 thread、**没有 `run_input`**，
+body 只有 `read_result` + `model`（`routes/generate.py`）。所以：
+- body 增可选 `bid_category`，由 App 下发**有效值**（确认值 ?? 判定值）；
+- 不传时回落到 `read_result.bid_category`（判定值本来就在里面），`_slim_for_checklist` 一并带出；
+- **不能只靠回落**——用户改判后的确认值不在 read result 里，只走回落等于改判对审核表不生效。
+
+**审查那处的口径必须写死**：「这些是行业经验必查项，**不是本次招标的明文要求**：能对上招标条款的
+按高风险报，对不上的按中风险提醒」。否则会把经验当红线，刷出一堆招标文件根本没要求的「废标风险」，
+用户信错一次就再也不信体检报告了。
+
+**行业资质补丁在什么文本上匹配：**
+
+| 项目形态 | 匹配输入 | 为什么不用全文 |
+|---|---|---|
+| 有读标结论 | `read.categories[].items[]` 的 title/value + `project_meta`（经 `filter_read_by_package` 收窄后的那份） | 补丁词是资质类术语，只出现在需求与资格条款里；拿 `doc_sections` 全文匹配只增噪声和成本 |
+| 无读标（自查） | `parse_bid_chapters` 出的章节正文（review 节点已截断的那份） | 同上 |
 
 **Files:**
-- Add: `prompts/categories.py`（三类知识块 × 四种口径 + 行业补丁表 + `category_scope(run_input, purpose)`，沿用 `common.py:63` `package_scope()` 的形态：无分类 ⇒ 返回空串）
-- Modify: `nodes/outline.py`、`nodes/content.py`、`nodes/review.py`、checklist 生成节点（各追加一行）
-- Test: 四处各断言两态（带/不带 `bid_category` 的用户消息差异）；行业关键词命中 ⇒ 补丁进入 review 消息；缺省态与改动前逐字节一致
+- Add: `prompts/categories.py`（三类知识块 × 五种口径 + 行业补丁表 + `category_scope(category, purpose)`，沿用 `common.py:63` `package_scope()` 的形态：无分类 ⇒ 返回空串）
+- Modify: `nodes/outline.py`（#1）
+- Modify: `nodes/content.py`（#2 规划轮 user；**#3 子写手 system_prompt 动态拼接**）
+- Modify: `nodes/review.py`（#4 + 行业补丁匹配）
+- Modify: `checklist_gen.py` + `routes/generate.py`（#5 body 可选 `bid_category`，回落 `read_result.bid_category`）
+- Modify: `apps/api`（调 `/generate/checklist` 处下发有效值——归属 Task C）
+- Test: 五处各断言两态（带/不带 `bid_category` 的消息差异）；
+  **#3 断言子写手 system_prompt 确实含该类要点**（只测规划轮会漏掉整个失效路径）；
+  行业关键词命中 ⇒ 补丁进入 review 消息、未命中 ⇒ 不进；
+  `/generate/checklist` 传 `bid_category` 与仅靠 `read_result` 回落两条路径各一例；
+  **缺省态（无分类）与改动前逐字节一致**
 
 - [ ] Task B（提交 `feat(agent): category knowledge and industry qualification patches`）
 
