@@ -379,10 +379,17 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
   async function guardedOverrides(projectId: string, step: Step, userId: string) {
     const overrides = await stateOverrides(projectId, step)
     const deck = overrides.deck as Record<string, unknown> | undefined
-    if (deck?.enterprise_template_id != null && featureLocked(await getEntitlements(userId), "pptTemplate")) {
+    if (deck?.enterprise_template_id != null && !(await allowedTemplateKey(deck, userId))) {
       delete deck.enterprise_template_id
     }
     return overrides
+  }
+  /** 落库 deck 里的企业模板 key 能否在本次渲染中使用：档位不含 pptTemplate 就当没有。
+   *  唯一实现，重渲的每条路径都过这里——各写一份的话，加一条新路径就漏一道权益门。 */
+  async function allowedTemplateKey(deck: Record<string, unknown> | undefined, userId: string) {
+    const key = deck?.enterprise_template_id
+    if (typeof key !== "string" || !key) return null
+    return featureLocked(await getEntitlements(userId), "pptTemplate") ? null : key
   }
   const createRun = deps.createRun ?? client.createRun
   const relayStream = deps.relayStream ?? client.relayStream
@@ -1081,11 +1088,20 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     // review-kind 述标跑在专属线程上，算错就会覆盖/取到别的对象。
     const threadId = p.kind === "review" ? `${p.threadId}-present-${row.id}` : p.threadId
     const deck = row.result as Record<string, unknown>
-    const { key } = await renderDeck({
-      threadId,
-      deck,
-      enterpriseTemplateKey: (deck.enterprise_template_id as string | undefined) ?? null,
-    })
+    let key: string
+    try {
+      // 企业模板走与 guardedOverrides 同一道权益门：deck 里的 key 是「专业版时期设置」的持久物，
+      // 降级后每次免费导出都照用就是白送付费权益。
+      ;({ key } = await renderDeck({
+        threadId,
+        deck,
+        enterpriseTemplateKey: await allowedTemplateKey(deck, c.get("user").id),
+      }))
+    } catch {
+      // agent 不可达/渲染失败一律 502：现在导出只有这一条路，裸 500 会让前端只显示「下载失败」，
+      // 分不清是自己的 deck 有问题还是服务挂了。
+      return c.json({ error: "agent_failed" }, 502)
+    }
     const base = projectName(p.name, p.tenderFileKey).replace(/\.(pdf|docx?|xlsx?|pptx?|zip|rar)(?=·|（|$)/i, "")
     const filename = `${base}-${ARTIFACT_NAME.pptx}`
     return c.json({ url: await presign(key, 300, filename), filename })

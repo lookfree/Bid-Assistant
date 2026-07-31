@@ -17,8 +17,6 @@ import {
   ChevronRight,
   History,
 } from "lucide-react"
-import { usePaywall } from "@/components/paywall"
-import { CreditEstimate } from "@/components/credit-estimate"
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepPageHeader } from "@/components/tool/step-page-header"
 import { StepBanner } from "@/components/tool/step-banner"
@@ -54,14 +52,10 @@ import { PresentEntry } from "./present-entry"
 type RealDeck = { title: string; duration: number; template: string; slides: Slide[]; qa: { q: string; a: string }[] }
 
 export default function PresentPage() {
-  const { openPaywall } = usePaywall()
   const router = useRouter()
 
   /* 真实积分余额与会员身份（GET /api/membership；仅 active 订阅算会员权益） */
   const { overview, balance, isMember, loading: membershipLoading, error: membershipError } = useMembership()
-  /* 计费口径一律取后端实时配置（运营可改），勿用静态副本——否则显示与实际扣减不一致 */
-  const exportCost = creditCostValue(overview, "export", 20)
-  const canAfford = balance >= exportCost
   /* 述标生成计费口径（优先后端实时配置） */
   const presentCost = creditCostValue(overview, "present", 80)
   /* 资料库数据提升到页面级：LibraryPicker / TemplatePicker 共用同一份，避免同页重复拉取 */
@@ -269,17 +263,22 @@ export default function PresentPage() {
      导出（export 步）由后端自动带编辑后 deck 重渲 pptx。 */
   const [deckSaveState, setDeckSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle")
   const [deckSaveError, setDeckSaveError] = useState<string>("")
+  /** 把当前编辑态整份写回 present 步（保存按钮与导出前的落库共用同一实现）。 */
+  async function persistDeck() {
+    if (!projectId || !realDeck) return
+    await patchStep(projectId, "present", {
+      title: realDeck.title,
+      duration,
+      template: styleId,
+      slides,
+      qa: realDeck.qa,
+    })
+  }
   async function saveDeck() {
     if (!projectId || !realDeck || deckSaveState === "saving") return
     setDeckSaveState("saving")
     try {
-      await patchStep(projectId, "present", {
-        title: realDeck.title,
-        duration,
-        template: styleId,
-        slides,
-        qa: realDeck.qa,
-      })
+      await persistDeck()
       setDeckSaveState("saved")
       setTimeout(() => setDeckSaveState((s) => (s === "saved" ? "idle" : s)), 2500)
     } catch (e) {
@@ -298,13 +297,10 @@ export default function PresentPage() {
 
   /* ---------------- 导出 ---------------- */
   function onExportEntry() {
-    // 余额加载中不做付费墙判定（按钮已禁用，双保险防按 balance=0 误弹）
-    if (membershipLoading || exportingRef.current) return
+    // 述标导出已改为免费重渲（后端不预扣、不看余额），这里不能再挡付费墙——
+    // 否则 0 积分用户连自己已付费生成的 PPT 都导不出来（评审实测）。
+    if (exportingRef.current) return
     setExportGate(null)
-    if (!canAfford) {
-      openPaywall("present")
-      return
-    }
     setExportOpen((v) => !v)
   }
   function doExport(_format: "pptx" | "pdf") {
@@ -329,6 +325,9 @@ export default function PresentPage() {
         // 对象,于是编辑器里改完再导出拿到的仍是编辑前那份 PPT,可能就这么带去投标;渲染器升级后
         // 老项目也拿不到新版式。重渲是确定性渲染（无 LLM）,服务端不计费,故一律重跑。
         // 该接口对「流水线正文」和「用户自己上传标书」两条入口是同一条路——述标结果因此一致。
+        // 先把当前编辑态落库再重渲：PATCH 只有「保存编辑」按钮会触发，用户改完直接点导出
+        // 仍会拿到编辑前那份 PPT——正是本次要消灭的失败模式（评审指出修得不彻底）。
+        await persistDeck()
         const dl = await presentRerender(projectId)
         triggerDownload(dl.url)
         setExportStatus(`已开始下载《${dl.filename}》，可在浏览器「下载」列表查看`)
@@ -484,12 +483,12 @@ export default function PresentPage() {
               {/* 导出 */}
               <button
                 onClick={onExportEntry}
-                disabled={membershipLoading || !projectId || exporting}
+                disabled={!projectId || exporting}
                 title={!projectId ? "请先从项目进入" : undefined}
                 className="inline-flex items-center gap-1.5 rounded-lg gradient-brand px-3 py-2 text-xs font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <FileDown className="size-4" />
-                {membershipLoading ? "余额加载中…" : exporting ? "导出中…" : "导出"}
+                {exporting ? "导出中…" : "导出"}
               </button>
             </div>
           )}
@@ -499,15 +498,10 @@ export default function PresentPage() {
         {deckReady && <AiNotice />}
 
         {/* 导出菜单 */}
-        {exportOpen && canAfford && (
+        {exportOpen && (
           <div className="mt-3 rounded-xl border border-border bg-background p-3">
-            <CreditEstimate
-              cost={exportCost}
-              balance={balance}
-              showSupportable={false}
-              actionLabel="确认导出"
-              onConfirm={() => doExport("pptx")}
-            />
+            {/* 不再挂 CreditEstimate：导出按当前内容免费重渲，报一个不会扣的价是误导 */}
+            <p className="text-xs text-muted-foreground">按当前编辑内容重新渲染并下载，不消耗积分。</p>
             <div className="mt-2.5 grid gap-2 sm:grid-cols-2">
               <button
                 onClick={() => doExport("pptx")}

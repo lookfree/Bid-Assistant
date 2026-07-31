@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import re
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from agent.agents.bidding_agent.nodes.common import fetch_master_bytes
@@ -36,10 +37,13 @@ async def render_deck(body: DeckRenderBody):
     """渲染 → 覆盖 artifacts/<thread_id>/present.pptx → {key}。
     母版取不到/损坏由 render_pptx 自身回退空白设计，不阻断导出（与 present/export 既有兜底一致）。"""
     if not _THREAD_ID.match(body.thread_id):
-        raise ValueError(f"非法 thread_id：{body.thread_id!r}")
+        # 裸 ValueError 会被 FastAPI 当成未捕获异常返 500，调用方分不清「参数错」和「服务挂了」
+        raise HTTPException(status_code=400, detail=f"非法 thread_id：{body.thread_id!r}")
     deck = DeckSpec(**body.deck)
     master = await fetch_master_bytes(body.enterprise_template_key)
-    data = render_pptx(deck, template=body.template, master_bytes=master)
+    # 渲染是 CPU 密集（尤其带图表的母版路径），直接在协程里跑会阻塞整个事件循环，
+    # 把同进程在途的 /runs SSE 中继一起卡住。本接口免费且每次导出都触发，比 present 节点容易撞上。
+    data = await asyncio.to_thread(render_pptx, deck, template=body.template, master_bytes=master)
     key = f"artifacts/{body.thread_id}/present.pptx"
     await storage.put_bytes(key, data, content_type=_PPTX_CT)
     return {"key": key}

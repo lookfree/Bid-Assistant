@@ -12,6 +12,7 @@
 import io
 
 import pytest
+from fastapi import HTTPException
 from pptx import Presentation
 
 from agent.routes import deck as deck_mod
@@ -53,12 +54,14 @@ async def test_render_deck_uploads_to_the_thread_key_and_returns_it(monkeypatch)
 
 
 async def test_render_deck_rejects_a_thread_id_that_escapes_the_prefix(monkeypatch):
-    """thread_id 直接拼进对象 key，必须挡住路径穿越——否则调用方一个 '../' 就能覆盖别的对象。"""
+    """thread_id 直接拼进对象 key，必须挡住路径穿越——否则调用方一个 '../' 就能覆盖别的对象。
+    且要以 400 而非 500 回绝：调用方得能区分「参数错」和「渲染服务挂了」。"""
     store = _Storage()
     monkeypatch.setattr(deck_mod, "storage", store)
     for bad in ("../evil", "a/b", "", "proj/../x"):
-        with pytest.raises(ValueError):
+        with pytest.raises(HTTPException) as ei:
             await render_deck(DeckRenderBody(thread_id=bad, deck=_DECK))
+        assert ei.value.status_code == 400
     assert store.calls == []
 
 

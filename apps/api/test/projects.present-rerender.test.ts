@@ -4,8 +4,8 @@ import { Hono } from "hono"
 import { projectRoutes, type ProjectDeps } from "../src/routes/projects"
 import { loginWithPhone } from "../src/services/auth"
 import { getDb, closeDb } from "../src/db/client"
-import { users, bidProjects, projectSteps, creditTransactions } from "../src/db/schema"
-import { uniquePhone, TEST_TIMEOUT_MS } from "./repos/helpers"
+import { users, bidProjects, projectSteps, creditTransactions, plans, subscriptions } from "../src/db/schema"
+import { uniquePhone, makeTestPlan, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS)
 
@@ -21,12 +21,15 @@ let reviewId = ""
 let normalThread = ""
 let reviewThread = ""
 let reviewStepId = ""
-const rendered: Array<{ threadId: string; deck: unknown }> = []
+const rendered: Array<{ threadId: string; deck: unknown; enterpriseTemplateKey?: string | null }> = []
+const madePlans: string[] = []
+let renderFails = false
 const presigned: string[] = []
 
 const mockDeps: Partial<ProjectDeps> = {
-  renderDeck: async ({ threadId, deck }) => {
-    rendered.push({ threadId, deck })
+  renderDeck: async ({ threadId, deck, enterpriseTemplateKey }) => {
+    if (renderFails) throw new Error("agent down")
+    rendered.push({ threadId, deck, enterpriseTemplateKey })
     return { key: `artifacts/${threadId}/present.pptx` }
   },
   presignGet: async (key: string) => {
@@ -65,7 +68,9 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  await getDb().delete(subscriptions).where(eq(subscriptions.userId, userId))
   await getDb().delete(users).where(eq(users.id, userId))
+  for (const id of madePlans) await getDb().delete(plans).where(eq(plans.id, id))
   await closeDb()
 })
 
@@ -102,6 +107,35 @@ describe("POST /api/projects/:id/present/pptx —— 导出前免费重渲", () 
     const res = await post(p!.id)
     expect(res.status).toBe(404)
     expect(rendered.length).toBe(n)
+  })
+
+  it("档位不含 pptTemplate 时剥掉企业模板——降级后不能继续白用付费母版", async () => {
+    // deck 里的 enterprise_template_id 是「专业版时期设置」的持久物，会一直留在库里；
+    // guardedOverrides 早就为 export/present 重渲做了这道剥除，新的免费导出路径必须同口径。
+    const [p] = await getDb().insert(bidProjects)
+      .values({ userId, threadId: `proj-${crypto.randomUUID()}` }).returning()
+    await getDb().insert(projectSteps).values({
+      projectId: p!.id, step: "present", status: "done",
+      result: { ...DECK, enterprise_template_id: "library/master.pptx" },
+    })
+    // 无订阅 → 回落免费档；只要免费档 features.pptTemplate 显式 false 就该剥掉
+    const planId = await makeTestPlan((id) => madePlans.push(id), {})
+    await getDb().update(plans).set({ features: { pptTemplate: false } }).where(eq(plans.id, planId))
+    await getDb().insert(subscriptions)
+      .values({ userId, planId, status: "active", currentPeriodEnd: new Date(Date.now() + 86_400_000) })
+    const res = await post(p!.id)
+    expect(res.status).toBe(200)
+    expect(rendered.at(-1)!.enterpriseTemplateKey).toBeNull()
+    await getDb().delete(subscriptions).where(eq(subscriptions.userId, userId))
+  })
+
+  it("agent 渲染失败 → 502，不是裸 500", async () => {
+    // 导出现在只有这一条路，前端要能区分「服务挂了」和「自己的 deck 有问题」
+    renderFails = true
+    const res = await post(normalId)
+    renderFails = false
+    expect(res.status).toBe(502)
+    expect((await res.json()) as { error: string }).toEqual({ error: "agent_failed" })
   })
 
   it("不是自己的项目一律 404", async () => {
