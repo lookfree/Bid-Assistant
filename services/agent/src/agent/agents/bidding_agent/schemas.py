@@ -95,9 +95,10 @@ class OutlineLeafItem(BaseModel):
     """五级（明细）：封顶层，无 children。"""
     id: str
     label: str                                    # 如 "① 值班安排"
-    # 用户在「添加标题」弹窗里填的写作说明（这一节要写什么），随提纲保存并进入正文生成提示词。
-    # 模型自己产提纲时不必填；它主要承载**人的意图**，是用户唯一能指导某一节怎么写的地方。
-    desc: str = ""
+    # 用户在「添加/编辑标题」弹窗里手写的写作说明（这一节要写什么），随提纲保存并进入正文生成提示词。
+    # **模型产提纲时必须留空**（提示词已明写）：写手把 desc 当作用户的明确要求、优先级高于自身判断，
+    # 模型往里填等于把自己的话冒充成用户指令，用户还会在编辑弹窗里看到一段自己没写过的文字。
+    desc: str = Field(default="", description="留空。该字段由用户在页面上手写，模型不要填写")
     clause_ids: list[str] = Field(default_factory=list)
     is_new: bool = False
 
@@ -106,7 +107,7 @@ class OutlineGrandChildItem(BaseModel):
     """四级（细分）：如「（1）人员配置」。"""
     id: str
     label: str
-    desc: str = ""   # 用户填写的该节写作说明（见 OutlineLeafItem.desc）
+    desc: str = Field(default="", description="留空。该字段由用户在页面上手写，模型不要填写")   # 见 OutlineLeafItem.desc
     clause_ids: list[str] = Field(default_factory=list)
     is_new: bool = False
     children: list[OutlineLeafItem] = Field(default_factory=list)
@@ -116,7 +117,7 @@ class OutlineChildItem(BaseModel):
     """三级（小节）：如「1. 项目背景分析」。"""
     id: str
     label: str
-    desc: str = ""   # 用户填写的该节写作说明（见 OutlineLeafItem.desc）
+    desc: str = Field(default="", description="留空。该字段由用户在页面上手写，模型不要填写")   # 见 OutlineLeafItem.desc
     clause_ids: list[str] = Field(default_factory=list)
     is_new: bool = False
     children: list[OutlineGrandChildItem] = Field(default_factory=list)
@@ -126,7 +127,7 @@ class OutlineItem(BaseModel):
     """二级（节）：如「一、项目理解」。"""
     id: str
     label: str
-    desc: str = ""   # 用户填写的该节写作说明（见 OutlineLeafItem.desc）
+    desc: str = Field(default="", description="留空。该字段由用户在页面上手写，模型不要填写")   # 见 OutlineLeafItem.desc
     clause_ids: list[str] = Field(default_factory=list)  # 招标依据条款 id（${secId}-cN，对齐原型 clauseIds）
     is_new: bool = False                          # 提纲新增（招标无直接来源）
     children: list[OutlineChildItem] = Field(default_factory=list)

@@ -261,3 +261,20 @@ def test_page_count_ceiling_is_deliberately_left_to_the_prompt():
         slides.append({"id": f"s{i}", "title": f"页{i}", "kind": "content", "bullets": ["要点"],
                        **({"layout": "comparison", "stats": [{"value": "1", "label": "x"}]} if varied else {})})
     DeckDraft(duration=15, slides=slides)      # 超上限不拦，交给提示词引导
+
+
+def test_outline_desc_is_marked_as_user_only_in_the_tool_schema():
+    """desc 是用户在页面上手写的写作说明，写手把它当成「用户的明确要求、优先级高于自身判断」。
+    它出现在 submit_outline 的工具 schema 里却没有任何说明时，模型会顺手填满每一项——
+    等于把模型自己的话洗成用户指令，用户还会在编辑弹窗里看到一段自己没写过的文字。
+    字段描述里必须明写「留空/由用户填写」，提示词里也有对应一条。"""
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+    from agent.agents.bidding_agent.schemas import Outline
+    from agent.framework.structured import make_submit_tool
+    from agent.agents.bidding_agent.prompts.outline import OUTLINE_SYSTEM_PROMPT
+
+    tool, _ = make_submit_tool("submit_outline", Outline, "提交提纲")
+    item = convert_to_openai_tool(tool)["function"]["parameters"]["properties"]["chapters"]["items"]
+    desc_field = item["properties"]["items"]["items"]["properties"]["desc"]
+    assert "留空" in (desc_field.get("description") or ""), "desc 字段没告诉模型要留空"
+    assert "desc" in OUTLINE_SYSTEM_PROMPT and "留空" in OUTLINE_SYSTEM_PROMPT

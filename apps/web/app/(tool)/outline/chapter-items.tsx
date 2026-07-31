@@ -7,14 +7,13 @@
 // - 结构性修改统一经 onChange 交回页面（位置编号重排/保存由页面链路负责）
 // - 与页面章标题编辑互斥（评审二轮:重构曾丢互斥）:开编辑时回调 onEditStart,页面 bump closeEditToken 反向关这里
 import { useEffect, useState } from "react"
-import { Check, CornerDownRight, GripVertical, ListTree, MapPin, Pencil, Plus, Sparkles, Trash2, X } from "lucide-react"
+import { CornerDownRight, GripVertical, ListTree, MapPin, Pencil, Plus, Sparkles, Trash2 } from "lucide-react"
 import type { OutlineItem } from "@/lib/bid-types"
 import { MAX_OUTLINE_DEPTH, reorderWithin } from "@/lib/outline-edit"
 import { OutlineItemDialog } from "./item-dialog"
 
 type Drag = { id: string; parentId: string } // parentId = 祖先 id 链 join("/")，空串=顶层
 
-/** 编辑态单行（各级共用；depth 决定缩进，与展示态对齐）。 */
 export function ChapterItems({
   items,
   activeItem,
@@ -50,8 +49,9 @@ export function ChapterItems({
     onChange(walk(items, path))
   }
 
-  /** 各级新增项的默认名（depth 从 1=节 起算，与提纲编号层级一一对应）。 */
-  const LEVEL_NAME = ["", "新增子项", "新增小节", "新增细分项", "新增明细项"]
+  /** 各级层级名（depth 从 1=节 起算，与提纲编号层级一一对应）：弹窗标题用「新增/编辑 + 层级名」拼。
+   *  别再带「新增」前缀——它原是新增项的默认标签，现在只作层级名用，带上就成了「新增新增子项」。 */
+  const LEVEL_NAME = ["", "子项", "小节", "细分项", "明细项"]
 
   /* 新增与编辑共用一个弹窗：除标题名外还要能填「这一节写什么」的说明——它随提纲保存并进入
      正文生成提示词。此前新增是插一个占位项再行内改名、编辑只能改名，用户的写作意图无处可放；
@@ -193,14 +193,12 @@ export function ChapterItems({
     )
   }
 
-  const renderRow = (item: OutlineItem, path: string[], depth: number) => row(item, path, depth)
-
   /** 递归渲染一层（含该层尾部落点）。depth 从 1（节）起算，最深到 MAX_OUTLINE_DEPTH-1。 */
   const renderLevel = (list: OutlineItem[], path: string[], depth: number) => (
     <ul className={`flex flex-col gap-1.5 ${depth === 1 ? "mt-2.5" : "mt-1.5"}`}>
       {list.map((item) => (
         <li key={item.id}>
-          {renderRow(item, path, depth)}
+          {row(item, path, depth)}
           {(item.children?.length ?? 0) > 0 && renderLevel(item.children!, [...path, item.id], depth + 1)}
           {/* 该项下级的尾部落点：仅拖动其直接子项时显形 */}
           {drag?.parentId === [...path, item.id].join("/") && (item.children?.length ?? 0) > 0 && (
