@@ -188,3 +188,76 @@ def test_stored_decks_with_mixed_units_still_render():
                    "series": [{"name": "承诺", "values": [1, 36]}]}},
     ])
     assert deck.slides[0].chart is not None
+
+
+def test_a_long_deck_must_use_more_than_one_layout():
+    """DeepSeek v4 实测：14 页正文里 13 页是纯要点、一张图表都没有——内容量够了但通篇一个调子，
+    评委翻到后面全是项目符号列表。提示词早写了「同一版式连续超 3 页视为偷懒」，但没人执行，
+    等于没写。按正文页数成比例要求非要点版式，模型把该画图的一页改成 chart 即可满足。"""
+    import pytest
+    from pydantic import ValidationError
+    from agent.agents.bidding_agent.schemas import DeckDraft
+
+    def deck(n_content, n_varied):
+        slides = [{"id": "c", "title": "封面", "kind": "cover", "bullets": []}]
+        for i in range(n_content):
+            varied = i < n_varied
+            slides.append({
+                "id": f"s{i}", "title": f"页{i}", "kind": "content", "bullets": ["要点"],
+                **({"layout": "comparison", "stats": [{"value": "1", "label": "x"}]} if varied else {}),
+            })
+        return {"slides": slides}
+
+    DeckDraft(**deck(5, 0))                    # 短 deck 不强求
+    with pytest.raises(ValidationError, match="版式"):
+        DeckDraft(**deck(6, 0))                # 6 页正文全要点 → 拒
+    DeckDraft(**deck(6, 1))                    # 有 1 页非要点 → 过
+    with pytest.raises(ValidationError, match="版式"):
+        DeckDraft(**deck(12, 1))               # 12 页只有 1 页非要点 → 仍嫌单调
+    DeckDraft(**deck(12, 2))                   # 2 页 → 过
+
+
+def test_a_chart_whose_values_are_all_equal_is_not_a_chart():
+    """DeepSeek v4 pro 实测：为满足「必须有非要点版式」硬凑出「多因素认证/端到端加密/应用级访问控制/
+    审计日志」四项、值全是 1 的柱状图——四根一样高的柱子，信息量为零。
+    这是上一条约束自己制造的逃逸路径：加约束就得同时堵住敷衍满足它的走法。
+    判据很干净——所有数值相同（或只有一个类别）本质就不是「跨类别可比数字」。"""
+    import pytest
+    from pydantic import ValidationError
+    from agent.agents.bidding_agent.schemas import SlideChart
+
+    from agent.agents.bidding_agent.schemas import DeckDraft, DeckSpec
+
+    def draft(cats, series):
+        return {"slides": [{"id": "s1", "title": "图", "kind": "content", "layout": "chart",
+                            "bullets": [], "chart": {"type": "column", "categories": cats, "series": series}}]}
+
+    with pytest.raises(ValidationError, match="没有可比性"):
+        DeckDraft(**draft(["多因素认证", "端到端加密", "应用级访问控制", "审计日志"],
+                          [{"name": "支持能力", "values": [1, 1, 1, 1]}]))
+    with pytest.raises(ValidationError, match="没有可比性"):
+        DeckDraft(**draft(["唯一项"], [{"name": "占比", "values": [100]}]))
+    DeckDraft(**draft(["硬件", "服务", "税金"], [{"name": "报价构成", "values": [62, 30, 8]}]))
+    # 多系列：某一个系列内部有差异即可（招标要求 vs 我方承诺，可能其中一条持平）
+    DeckDraft(**draft(["响应", "到场"],
+                      [{"name": "要求", "values": [2, 2]}, {"name": "承诺", "values": [1, 8]}]))
+    # 存量 deck 的退化图表照样能导出——这条拦在生成阶段，不能让老 PPT 变成永久导不出
+    DeckSpec(title="存量", slides=[{"id": "s1", "title": "图", "kind": "content", "layout": "chart",
+                                    "bullets": ["说明"],
+                                    "chart": {"type": "column", "categories": ["A", "B"],
+                                              "series": [{"name": "x", "values": [1, 1]}]}}])
+
+
+def test_page_count_ceiling_is_deliberately_left_to_the_prompt():
+    """页数上限**有意不做硬校验**。DeepSeek v4 pro 确实超了（15 分钟给 14 页正文），但做成硬校验后
+    实测撞上「多条约束三轮收敛不了 → 整步失败退款、用户什么都拿不到」——多两页属于「不够好」，
+    整步失败属于「不能用」，后者代价大得多。
+    判据：只有「不拦就等于交付垃圾」的才配当校验器（缺 bullets、图表数据被丢弃属于此类）。
+    本测试锁住这个决定，防止以后有人顺手又把它加回硬校验。"""
+    from agent.agents.bidding_agent.schemas import DeckDraft
+    slides = [{"id": "c", "title": "封面", "kind": "cover", "bullets": []}]
+    for i in range(14):
+        varied = i < 2
+        slides.append({"id": f"s{i}", "title": f"页{i}", "kind": "content", "bullets": ["要点"],
+                       **({"layout": "comparison", "stats": [{"value": "1", "label": "x"}]} if varied else {})})
+    DeckDraft(duration=15, slides=slides)      # 超上限不拦，交给提示词引导

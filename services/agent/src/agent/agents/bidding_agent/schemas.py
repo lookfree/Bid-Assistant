@@ -197,6 +197,18 @@ class SlideChart(BaseModel):
         return {m.group(1).strip() for c in self.categories
                 if (m := _UNIT_RE.search(c)) and m.group(1).strip()}
 
+    def degenerate_reason(self) -> str | None:
+        """这张图是否「画出来没信息」：单类别，或所有系列内部数值都一样（几根等高的柱子）。
+        **只作判据不在此处抛错**——SlideChart 被 Slide/DeckSpec 共用，在这里拦会让库里已有的
+        退化图表再也导不出来（混合单位那条就是这么踩的，实测 /render/deck 500）。
+        多系列时只要有一个系列内部有差异就算合格（招标要求 vs 我方承诺可能某几项持平）。"""
+        if len(self.categories) < 2:
+            return "只有一个类别，没有可比性——改用数字卡片（comparison 版式）"
+        if all(len(set(sr.values)) <= 1 for sr in self.series):
+            return ("每个系列的数值都一样，没有可比性——几根等高的柱子传达不了任何信息。"
+                    "换一个真有差异的维度（金额/周期/数量占比），或改用要点/数字卡片")
+        return None
+
     @model_validator(mode="after")
     def _shape_consistent(self):
         if not self.categories:
@@ -348,6 +360,11 @@ class DeckDraft(BaseModel):
     def _structure_is_sound(self):
         _sections_have_content(self.slides)
         _charts_use_one_unit(self.slides)
+        _charts_are_comparable(self.slides)
+        _layouts_are_varied(self.slides)
+        # 页数上限只写在提示词里，不做硬校验：多两页属于「不够好」而非「不能用」，
+        # 而每多一条硬约束就多一种「三轮收敛不了 → 整步失败退款、用户什么都拿不到」的失败模式。
+        # 判据：只有「不拦就等于交付垃圾」的才配当校验器（缺 bullets、图表数据被丢弃属于此类）。
         return self
 
 
@@ -362,6 +379,33 @@ def _charts_use_one_unit(slides: list) -> None:
             raise ValueError(
                 f"「{sl.title}」的图表类别单位不一致（{'、'.join(sorted(units))}）：量纲不同画在一根轴上，"
                 "大数会把小数压成看不见的线。请拆成两张图，或改用 comparison 版式的数字卡片")
+
+
+def _layouts_are_varied(slides: list) -> None:
+    """长 deck 不能通篇一个版式。生产实测（DeepSeek v4，2026-07-31）：14 页正文里 13 页纯要点、
+    一张图表都没有——内容量够了但评委翻到后面全是项目符号列表。
+    提示词早写了「同一版式连续超 3 页视为偷懒」，没有执行等于没写。
+    按正文页数成比例要求：6 页起至少 1 页非要点，12 页起至少 2 页。模型把最该画图的那页
+    改成 chart 即可满足，代价极小；短 deck 不强求（3–5 页本来就没必要凑版式）。"""
+    content = [s for s in slides if s.kind == "content"]
+    if len(content) < 6:
+        return
+    need = 2 if len(content) >= 12 else 1
+    varied = sum(1 for s in content if s.layout != "bullets")
+    if varied < need:
+        raise ValueError(
+            f"{len(content)} 页正文里只有 {varied} 页用了非要点版式，至少要 {need} 页："
+            "凡是团队构成、历史业绩、报价构成、实施进度这类可比数字，用 chart；"
+            "招标要求 vs 我方承诺这类对照，用 comparison。通篇要点评委翻到后面就麻木了")
+
+
+def _charts_are_comparable(slides: list) -> None:
+    """生产实测（DeepSeek v4 pro）：为满足「必须有非要点版式」硬凑出四项值全为 1 的柱状图——
+    加约束就得同时堵住敷衍满足它的走法，否则约束本身制造了新的垃圾产出。只在生成阶段拦。"""
+    for sl in slides:
+        why = sl.chart.degenerate_reason() if sl.chart is not None else None
+        if why:
+            raise ValueError(f"「{sl.title}」的图表{why}")
 
 
 def _sections_have_content(slides: list) -> None:

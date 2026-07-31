@@ -111,17 +111,21 @@ def build_create_agent(prompt: str, tools: list, ctx):
 
 
 async def run_submit_agent(ctx, prompt: str, user_msg: str,
-                           tool_name: str, schema, desc: str, extra_tools: list | None = None):
+                           tool_name: str, schema, desc: str, extra_tools: list | None = None,
+                           attempts: int = 3):
     """跑一个「必须用 submit 工具提交 schema 结构化结果」的子 agent，返回校验后的实例。
     模型没提交（含提交但校验失败）就抛错 → run 落 failed 而非把空结果当成功；
     checkpoint 停在节点前，客户端重发 run 即重试本节点。工作流各 submit 节点共用。
-    只有 submit 一个工具时走 tool_choice 强制路径（模型自由发挥不调工具是真实高频失败模式）。"""
+    只有 submit 一个工具时走 tool_choice 强制路径（模型自由发挥不调工具是真实高频失败模式）。
+
+    attempts：约束越多的 schema 越需要更多轮次收敛。一次耗尽等于白烧掉前几轮的 token 且整步失败
+    退款、用户什么都拿不到——多给一两轮的成本远低于整轮报废（述标骨架实测 3 轮会翻车）。"""
     submit, get_result = make_submit_tool(tool_name, schema, desc)
     if extra_tools:
         sub = build_create_agent(prompt, [*extra_tools, submit], ctx)
         await sub.ainvoke({"messages": [{"role": "user", "content": user_msg}]})
     else:
-        await _forced_submit(ctx, prompt, user_msg, submit, tool_name, label=desc)
+        await _forced_submit(ctx, prompt, user_msg, submit, tool_name, label=desc, attempts=attempts)
     result = get_result()
     if result is None:
         raise RuntimeError(f"模型未通过 {tool_name} 提交结构化结果")

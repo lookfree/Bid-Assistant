@@ -88,9 +88,11 @@ def make_present_node(ctx):
         if template:
             user += f"\n客户指定模板：{template}（template 字段必须用它）。"
         await publish_phase(ctx, "述标·基于标书与评分点搭建 PPT 骨架")
+        # 骨架 schema 的约束最多（页数/分隔页/版式多样性/图表可比性/单位一致），3 轮实测会耗尽，
+        # 整步失败退款、用户什么都拿不到——比多跑两轮糟得多，故这一步单独放宽到 5 轮。
         draft = await run_submit_agent(
             ctx, PRESENT_SKELETON_PROMPT, user,
-            "submit_deck_draft", DeckDraft, "提交述标骨架（不含口播稿）")
+            "submit_deck_draft", DeckDraft, "提交述标骨架（不含口播稿）", attempts=5)
         await publish_phase(ctx, f"述标·逐页撰写口播稿（共{len(draft.slides)}页）")
         slide_notes = await run_submit_agent(
             ctx, PRESENT_NOTES_PROMPT, _notes_user_msg(draft, duration),
