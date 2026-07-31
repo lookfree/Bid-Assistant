@@ -158,6 +158,13 @@ export async function createRefund(
     const res = await deps.provider.refund({ clientSn: order.clientSn, refundSn: refundRequestNo(refundId), amountCents: input.amountCents })
     outcome = res.ok ? "ok" : "rejected"
     providerError = res.reason
+    // 通道返回原样留痕（2026-07-31）：那天三次退款的审计里 reason 都是空，界面只显示「通道拒绝，
+    // 未返回原因」，而直连同一 provider 探测拿得到「今日新收款余额小于退款额[EP36]」，
+    // 适配器的「无原因就打原始报文」也没触发——原因确实产生了却没到界面，断点不明。
+    // 这行把边界上的真值记下来，下次失败直接看日志，不必再靠推断。
+    if (!res.ok) {
+      console.error(`[refund] 通道返回 refund=${refundId} ok=${res.ok} reason=${JSON.stringify(res.reason)}`)
+    }
   } catch (e) {
     outcome = "ambiguous"
     providerError = (e as Error).message
