@@ -35,6 +35,10 @@ export function refundsRouter(resolveProvider: () => RefundProvider | undefined)
   const r = new Hono<{ Variables: { admin: AdminUser } }>()
   r.post("/", requirePermission("refund.write"), async (c) => {
     const parsed = RefundBody.safeParse(await c.req.json().catch(() => null))
+    // 入口留痕（2026-07-31 排查）：后台三次退款的响应里都没有 reason，而直接调 createRefund
+    // 明明带得出来；幂等重放/未部署/stderr 被吞/路由错/provider 不同源都已逐一排除，矛盾仍在。
+    // 记下入参与返回值，下一次点击即可定位断点，不必再靠推断。
+    console.error(`[admin-refund] 入口 ok=${parsed.success} body=${JSON.stringify(parsed.success ? parsed.data : null)}`)
     if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
     const provider = resolveProvider()
     if (!provider) return c.json({ error: "payment_unconfigured" }, 503)
@@ -59,6 +63,7 @@ export function refundsRouter(resolveProvider: () => RefundProvider | undefined)
     } catch (e) {
       console.error(`[admin-refund] 审计写入失败（退款已成功，不影响结果）order=${parsed.data.orderId}`, e)
     }
+    console.error(`[admin-refund] 出口 res=${JSON.stringify(res)}`)
     return c.json(res)
   })
   return r
