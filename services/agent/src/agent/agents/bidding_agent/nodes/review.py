@@ -70,7 +70,11 @@ def make_review_node(ctx):
         # 行业资质补丁在读标条目（有招标文件）或标书正文（自查）上做字面匹配，不拿全文匹配：
         # 补丁词是资质类术语，只出现在需求与资格条款里，全文匹配只增噪声和成本。
         user += category_scope(category.get("value"), "review")
-        user += industry_patches(json.dumps(payload["read"] or chapters, ensure_ascii=False))
+        # 判据用 read_state 而不是 payload["read"]：slim_read({}) 回的是
+        # {"project_meta": {}, "categories": [], ...}——**非空 dict 恒为真**，
+        # 写成 `payload["read"] or chapters` 就永远取不到 chapters，自查项目的资质补丁静默全失效。
+        patch_src = payload["read"] if read_state else chapters
+        user += industry_patches(json.dumps(patch_src, ensure_ascii=False))
         result = await run_submit_agent(
             ctx, REVIEW_SYSTEM_PROMPT, user,
             "submit_risk_report", RiskReport, "提交审查报告")

@@ -171,3 +171,17 @@ def test_every_shipped_entry_is_still_phrased_as_a_prompt():
         for cat in cat_mod.CATEGORY_LABEL:
             block = cat_mod.category_scope([cat], purpose)
             assert "必须：" not in block, (cat, purpose)
+
+
+def test_self_check_matches_industry_patches_against_the_uploaded_bid(knowledge, submit_gateway):
+    """自查项目（没有招标文件）的资质补丁必须拿**上传标书正文**匹配。
+    这条卡的是一个静默失效：slim_read({}) 回的是非空 dict，`payload["read"] or chapters`
+    永远取不到 chapters，补丁对整类项目一条都不会命中，而且没有任何报错。"""
+    gw = submit_gateway({"submit_risk_report": _RISK_ARGS, "submit_bid_category": {"value": ["services"]}})
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
+    asyncio.run(make_review_node(ctx)({
+        "chapters": {"c1": "<h3>人员配置</h3><p>本项目采用劳务派遣用工方式</p>"},
+    }))
+    review_msg = next(c.last_messages[1].content for c in gw.chats
+                      if "submit_risk_report" in c.tool_names)
+    assert "须提供劳务派遣经营许可证" in review_msg
