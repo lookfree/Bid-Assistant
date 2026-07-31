@@ -95,7 +95,7 @@ describe("PATCH /api/projects/:id/category（spec334）", () => {
     const id = await createProject(tokenA)
     const res = await patchCategory(id, ["goods", "services"], tokenA)
     expect(res.status).toBe(200)
-    expect((await res.json()) as { bidCategory: unknown }).toEqual({ ok: true, bidCategory: ["goods", "services"] })
+    expect((await res.json()) as { ok: boolean; bidCategory: unknown }).toEqual({ ok: true, bidCategory: ["goods", "services"] })
 
     const detail = await app.request(`/api/projects/${id}`, { headers: auth(tokenA) })
     const body = (await detail.json()) as { project: { bidCategory: unknown } }

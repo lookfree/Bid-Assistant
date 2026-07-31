@@ -40,9 +40,11 @@ def _ctx(submit_gateway, args):
     return RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=submit_gateway(args))
 
 
-def test_empty_knowledge_changes_nothing(submit_gateway):
+def test_empty_knowledge_changes_nothing(monkeypatch, submit_gateway):
     """知识表为空 ⇒ 注入为空串 ⇒ 各处消息与启用分类前逐字节一致。
-    这条保证管线可以先于知识上线。"""
+    这条保证管线与知识可以分开上线、分开验收：清空知识表，全链路必须退回改动前的样子。"""
+    monkeypatch.setattr(cat_mod, "CATEGORY_KNOWLEDGE", [])
+    monkeypatch.setattr(cat_mod, "INDUSTRY_PATCHES", [])
     gw = submit_gateway({"submit_outline": _OUTLINE_ARGS})
     ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
     asyncio.run(make_outline_node(ctx)({"read": {"categories": []}, "run_input": {"bid_category": ["goods"]}}))
@@ -139,3 +141,33 @@ def test_unverified_entries_are_phrased_as_a_prompt_not_a_requirement(knowledge)
     unverified = cat_mod.category_scope(["goods"], "planning")
     assert "必须：报价明细表须含产地与品牌两列" in verified
     assert "通常：技术参数逐条响应" in unverified and "请核对" in unverified
+
+
+def test_shipped_knowledge_is_well_formed():
+    """随包发出的知识表逐条自检：类别/用途/状态必须是合法值。
+    33 条手写条目里拼错一个 purpose，那条就永远不会被注入——而且**静默**，没有任何报错。"""
+    for e in cat_mod.CATEGORY_KNOWLEDGE:
+        assert e["category"] in cat_mod.CATEGORY_LABEL, e
+        assert e["purpose"] in cat_mod.PURPOSE_TITLE, e
+        assert e["status"] in ("verified", "unverified"), e
+        assert e["text"].strip(), e
+    for p in cat_mod.INDUSTRY_PATCHES:
+        assert p["keywords"] and p["item"].strip(), p
+        assert p["level"] in ("高", "中"), p
+
+
+def test_no_repealed_qualification_in_the_patch_table():
+    """已废止的资质不得在表里：物业服务企业资质 2018 年随《物业管理条例》修订删除。
+    留着的后果是审查报告报一条假风险，用户信了会去补一个根本不存在的证。"""
+    joined = " ".join(p["item"] for p in cat_mod.INDUSTRY_PATCHES)
+    assert "物业服务企业资质" not in joined
+
+
+def test_every_shipped_entry_is_still_phrased_as_a_prompt():
+    """随包发出的条目目前全是待验证——**一条都不许以「必须」的口吻出现**。
+    等某条真核到了现行法规原文或我们自己的真实标书，再把它的 status 改成 verified。"""
+    assert all(e["status"] == "unverified" for e in cat_mod.CATEGORY_KNOWLEDGE)
+    for purpose in cat_mod.PURPOSE_TITLE:
+        for cat in cat_mod.CATEGORY_LABEL:
+            block = cat_mod.category_scope([cat], purpose)
+            assert "必须：" not in block, (cat, purpose)
