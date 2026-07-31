@@ -203,3 +203,34 @@ describe("refundRequestNo：收钱吧 refund_request_no 31 字符硬上限", () 
     expect(out).toBe(refundRequestNo(id)) // 纯函数：同一退款单每次重算得到同一个值，通道侧幂等键才稳定
   })
 })
+
+describe("扣回护栏拒绝后，操作员确认重试必须真的重试", () => {
+  it("护栏拒绝的行不占用幂等键 —— 否则确认后的重试被当成重放，直接返回上次的 failed", async () => {
+    // 生产实测（2026-07-31）：后台确认弹层沿用同一 idempotencyKey 重发（本意是防双退），
+    // 但第一次已被扣回护栏标成 failed，于是第二次走幂等重放：不调通道、不带 reason、
+    // 直接回上次的 failed。运营点「确认退款」等于什么都没发生，界面还显示「通道未返回原因」——
+    // 而通道根本没被调用过。护栏是**通道调用之前**的拒绝，一分钱没动，
+    // 那行就不该霸占这个键挡住后续重试；幂等键的职责是挡重复的通道调用。
+    const userId = await mkUser()
+    const order = await mkPaidOrder(userId, 1000)
+    await grant(userId, 1000, { type: "purchase", ref: order.id, idempotencyKey: `rfk-g-${order.id}` })
+    const { holdId } = await hold(userId, "read", { idempotencyKey: `rfk-h-${userId}` })
+    await settle(holdId, 10, { idempotencyKey: `rfk-s-${userId}` })   // 余额 990 < 扣回 1000
+
+    const key = randomUUID()
+    await expect(
+      createRefund({ orderId: order.id, amountCents: 1000, reason: "第一次", operator: "ops", idempotencyKey: key },
+                   { provider: okProvider() }),
+    ).rejects.toThrow(/allowNegativeBalance/)
+
+    // 同一个 key 确认重试：必须真的走通道，而不是被当成重放直接回上次的 failed
+    const calls: Array<{ clientSn: string; refundSn: string; amountCents: number }> = []
+    const res = await createRefund(
+      { orderId: order.id, amountCents: 1000, reason: "确认", operator: "ops",
+        idempotencyKey: key, allowNegativeBalance: true },
+      { provider: okProvider(calls) },
+    )
+    expect(res.status).toBe("done")
+    expect(calls.length).toBe(1)   // 通道被真正调用过一次——这正是此前缺失的
+  })
+})

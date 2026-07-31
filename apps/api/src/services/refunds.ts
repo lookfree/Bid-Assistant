@@ -146,7 +146,12 @@ export async function createRefund(
     const balance = await getBalance(order.userId)
     const estimate = clawbackTarget(await sumGrantedCredits(getDb(), order.id), input.amountCents, order.amountCents)
     if (estimate > balance) {
-      await getDb().update(refunds).set({ status: "failed" }).where(eq(refunds.id, refundId)) // 未触发通道调用，failed 安全
+      // 未触发通道调用 → 标 failed 安全；但**必须同时释放幂等键**：这行拿着键的话，操作员按提示
+      // 携 allowNegativeBalance 用同一个键重试会被判成「幂等重放」，直接回上次的 failed——
+      // 不调通道、不带原因，点了确认等于什么都没发生（2026-07-31 生产实测，界面显示
+      // 「通道拒绝，未返回原因」，而通道根本没被调用过）。
+      // 幂等键的职责是挡住重复的**通道调用**；这里一次都没调过，键就不该继续占着。
+      await getDb().update(refunds).set({ status: "failed", idempotencyKey: null }).where(eq(refunds.id, refundId))
       throw new Error(`扣回积分 ${estimate} 超过当前余额 ${balance}（用户已消费）：需操作员确认后携 allowNegativeBalance 重试`)
     }
   }
