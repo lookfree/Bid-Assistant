@@ -14,6 +14,7 @@ from agent.routes.checklist import router as checklist_router
 from agent.routes.models import router as models_router
 from agent.routes.rag import router as rag_router
 from agent.routes.generate import router as generate_router
+from agent.routes.deck import router as deck_router
 
 
 @asynccontextmanager
@@ -40,4 +41,5 @@ def create_app() -> FastAPI:
     app.include_router(models_router)      # spec319 模型连通性测试探针
     app.include_router(rag_router)         # spec316 资料库 RAG 索引
     app.include_router(generate_router)    # spec333 定制审核表生成（同步无状态）
+    app.include_router(deck_router)        # 述标 deck 确定性重渲（同步无状态，编辑后导出用）
     return app

@@ -40,9 +40,8 @@ import { LibraryPicker } from "@/components/tool/library-picker"
 import { AiNotice } from "@/components/tool/ai-notice"
 import { type LibraryItem } from "@/lib/library"
 import { ApiError } from "@/lib/api-client"
-import { storedFormat } from "@/lib/generation-config"
 import { stepPrereq, useStep } from "@/lib/use-step"
-import { artifactDownload, triggerDownload, patchErrorMessage, patchStep, runStep } from "@/lib/project"
+import { presentRerender, triggerDownload, patchErrorMessage, patchStep } from "@/lib/project"
 import { AiPanel } from "./ai-panel"
 import { EmptyState, DURATIONS, type Duration } from "./empty-state"
 import { NotReadyCard } from "./not-ready-card"
@@ -318,33 +317,19 @@ export default function PresentPage() {
       setTimeout(() => setExportStatus(""), 3000)
       return
     }
-    // 步序闸守卫（defensive）：present 完成后 currentStep=export，一般已放行；
-    // 未到 export/done 就不调 runStep("export")（后端必 409），给友好提示
-    const cur = info?.project.currentStep
-    if (cur && cur !== "export" && cur !== "done") {
-      setExportStatus("述标生成完成后才能导出，请先完成本步生成")
-      setTimeout(() => setExportStatus(""), 3000)
-      return
-    }
-    // 真实导出：present 步已把 .pptx 落 MinIO，取预签名 URL 直下
+    // 这里不再判 currentStep：旧逻辑要 export/done 才放行，是因为当时导出要靠补跑 export 步；
+    // 而「用户自己上传标书」那条（kind=review）的 currentStep 停在 review，会被这道闸直接挡死。
+    // 重渲接口只要求 present 已跑完（realDeck 存在即成立），后端也只按这一条判。
     exportingRef.current = true
     setExporting(true)
-    setExportStatus("正在获取下载链接…")
+    setExportStatus("正在按当前内容重新渲染…")
     void (async () => {
       try {
-        let dl: { url: string; filename: string }
-        try {
-          dl = await artifactDownload(projectId, "pptx")
-        } catch (e) {
-          // 仅 404（产物不存在=从未跑过 export）才触发计费的 export 步；瞬断/5xx 一律如实报错——
-          // 计费红线：重复下载免费，绝不能因网络抖动静默重跑付费步骤。
-          if (!(e instanceof ApiError && e.status === 404)) throw e
-          setExportStatus("正在整理产物…")
-          // 审查修正：回退重渲也带用户存好的输出格式,否则会把定制版式的 docx/pdf 覆盖回默认版式
-          const fmt = storedFormat()
-          await runStep(projectId, "export", undefined, fmt ? { format: fmt } : undefined)
-          dl = await artifactDownload(projectId, "pptx")
-        }
+        // 每次导出都按**当前存库 deck** 重渲（与标书正文侧同口径）：此前是直接下载 MinIO 里的旧
+        // 对象,于是编辑器里改完再导出拿到的仍是编辑前那份 PPT,可能就这么带去投标;渲染器升级后
+        // 老项目也拿不到新版式。重渲是确定性渲染（无 LLM）,服务端不计费,故一律重跑。
+        // 该接口对「流水线正文」和「用户自己上传标书」两条入口是同一条路——述标结果因此一致。
+        const dl = await presentRerender(projectId)
         triggerDownload(dl.url)
         setExportStatus(`已开始下载《${dl.filename}》，可在浏览器「下载」列表查看`)
       } catch (e) {

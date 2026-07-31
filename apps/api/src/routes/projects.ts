@@ -239,6 +239,7 @@ export type ProjectDeps = {
   rewriteChapter: typeof client.rewriteChapter
   presignGet: typeof presignGet
   getAgentModel: typeof client.getAgentModel
+  renderDeck: typeof client.renderDeck
 }
 
 /** 属主校验取项目行：只见自己的，查不到与越权同语义（undefined → 404）。 */
@@ -389,6 +390,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
   const rewriteChapter = deps.rewriteChapter ?? client.rewriteChapter
   const presign = deps.presignGet ?? presignGet
   const resolveModel = deps.getAgentModel ?? client.getAgentModel
+  const renderDeck = deps.renderDeck ?? client.renderDeck
 
   const r = new Hono<{ Variables: { user: User } }>()
   r.use("*", authMiddleware)
@@ -1060,6 +1062,35 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
 
   // 产物下载：present/export 步的 result.artifacts[kind]（spec201 step.done 带 artifacts 合并快照），
   // 发预签名 URL，二进制不过 App。
+  // 述标导出前的免费重渲：拿存库 deck 重画一份 .pptx 覆盖同 key，再下发预签名 URL。
+  // 为什么必须重渲而不是直接下载已存对象（生产缺陷 2026-07-30）：
+  //   ① 用户在编辑器改完 deck（PATCH 只写库、不动产物）再导出，拿到的是编辑前那份 PPT，
+  //      可能就这么带去投标——标书正文侧 7-28 已修过同样的病，述标侧没跟上；
+  //   ② 渲染器升级后老项目也拿不到新版式；
+  //   ③「用户自己上传标书」那条（kind=review）的 export 步一律被拒（无正文章节），
+  //      连补跑 export 重渲都做不到——两条入口共用这一条，述标结果才会一致。
+  // 免费且不看余额：确定性渲染（无 LLM，只花本机 CPU），present 步已收过费——与 export 重渲同口径。
+  r.post("/:id/present/pptx", async (c) => {
+    const { id } = c.req.param()
+    if (!isUuid(id)) return c.json({ error: "not_found" }, 404)
+    const p = await ownedProject(id, c.get("user").id)
+    if (!p) return c.json({ error: "not_found" }, 404)
+    const row = await latestDoneStep(p.id, "present")
+    if (!row?.result) return c.json({ error: "step_not_done" }, 404)
+    // 线程 id 决定产物 key，必须与当初跑 run 时的派生规则逐字一致（见 runStep 里的 runThreadId）：
+    // review-kind 述标跑在专属线程上，算错就会覆盖/取到别的对象。
+    const threadId = p.kind === "review" ? `${p.threadId}-present-${row.id}` : p.threadId
+    const deck = row.result as Record<string, unknown>
+    const { key } = await renderDeck({
+      threadId,
+      deck,
+      enterpriseTemplateKey: (deck.enterprise_template_id as string | undefined) ?? null,
+    })
+    const base = projectName(p.name, p.tenderFileKey).replace(/\.(pdf|docx?|xlsx?|pptx?|zip|rar)(?=·|（|$)/i, "")
+    const filename = `${base}-${ARTIFACT_NAME.pptx}`
+    return c.json({ url: await presign(key, 300, filename), filename })
+  })
+
   r.get("/:id/artifacts/:kind", async (c) => {
     const { id, kind } = c.req.param()
     if (!isUuid(id)) return c.json({ error: "not_found" }, 404) // 非 uuid 直接 404，避免 PG 22P02 → 500

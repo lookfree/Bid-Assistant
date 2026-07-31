@@ -268,6 +268,20 @@ export async function renderRiskReport(payload: Record<string, unknown>): Promis
   return postSync("/render/risk-report", payload)
 }
 
+/** 述标 deck 重渲（编辑后导出/渲染器升级后重出）：无状态、免计费——present 步已收过费，
+ *  且这是确定性渲染（无 LLM，只花本机 CPU）。落回 present 节点用的同一个 key，重渲即覆盖。 */
+export async function renderDeck(payload: {
+  threadId: string
+  deck: unknown
+  template?: string | null
+  enterpriseTemplateKey?: string | null
+}): Promise<{ key: string }> {
+  const body: Record<string, unknown> = { thread_id: payload.threadId, deck: payload.deck }
+  if (payload.template) body.template = payload.template
+  if (payload.enterpriseTemplateKey) body.enterprise_template_key = payload.enterpriseTemplateKey
+  return postSync("/render/deck", body)
+}
+
 /** 标书分析报告渲染（读标结论全量落 docx）：无状态、免计费——读标步已收过费。 */
 export async function renderReadReport(payload: Record<string, unknown>): Promise<{ key: string }> {
   return postSync("/render/read-report", payload)

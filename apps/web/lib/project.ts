@@ -344,6 +344,13 @@ export async function artifactDownload(
   return api.request<{ url: string; filename: string }>(`/api/projects/${id}/artifacts/${kind}`)
 }
 
+/** 述标导出：按当前存库 deck 免费重渲 .pptx 再取预签名 URL。
+ *  不用 artifactDownload 直下已存对象——那样编辑器里的修改进不了产物（生产缺陷 2026-07-30）。
+ *  「流水线正文」与「用户自己上传标书」两条入口共用本接口，述标结果因此一致。 */
+export async function presentRerender(id: string): Promise<{ url: string; filename: string }> {
+  return api.request<{ url: string; filename: string }>(`/api/projects/${id}/present/pptx`, { method: "POST" })
+}
+
 /** 触发浏览器下载：隐藏 <a> 点击。比 window.open 好在不闪空白标签页、await 之后也不被弹窗拦截。
  *  仅用于带 attachment disposition 的预签名 URL（服务端已带下载名），否则会把当前页导航走。 */
 export function triggerDownload(url: string): void {
