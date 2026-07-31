@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, jsonb, integer, boolean, index } from "drizzle-orm/pg-core"
+import { pgTable, uuid, text, jsonb, integer, boolean, timestamp, index } from "drizzle-orm/pg-core"
 import { id, createdAt } from "./columns"
 import { users } from "./users"
 
@@ -28,6 +28,9 @@ export const bidProjects = pgTable(
     // 默认 true=从未导出过的项目首次导出照收。用标记而非内容哈希：导出是每次点击的必经路径，
     // 哈希要把整本正文读出来算，与「导出路径不碰 result 列」的既有教训冲突。
     exportDirty: boolean("export_dirty").notNull().default(true),
+    // 内容最后变更时间：导出收尾据此判断「本次 run 期间内容有没有被改过」，改过就不清脏——
+    // 否则长导出期间的编辑会被收尾抹平，交付文件不含该改动、下次真含改动的导出却免费。
+    contentChangedAt: timestamp("content_changed_at", { withTimezone: true }),
     createdAt: createdAt(),
   },
   (t) => ({ userIdx: index("bid_projects_user_idx").on(t.userId) }),

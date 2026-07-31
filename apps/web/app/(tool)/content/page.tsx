@@ -153,7 +153,8 @@ export default function ContentPage() {
   /* 导出全流程（入口/步序闸/断流收敛/断点续看）拆到 use-export.ts；确认弹层仍在本页,回调发信号 */
   const {
     exportOpen, setExportOpen, exportFormat, setExportFormat, exportStatus, flashExportStatus,
-    exportGate, exportGateHint, hasExported, pdfUnavailable, exporting, freeRerender, onExportEntry, attemptExport, doExport,
+    exportGate, exportGateHint, hasExported, pdfUnavailable, exporting, freeRerender, markContentChanged,
+    onExportEntry, attemptExport, doExport,
   } = useExport({
     projectId, info, membershipLoading, canAfford,
     openPaywall: () => openPaywall("export"),
@@ -218,6 +219,8 @@ export default function ContentPage() {
     isReal, projectId, data, setData, editor, active,
     bumpEpoch: () => setEditorEpoch((e) => e + 1),
     scrollRef: editorScrollRef,
+    // 正文一变，导出侧立刻改回「要收费」——否则本次会话内改完再导出会显示「不消耗积分」却被扣
+    onContentChanged: markContentChanged,
   })
 
   function openLibrary() {

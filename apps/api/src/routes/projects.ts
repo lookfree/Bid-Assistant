@@ -927,9 +927,13 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       if (cur == null) delete s.enterprise_template_id
       else s.enterprise_template_id = cur
     }
+    // 内容真的变了才置脏。正文编辑器 blur 即自动保存，而它的「没改就不发」判断是拿
+    // TipTap 的 getHTML() 和库里 agent 产出的 HTML 比字符串——TipTap 会规范化标签/空白，
+    // 于是「点进某章看一眼再点出去」也可能发出一次 PATCH。不比对就等于让一次误触值 20 积分。
+    const unchanged = JSON.stringify(row.result) === JSON.stringify(stored)
     await getDb().update(projectSteps).set({ result: stored }).where(eq(projectSteps.id, row.id))
     // 改了提纲/正文 → 下次导出要重新收费（present 的 deck 编辑不影响标书产物，不置脏）
-    if (step === "outline" || step === "content") await markExportDirty(p.id)
+    if (!unchanged && (step === "outline" || step === "content")) await markExportDirty(p.id)
     return c.json({ ok: true })
   })
 
@@ -996,9 +1000,16 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         const chapters = { ...((fresh?.result as Record<string, unknown>) ?? {}), [chapterId]: html }
         await tx.update(projectSteps).set({ result: chapters }).where(eq(projectSteps.id, contentRow.id))
       })
-      await markExportDirty(p.id)   // 改写本身不收费，但正文变了，下次导出要收费
     } catch (e) {
       throw e
+    }
+    // 置脏放在事务之外：正文此时已提交，若这一条 UPDATE 抖了就把一次**成功的**改写报成 500，
+    // 用户看到「改写失败」但内容其实已改——两种失败模式必须分开。失败只记日志，
+    // 代价是这次改动可能被免费导出一次，远小于谎报失败。
+    try {
+      await markExportDirty(p.id)   // 改写本身不收费，但正文变了，下次导出要收费
+    } catch {
+      console.warn(`[export-dirty] 改写后置脏失败 project=${p.id}`)
     }
 
     return c.json({ chapterId, html, cost: 0 })

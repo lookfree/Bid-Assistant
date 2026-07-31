@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm"
+import { and, eq, isNull, lt, or } from "drizzle-orm"
 import { getDb } from "../db/client"
 import { bidProjects } from "../db/schema"
 
@@ -9,14 +9,29 @@ import { bidProjects } from "../db/schema"
 // 用标记而非内容哈希：导出是每次点击的必经路径，哈希要把整本正文（几百 KB）读出来算，
 // 与「导出路径不碰 result 列」的既有教训冲突。标记是 O(1) 且语义等价。
 
-/** 内容发生变化：编辑回写提纲/正文、AI 改写单章、重跑提纲/正文步之后调用。幂等。 */
+/** 内容发生变化：编辑回写提纲/正文、AI 改写单章、重跑提纲/正文步之后调用。幂等。
+ *  一并记下变更时刻，供导出收尾判断「本次 run 期间内容有没有被改过」。 */
 export async function markExportDirty(projectId: string): Promise<void> {
-  await getDb().update(bidProjects).set({ exportDirty: true }).where(eq(bidProjects.id, projectId))
+  await getDb()
+    .update(bidProjects)
+    .set({ exportDirty: true, contentChangedAt: new Date() })
+    .where(eq(bidProjects.id, projectId))
 }
 
-/** 导出成功收尾后调用：此后没改动的重复下载不再收费。幂等。 */
-export async function clearExportDirty(projectId: string): Promise<void> {
-  await getDb().update(bidProjects).set({ exportDirty: false }).where(eq(bidProjects.id, projectId))
+/** 导出成功收尾后调用：此后没改动的重复下载不再收费。
+ *  runStartedAt = 本次导出步位行的创建时刻。**只在这之后内容没再变过时才清净**——
+ *  导出动辄数十秒到数分钟，期间 PATCH/改写并不受 run 互斥保护，用户完全可能在导出跑着时改章节。
+ *  无条件清净会把这次改动一并抹平：交付的文件不含它，而下一次（真含它的）导出反倒免费。 */
+export async function clearExportDirty(projectId: string, runStartedAt: Date): Promise<void> {
+  await getDb()
+    .update(bidProjects)
+    .set({ exportDirty: false })
+    .where(
+      and(
+        eq(bidProjects.id, projectId),
+        or(isNull(bidProjects.contentChangedAt), lt(bidProjects.contentChangedAt, runStartedAt)),
+      ),
+    )
 }
 
 /** 本次导出是否该收费。查不到项目一律按收费处理——漏收是钱的问题，误判免费是账目对不上的问题。 */

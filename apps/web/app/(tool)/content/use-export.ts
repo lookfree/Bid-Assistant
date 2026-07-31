@@ -36,7 +36,11 @@ export function useExport(opts: {
   const [exportFormat, setExportFormat] = useState<"word" | "pdf">("word")
   const [exportStatus, setExportStatus] = useState<string>("")
   const [exportGate, setExportGate] = useState<ExportGate | null>(null)
-  const [hasExported, setHasExported] = useState(false)
+  // 本地净态：导出成功置 true，正文一变置 false（null=还没有本地判断，听服务端的）。
+  // 不能用「导出过就永远免费」的粘滞布尔——info 只在挂载时取一次，
+  // 「导出→改正文→再导出」会一直沿用导出那刻的免费判断，界面写着不消耗积分而服务端照扣。
+  const [localClean, setLocalClean] = useState<boolean | null>(null)
+  const hasExported = localClean === true
   // 导出在途（含从导出流程触发的体检等待）：驱动导出按钮置灰——体检/渲染中按钮仍可点是怪设计（用户反馈）。
   // ref 是同步防重（state 异步，双击间隙读到旧值）；state 供 UI 渲染。
   const [exporting, setExporting] = useState(false)
@@ -65,7 +69,7 @@ export function useExport(opts: {
    *  用户改完正文、余额为 0 时会跳过付费墙直奔 402，只看到一句「导出失败」。
    *  并上本会话的 hasExported：info 走 30s 缓存，刚导出完那次不至于还显示要扣费。
    *  字段缺失（老接口）时按收费处理——宁可多显示一次费用，也不误显示免费。 */
-  const freeRerender = hasExported || info?.project.exportDirty === false
+  const freeRerender = localClean ?? info?.project.exportDirty === false
 
   function onExportEntry() {
     // 余额加载中不做付费墙判定（按钮已禁用，双保险防按 balance=0 误弹）
@@ -88,6 +92,11 @@ export function useExport(opts: {
     // 后端步序闸同步放行。仍未走到 review（正文没生成完）才拦，那是真的没东西可导。
     if (!cur || ["review", "present", "export", "done"].includes(cur)) return null
     return { text: "导出前需完成：标书正文生成", href: "/content", label: "前往正文页" }
+  }
+
+  /** 正文/提纲发生实际变更：下次导出重新按「要收费」显示（服务端已同步置脏）。 */
+  function markContentChanged() {
+    setLocalClean(false)
   }
 
   /* 付费用户在导出菜单点「确认导出」：体检未跑不再静默触发，先显式确认计费；再按风险弱拦截 */
@@ -148,7 +157,7 @@ export function useExport(opts: {
         const dl = await artifactDownload(projectId, kind)
         triggerDownload(dl.url)
         setExportStatus(`已开始下载《${dl.filename}》${pagesSuffix(exportRes)}，可在浏览器「下载」列表查看`)
-        setHasExported(true)
+        setLocalClean(true)
       } catch (e) {
         // 连接中途断开 / 双发撞 running / 撞上对账刚收尾（step_already_done）：run 在服务端照常
         // 跑或已完成——转收敛轮询等真实结果,绝不把切页断流误报成「导出失败」诱导重跑重扣。
@@ -163,7 +172,7 @@ export function useExport(opts: {
             const dl = await artifactDownload(projectId, kind)
             triggerDownload(dl.url)
             setExportStatus(`已开始下载《${dl.filename}》${pagesSuffix(converged)}，可在浏览器「下载」列表查看`)
-            setHasExported(true)
+            setLocalClean(true)
             return
           } catch (e2) {
             // 收敛成功但 pdf 产物缺失（该次 docx→pdf 转换失败）:导出步其实成功了,给准确文案
@@ -224,7 +233,7 @@ export function useExport(opts: {
     exportFormat, setExportFormat,
     exportStatus, flashExportStatus,
     exportGate, exportGateHint,
-    hasExported, pdfUnavailable, exporting, freeRerender,
+    hasExported, pdfUnavailable, exporting, freeRerender, markContentChanged,
     onExportEntry, attemptExport, doExport,
   }
 }

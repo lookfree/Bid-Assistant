@@ -21,8 +21,12 @@ export function useChapterEdits(opts: {
   bumpEpoch: () => void
   /** 编辑器滚动容器：重挂会把滚动位置清零，替换正文后要还原（否则用户被甩回文首找不到改了哪） */
   scrollRef?: { current: HTMLElement | null }
+  /** 正文发生实际变更时通知外部（导出侧据此重新按「要收费」显示，见 use-export 的 freeRerender）。
+   *  不通知的话，本次会话内「导出→改正文→再导出」会一直沿用导出成功时的免费判断，
+   *  界面写着「不消耗积分」而服务端照扣——静默扣费是红线。 */
+  onContentChanged?: () => void
 }) {
-  const { isReal, projectId, data, setData, editor, active, bumpEpoch, scrollRef } = opts
+  const { isReal, projectId, data, setData, editor, active, bumpEpoch, scrollRef, onContentChanged } = opts
 
   /** 重挂 RichEditor 但保住滚动位置：换 key 会重建 DOM、scrollTop 归零。
    *  先记下当前位置，两帧后（新内容已挂载测量完）还原——生产反馈「改完跳到文章开头，找不到改了哪」。 */
@@ -54,7 +58,10 @@ export function useChapterEdits(opts: {
     for (const c of [...next.tech, ...next.business]) result[c.id] = c.html
     setContentSaveState("saving")
     patchStep(projectId, "content", result)
-      .then(() => setContentSaveState("saved"))
+      .then(() => {
+        setContentSaveState("saved")
+        onContentChanged?.()
+      })
       .catch((e: unknown) => {
         // 404 = 该步无真实 done 结果（step_not_done），精确提示
         setContentSaveError(patchErrorMessage(e))
@@ -107,6 +114,7 @@ export function useChapterEdits(opts: {
       return withChapterHtml(prev, chapterId, html)
     })
     bumpKeepingScroll() // 改写替换经重挂生效（见 RichEditor 文档注释），滚动位置保持不动
+    onContentChanged?.()  // 改写已在服务端落库（rewrite 路由自行置脏），导出侧要同步改回「要收费」
   }
 
   /* 插入内容：TipTap 失焦仍保留文档内选区,insertContent 落在光标处;

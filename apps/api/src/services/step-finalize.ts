@@ -51,6 +51,7 @@ async function settleAndAdvance(opts: {
   step: Step
   result: unknown
   hold: { holdId: string; heldAmount: number } | null
+  runStartedAt: Date        // 步位行创建时刻：导出收尾据此判断本次 run 期间内容有没有被改过
   billing?: FinalizeBilling
 }): Promise<number> {
   const b = opts.billing ?? billing
@@ -62,6 +63,12 @@ async function settleAndAdvance(opts: {
       : await b.settle(opts.stepId, opts.hold.holdId, opts.hold.heldAmount)
   }
   await getDb().update(projectSteps).set({ costPoints: cost }).where(eq(projectSteps.id, opts.stepId))
+  // 导出计费脏标记（2026-07-31 口径）：重跑提纲/正文=内容变了→置脏；导出成功→清净。
+  // 放在这里而不是 finalizeStepSuccess：sweepStuckSteps 的半收尾修复（R1/R2）直接调 settleAndAdvance，
+  // 挂在上层会漏掉那条路——进程在「翻 done」与「清净」之间挂掉（部署打断导出是复发事件），
+  // 修复后标记仍是脏的，用户下次原样重下会被二次收费。
+  if (opts.step === "outline" || opts.step === "content") await markExportDirty(opts.projectId)
+  else if (opts.step === "export") await clearExportDirty(opts.projectId, opts.runStartedAt)
   const [proj] = await getDb().select({ kind: bidProjects.kind }).from(bidProjects).where(eq(bidProjects.id, opts.projectId))
   const next = nextStepFor(opts.step, proj?.kind ?? "bid")
   await getDb()
@@ -103,16 +110,14 @@ export async function finalizeStepSuccess(opts: {
     .update(projectSteps)
     .set({ status: "done", result: opts.result })
     .where(and(eq(projectSteps.id, opts.stepId), eq(projectSteps.status, "running")))
-    .returning({ id: projectSteps.id })
+    // 一并取回 createdAt（= run 起步时刻）：导出收尾据此判断本次 run 期间内容有没有被改过，
+    // 顺手带出来比事后再查一次省一趟往返。
+    .returning({ id: projectSteps.id, createdAt: projectSteps.createdAt })
   if (flipped.length === 0) return null
-  // 导出计费脏标记（2026-07-31 口径）：放在共享收尾核心里，SSE / 409 自愈 / 对账 Cron 三条收尾
-  // 路径共用同一处，避免只在其中一条清净导致「有的路径重复收费、有的免单」。
-  // 重跑提纲/正文 = 内容变了 → 置脏；导出成功 → 清净。
-  if (opts.step === "outline" || opts.step === "content") await markExportDirty(opts.projectId)
-  else if (opts.step === "export") await clearExportDirty(opts.projectId)
   return await settleAndAdvance({
     stepId: opts.stepId, projectId: opts.projectId, step: opts.step, result: opts.result,
     hold: opts.holdId ? { holdId: opts.holdId, heldAmount: opts.heldAmount } : null,
+    runStartedAt: flipped[0]!.createdAt,
     billing: opts.billing,
   })
 }
@@ -237,6 +242,7 @@ export async function sweepStuckSteps(
       if (hold && !(await hasSettlement(hold.holdId))) {
         await settleAndAdvance({
           stepId: row.id, projectId: row.projectId, step: row.step as Step, result: row.result, hold,
+          runStartedAt: row.createdAt,
         })
         counts.repaired += 1
         continue
