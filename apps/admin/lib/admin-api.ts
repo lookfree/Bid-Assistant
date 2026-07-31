@@ -138,6 +138,13 @@ export const adminApi = {
     handle: (id: string, patch: { status: "processing" | "resolved"; reply?: string }) =>
       req<ApiFeedback>(`/feedback/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   },
+  // 标书分类纠偏（spec334）：只读。判定质量的唯一反馈回路——没有它，同一个判错会被一百个用户
+  // 各纠一次，而我们一次都不知道。
+  bidCategories: {
+    corrections: (p: { page?: number; pageSize?: number } = {}) =>
+      req<Paged<ApiCategoryCorrection>>(`/bid-categories/corrections${qs(p)}`),
+    summary: () => req<{ items: ApiCategorySummaryRow[] }>(`/bid-categories/corrections/summary`),
+  },
   // 发票管理（spec332）：列表按 status/userId 筛选（invoice.write）；handle 开具/驳回，落审计。
   invoices: {
     list: (p: { status?: string; userId?: string; page?: number; pageSize?: number } = {}) =>
@@ -175,6 +182,10 @@ export type ApiPlan = { id: string; name: string; code: string | null; priceCent
 export type ApiFeedback = { id: string; userId: string; type: "content_error" | "complaint" | "billing" | "suggestion" | "other"; projectId: string | null; content: string; contact: string | null; status: "pending" | "processing" | "resolved"; reply: string | null; handledBy: string | null; handledAt: string | null; createdAt: string; nickname: string | null }
 export type ApiInvoice = { id: string; userId: string; orderId: string; amountCents: number; titleType: "personal" | "enterprise"; title: string; taxNo: string | null; email: string | null; remark: string | null; status: "pending" | "issued" | "rejected"; invoiceNo: string | null; fileKey: string | null; rejectReason: string | null; handledBy: string | null; handledAt: string | null; createdAt: string }
 // email 为历史字段（改站内下载后新申请不再收集，可空）
+// 分类纠偏样本（spec334）：detected 是系统判的，confirmed 是用户改成的；两者都是 1–2 个值的
+// 有序数组，首元素为主类别。**只有「判过且被改」才会有记录**——没判过时的用户选择不算纠偏。
+export type ApiCategoryCorrection = { id: string; projectId: string; projectName: string | null; detected: string[]; confirmed: string[]; confidence: string | null; createdAt: string }
+export type ApiCategorySummaryRow = { detected: string; confirmed: string; count: number }
 
 // 查询串：跳过 undefined/空，encodeURIComponent。
 function qs(p: Record<string, unknown>): string {

@@ -13,6 +13,7 @@ import {
   BrainCircuit,
   MessageSquare,
   FileText,
+  Tags,
 } from "lucide-react"
 
 import { cn } from "@/lib/utils"
@@ -38,6 +39,7 @@ const nav = [
   { title: "模型管理", url: "/models", icon: BrainCircuit },
   { title: "反馈工单", url: "/feedback", icon: MessageSquare },
   { title: "发票管理", url: "/invoices", icon: FileText },
+  { title: "标书分类纠偏", url: "/bid-categories", icon: Tags },
   { title: "系统与权限", url: "/system", icon: ShieldCheck },
 ]
 
