@@ -177,9 +177,10 @@ export function ChapterItems({
           </span>
         )}
         <div className="flex shrink-0 items-center gap-0.5">
+          {/* 新增一律用 ➕（与添加章节/添加子项同一符号）：彩色 emoji 自带字号，用 text-[13px] 对齐旁边 size-3.5 的线性图标 */}
           {canNest && (
-            <button onClick={() => add([...path, item.id])} className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-primary" aria-label="添加下级" title="添加下一级">
-              <CornerDownRight className="size-3.5" />
+            <button onClick={() => add([...path, item.id])} className="rounded-md p-1 text-[13px] leading-none text-muted-foreground hover:bg-muted hover:text-primary" aria-label="添加下级" title="添加下一级">
+              <span aria-hidden>➕</span>
             </button>
           )}
           <button onClick={() => startEdit(item, path, depth)} className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="编辑标题与说明">
