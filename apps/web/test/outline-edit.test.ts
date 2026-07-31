@@ -164,3 +164,23 @@ describe("flattenItems / serializeItems（评审二轮:迁入可测纯函数层�
     expect(ser[0]!.children[0]!.children).toEqual([])
   })
 })
+
+describe("提纲项描述：新增标题时填的说明必须能存下来", () => {
+  it("serializeItems 保留 desc —— 只保留白名单字段会让描述在保存时被静默丢掉", () => {
+    // 描述是用户手写的、用来指导正文生成的内容（「这一节要写什么」）。
+    // 序列化按白名单重建对象，漏掉它 = 用户填了、界面显示了、一保存就没了，且毫无提示。
+    const out = serializeItems([
+      { id: "t1.1", label: "项目理解", desc: "重点写对海警医院场景的理解，强调涉密合规" },
+      { id: "t1.2", label: "无描述项" },
+    ]) as Array<Record<string, unknown>>
+    expect(out[0]!.desc).toBe("重点写对海警医院场景的理解，强调涉密合规")
+    expect(out[1]!.desc).toBe("")          // 未填 → 空串，形状稳定不产生 undefined 键
+  })
+
+  it("子级的描述同样保留（提纲最深五级，描述可以挂在任意一级）", () => {
+    const out = serializeItems([
+      { id: "t1", label: "一级", children: [{ id: "t1.1", label: "二级", desc: "二级的写作要求" }] },
+    ]) as Array<{ children: Array<Record<string, unknown>> }>
+    expect(out[0]!.children[0]!.desc).toBe("二级的写作要求")
+  })
+})

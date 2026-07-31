@@ -137,11 +137,14 @@ export function flattenItems<I extends { children?: I[] }>(list: I[]): I[] {
 
 /** 子项树序列化（保存回写 Outline 契约）：children 递归透传——丢了这个键=丢用户的小节。 */
 export function serializeItems(
-  list: Array<{ id: string; label: string; clauseIds?: string[]; isNew?: boolean; children?: unknown[] }>,
+  list: Array<{ id: string; label: string; desc?: string; clauseIds?: string[]; isNew?: boolean; children?: unknown[] }>,
 ): unknown[] {
   return list.map((it) => ({
     id: it.id,
     label: it.label,
+    // 用户手写的写作说明（新增标题时可填），随提纲一并保存并进入正文生成提示词。
+    // 序列化按白名单重建对象——漏掉它就是「填了、显示了、一保存就没了」，且毫无提示。
+    desc: it.desc ?? "",
     clauseIds: it.clauseIds ?? [],
     isNew: it.isNew ?? false,
     children: serializeItems((it.children ?? []) as Parameters<typeof serializeItems>[0]),

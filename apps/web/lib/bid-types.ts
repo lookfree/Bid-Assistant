@@ -54,7 +54,8 @@ export type PackageInfo = {
 export type Group = "tech" | "business"
 /** 提纲子项。自引用支持到投标惯例的五级：章（chapter.no）→ 一、→ 1. → （1） → ①；
  *  封顶由 MAX_OUTLINE_DEPTH 与 agent 侧显式分层 schema 共同约束（更深的数据会被静默剪掉）。 */
-export type OutlineItem = { id: string; label: string; clauseIds?: string[]; isNew?: boolean; children?: OutlineItem[] }
+/** desc：用户在「添加标题」弹窗里填的写作说明（这一节要写什么），随提纲保存并进入正文生成提示词。 */
+export type OutlineItem = { id: string; label: string; desc?: string; clauseIds?: string[]; isNew?: boolean; children?: OutlineItem[] }
 
 export type BidChapter = {
   id: string

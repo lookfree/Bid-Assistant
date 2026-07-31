@@ -10,6 +10,7 @@ import { useEffect, useState } from "react"
 import { Check, CornerDownRight, GripVertical, ListTree, MapPin, Pencil, Plus, Sparkles, Trash2, X } from "lucide-react"
 import type { OutlineItem } from "@/lib/bid-types"
 import { MAX_OUTLINE_DEPTH, reorderWithin } from "@/lib/outline-edit"
+import { AddItemDialog } from "./add-item-dialog"
 
 type Drag = { id: string; parentId: string } // parentId = 祖先 id 链 join("/")，空串=顶层
 
@@ -104,13 +105,17 @@ export function ChapterItems({
   /** 各级新增项的默认名（depth 从 1=节 起算，与提纲编号层级一一对应）。 */
   const LEVEL_NAME = ["", "新增子项", "新增小节", "新增细分项", "新增明细项"]
 
-  const add = (path: string[]) => {
-    const id = genId()
-    const label = LEVEL_NAME[Math.min(path.length + 1, LEVEL_NAME.length - 1)]!
+  /* 新增改走弹窗：除了标题名，还要能填「这一节写什么」的说明——它随提纲保存并进入
+     正文生成提示词。此前是直接插一个「新增子项」再行内改名，用户的写作意图无处可放。 */
+  const [adding, setAdding] = useState<{ path: string[]; levelName: string } | null>(null)
+  const add = (path: string[]) =>
+    setAdding({ path, levelName: LEVEL_NAME[Math.min(path.length + 1, LEVEL_NAME.length - 1)]! })
+
+  const confirmAdd = (label: string, desc: string) => {
+    if (!adding) return
     onEditStart?.()
-    mutateLevel(path, (list) => [...list, { id, label, isNew: true }])
-    setEditingId(id)
-    setDraft(label)
+    mutateLevel(adding.path, (list) => [...list, { id: genId(), label, desc, isNew: true }])
+    setAdding(null)
   }
 
   /** 同层放置：drag 与目标同一父路径才接受。dropId=null 落到层尾。 */
@@ -264,11 +269,19 @@ export function ChapterItems({
       <button
         onClick={() => add([])}
         {...tailDropProps([])}
-        className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-border py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
+        aria-label="添加子项"
+        title="添加子项"
+        className="mt-2 flex w-full items-center justify-center rounded-lg border border-dashed border-border py-1.5 text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
       >
-        <Plus className="size-3.5" />
-        添加子项
+        <Plus className="size-4" />
       </button>
+      {adding && (
+        <AddItemDialog
+          levelName={adding.levelName}
+          onCancel={() => setAdding(null)}
+          onConfirm={confirmAdd}
+        />
+      )}
     </>
   )
 }
