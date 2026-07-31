@@ -17,6 +17,12 @@ _DOC2 = ParsedDoc(text="技术规范全文", kind="pdf",
                   clauses=[{"id": "sec-1-c1", "text": "★须具备 ISO27001 认证"}])
 
 
+
+def _read_rounds(gw) -> list:
+    """只数读标轮：读标节点收尾还会为标书分类（spec334）另发一次调用，
+    那一轮不属于「读标提交了几次」这件事，混进来会让本文件的分段判据全部漂掉。"""
+    return [c for c in gw.chats if "submit_read_result" in c.tool_names]
+
 def test_read_node_merges_multiple_files(monkeypatch, submit_gateway):
     """多文件：逐个 read_and_parse → merge_parsed 合并，read 结果加 doc_files（章节区间）。"""
     by_key = {"a/gonggao.docx": _DOC1, "b/jishu.pdf": _DOC2}
@@ -150,7 +156,7 @@ def test_large_clause_count_triggers_segmented_read(monkeypatch, submit_gateway)
         "file_key": "a.docx", "files": [{"key": "a.docx", "name": "采购文件"}]}))
 
     tech_chunks = math.ceil(n / read_mod.TECH_CHUNK_CLAUSES)
-    assert len(gw.chats) == 3 + tech_chunks             # 基础/格式/评分 3 骨架轮 + N 技术块
+    assert len(_read_rounds(gw)) == 3 + tech_chunks     # 基础/格式/评分 3 骨架轮 + N 技术块
     assert "基础轮" in str(gw.chats[0].last_messages[-1].content)
     assert "格式构成轮" in str(gw.chats[1].last_messages[-1].content)
     assert "评分轮" in str(gw.chats[2].last_messages[-1].content)
@@ -245,7 +251,7 @@ def test_segmented_read_resumes_from_cache_on_retry(monkeypatch, submit_gateway)
     ctx2 = RunContext(run_id="r2", agent_type="bidding_agent", thread_id="t-resume",
                       gateway=gw2, redis=redis)
     out = asyncio.run(read_mod.make_read_node(ctx2)(state))
-    assert len(gw2.chats) == 1                       # 只有失败那轮真正调了模型
+    assert len(_read_rounds(gw2)) == 1               # 只有失败那轮真正调了模型
     assert "categories" in out["read"]
 
 
@@ -313,4 +319,4 @@ def test_small_clause_count_single_submission(monkeypatch, submit_gateway):
     ctx = RunContext(run_id="r-one", agent_type="bidding_agent", thread_id="t-one", gateway=gw)
     asyncio.run(read_mod.make_read_node(ctx)({
         "file_key": "a.docx", "files": [{"key": "a.docx", "name": "f"}]}))
-    assert len(gw.chats) == 1
+    assert len(_read_rounds(gw)) == 1

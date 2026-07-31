@@ -456,3 +456,30 @@ class ChecklistGen(BaseModel):
     """依据读标结论生成的定制审核表（spec333）。分组核对项，条目紧扣本招标文件的具体要求。
     groups min_length=1：模型整段放弃应触发校验失败强制重试，而非静默产空表（空表由 App 层回落默认 36）。"""
     groups: list[ChecklistGenGroup] = Field(min_length=1)
+
+
+# 标书分类（spec334）：货物 / 服务 / 工程。**刻意不是 ReadResult 的字段**——它是读标收尾另一次
+# 独立调用的产物，挂进 ReadResult 就等于混进 submit_read_result 的工具 schema，重蹈「大 schema 里
+# 的字段被小模型静默跳过」的覆辙。落地方式沿用 doc_sections 的成例：并进 read result 的 dict。
+BidCategoryValue = Literal["goods", "services", "engineering"]
+
+
+class BidCategory(BaseModel):
+    """分类判定结果。value 是 1–2 个值的**有序**数组，首元素为主类别；判据不足留空，不猜。"""
+    value: list[BidCategoryValue] = Field(
+        default_factory=list,
+        description="货物 goods / 服务 services / 工程 engineering。横跨两类时给 2 个、主类别在前；判据不足给空数组，不要猜")
+    confidence: Literal["high", "medium", "low"] = "low"
+    reason: str = ""                                   # 一句话判据，给用户看，便于判断要不要改判
+    evidence_clause_ids: list[str] = Field(default_factory=list)  # 只能引用消息中出现过的条款 id
+
+    @model_validator(mode="after")
+    def _normalize(self) -> "BidCategory":
+        """去重保序、截到 2 个。模型偶尔会把三类全列上或重复同一类——这里收敛成不变量，
+        免得下游「首元素为主类别、最多两类」的约定要在每个消费点各防一次。"""
+        seen: list[str] = []
+        for v in self.value:
+            if v not in seen:
+                seen.append(v)
+        self.value = seen[:2]  # type: ignore[assignment]
+        return self

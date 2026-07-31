@@ -3,6 +3,7 @@ import asyncio
 import json
 from agent.framework.create_agent import run_submit_agent
 from agent.agents.bidding_agent.nodes.common import slim_read, filter_read_by_package, parse_bid_chapters, publish_phase
+from agent.agents.bidding_agent.nodes.classify import EMPTY as EMPTY_CATEGORY, classify_from_chapters
 from agent.agents.bidding_agent.schemas import RiskReport
 from agent.agents.bidding_agent.prompts.review import REVIEW_SYSTEM_PROMPT
 
@@ -16,6 +17,19 @@ _SELF_CHECK_NOTE = (
     "敏感与前后矛盾表述的自查,不做招标条款对照。risk_summary 第一条必须原样写:"
     "「未提供招标文件,未做招标条款对照审查,以下为通用自查结果」。"
 )
+
+
+async def _resolve_category(ctx, run_input: dict, read_state: dict, chapters: dict[str, str]) -> dict:
+    """本次审查生效的标书分类（spec334）。三条路，优先级从高到低：
+    ① run_input 带用户确认值 → 直接用，不再判；
+    ② 有读标结论 → 读标步已判过，这里不重复烧钱，取那一份；
+    ③ 自查模式（没有招标文件、也就没有读标结论）→ 拿上传标书正文现判。"""
+    given = run_input.get("bid_category")
+    if given:
+        return {**EMPTY_CATEGORY, "value": list(given)}
+    if read_state:
+        return read_state.get("bid_category") or dict(EMPTY_CATEGORY)
+    return await classify_from_chapters(ctx, chapters)
 
 
 def make_review_node(ctx):
@@ -40,6 +54,10 @@ def make_review_node(ctx):
                 raise RuntimeError("上传的标书未能解析出任何正文（扫描件/图片版暂不支持），请上传可复制文字的 docx/pdf 后重试")
         chapters = {cid: (html[:_CHAPTER_CAP] + "…（截断）" if len(html) > _CHAPTER_CAP else html)
                     for cid, html in chapters_src.items()}
+        # 分类判定（spec334）：**在审查之前**做，这一轮就能用上分类知识——放到审查之后的话，
+        # 用户看到分类时报告已经出完，得再花一次钱重跑才生效。
+        # 有读标结论的项目在读标步已判过，这里不重复判；用户确认过的值优先。
+        category = await _resolve_category(ctx, run_input, read_state, chapters)
         payload = {"read": slim_read(read_state), "outline": state.get("outline") or {},
                    "chapters": chapters}
         structure = read_state.get("required_structure") or []
@@ -50,5 +68,6 @@ def make_review_node(ctx):
         result = await run_submit_agent(
             ctx, REVIEW_SYSTEM_PROMPT, user,
             "submit_risk_report", RiskReport, "提交审查报告")
-        return {"risk": result.model_dump()}
+        # 与 read 节点同理：分类并进结果 dict，**不进 submit_risk_report 的工具 schema**
+        return {"risk": {**result.model_dump(), "bid_category": category}}
     return review_node
