@@ -158,7 +158,11 @@ export function OrdersClient() {
           description: `请勿重复发起（可能已退款）。${res.reason ?? ""}`,
         })
       } else {
-        toast.error("退款失败，订单状态未变", { description: res.reason ?? "通道拒绝，未返回原因" })
+        // 「通道拒绝，未返回原因」是错的：实测通道其实回了原因（如「今日新收款余额小于退款额[EP36]」），
+        // 是我们没把它带到界面。把没验证过的说法当事实报给运营，会让人往错的方向查。
+        toast.error("退款未成功，订单状态未变", {
+          description: res.reason ?? "没取到通道返回的原因（服务端已记录日志，请把订单号发给技术）",
+        })
       }
       setSelected(null)
       setClawbackConfirm(null)
