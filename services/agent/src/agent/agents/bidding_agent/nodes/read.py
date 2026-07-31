@@ -10,7 +10,7 @@ from agent.parsing.merge import merge_parsed
 from agent.parsing.tool import parse_document_tool
 from agent.agents.bidding_agent.schemas import ReadResult, ReadCategory
 from agent.agents.bidding_agent.nodes.common import publish_phase
-from agent.agents.bidding_agent.nodes.classify import EMPTY as EMPTY_CATEGORY, classify_from_read
+from agent.agents.bidding_agent.nodes.classify import classify_from_read
 from agent.agents.bidding_agent.prompts.read import READ_SYSTEM_PROMPT
 from agent.db import get_pool
 from agent.rag import store as rag_store
@@ -282,11 +282,9 @@ def make_read_node(ctx):
         _BG_INDEX_TASKS.add(task)                       # 持引用防 GC 提前取消
         task.add_done_callback(_BG_INDEX_TASKS.discard)
         # 分类判定（spec334）：读标收尾的一次轻量调用，与 doc_sections 一样并进结果 dict 而**不进
-        # ReadResult 的工具 schema**。已带 run_input.bid_category（用户确认过）时不重复判。
+        # ReadResult 的工具 schema**。这里**每次重跑都重新判**——read 步正是判定值的产地，
+        # 跳过它就意味着重跑读标再也刷不出新判定；用户的确认值另存在项目行，不受影响。
         read_result = result.model_dump()
-        given = (state.get("run_input") or {}).get("bid_category")
-        read_result["bid_category"] = (
-            {**EMPTY_CATEGORY, "value": list(given)} if given
-            else await classify_from_read(ctx, read_result))
+        read_result["bid_category"] = await classify_from_read(ctx, read_result)
         return {"read": {**read_result, "doc_sections": clauses, **extra}}
     return read_node

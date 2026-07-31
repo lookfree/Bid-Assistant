@@ -80,16 +80,18 @@ def test_fabricated_evidence_clause_ids_are_dropped(monkeypatch, submit_gateway)
     assert out["read"]["bid_category"]["evidence_clause_ids"] == ["sec-2-c1"]
 
 
-def test_confirmed_category_skips_the_model_call(monkeypatch, submit_gateway):
-    """用户确认过（run_input 带值）⇒ 直接用，不再判、不再烧钱。"""
+def test_rerunning_read_always_refreshes_the_detection(monkeypatch, submit_gateway):
+    """读标步是判定值的产地：**每次重跑都重新判**，即使 run_input 带了分类。
+    跳过就意味着重跑读标再也刷不出新判定；用户的确认值另存在项目行，不受这里影响。
+    （App 对 read 步本来就不下发分类，这条钉住的是「即使下发了也不许跳过」。）"""
     monkeypatch.setattr(read_mod, "read_and_parse",
                         lambda key: ParsedDoc(text="全文", kind="docx", clauses=_CLAUSES))
     gw = submit_gateway({"submit_read_result": _READ_ARGS, "submit_bid_category": _CAT_ARGS})
     ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
     out = asyncio.run(read_mod.make_read_node(ctx)(
         {"file_key": "uploads/x/t.docx", "run_input": {"bid_category": ["services"]}}))
-    assert out["read"]["bid_category"]["value"] == ["services"]
-    assert all("submit_bid_category" not in c.tool_names for c in gw.chats)
+    assert out["read"]["bid_category"]["value"] == ["goods"]   # 重新判出来的，不是回传的
+    assert any("submit_bid_category" in c.tool_names for c in gw.chats)
 
 
 def test_category_value_is_deduped_and_capped_at_two():
