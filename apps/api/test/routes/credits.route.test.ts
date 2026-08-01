@@ -14,21 +14,26 @@ const app = new Hono()
 app.route("/api/credits", creditsRoutes())
 let token = ""
 let userId = ""
+// 注册即赠积分（auth.grantSignupBonus）在新用户账本里先有一条 signup 流水——生产里每个用户都如此，
+// 不存在「空账本的注册用户」。分页断言一律基于 SEEDED + 这条基线，不去删它、也不写死赠送额度。
+let baseline = 0
+const SEEDED = 25
 
 beforeAll(async () => {
   const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
   token = a.token
   userId = a.user.id
+  baseline = (await getDb().select().from(creditTransactions).where(eq(creditTransactions.userId, userId))).length
   const base = Date.now()
   await getDb()
     .insert(creditTransactions)
     .values(
-      Array.from({ length: 25 }, (_, i) => ({
+      Array.from({ length: SEEDED }, (_, i) => ({
         userId,
         type: "grant" as const,
         amount: 100 + i,
         idempotencyKey: `route:${userId}:${i}:${randomUUID()}`,
-        createdAt: new Date(base - (25 - i) * 1000),
+        createdAt: new Date(base - (SEEDED - i) * 1000),
       })),
     )
 })
@@ -40,20 +45,20 @@ afterAll(async () => {
 const auth = () => ({ Authorization: `Bearer ${token}` })
 
 describe("spec308 GET /api/credits/transactions", () => {
-  it("首页 200：items 20 / total 25 / hasMore true", async () => {
+  it("首页 200：满页 20 条 / total = 基线 + 播种 / hasMore true", async () => {
     const res = await app.request("/api/credits/transactions?page=1&pageSize=20", { headers: auth() })
     expect(res.status).toBe(200)
     const b = (await res.json()) as any
     expect(b.items.length).toBe(20)
     expect(b.page).toBe(1)
     expect(b.pageSize).toBe(20)
-    expect(b.total).toBe(25)
+    expect(b.total).toBe(baseline + SEEDED)
     expect(b.hasMore).toBe(true)
   })
 
-  it("第二页 hasMore false", async () => {
+  it("第二页收尾：剩余条数正确且 hasMore false", async () => {
     const b = (await (await app.request("/api/credits/transactions?page=2&pageSize=20", { headers: auth() })).json()) as any
-    expect(b.items.length).toBe(5)
+    expect(b.items.length).toBe(baseline + SEEDED - 20)
     expect(b.hasMore).toBe(false)
   })
 

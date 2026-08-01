@@ -53,18 +53,32 @@ describe("spec301 计费数据模型", () => {
     expect("agreementNo" in s!).toBe(false)
   })
 
+  // 注册即赠积分（auth.grantSignupBonus）是每个真实用户的**起点**，本套件其余用例都以它为基线：
+  // 生产里不存在「账本为空的注册用户」，测试也不许构造那个状态——那样测的是永远不会发生的场景。
+  it("注册即赠：新用户开局就有一条 signup 流水与一行余额（后续用例的基线）", async () => {
+    const txs = await getDb().select().from(creditTransactions).where(eq(creditTransactions.userId, userId))
+    expect(txs).toHaveLength(1)
+    expect(txs[0]!.type).toBe("grant")
+    expect(txs[0]!.sourceBatch).toBe("signup")
+    expect(txs[0]!.idempotencyKey).toBe(`signup_grant:${userId}`) // 每用户仅发一次
+    const [bal] = await getDb().select().from(creditBalances).where(eq(creditBalances.userId, userId))
+    expect(bal!.balance).toBe(txs[0]!.amount) // 余额缓存 = Σ流水
+  })
+
   it("credit_transactions 追加 + 幂等键唯一（同键只入一次）", async () => {
+    const before = await getDb().select().from(creditTransactions).where(eq(creditTransactions.userId, userId))
     const key = `k-${crypto.randomUUID()}`
     await getDb().insert(creditTransactions).values({ userId, type: "grant", amount: 100, idempotencyKey: key })
     await expectConflict(() =>
       getDb().insert(creditTransactions).values({ userId, type: "grant", amount: 100, idempotencyKey: key }),
     )
-    const rows = await getDb().select().from(creditTransactions).where(eq(creditTransactions.userId, userId))
-    expect(rows).toHaveLength(1)
+    // 断增量而非绝对条数：绝对值会把「注册赠多少」这个**运营可配**的值焊进测试
+    const after = await getDb().select().from(creditTransactions).where(eq(creditTransactions.userId, userId))
+    expect(after).toHaveLength(before.length + 1)
   })
 
   it("credit_balances 一人一行（主键 user_id）", async () => {
-    await getDb().insert(creditBalances).values({ userId, balance: 100 })
+    // 注册时那行余额就是「第一行」，再插一行必冲突——不必也不该自己先造一行
     await expectConflict(() => getDb().insert(creditBalances).values({ userId, balance: 200 }))
   })
 

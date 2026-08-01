@@ -23,6 +23,10 @@ const madePlans: string[] = []
 let token = ""
 let userId = ""
 let personalId = ""
+// 注册即赠积分，新用户账本开局就有一条：生产里不存在「空账本的注册用户」，
+// 断言一律基于这条基线 + 本套件播种的条数，不去删它、也不写死赠送额度。
+let txBaseline = 0
+const SEEDED_TX = 3
 
 beforeAll(async () => {
   await seedConfigs()
@@ -35,9 +39,10 @@ beforeAll(async () => {
   await getDb()
     .insert(subscriptions)
     .values({ userId, planId: personalId, status: "active", currentPeriodEnd: new Date(Date.now() + 30 * 86_400_000) })
+  txBaseline = (await getDb().select().from(creditTransactions).where(eq(creditTransactions.userId, userId))).length
   await getDb()
     .insert(creditTransactions)
-    .values(Array.from({ length: 3 }, (_, i) => ({ userId, type: "grant" as const, amount: 100 + i, idempotencyKey: `e2e:${userId}:${i}:${randomUUID()}` })))
+    .values(Array.from({ length: SEEDED_TX }, (_, i) => ({ userId, type: "grant" as const, amount: 100 + i, idempotencyKey: `e2e:${userId}:${i}:${randomUUID()}` })))
   await getDb()
     .insert(paymentOrders)
     .values(Array.from({ length: 2 }, (_, i) => ({ userId, type: "renewal" as const, amountCents: 3900, status: "paid" as const, planId: personalId, clientSn: `t-${randomUUID()}`, idempotencyKey: `e2e-ord:${userId}:${i}:${randomUUID()}` })))
@@ -63,7 +68,7 @@ describe("spec308 会员中心端到端", () => {
 
   it("流水分页正确", async () => {
     const b = (await (await app.request("/api/credits/transactions?page=1&pageSize=20", { headers: auth() })).json()) as any
-    expect(b.total).toBe(3)
+    expect(b.total).toBe(txBaseline + SEEDED_TX)
     expect(b.hasMore).toBe(false)
   })
 

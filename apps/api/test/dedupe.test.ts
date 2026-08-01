@@ -4,7 +4,7 @@ import { Hono } from "hono"
 import { dedupeRoutes, type DedupeDeps } from "../src/routes/dedupe"
 import * as billing from "../src/services/billing-stub"
 import { AgentHttpError } from "../src/services/agent-client"
-import { grant, getBalance } from "../src/services/credits"
+import { grant, getBalance, adminAdjust } from "../src/services/credits"
 import { seedConfigs, setConfig } from "../src/services/config"
 import { loginWithPhone } from "../src/services/auth"
 import { getDb, closeDb } from "../src/db/client"
@@ -61,6 +61,7 @@ app.route("/api/dedupe", dedupeRoutes(mockDeps))
 
 let tokenA = ""
 let userA = ""
+let balanceA = 0   // userA 开跑前的余额基线（注册赠送 + 本套件显式授信）
 let tokenB = ""
 let userB = ""
 let keyA1 = "" // A 的已上传文件
@@ -93,9 +94,13 @@ beforeAll(async () => {
   tokenA = a.token
   userA = a.user.id
   await grant(userA, 200, { idempotencyKey: `g-dedupe-${userA}` })
+  balanceA = await getBalance(userA) // 基线含注册赠送：生产里注册用户的账本从来不是空的
   const b = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
   tokenB = b.token
-  userB = b.user.id // 不授信 → 余额 0
+  userB = b.user.id
+  // 「余额不足」是**花光了**，不是「从来没有过」——注册即赠，谁都不会是零起点。
+  // 用运营调整把注册赠送如数扣回，得到一个真实存在的状态：账本有历史、余额不够下一次消费。
+  await adminAdjust(userB, -(await getBalance(userB)), { idempotencyKey: `zero-${userB}`, ref: "test:spend-down" })
 
   keyA1 = await makeFile(userA, "A公司投标.docx")
   keyA2 = await makeFile(userA, "B公司投标.docx")
@@ -134,8 +139,8 @@ describe("POST /api/dedupe 标书查重（真账本）", () => {
     expect(body.pairs[0]!.hits[0]!.aText).toBe("本项目工期为 90 日历天")
     expect("a_text" in body.pairs[0]!.hits[0]!).toBe(false)
 
-    // 余额 200 → 100（hold 100 → settle 足额）
-    expect(await getBalance(userA)).toBe(100)
+    // hold 100 → settle 足额：净扣 100（基线不写死——注册赠多少是运营可配的）
+    expect(await getBalance(userA)).toBe(balanceA - 100)
 
     // agent 载荷契约：files 带上传原始文件名 label；tenderKey/dims/strategy 透传
     expect(captured.payload).toEqual({

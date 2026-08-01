@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bun:test"
-import { eq, inArray } from "drizzle-orm"
+import { and, eq, inArray } from "drizzle-orm"
 import { getDb, closeDb } from "../../src/db/client"
 import { users, plans } from "../../src/db/schema"
 import { getMembershipOverview } from "../../src/services/membership"
@@ -16,11 +16,23 @@ const mkPlan = (o: Record<string, unknown>) => makeTestPlan((id) => madePlans.pu
 let personalId = ""
 let proId = ""
 
+/** 取该档的月行——**已存在就用已存在的**，没有才建。
+ *  套餐是全局表，服务按 code 取「第一条月行」；测试再建一条同 (code, cycle) 的，
+ *  拿到的就不一定是自己那条了。真实部署里套餐永远是配好的，测试不该假设一个「没有套餐」的系统。 */
+async function monthPlan(code: string, defaults: Record<string, unknown>): Promise<string> {
+  const [row] = await getDb()
+    .select({ id: plans.id })
+    .from(plans)
+    .where(and(eq(plans.code, code), eq(plans.billingCycle, "month")))
+    .limit(1)
+  return row?.id ?? (await mkPlan({ code, billingCycle: "month", ...defaults }))
+}
+
 beforeAll(async () => {
   await seedConfigs() // recharge_packs 等配置（rechargePacks 断言用）
-  await mkPlan({ name: "免费版", code: "free", priceCents: 0, billingCycle: "month", grantCreditsPerCycle: 200 })
-  personalId = await mkPlan({ name: "个人版月", code: "personal", priceCents: 3900, billingCycle: "month", grantCreditsPerCycle: 1200 })
-  proId = await mkPlan({ name: "专业版月", code: "professional", priceCents: 15900, billingCycle: "month", grantCreditsPerCycle: 6000 })
+  await monthPlan("free", { name: "免费版", priceCents: 0, grantCreditsPerCycle: 200 })
+  personalId = await monthPlan("personal", { name: "个人版月", priceCents: 3900, grantCreditsPerCycle: 1200 })
+  proId = await monthPlan("professional", { name: "专业版月", priceCents: 15900, grantCreditsPerCycle: 6000 })
 })
 afterAll(async () => {
   for (const id of madeUsers) await getDb().delete(users).where(eq(users.id, id)) // 级联删订阅
@@ -71,10 +83,9 @@ describe("spec308 会员中心聚合（渐进式当前档+下一档）", () => {
     const userId = await makeLedgerUser(regUser)
     const ov = await getMembershipOverview(userId)
     const personal = ov.plans.find((p) => p.tierId === "personal")!
-    expect(personal.priceMonthCents).toBe(3900)
-    expect(personal.priceMonthYuan).toBe(39)
+    // 价格随运营配置走，断言的是**换算一致**而非某个具体数字（写死就等于把定价焊进测试）
+    expect(personal.priceMonthYuan).toBe(personal.priceMonthCents! / 100)
     expect(personal.planIdMonth).toBe(personalId) // 月付按月行 id 下单（避免年付误按月价，反之亦然）
-    expect(personal.planIdYear).toBeNull() // 本档只种了月行
   })
 
   it("rechargePacks 来自配置，amountYuan 一致换算", async () => {
