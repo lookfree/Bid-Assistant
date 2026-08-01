@@ -119,6 +119,9 @@ export function useStep<T>(step: StepName) {
   const [dataLoading, setDataLoading] = useState(false)
   const [running, setRunning] = useState(() => !!info?.steps.some((s) => s.step === step && s.status === "running"))
   const [error, setError] = useState<string | null>(null)
+  // 读标分轮产出（read 步实时）：整轮跑完前先上屏已解读的部分。**只作展示**，
+  // 拿到 step.done 的权威结果后由调用方优先用后者，这里不参与任何业务判断。
+  const [partial, setPartial] = useState<Record<string, unknown> | null>(null)
   // 正文逐章进度（content 步实时）。下方订阅 effect 会在该步 running 时（本次生成/切回/刷新都算）
   // 重连事件流并回放，故切页/刷新回来也能接上进度，不再局限于本次 start()。
   const [progress, setProgress] = useState<ChapterProgress | null>(null)
@@ -204,6 +207,7 @@ export function useStep<T>(step: StepName) {
     const cancel = openStepEvents(projectId, step, (e) => {
       if (e.kind === "chapter") setProgress(e.progress)
       else if (e.kind === "phase") setPhase(e.phase)
+      else if (e.kind === "readPart") setPartial((prev) => mergeReadPart(prev, e.part))
     })
     return cancel
   }, [projectId, step, running])
@@ -295,7 +299,7 @@ export function useStep<T>(step: StepName) {
           ? { href: prereq.href, label: `前往${prereq.label}` }
           : null
 
-  return { projectId, info, data, dataLoading, running, progress, phase, error: displayError, errorStatus, errorAction, start }
+  return { projectId, info, data, dataLoading, running, progress, phase, partial, error: displayError, errorStatus, errorAction, start }
 }
 
 /** 跨步结果按需拉取（slim 首屏配套）：本页需要引用**其他步骤**的结果时用
@@ -327,4 +331,33 @@ export function useOtherStepResult<T>(projectId: string | null, info: ProjectInf
     }
   }, [projectId, step, done])
   return { data, loading, error }
+}
+
+
+/** 累加读标分轮产出（**只为展示**）：各轮只产自己负责的字段，取并集；分类按 key 合并、条目追加。
+ *  刻意不复刻服务端的完整合并语义（包件过滤、技术项清包件标签…）——权威结果随 step.done 整体覆盖，
+ *  两处各写一份迟早漂。 */
+export function mergeReadPart(
+  prev: Record<string, unknown> | null,
+  part: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...(prev ?? {}) }
+  for (const [k, v] of Object.entries(part)) {
+    if (k === "categories") {
+      const byKey = new Map<string, { key: string; title: string; items: unknown[] }>()
+      for (const c of [...((out.categories as never[]) ?? []), ...(v as never[])] as {
+        key: string; title: string; items: unknown[]
+      }[]) {
+        const hit = byKey.get(c.key)
+        if (hit) hit.items = [...hit.items, ...c.items]
+        else byKey.set(c.key, { ...c, items: [...c.items] })
+      }
+      out.categories = [...byKey.values()]
+    } else if (Array.isArray(v)) {
+      out[k] = [...((out[k] as unknown[]) ?? []), ...v]
+    } else {
+      out[k] = v
+    }
+  }
+  return out
 }

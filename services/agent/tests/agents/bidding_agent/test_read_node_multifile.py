@@ -320,3 +320,45 @@ def test_small_clause_count_single_submission(monkeypatch, submit_gateway):
     asyncio.run(read_mod.make_read_node(ctx)({
         "file_key": "a.docx", "files": [{"key": "a.docx", "name": "f"}]}))
     assert len(_read_rounds(gw)) == 1
+
+
+def test_each_round_publishes_its_partial_result(monkeypatch, submit_gateway):
+    """分段读标每完成一轮就把该轮结果推给前端：大标书要十几分钟，干等到最后才出内容最难熬。
+    推的是**展示态**（裁掉 source_quote、条目截断）；权威结果仍以 step.done 的合并结果为准，
+    所以前端不必复刻服务端的合并语义（按 key 合并/技术项追加/按包过滤）。"""
+    import agent.agents.bidding_agent.nodes.read as read_mod
+
+    events: list[dict] = []
+
+    async def fake_publish(redis, run_id, data):
+        events.append(data)
+
+    monkeypatch.setattr(read_mod, "publish_event", fake_publish)
+    n = read_mod.SEGMENT_CLAUSE_THRESHOLD + 60
+    big = [{"id": f"sec-1-c{i}", "text": f"条款{i}"} for i in range(n)]
+
+    async def fake_parse_multi(files):
+        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}], []
+    monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
+
+    args = {"submit_read_result": {"categories": [
+        {"key": "overview", "title": "概况",
+         "items": [{"title": "项目名称", "value": "某平台", "source_quote": "原文很长" * 50}]}]}}
+    gw = submit_gateway(args)
+    ctx = RunContext(run_id="r-part", agent_type="bidding_agent", thread_id="t-part", gateway=gw)
+    asyncio.run(read_mod.make_read_node(ctx)({
+        "file_key": "a.docx", "files": [{"key": "a.docx", "name": "采购文件"}]}))
+
+    parts = [e for e in events if e.get("kind") == "read_part"]
+    assert parts, "每轮完成都该推一条 read_part"
+    item = parts[0]["part"]["categories"][0]["items"][0]
+    assert "source_quote" not in item, "source_quote 是体积大头，展示态必须裁掉"
+    assert item["title"] == "项目名称"
+
+
+def test_empty_round_publishes_nothing(monkeypatch, submit_gateway):
+    """某轮什么都没提取到（如最低价法项目的评分轮）⇒ 不推空事件，免得前端闪一下空块。"""
+    import agent.agents.bidding_agent.nodes.read as read_mod
+    from agent.agents.bidding_agent.schemas import ReadResult
+
+    assert read_mod._slim_part(ReadResult(categories=[])) == {}

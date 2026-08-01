@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test"
-import { stepNotApplicable, stepPrereq } from "../lib/use-step"
+import { stepNotApplicable, stepPrereq, mergeReadPart } from "../lib/use-step"
 import type { ProjectInfo } from "../lib/project"
 
 function info(currentStep: string, kind?: "bid" | "review", tenderFileKey: string | null = null): ProjectInfo {
@@ -68,5 +68,35 @@ describe("useStep：步骤结束必须刷新项目状态", () => {
     expect(tail).toContain("invalidateProjectCache(projectId)")
     expect(tail).toContain("getProject(projectId, { fresh: true })")
     expect(tail).toContain("setInfo(")
+  })
+})
+
+// 读标分轮上屏（2026-08-01）：大标书分 10 轮跑十几分钟，基础轮一两分钟就能出「项目概况/资格要求」，
+// 没理由让用户干等。累加只为展示，权威结果随 step.done 整体覆盖。
+describe("mergeReadPart：分轮产出累加（仅展示态）", () => {
+  it("同 key 分类合并、条目追加；数组字段拼接；标量覆盖", () => {
+    const a = mergeReadPart(null, {
+      project_meta: { name: "某平台采购" },
+      categories: [{ key: "overview", title: "项目概况", items: [{ title: "预算" }] }],
+    })
+    const b = mergeReadPart(a, {
+      categories: [
+        { key: "overview", title: "项目概况", items: [{ title: "工期" }] },
+        { key: "technical", title: "技术需求", items: [{ title: "参数A" }] },
+      ],
+      risk_summary: ["未密封作废标"],
+    })
+    const cats = b.categories as { key: string; items: unknown[] }[]
+    expect(cats).toHaveLength(2)
+    expect(cats.find((c) => c.key === "overview")!.items).toHaveLength(2) // 两轮的条目都在
+    expect(b.risk_summary).toEqual(["未密封作废标"])
+    expect(b.project_meta).toEqual({ name: "某平台采购" }) // 先前轮次的字段不被后续轮清掉
+  })
+
+  it("不复刻服务端合并语义：前端只做并集，权威结果由 step.done 整体覆盖", () => {
+    // 这里刻意不做「按包件过滤」「技术项清 packages 标签」等服务端才有的处理——
+    // 两处各写一份迟早漂，展示态错一会儿无害，业务判断一律以最终结果为准。
+    const merged = mergeReadPart({ scoring: [{ id: "s1" }] }, { scoring: [{ id: "s2" }] })
+    expect(merged.scoring).toHaveLength(2)
   })
 })

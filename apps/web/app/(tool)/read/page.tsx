@@ -85,7 +85,7 @@ import { AiNotice } from "@/components/tool/ai-notice"
 import { CategoryCard } from "../category-card"
 
 export default function ReadPage() {
-  const { projectId, info, data: real, dataLoading, running, phase, error, errorAction, start } = useStep<RealRead>("read")
+  const { projectId, info, data: real, dataLoading, running, phase, partial, error, errorAction, start } = useStep<RealRead>("read")
   // 线下标书审查项目（无招标文件）不适用读标：绝不亮计费按钮（点了必 409）
   const notApplicable = stepNotApplicable(info, "read")
   const { overview } = useMembership()
@@ -108,17 +108,36 @@ export default function ReadPage() {
   // 单轮读标（小标书）直接用模型原始 categories，模型可能对同一 key 产出多个块（如把资格拆成两段）；
   // 右栏按 key 过滤渲染，重复 key 会让一次点击把多类内容全堆出来（实测「点几次就对不上号/展示全部」）。
   // 此处按 key 合并去重：items 顺序拼接、保留首个 title/icon，保证每类唯一（tab 也不再重复）。
+  // 跑完前先用分轮产出上屏（spec334 之外的体验改进）：大标书分 10 轮跑十几分钟，基础轮一两分钟
+  // 就能出「项目概况/资格要求/商务条款」，没理由让用户干等。**只拿它渲染分类解读这一栏**——
+  // 分轮事件从 agent 直穿、是 snake_case，转换面越小越不容易错；评分表/构成清单等最终结果。
+  const partialCategories = useMemo(() => {
+    const raw = (partial?.categories ?? []) as {
+      key: string; title: string; items: Record<string, unknown>[]
+    }[]
+    return raw.map((c) => ({
+      key: c.key,
+      title: c.title,
+      items: c.items.map((i) => ({ ...i, clauseIds: (i.clause_ids as string[]) ?? [] })) as AnalysisItem[],
+    }))
+  }, [partial])
+
   const categories = useMemo(() => {
-    if (!real) return []
+    // 权威结果一到就整体取代分轮产出——前端不复刻服务端的合并语义（按包过滤等），只作展示
+    const src = real
+      ? real.categories.map((c) => ({ ...c, items: c.items.map((i) => ({ ...i, clauseIds: i.clauseIds ?? [] })) }))
+      : partialCategories
+    if (!src.length) return []
     const byKey = new Map<string, { key: string; title: string; icon: LucideIcon; items: AnalysisItem[] }>()
-    for (const c of real.categories) {
-      const items = c.items.map((i) => ({ ...i, clauseIds: i.clauseIds ?? [] }))
+    for (const c of src) {
       const prev = byKey.get(c.key)
-      if (prev) prev.items.push(...items)
-      else byKey.set(c.key, { key: c.key, title: c.title, icon: CATEGORY_ICONS[c.key] ?? FileText, items })
+      if (prev) prev.items.push(...c.items)
+      else byKey.set(c.key, { key: c.key, title: c.title, icon: CATEGORY_ICONS[c.key] ?? FileText, items: [...c.items] })
     }
     return [...byKey.values()]
-  }, [real])
+  }, [real, partialCategories])
+  // 只有分轮产出、还没有权威结果：页面按「读标进行中但已有部分内容」渲染
+  const hasPartial = !real && categories.length > 0
   const scoringTable = real?.scoring ?? []
   const requiredStructure = real?.requiredStructure ?? []
   const packages = real?.packages ?? []
@@ -254,8 +273,10 @@ export default function ReadPage() {
       </div>
     )
 
-  // 该步未跑：停在显式生成入口（消耗数标注在按钮上），运行中/失败由横幅呈现
-  if (!real)
+  // 该步未跑：停在显式生成入口（消耗数标注在按钮上），运行中/失败由横幅呈现。
+  // **但分轮已经吐出内容时走结果布局**：大标书十几分钟，先把解读出来的部分放上屏。
+  // 下面所有推进/计费 CTA 一律以 real（权威结果）为条件，绝不因为有半截内容就放行。
+  if (!real && !hasPartial)
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
         <FlowNav current="read" info={info} />
@@ -289,6 +310,20 @@ export default function ReadPage() {
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
       <FlowNav current="read" info={info} />
+      {/* 边解读边显示时这条必须在：页面已经有内容了，用户得知道它**还没完**——
+          否则会拿一份只解读了一半的结论当最终结果去做判断。 */}
+      {running && (
+        <StepBanner
+          running
+          error={null}
+          runningText={
+            phase
+              ? `AI 读标中：${phase.label}…（下方为已解读部分，完成后自动补全）`
+              : "AI 正在通读招标文件…（下方为已解读部分，完成后自动补全）"
+          }
+          onRetry={() => void start()}
+        />
+      )}
       <StepPageHeader icon={FileText} title="招标解读" desc="AI 通读招标文件，自动提取评分点、资格要求与废标红线，点击逐条定位原文">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2.5 rounded-xl bg-muted/60 px-3 py-1.5 text-xs">
@@ -304,7 +339,8 @@ export default function ReadPage() {
           </div>
           <button
             onClick={generateReport}
-            disabled={reportState === "generating"}
+            // 读标没跑完就生成报告 = 拿半截解读出正式文件；未确认态绝不亮计费 CTA
+            disabled={reportState === "generating" || !real}
             className="inline-flex items-center gap-2 rounded-xl gradient-brand px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-70"
           >
             {reportState === "generating" ? (
@@ -652,7 +688,9 @@ export default function ReadPage() {
         </section>
       )}
 
-      {/* 右下角悬浮：进入大纲生成 */}
+      {/* 右下角悬浮：进入大纲生成。**读标未完成不渲染**——此时页面上只有分轮的半截解读，
+          点进去会拿不完整的读标结论去生成提纲（服务端也会按步序拒掉，白让用户撞一次墙）。 */}
+      {real && (
       <Link
         href={info?.project.kind === "review" ? "/risk" : "/outline"}
         className="fixed bottom-6 right-6 z-40 inline-flex items-center gap-2 rounded-full gradient-brand px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-primary/30 transition-opacity hover:opacity-90"
@@ -661,6 +699,7 @@ export default function ReadPage() {
         {info?.project.kind === "review" ? "已知悉，去标书审查" : "已知悉，生成投标文件大纲"}
         <ArrowRight className="size-4" />
       </Link>
+      )}
     </div>
   )
 }

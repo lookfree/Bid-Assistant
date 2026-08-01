@@ -27,6 +27,7 @@ export type StepPhase = { label: string }
 export type StepLiveEvent =
   | { kind: "chapter"; progress: ChapterProgress }
   | { kind: "phase"; phase: StepPhase }
+  | { kind: "readPart"; part: Record<string, unknown> }
   | { kind: "end" }
 
 /** 订阅某步的实时进度事件流（只读、不计费）：任何步骤在跑时打开，从头回放持久事件，
@@ -67,6 +68,10 @@ export function openStepEvents(
             onEvent({ kind: "chapter", progress: data as ChapterProgress })
           } else if (type === "progress" && (data as { kind?: string })?.kind === "phase") {
             onEvent({ kind: "phase", phase: { label: (data as { label: string }).label } })
+          } else if (type === "progress" && (data as { kind?: string })?.kind === "read_part") {
+            // 分段读标每完成一轮推一条：整轮跑完前先把已解读的部分放上屏（大标书要十几分钟）。
+            // 这是**展示态**，最终以 step.done 的合并结果整体覆盖——前端不复刻服务端的合并语义。
+            onEvent({ kind: "readPart", part: (data as { part: Record<string, unknown> }).part })
           } else if (type === "progress" && (data as { kind?: string })?.kind === "heartbeat") {
             // 块内心跳：长块生成时 token 持续吐，附「已 N 字」让运行横幅动起来（不再看着卡住）。
             const hb = data as { label: string; chars?: number }

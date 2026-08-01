@@ -10,6 +10,7 @@ from agent.parsing.merge import merge_parsed
 from agent.parsing.tool import parse_document_tool
 from agent.agents.bidding_agent.schemas import ReadResult, ReadCategory
 from agent.agents.bidding_agent.nodes.common import publish_phase
+from agent.runtime.progress import publish_event
 from agent.agents.bidding_agent.nodes.classify import classify_from_read
 from agent.agents.bidding_agent.prompts.read import READ_SYSTEM_PROMPT
 from agent.db import get_pool
@@ -102,6 +103,45 @@ async def _seg_cache_set(ctx, key: str, part: ReadResult) -> None:
         logger.warning("segread cache set failed key=%s", key, exc_info=True)
 
 
+
+# 单轮结果里各类条目的推送上限：进度流按 maxlen=1000 截断，整轮原样推会把技术块那种大结果
+# 塞爆流、把更早的事件挤掉。展示态够用即可，权威结果仍以 step.done 的合并结果为准。
+_PART_ITEMS_CAP = 60
+
+
+def _slim_part(part: ReadResult) -> dict:
+    """把一轮的产出裁成「能直接上屏」的展示态：丢掉 source_quote（token/体积大头，
+    前端左栏本就按 clause_ids 回看原文），条目按上限截断。"""
+    cats = [{"key": c.key, "title": c.title,
+             "items": [{k: v for k, v in it.model_dump().items() if k != "source_quote"}
+                       for it in c.items[:_PART_ITEMS_CAP]]}
+            for c in part.categories if c.items]
+    out: dict = {}
+    if part.project_meta:
+        out["project_meta"] = part.project_meta
+    if cats:
+        out["categories"] = cats
+    if part.scoring:
+        out["scoring"] = [s.model_dump() for s in part.scoring[:_PART_ITEMS_CAP]]
+    if part.risk_summary:
+        out["risk_summary"] = part.risk_summary[:_PART_ITEMS_CAP]
+    if part.required_structure:
+        out["required_structure"] = [s.model_dump() for s in part.required_structure[:_PART_ITEMS_CAP]]
+    if part.packages:
+        out["packages"] = [p.model_dump() for p in part.packages]
+    return out
+
+
+async def _publish_part(ctx, part: ReadResult) -> None:
+    """把刚跑完那一轮的结果推给前端，让用户在整轮读标结束前就看到已解读的部分——
+    大标书要十几分钟，干等到最后才出内容是最难熬的。best-effort：推送失败绝不影响读标本身。"""
+    payload = _slim_part(part)
+    if not payload:
+        return
+    await publish_event(getattr(ctx, "redis", None), getattr(ctx, "run_id", None),
+                        {"kind": "read_part", "part": payload})
+
+
 async def _segmented_read(ctx, user: str, clauses: list[dict]) -> ReadResult:
     """大标书分段读标:基础轮 + 格式构成轮 + 评分轮 + 技术需求按条款分块,节点内合并成一份 ReadResult。
     每轮字段范围受限、技术按条款分块——单轮输出与标书/包件规模解耦,恒不撞 8k 输出上限。
@@ -128,6 +168,7 @@ async def _segmented_read(ctx, user: str, clauses: list[dict]) -> ReadResult:
         done += 1   # asyncio 单线程,计数无竞态
         suffix = f"(续跑复用 {cached_hits})" if cached_hits else ""
         await publish_phase(ctx, f"读标·并行提取中 已完成 {done}/{total} 轮{suffix}")
+        await _publish_part(ctx, part)   # 该轮已解读的内容立刻上屏（展示态，权威结果仍以 step.done 为准）
         return part
 
     # 骨架三轮喂全文(user);技术块轮喂独立瘦身消息(只含本块条款,见 _tech_chunk_user)。
