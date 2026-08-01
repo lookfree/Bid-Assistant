@@ -117,37 +117,39 @@ export function TenderDocPanel({
         {sections.length > 0 && visible.length === 0 && (
           <p className="py-16 text-center text-sm text-muted-foreground">该文件无可解析条款</p>
         )}
+        {/* 排版对齐标书生成页的正文视图（prose-sm 一套）：招标原文是「文档」不是「条款清单」，
+            早先每条都套一个圆角灰盒、正文用 muted 小字，读起来像列表、也认不出层级。
+            命中高亮保留——右栏点条款定位到原文是核心功能，只是从「整条变色块」收成左侧标线，
+            不再喧宾夺主。 */}
         {visible.map((sec) => (
-          <div
+          <section
             key={sec.id}
-            className={`rounded-xl px-3 py-3 transition-colors ${
+            className={`rounded-xl px-3 py-2 transition-colors ${
               activeSection === sec.id ? "bg-primary/[0.04]" : ""
-            } ${sec.id !== visible[0].id ? "mt-4" : ""}`}
+            } ${sec.id !== visible[0].id ? "mt-6" : ""}`}
           >
-            <h3 className="text-sm font-bold text-foreground">{sec.title}</h3>
-            <div className="mt-2 flex flex-col gap-1.5">
-              {sec.paragraphs.map((clause) => {
-                const hit = activeClauses.includes(clause.id)
-                return (
-                  <p
-                    key={clause.id}
-                    ref={(el) => {
-                      localRefs.current[clause.id] = el
-                      registerClauseRef(clause.id, el)
-                    }}
-                    className={`scroll-mt-16 rounded-lg px-2.5 py-1.5 text-[13px] leading-relaxed transition-colors ${
-                      hit
-                        ? "border-l-2 border-primary bg-primary/10 font-medium text-foreground"
-                        : "text-muted-foreground"
-                    }`}
-                  >
-                    {hit && <MapPin className="mr-1 inline size-3.5 -translate-y-px text-primary" />}
-                    {clause.text}
-                  </p>
-                )
-              })}
-            </div>
-          </div>
+            <h3 className="mb-2 mt-1 text-base font-semibold text-foreground">{sec.title}</h3>
+            {sec.paragraphs.map((clause) => {
+              const hit = activeClauses.includes(clause.id)
+              return (
+                <p
+                  key={clause.id}
+                  ref={(el) => {
+                    localRefs.current[clause.id] = el
+                    registerClauseRef(clause.id, el)
+                  }}
+                  className={`scroll-mt-16 mb-3 text-sm leading-relaxed transition-colors ${
+                    hit
+                      ? "-ml-3 border-l-2 border-primary bg-primary/10 pl-2.5 font-medium text-foreground"
+                      : "text-foreground/90"
+                  }`}
+                >
+                  {hit && <MapPin className="mr-1 inline size-3.5 -translate-y-px text-primary" />}
+                  {clause.text}
+                </p>
+              )
+            })}
+          </section>
         ))}
       </div>
     </section>
