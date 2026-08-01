@@ -215,6 +215,11 @@ export function useStep<T>(step: StepName) {
       else if (e.kind === "readSections") {
         setPartialSections((prev) => (prev.length ? [...prev, ...e.sections] : e.sections))
         if (e.headings?.length) setPartialHeadings(e.headings)
+      } else if (e.kind === "reset") {
+        // 断线重连会把事件从流首整份重放：不清空则条款与分轮条目直接叠两遍（头部「已识别 N」也翻倍）
+        setPartial(null)
+        setPartialSections([])
+        setPartialHeadings([])
       }
     })
     return cancel

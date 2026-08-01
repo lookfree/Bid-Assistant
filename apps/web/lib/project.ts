@@ -31,10 +31,20 @@ export type StepLiveEvent =
   | { kind: "phase"; phase: StepPhase }
   | { kind: "readPart"; part: Record<string, unknown> }
   | { kind: "readSections"; sections: { id: string; text: string }[]; headings?: DocHeading[] }
+  // 重连即将从流首整份回放：消费方必须先清空累加的展示态，否则条款/分轮条目会叠两遍
+  | { kind: "reset" }
   | { kind: "end" }
 
+// 重连节奏。首连必然扑空：订阅由 start() 的 setRunning(true) 触发，比 POST 建 run 早约 1 秒
+// （要先扣费再向 agent 建 run 才回填 runId），服务端查不到 runId 就发 idle 关流——不重连的话
+// 整轮进度事件全丢在 Redis 里没人接（生产实测：读标 6 分钟只见兜底文案，407 条事件一条没到）。
+// 也顺带自愈中途断连（发版重启/代理超时）。上限 ~60s：run 一直起不来（如扣费失败）就安静降级。
+const EVENTS_RETRY_MS = 1000
+const EVENTS_MAX_TRIES = 60
+
 /** 订阅某步的实时进度事件流（只读、不计费）：任何步骤在跑时打开，从头回放持久事件，
- *  停留/切回/刷新都能立即接上进度。返回取消函数。无 running run → 立即结束。 */
+ *  停留/切回/刷新都能立即接上进度。返回取消函数。
+ *  连不上/run 还没建好/中途断开都会自动重连——事件流是 Redis Stream 从头回放的，重连不丢事件。 */
 export function openStepEvents(
   projectId: string,
   step: StepName,
@@ -42,63 +52,90 @@ export function openStepEvents(
 ): () => void {
   const ctrl = new AbortController()
   ;(async () => {
-    try {
-      const res = await fetch(`${baseUrl}/api/projects/${projectId}/steps/${step}/events`, {
-        headers: { authorization: `Bearer ${tokenStore.get() ?? ""}` },
-        signal: ctrl.signal,
-      })
-      if (!res.ok || !res.body) return
-      const reader = res.body.getReader()
-      const dec = new TextDecoder()
-      let buf = ""
-      for (;;) {
-        const { value, done } = await reader.read()
-        if (done) break
-        // stream: true 不可省——多字节汉字被网络分片切断时，逐片当完整流解码会把
-        // 半个字符替换成 U+FFFD。JSON 仍能解析（U+FFFD 在字符串里合法），于是**静默乱码**。
-        buf += dec.decode(value, { stream: true })
-        // 按 SSE 空行切帧，逐帧解析（event: <type>\ndata: <json>）；兼容 \r\n 分隔。
-        const frames = buf.split(/\r?\n\r?\n/)
-        buf = frames.pop() ?? ""
-        for (const f of frames) {
-          const type = /event:\s*(\S+)/.exec(f)?.[1]
-          const dataM = /data:\s*(.+)/.exec(f)
-          if (!type) continue
-          if (type === "run.end") { onEvent({ kind: "end" }); return }
-          if (!dataM) continue
-          let d: unknown
-          try { d = JSON.parse(dataM[1]!) } catch { continue }
-          const data = (d as { data?: unknown }).data
-          if (type === "progress" && (data as ChapterProgress)?.kind === "chapter") {
-            onEvent({ kind: "chapter", progress: data as ChapterProgress })
-          } else if (type === "progress" && (data as { kind?: string })?.kind === "phase") {
-            onEvent({ kind: "phase", phase: { label: (data as { label: string }).label } })
-          } else if (type === "progress" && (data as { kind?: string })?.kind === "read_part") {
-            // 分段读标每完成一轮推一条：整轮跑完前先把已解读的部分放上屏（大标书要十几分钟）。
-            // 这是**展示态**，最终以 step.done 的合并结果整体覆盖——前端不复刻服务端的合并语义。
-            onEvent({ kind: "readPart", part: (data as { part: Record<string, unknown> }).part })
-          } else if (type === "progress" && (data as { kind?: string })?.kind === "read_sections") {
-            // 招标原文分片：条款在模型跑之前就解析好了，先推给左栏——不然半个屏幕空等十几分钟，
-            // 右栏流式出来的条目也点不动（点条款定位原文靠的就是左栏）。
-            onEvent({
-              kind: "readSections",
-              sections: (data as { sections: { id: string; text: string }[] }).sections,
-              headings: (data as { headings?: DocHeading[] }).headings,
-            })
-          } else if (type === "progress" && (data as { kind?: string })?.kind === "heartbeat") {
-            // 块内心跳：长块生成时 token 持续吐，附「已 N 字」让运行横幅动起来（不再看着卡住）。
-            const hb = data as { label: string; chars?: number }
-            const suffix = hb.chars ? `（已 ${hb.chars} 字）` : ""
-            onEvent({ kind: "phase", phase: { label: `${hb.label}${suffix}` } })
-          } else if (type === "node.start" || type === "step.done") {
-            const node = (data as { node?: string })?.node
-            if (node) onEvent({ kind: "phase", phase: { label: node } })
-          }
-        }
-      }
-    } catch { /* aborted / network：静默，页面降级为无实时进度 */ }
+    for (let tries = 0; tries < EVENTS_MAX_TRIES; tries++) {
+      if (ctrl.signal.aborted) return
+      // 重连前让消费方清空：本次连接会把已发生的事件从头再放一遍
+      if (tries > 0) onEvent({ kind: "reset" })
+      if (await pumpStepEvents(projectId, step, onEvent, ctrl.signal)) return // 收到 run.end：本步已结束
+      if (ctrl.signal.aborted) return
+      await new Promise((r) => setTimeout(r, EVENTS_RETRY_MS))
+    }
   })()
   return () => ctrl.abort()
+}
+
+/** 单次连接：把一条 SSE 事件流读到底并逐帧派发。收到 run.end 返回 true（本步结束，无须重连）；
+ *  连接失败/服务端发 idle/流被掐断都返回 false（由调用方重连）。 */
+async function pumpStepEvents(
+  projectId: string,
+  step: StepName,
+  onEvent: (e: StepLiveEvent) => void,
+  signal: AbortSignal,
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${baseUrl}/api/projects/${projectId}/steps/${step}/events`, {
+      headers: { authorization: `Bearer ${tokenStore.get() ?? ""}` },
+      signal,
+    })
+    if (!res.ok || !res.body) return false
+    const reader = res.body.getReader()
+    const dec = new TextDecoder()
+    let buf = ""
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (done) return false
+      // stream: true 不可省——多字节汉字被网络分片切断时，逐片当完整流解码会把
+      // 半个字符替换成 U+FFFD。JSON 仍能解析（U+FFFD 在字符串里合法），于是**静默乱码**。
+      buf += dec.decode(value, { stream: true })
+      // 按 SSE 空行切帧，逐帧解析（event: <type>\ndata: <json>）；兼容 \r\n 分隔。
+      const frames = buf.split(/\r?\n\r?\n/)
+      buf = frames.pop() ?? ""
+      for (const f of frames) {
+        if (dispatchStepFrame(f, onEvent)) { onEvent({ kind: "end" }); return true }
+      }
+    }
+  } catch {
+    return false // aborted / network：由调用方决定重连或退出
+  }
+}
+
+/** 解析一帧 SSE 并派发为 StepLiveEvent；该帧是 run.end 时返回 true。 */
+function dispatchStepFrame(f: string, onEvent: (e: StepLiveEvent) => void): boolean {
+  const type = /event:\s*(\S+)/.exec(f)?.[1]
+  const dataM = /data:\s*(.+)/.exec(f)
+  if (!type) return false
+  if (type === "run.end") return true
+  if (!dataM) return false
+  let d: unknown
+  try { d = JSON.parse(dataM[1]!) } catch { return false }
+  const data = (d as { data?: unknown }).data
+  const kind = (data as { kind?: string })?.kind
+  if (type === "progress" && kind === "chapter") {
+    onEvent({ kind: "chapter", progress: data as ChapterProgress })
+  } else if (type === "progress" && kind === "phase") {
+    onEvent({ kind: "phase", phase: { label: (data as { label: string }).label } })
+  } else if (type === "progress" && kind === "read_part") {
+    // 分段读标每完成一轮推一条：整轮跑完前先把已解读的部分放上屏（大标书要十几分钟）。
+    // 这是**展示态**，最终以 step.done 的合并结果整体覆盖——前端不复刻服务端的合并语义。
+    onEvent({ kind: "readPart", part: (data as { part: Record<string, unknown> }).part })
+  } else if (type === "progress" && kind === "read_sections") {
+    // 招标原文分片：条款在模型跑之前就解析好了，先推给左栏——不然半个屏幕空等十几分钟，
+    // 右栏流式出来的条目也点不动（点条款定位原文靠的就是左栏）。
+    onEvent({
+      kind: "readSections",
+      sections: (data as { sections: { id: string; text: string }[] }).sections,
+      headings: (data as { headings?: DocHeading[] }).headings,
+    })
+  } else if (type === "progress" && kind === "heartbeat") {
+    // 块内心跳：长块生成时 token 持续吐，附「已 N 字」让运行横幅动起来（不再看着卡住）。
+    const hb = data as { label: string; chars?: number }
+    const suffix = hb.chars ? `（已 ${hb.chars} 字）` : ""
+    onEvent({ kind: "phase", phase: { label: `${hb.label}${suffix}` } })
+  } else if (type === "node.start" || type === "step.done") {
+    const node = (data as { node?: string })?.node
+    if (node) onEvent({ kind: "phase", phase: { label: node } })
+  }
+  return false
 }
 
 export type ProjectStep = { step: string; status: string; result: unknown; costPoints: number }

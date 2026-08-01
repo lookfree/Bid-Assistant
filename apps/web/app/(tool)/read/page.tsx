@@ -116,8 +116,12 @@ export default function ReadPage() {
     [real, partial, scoringRows],
   )
 
-  // 只有分轮产出、还没有权威结果：页面按「读标进行中但已有部分内容」渲染
-  const hasPartial = !real && categories.length > 0
+  // 只有分轮解读产出、还没有权威结果（右栏有东西可看）
+  const hasPartialRead = !real && categories.length > 0
+  // 页面按「读标进行中但已有部分内容」渲染的条件。**原文条款也算**：它在模型跑之前就解析完了
+  // （实测 run 开始后 1 秒），而第一轮解读要几分钟——只认解读的话，左栏原文明明到了却还被挡在
+  // 空态里，用户看着「约 1–2 分钟」的兜底文案干等一屏空白。
+  const hasPartial = hasPartialRead || (!real && partialSections.length > 0)
   const scoringTable = scoringRows   // 评分表数据源；类目入口由 buildCategories 按它补齐
   const requiredStructure = real?.requiredStructure ?? []
   const packages = real?.packages ?? []
@@ -303,7 +307,8 @@ export default function ReadPage() {
           error={error}
           runningText={
             phase
-              ? `AI 读标中：${phase.label}…${hasPartial ? "（下方为已解读部分，完成后自动补全）" : ""}`
+              // 只有原文上屏、解读还没出时不能说「已解读部分」——那是招标原文，不是解读结果
+              ? `AI 读标中：${phase.label}…${hasPartialRead ? "（下方为已解读部分，完成后自动补全）" : ""}`
               : "AI 正在通读招标文件…"
           }
           onRetry={() => void start()}
