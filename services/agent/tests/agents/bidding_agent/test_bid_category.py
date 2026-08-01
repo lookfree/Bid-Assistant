@@ -140,3 +140,39 @@ def test_explicit_off_is_honoured_and_not_re_detected(submit_gateway):
     assert all("submit_bid_category" not in c.tool_names for c in gw.chats), "关掉了就不该再判"
     msg = gw.chats[-1].last_messages[1].content
     assert "必查项】" not in msg, "关掉了就不该注入任何分类知识"
+
+
+def test_classification_publishes_progress(monkeypatch, submit_gateway):
+    """分类跑在读标各轮合并之后。**必须推进度**——不推的话前端停在「已完成 N/N 轮」再静默一段，
+    看起来像卡死；大标书读标本就要好几分钟，尾巴上再来一段无反馈的等待最伤体感。"""
+    from agent.agents.bidding_agent.nodes import classify as classify_mod
+
+    seen: list[str] = []
+
+    async def fake_publish(ctx, label):
+        seen.append(label)
+
+    monkeypatch.setattr(classify_mod, "publish_phase", fake_publish)
+    monkeypatch.setattr(read_mod, "read_and_parse",
+                        lambda key: ParsedDoc(text="全文", kind="docx", clauses=_CLAUSES))
+    ctx = _read_ctx(submit_gateway, {"submit_bid_category": _CAT_ARGS})
+    asyncio.run(read_mod.make_read_node(ctx)({"file_key": "uploads/x/t.docx"}))
+    assert any("判定标书类型" in s for s in seen)
+
+
+def test_multi_package_skips_the_progress_line_too(monkeypatch, submit_gateway):
+    """多包件不判定 ⇒ 连进度都不该推：推一条「判定标书类型」再什么都不做，是在骗用户。"""
+    from agent.agents.bidding_agent.nodes import classify as classify_mod
+
+    seen: list[str] = []
+
+    async def fake_publish(ctx, label):
+        seen.append(label)
+
+    monkeypatch.setattr(classify_mod, "publish_phase", fake_publish)
+    monkeypatch.setattr(read_mod, "read_and_parse",
+                        lambda key: ParsedDoc(text="全文", kind="docx", clauses=_CLAUSES))
+    multi = {**_READ_ARGS, "packages": [{"id": "p1", "name": "包一"}, {"id": "p2", "name": "包二"}]}
+    ctx = _read_ctx(submit_gateway, {"submit_read_result": multi, "submit_bid_category": _CAT_ARGS})
+    asyncio.run(read_mod.make_read_node(ctx)({"file_key": "uploads/x/t.docx"}))
+    assert not any("判定标书类型" in s for s in seen)

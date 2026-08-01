@@ -13,6 +13,7 @@ import json
 import logging
 
 from agent.framework.create_agent import run_submit_agent
+from agent.runtime.progress import publish_phase
 from agent.agents.bidding_agent.prompts.classify import CLASSIFY_SYSTEM_PROMPT
 from agent.agents.bidding_agent.schemas import BidCategory
 
@@ -69,7 +70,11 @@ def _chapters_summary(chapters: dict[str, str]) -> tuple[str, set[str]]:
 
 
 async def _classify(ctx, summary: str, allowed_ids: set[str], what: str) -> dict:
-    """跑一次分类调用。**任何异常都吞掉**并返回空分类——调用方是读标/审查节点，不能被拖垮。"""
+    """跑一次分类调用。**任何异常都吞掉**并返回空分类——调用方是读标/审查节点，不能被拖垮。
+
+    先推一条进度：这一步跑在读标各轮合并之后，不推的话前端会停在「已完成 N/N 轮」再静默一段，
+    看起来像卡死——大标书读标本就要好几分钟，尾巴上再多一段无反馈的等待最伤体感。"""
+    await publish_phase(ctx, "判定标书类型（货物/服务/工程）")
     user = f"{what}：\n{summary}\n请判断本次采购属于货物类、服务类还是工程类。"
     try:
         result: BidCategory = await run_submit_agent(
