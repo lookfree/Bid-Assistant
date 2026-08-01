@@ -1,7 +1,10 @@
 from __future__ import annotations
+import logging
 import re
 from typing import Literal
 from pydantic import BaseModel, Field, model_validator
+
+logger = logging.getLogger(__name__)
 
 CategoryKey = Literal["overview", "qualification", "commercial", "technical", "scoring", "format"]
 
@@ -358,29 +361,33 @@ class SlideDraft(BaseModel):
 
     @model_validator(mode="after")
     def _content_needs_substance(self):
-        """content 页必须有实质内容——不同版式的「实质内容」形状不同,只判断「有没有」，
-        「对不对」交给各自的 model_validator（SlideChart 已校验 categories/series 一致性）：
-        - bullets（默认）：至少 1 条非空要点；
-        - chart：必须给 chart 数据；
-        - comparison：左栏 bullets + 右栏 1-2 张 stats 缺一不可。
-        cover/section/end 不要求（section 是过渡页，标题即内容）。
-        生产实测教训：bullets 原是「可选带默认空列表」，模型只给标题就静默通过——
-        14 页全空，用户拿到一份只有标题的 PPT，80 积分照扣。校验失败会触发强制提交重试，
-        与 SlideNotes.notes 的 min_length=1 同一范式。"""
+        """content 页必须有实质内容；**修得动的机械修，修不动的才拒**。
+        2026-08-01 生产实测：Qwen 选了 comparison 版式却不给 stats，纠错反馈喂回三轮原样重交，
+        5 次耗尽整步报废退款——用户什么都拿不到。「宣称对比页但没有对比数据」的可靠证据就是
+        bullets 页，降级即合格品（与 derive_layout「数据才是意图的可靠证据」同一哲学，方向相反）：
+        - 版式宣称与数据不符：chart 无 chart 数据 / comparison 无 stats → 有要点就降级 bullets；
+          stats 超 2 张 → 截前 2 张。均 warn 留痕。
+        - 真空页（连一条非空要点都没有）→ 仍拒：不拦就等于交付垃圾——bullets 原是「可选带默认
+          空列表」时，模型只给标题静默通过，14 页全空 PPT 照扣 80 积分（实测在前）。
+        cover/section/end 不要求（section 是过渡页，标题即内容）。校验失败仍触发强制提交重试。"""
         if self.kind != "content":
             return self
         has_bullets = bool([b for b in self.bullets if b.strip()])
-        if self.layout == "chart":
-            if self.chart is None:
-                raise ValueError(f"「{self.title}」选了 chart 版式却没给 chart 数据")
+        if self.layout == "chart" and self.chart is None:
+            if not has_bullets:
+                raise ValueError(f"「{self.title}」选了 chart 版式却没给 chart 数据，也没有要点可降级")
+            logger.warning("slide %r: chart layout without chart data, downgraded to bullets", self.title)
+            self.layout = "bullets"
         elif self.layout == "comparison":
             if not has_bullets:
                 raise ValueError(f"「{self.title}」选了 comparison 版式，左栏 bullets 不能为空")
-            if not (1 <= len(self.stats) <= 2):
-                raise ValueError(
-                    f"「{self.title}」选了 comparison 版式，右栏 stats 需要 1-2 项，实际 {len(self.stats)} 项"
-                )
-        elif not has_bullets:
+            if not self.stats:
+                logger.warning("slide %r: comparison layout without stats, downgraded to bullets", self.title)
+                self.layout = "bullets"
+            elif len(self.stats) > 2:
+                logger.warning("slide %r: %d stats trimmed to 2", self.title, len(self.stats))
+                self.stats = self.stats[:2]
+        elif self.layout == "bullets" and not has_bullets:
             raise ValueError(f"content 页「{self.title}」缺少 bullets：每页必须给 3–5 条要点")
         return self
 
@@ -400,7 +407,9 @@ class DeckDraft(BaseModel):
 
     @model_validator(mode="after")
     def _structure_is_sound(self):
-        _sections_have_content(self.slides)
+        # 凑数分隔页机械修复而非拒（2026-08-01：Qwen 第 5 次提交把「总结与致谢」做成尾部空分隔页
+        # 被拒,恰好耗尽重试整步报废）——丢分隔页本身,正文一张不动,必然产出合格结构。
+        self.slides = _drop_padding_sections(self.slides)
         _charts_use_one_unit(self.slides)
         _charts_are_comparable(self.slides)
         _layouts_are_varied(self.slides)
@@ -450,22 +459,24 @@ def _charts_are_comparable(slides: list) -> None:
             raise ValueError(f"「{sl.title}」的图表{why}")
 
 
-def _sections_have_content(slides: list) -> None:
-    """每张 section 后面必须跟至少 2 张 content 页。
-    生产实测：14 页里 5 页是纯标题分隔页、内容页只有 7 张，评委翻两页就撞见一张大蓝页。
-    提示词早写了页数区间，模型照做了总页数却拿分隔页凑数——页数约束管不住结构，得单独判。"""
+def _drop_padding_sections(slides: list) -> list:
+    """分隔页后不足 2 张 content 页 = 拿分隔页凑数（生产实测：14 页里 5 页纯标题分隔页，
+    评委翻两页就撞一张大蓝页）。此前整单拒——2026-08-01 实测 Qwen 恰在最后一轮踩这条规则，
+    重试耗尽整步报废退款。凑数分隔页可机械修复：丢分隔页本身，正文一张不动。warn 留痕。"""
+    out = []
     for i, sl in enumerate(slides):
-        if sl.kind != "section":
-            continue
-        following = 0
-        for nxt in slides[i + 1:]:
-            if nxt.kind != "content":
-                break
-            following += 1
-        if following < 2:
-            raise ValueError(
-                f"分隔页「{sl.title}」后面只有 {following} 张正文页，至少 2 张——"
-                "分隔页不承载内容，不能拿它凑页数；请合并章节或给这一章补足正文页")
+        if sl.kind == "section":
+            following = 0
+            for nxt in slides[i + 1:]:
+                if nxt.kind != "content":
+                    break
+                following += 1
+            if following < 2:
+                logger.warning("deck: padding section %r dropped (%d content slides after)",
+                               sl.title, following)
+                continue
+        out.append(sl)
+    return out
 
 
 class SlideNote(BaseModel):

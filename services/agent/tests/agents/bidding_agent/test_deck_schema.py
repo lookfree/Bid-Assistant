@@ -48,11 +48,15 @@ def test_section_kind_needs_no_bullets_or_scoring():
     SlideDraft(id="sec", title="技术方案", kind="section", bullets=[])  # 不抛错
 
 
-def test_chart_layout_requires_chart_data():
+def test_chart_layout_without_data_downgrades_or_rejects():
+    """修得动的机械修：chart 版式没给数据但有要点 → 降级 bullets（要点一条不丢，渲染正常）；
+    连要点都没有 → 仍拒（真空页，放行=交付垃圾）。"""
     from pydantic import ValidationError
     import pytest
     from agent.agents.bidding_agent.schemas import SlideDraft
-    with pytest.raises(ValidationError, match="chart 版式却没给 chart 数据"):
+    sl = SlideDraft(id="s1", title="团队构成", kind="content", layout="chart", bullets=["高级3人、中级6人"])
+    assert sl.layout == "bullets"
+    with pytest.raises(ValidationError, match="也没有要点可降级"):
         SlideDraft(id="s1", title="团队构成", kind="content", layout="chart", bullets=[])
 
 
@@ -75,19 +79,27 @@ def test_pie_chart_rejects_multiple_series():
                    series=[{"name": "s1", "values": [1, 2]}, {"name": "s2", "values": [3, 4]}])
 
 
-def test_comparison_layout_requires_both_bullets_and_one_or_two_stats():
+def test_comparison_layout_repairs_or_rejects():
+    """2026-08-01 生产复现（run ce66f89d）：Qwen 给 comparison 版式却 stats=0，纠错三轮原样重交、
+    5 次耗尽整步报废。现在机械修复：stats=0 有要点 → 降级 bullets；stats 超 2 → 截前 2；
+    无 bullets → 仍拒（comparison 左栏是必备内容，没有就是真空页）。"""
     from pydantic import ValidationError
     import pytest
     from agent.agents.bidding_agent.schemas import SlideDraft
+    # 生产原始形态：layout=comparison, chart=None, 无 stats —— 必须通过且降级
+    sl = SlideDraft(id="c2", title="动态访问控制与微隔离能力", kind="content",
+                    layout="comparison", bullets=["东西向流量全隔离", "按身份动态授权"], chart=None)
+    assert sl.layout == "bullets"
+    trimmed = SlideDraft(id="s2", title="对比", kind="content", layout="comparison", bullets=["差异点"],
+                         stats=[{"value": "a", "label": "1"}, {"value": "b", "label": "2"}, {"value": "c", "label": "3"}])
+    assert trimmed.layout == "comparison" and len(trimmed.stats) == 2
     with pytest.raises(ValidationError, match="左栏 bullets 不能为空"):
         SlideDraft(id="s1", title="对比", kind="content", layout="comparison", bullets=[],
                    stats=[{"value": "72小时", "label": "提前完成"}])
-    with pytest.raises(ValidationError, match="1-2 项"):
-        SlideDraft(id="s2", title="对比", kind="content", layout="comparison", bullets=["差异点"],
-                   stats=[{"value": "a", "label": "1"}, {"value": "b", "label": "2"}, {"value": "c", "label": "3"}])
-    # 合法：左右都给，且 stats 在 1-2 项范围内 —— 不抛错
-    SlideDraft(id="s3", title="对比", kind="content", layout="comparison", bullets=["差异点"],
-               stats=[{"value": "72小时", "label": "提前完成"}])
+    # 合法输入原样保留
+    ok = SlideDraft(id="s3", title="对比", kind="content", layout="comparison", bullets=["差异点"],
+                    stats=[{"value": "72小时", "label": "提前完成"}])
+    assert ok.layout == "comparison" and len(ok.stats) == 1
 
 
 def test_bullets_is_required_in_the_llm_tool_schema():
@@ -144,14 +156,16 @@ def test_every_section_divider_needs_real_content_after_it():
             {"id": f"s{i}", "title": f"页{i}", "kind": k, "bullets": ["要点"] if k == "content" else []}
             for i, k in enumerate(kinds)]}
 
-    # 分隔页后面只有 1 张内容页 → 拒
-    with pytest.raises(ValidationError, match="至少 2 张"):
-        DeckDraft(**deck(["cover", "section", "content", "section", "content", "end"]))
-    # 分隔页后面直接是结束页 → 拒（挂了个标题却什么都没讲）
-    with pytest.raises(ValidationError, match="至少 2 张"):
-        DeckDraft(**deck(["cover", "section", "content", "content", "section", "end"]))
-    # 每张分隔页后 2 张以上内容页 → 通过
-    DeckDraft(**deck(["cover", "section", "content", "content", "section", "content", "content", "end"]))
+    # 凑数分隔页机械修复而非拒（2026-08-01：尾部空分隔页恰在最后一轮被拒，整步报废）：
+    # 分隔页后面只有 1 张内容页 → 该分隔页被丢弃，正文一张不动
+    d1 = DeckDraft(**deck(["cover", "section", "content", "section", "content", "end"]))
+    assert [sl.kind for sl in d1.slides] == ["cover", "content", "content", "end"]
+    # 生产原始形态：尾部「总结与致谢」分隔页后 0 张正文 → 丢弃
+    d2 = DeckDraft(**deck(["cover", "content", "content", "section", "end"]))
+    assert [sl.kind for sl in d2.slides] == ["cover", "content", "content", "end"]
+    # 每张分隔页后 2 张以上内容页 → 原样保留
+    d3 = DeckDraft(**deck(["cover", "section", "content", "content", "section", "content", "content", "end"]))
+    assert sum(1 for sl in d3.slides if sl.kind == "section") == 2
     # 没有分隔页的短 deck 不受影响
     DeckDraft(**deck(["cover", "content", "content", "end"]))
 
