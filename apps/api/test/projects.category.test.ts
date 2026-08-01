@@ -159,6 +159,30 @@ describe("PATCH /api/projects/:id/category（spec334）", () => {
   })
 })
 
+describe("列表分类标签（spec334 Task D）", () => {
+  it("列表回生效值，且**一条批量查询**取完整页——逐项目查会让列表退化成 N+1", async () => {
+    const id = await createProject(tokenA)
+    await seedDetected(id, ["goods", "services"])
+    const res = await app.request("/api/projects?page=1&pageSize=50", { headers: auth(tokenA) })
+    const body = (await res.json()) as { items: Array<{ id: string; bidCategory?: string[] }> }
+    expect(body.items.find((i) => i.id === id)?.bidCategory).toEqual(["goods", "services"])
+  })
+
+  it("用户改判后列表跟着变；关掉分类则不显示标签", async () => {
+    const id = await createProject(tokenA)
+    await seedDetected(id, ["goods"])
+    await patchCategory(id, ["engineering"], tokenA)
+    const pick = async () => {
+      const res = await app.request("/api/projects?page=1&pageSize=50", { headers: auth(tokenA) })
+      const body = (await res.json()) as { items: Array<{ id: string; bidCategory?: string[] }> }
+      return body.items.find((i) => i.id === id)?.bidCategory
+    }
+    expect(await pick()).toEqual(["engineering"])
+    await patchCategory(id, [], tokenA)
+    expect(await pick()).toEqual([])
+  })
+})
+
 describe("纠偏样本（spec334）", () => {
   it("判过且被改 → 记一条；判得一样 → 不记", async () => {
     const id = await createProject(tokenA)

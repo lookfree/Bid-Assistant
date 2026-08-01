@@ -612,6 +612,26 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       : []
     const doneByProject = new Map<string, string[]>()
     for (const r of doneRows) doneByProject.set(r.projectId, [...(doneByProject.get(r.projectId) ?? []), r.step])
+    // 分类标签（spec334）：**一条批量查询**取本页各项目的判定值，与上面的 doneRows 同法——
+    // 逐项目查会让列表退化成 N+1，正是首屏慢的老病根。只取 result 里那一个 JSON 键，不碰整列。
+    const catRows = items.length
+      ? await getDb()
+          .selectDistinctOn([projectSteps.projectId], {
+            projectId: projectSteps.projectId,
+            cat: sql<{ value?: string[] } | null>`${projectSteps.result} -> 'bid_category'`,
+          })
+          .from(projectSteps)
+          .where(
+            and(
+              inArray(projectSteps.projectId, items.map((p) => p.id)),
+              inArray(projectSteps.step, ["read", "review"]),
+              eq(projectSteps.status, "done"),
+              sql`${projectSteps.result} -> 'bid_category' is not null`,
+            ),
+          )
+          .orderBy(projectSteps.projectId, desc(projectSteps.createdAt))
+      : []
+    const detectedByProject = new Map(catRows.map((r) => [r.projectId, r.cat?.value ?? []]))
     return c.json(
       pagedBody(pg, {
         items: items.map((p) => ({
@@ -629,6 +649,8 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
           // 只会让用户选中后空转，甚至触发一次白扣积分的运行。
           hasBid: p.kind === "review" ? !!p.bidFileKey : ["review", "present", "export", "done"].includes(p.currentStep),
           doneSteps: doneByProject.get(p.id) ?? [],
+          // 展示口径与实际生效一致：确认值优先，没表态就回落判定值（同 effectiveCategory）
+          bidCategory: effectiveCategory(p.bidCategory, { value: (detectedByProject.get(p.id) ?? []) as never }),
           createdAt: p.createdAt,
         })),
         total,

@@ -161,6 +161,8 @@ export type ProjectListItem = {
   /** 已完成的步（read/outline/content/review/present/export）：列表据此标「已审查 / 已述标」——
    *  只看 currentStep 会标错，审查跑完 currentStep 就走到 present 了 */
   doneSteps?: string[]
+  /** 本次生效的标书分类（spec334，确认值 ?? 判定值）；空数组=未判定或用户关掉 */
+  bidCategory?: BidCategoryValue[]
   createdAt: string
 }
 

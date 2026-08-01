@@ -20,7 +20,7 @@ import {
 } from "lucide-react"
 import { Trash2 } from "lucide-react"
 import { ApiError } from "@/lib/api-client"
-import { listProjects, setCurrentProjectId, deleteProject, type ProjectListItem } from "@/lib/project"
+import { listProjects, setCurrentProjectId, deleteProject, BID_CATEGORY_LABEL, type ProjectListItem } from "@/lib/project"
 
 type CurrentStep = ProjectListItem["currentStep"]
 
@@ -361,6 +361,13 @@ function ProjectCard({ project: p, onDelete }: { project: ProjectListItem; onDel
             <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${stage.tone}`}>
               {p.kind === "review" ? "线下标书" : p.status === "done" ? statusLabel.done : stage.label}
             </span>
+            {/* 标书类型（spec334）：只读标签，列表里一眼分清工程/货物/服务。
+                取的是**生效值**（确认值 ?? 判定值），与实际用于生成的那个一致；未判定则不渲染。 */}
+            {p.bidCategory?.length ? (
+              <span className="shrink-0 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+                {p.bidCategory.map((c) => BID_CATEGORY_LABEL[c]).join(" + ")}
+              </span>
+            ) : null}
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
             <span className="inline-flex items-center gap-1">
