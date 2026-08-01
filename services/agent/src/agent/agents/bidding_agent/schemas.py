@@ -179,9 +179,11 @@ class RiskFinding(BaseModel):
     level: Literal["高风险", "中风险"]              # 前端按此渲染，收紧取值
     tone: Literal["destructive", "warning"]
     title: str
-    chapter_title: str = ""                       # 对应标书章节标题
-    tender_ref: str = ""                          # 对应招标条款（"对应：第X章…★…"）
-    advice: str = ""                              # 整改建议
+    chapter_title: str = Field(default="", description="对应的标书章节标题，用于把问题落到具体章节")
+    tender_ref: str = Field(default="", description='对应的招标条款，写成"对应：第X章 xxx（★不可偏离）"')
+    # 整改建议是这条发现的全部价值：只说"有问题"而不说怎么改，用户拿到的等于一句空话。
+    # 留默认值不改必填（漏填升级成整单被拒会凭空多一种失败模式），靠描述让模型看见这条要求。
+    advice: str = Field(default="", description="整改建议：具体怎么改、补什么材料、放到哪一章，一句话讲清")
     target_tab: Literal["tech", "business"]
     target_id: str                                # 章节 id（点击定位）
 
@@ -191,8 +193,14 @@ class RiskReport(BaseModel):
     high: int = 0                                 # 高风险数（按 items 推导，见下）
     mid: int = 0                                  # 中风险数（同上）
     passed: int = 0                               # 通过项数（= len(passed_items)）
-    items: list[RiskFinding] = Field(default_factory=list)
-    passed_items: list[str] = Field(default_factory=list)
+    # 这两个字段是审查步的**全部产出**，缺一个就等于交付垃圾——而且是最危险的那种垃圾：
+    # 漏填后默认值补成 []，前端显示"0 项风险"，看起来像"这份标书没问题"而不像失败，
+    # 用户会带着一份没体检过的标书去投。故必填（空数组仍合法：真干净的标书就是没有发现），
+    # 与提纲 items 同一范式（2026-08-01：Qwen3.6-35B 把可选且无描述的字段整个省略）。
+    items: list[RiskFinding] = Field(
+        ..., description="查出的风险项**必填**：确实没查出问题时给空数组 []，但绝不可省略本字段")
+    passed_items: list[str] = Field(
+        ..., description="通过项（已满足的要求）**必填**：一条一句话；确实没有时给空数组 []，但绝不可省略本字段")
 
     @model_validator(mode="after")
     def _derive_counts(self):
@@ -335,7 +343,10 @@ class SlideDraft(BaseModel):
         default="bullets",
         description="本页版式：bullets=纯要点；chart=图表页（同时给 chart 字段）；"
                     "comparison=左要点右数字卡片（同时给 stats 字段）。给了 chart/stats 就要选对应版式")
-    stats: list[StatItem] = Field(default_factory=list)
+    stats: list[StatItem] = Field(
+        default_factory=list,
+        description="comparison 版式右栏的数字卡片，1–2 张：value 是展示用短文本（如「7×24」「较限价低 8%」），"
+                    "label 是对该数字的一句话说明；其余版式给空数组 []")
     chart: SlideChart | None = None
 
     # 顺序要紧：pydantic 的 after 校验器按定义顺序跑，layout 必须先按数据纠正，
@@ -376,12 +387,16 @@ class SlideDraft(BaseModel):
 
 class DeckDraft(BaseModel):
     """述标骨架：DeckSpec 去掉每页 notes，两段式第一段提交对象。"""
-    title: str = ""
+    title: str = Field(default="", description="述标主题，一般用项目名（会原样印在封面页上）")
     duration: Literal[10, 15, 20] = 15
     template: Literal["blue", "tech", "gov"] = "blue"
     enterprise_template_id: str | None = None
     slides: list[SlideDraft]
-    qa: list[QA] = Field(default_factory=list)
+    # 必填（空数组仍合法）：问答是述标的组成部分，漏填后默认值补成 [] 就静默少了一个环节，
+    # 与 bullets 同一类根因（有默认值的字段模型会跳过）。空数组保留给确实不需要问答的短 deck。
+    qa: list[QA] = Field(
+        ..., description="评委可能追问的问题与回答**必填**：一般 4–6 组，围绕★项与报价、工期、售后；"
+                         "确实不需要时给空数组 []，但绝不可省略本字段")
 
     @model_validator(mode="after")
     def _structure_is_sound(self):

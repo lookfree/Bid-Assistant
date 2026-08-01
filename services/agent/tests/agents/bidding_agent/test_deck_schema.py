@@ -140,7 +140,7 @@ def test_every_section_divider_needs_real_content_after_it():
     from agent.agents.bidding_agent.schemas import DeckDraft
 
     def deck(kinds):
-        return {"slides": [
+        return {"qa": [], "slides": [
             {"id": f"s{i}", "title": f"页{i}", "kind": k, "bullets": ["要点"] if k == "content" else []}
             for i, k in enumerate(kinds)]}
 
@@ -165,7 +165,7 @@ def test_chart_categories_must_share_one_unit_at_generation_time():
     from agent.agents.bidding_agent.schemas import DeckDraft
 
     def draft(cats, vals):
-        return {"slides": [{"id": "s1", "title": "图", "kind": "content", "layout": "chart", "bullets": [],
+        return {"qa": [], "slides": [{"id": "s1", "title": "图", "kind": "content", "layout": "chart", "bullets": [],
                             "chart": {"type": "bar", "categories": cats,
                                       "series": [{"name": "承诺", "values": vals}]}}]}
 
@@ -206,7 +206,7 @@ def test_a_long_deck_must_use_more_than_one_layout():
                 "id": f"s{i}", "title": f"页{i}", "kind": "content", "bullets": ["要点"],
                 **({"layout": "comparison", "stats": [{"value": "1", "label": "x"}]} if varied else {}),
             })
-        return {"slides": slides}
+        return {"qa": [], "slides": slides}
 
     DeckDraft(**deck(5, 0))                    # 短 deck 不强求
     with pytest.raises(ValidationError, match="版式"):
@@ -229,7 +229,7 @@ def test_a_chart_whose_values_are_all_equal_is_not_a_chart():
     from agent.agents.bidding_agent.schemas import DeckDraft, DeckSpec
 
     def draft(cats, series):
-        return {"slides": [{"id": "s1", "title": "图", "kind": "content", "layout": "chart",
+        return {"qa": [], "slides": [{"id": "s1", "title": "图", "kind": "content", "layout": "chart",
                             "bullets": [], "chart": {"type": "column", "categories": cats, "series": series}}]}
 
     with pytest.raises(ValidationError, match="没有可比性"):
@@ -260,7 +260,7 @@ def test_page_count_ceiling_is_deliberately_left_to_the_prompt():
         varied = i < 2
         slides.append({"id": f"s{i}", "title": f"页{i}", "kind": "content", "bullets": ["要点"],
                        **({"layout": "comparison", "stats": [{"value": "1", "label": "x"}]} if varied else {})})
-    DeckDraft(duration=15, slides=slides)      # 超上限不拦，交给提示词引导
+    DeckDraft(duration=15, slides=slides, qa=[])      # 超上限不拦，交给提示词引导
 
 
 def test_outline_desc_is_marked_as_user_only_in_the_tool_schema():
@@ -281,3 +281,19 @@ def test_outline_desc_is_marked_as_user_only_in_the_tool_schema():
     chap_desc = item["properties"]["desc"]
     assert "留空" in (chap_desc.get("description") or ""), "章级 desc 字段没告诉模型要留空"
     assert "desc" in OUTLINE_SYSTEM_PROMPT and OUTLINE_SYSTEM_PROMPT.count("留空") >= 2
+
+
+def test_deck_qa_is_required_in_the_tool_schema():
+    """qa 可选且无描述时，弱模型会跳过它（与 bullets 同一根因，见 91a2e0c）——述标静默少一个问答环节。
+    改必填不新增失败模式：空数组仍合法，只是要求模型显式表态。"""
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+    from agent.agents.bidding_agent.schemas import DeckDraft
+    from agent.framework.structured import make_submit_tool
+
+    params = convert_to_openai_tool(
+        make_submit_tool("submit_deck_draft", DeckDraft, "提交述标骨架")[0])["function"]["parameters"]
+    assert "qa" in params.get("required", []), "qa 不是必填，模型可以整个省掉 → 述标没有问答"
+    assert "必填" in (params["properties"]["qa"].get("description") or ""), "qa 没有字段说明"
+    # comparison 版式的数字卡片同样要有说明，否则模型不知道该往里放什么
+    slide = params["properties"]["slides"]["items"]["properties"]
+    assert "comparison" in (slide["stats"].get("description") or "")

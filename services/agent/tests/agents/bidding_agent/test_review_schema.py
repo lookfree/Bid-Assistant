@@ -23,3 +23,25 @@ def test_submit_risk_captures():
     tool, get = make_submit_tool("submit_risk_report", RiskReport, "提交审查报告")
     asyncio.run(tool.ainvoke(_SAMPLE))
     assert get().model_dump() == RiskReport(**_SAMPLE).model_dump()   # 捕获即原样往返
+
+
+def test_findings_and_passed_items_are_required_in_the_tool_schema():
+    """审查步的全部产出就是这两个列表。它们可选且无描述时，弱模型（2026-08-01 起主模型是客户本地的
+    Qwen3.6-35B-A3B-W4A8）会整个省略 → 默认值补成 [] → 前端显示「0 项风险」。这比报错危险得多：
+    看起来像「这份标书没问题」，用户会带着一份没体检过的标书去投。空数组仍合法（真干净就是没有发现），
+    但必须由模型显式给出。同一根因见提纲 OutlineChapter.items。"""
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+    import pytest
+    from pydantic import ValidationError
+
+    params = convert_to_openai_tool(
+        make_submit_tool("submit_risk_report", RiskReport, "提交审查报告")[0])["function"]["parameters"]
+    for f in ("items", "passed_items"):
+        assert f in params.get("required", []), f"{f} 不是必填，模型可以整个省掉 → 静默变成「0 项风险」"
+        assert "必填" in (params["properties"][f].get("description") or ""), f"{f} 没有字段说明"
+    # 整改建议是一条发现的全部价值，必须在 schema 里说清楚要写什么
+    finding = params["properties"]["items"]["items"]["properties"]
+    assert "整改建议" in (finding["advice"].get("description") or "")
+
+    with pytest.raises(ValidationError):     # 省略 items 必须被拒，而不是默认成空数组静默通过
+        RiskReport(score=90, passed_items=[])
