@@ -269,6 +269,14 @@ export function useStep<T>(step: StepName) {
       } finally {
         inFlight.current = false
         setRunning(false)
+        // 跑完必须把项目状态重新拉一遍：info.steps 里还留着开跑那一刻的快照（该步 status='running'）。
+        // 顶部流程导航的「XX进行中」胶囊、以及读标页的标书类型卡都读这份 info——不刷新就会一直
+        // 转到用户手动刷新页面为止，页面下方结果都出来了、右上角还在转（实测截图）。
+        // setRunning(false) 只修好了本页横幅，修不到这些照 info.steps 渲染的地方。
+        invalidateProjectCache(projectId)
+        getProject(projectId, { fresh: true })
+          .then((i) => setInfo(i))
+          .catch(() => {})   // 只是刷新展示态，失败不该覆盖上面已给出的结果/错误
       }
     },
     [projectId, step, running],

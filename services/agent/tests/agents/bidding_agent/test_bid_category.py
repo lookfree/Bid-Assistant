@@ -94,11 +94,31 @@ def test_rerunning_read_always_refreshes_the_detection(monkeypatch, submit_gatew
     assert any("submit_bid_category" in c.tool_names for c in gw.chats)
 
 
+def _cat(**kw) -> dict:
+    return {"value": [], "confidence": "low", "reason": "r", "evidence_clause_ids": [], **kw}
+
+
 def test_category_value_is_deduped_and_capped_at_two():
     """1–2 个值、去重保序：模型偶尔把三类全列上或重复同一类，在数据模型层收敛成不变量，
     免得「首元素为主类别、最多两类」要在每个消费点各防一次。"""
-    assert BidCategory(value=["services", "goods", "services", "engineering"]).value == ["services", "goods"]
-    assert BidCategory().value == []
+    m = BidCategory.model_validate(_cat(value=["services", "goods", "services", "engineering"]))
+    assert m.value == ["services", "goods"]
+    assert BidCategory.model_validate(_cat()).value == []
+
+
+def test_empty_submission_is_rejected():
+    """**四个字段一律必填**。全带默认值时 `submit_bid_category({})` 也能过校验——模型调了工具
+    却什么都没填，产出与「判据不足」逐字节相同，整个功能静默失效且零报错（生产首跑即中招）。
+    必填不妨碍表达「判不出来」：键必须在，值仍可以是空数组。"""
+    import pytest as _pytest
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+    from agent.framework.structured import make_submit_tool
+
+    with _pytest.raises(Exception):
+        BidCategory.model_validate({})
+    tool, _ = make_submit_tool("submit_bid_category", BidCategory, "提交标书分类")
+    required = convert_to_openai_tool(tool)["function"]["parameters"].get("required") or []
+    assert set(required) == {"value", "confidence", "reason", "evidence_clause_ids"}
 
 
 def test_self_check_project_classifies_from_uploaded_bid(submit_gateway):

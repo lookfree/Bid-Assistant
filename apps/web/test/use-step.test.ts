@@ -56,3 +56,17 @@ describe("stepNotApplicable：审查项目不适用的步不得亮计费按钮",
     expect(stepNotApplicable(null, "read")).toBeNull()
   })
 })
+
+// 步骤跑完后的状态刷新（2026-08-01 生产实测）：页面下方结果都出来了，右上角流程导航的
+// 「招标解读进行中」胶囊还在转——因为它读的是 info.steps，而 start() 的 finally 只复位了
+// 本页横幅用的 running，从没重新拉过 info。这里钉住「finally 里必须刷新项目状态」。
+describe("useStep：步骤结束必须刷新项目状态", () => {
+  it("start() 的收尾同时失效缓存并重新拉 info（否则 info.steps 永远停在 running）", async () => {
+    const src = await Bun.file(new URL("../lib/use-step.ts", import.meta.url)).text()
+    const tail = src.slice(src.indexOf("} finally {"), src.indexOf("[projectId, step, running],"))
+    expect(tail).toContain("setRunning(false)")
+    expect(tail).toContain("invalidateProjectCache(projectId)")
+    expect(tail).toContain("getProject(projectId, { fresh: true })")
+    expect(tail).toContain("setInfo(")
+  })
+})

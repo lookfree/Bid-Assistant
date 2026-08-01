@@ -465,13 +465,21 @@ BidCategoryValue = Literal["goods", "services", "engineering"]
 
 
 class BidCategory(BaseModel):
-    """分类判定结果。value 是 1–2 个值的**有序**数组，首元素为主类别；判据不足留空，不猜。"""
+    """分类判定结果。value 是 1–2 个值的**有序**数组，首元素为主类别；判据不足给空数组，不猜。
+
+    **四个字段一律必填（没有默认值）**——全带默认值时 `submit_bid_category({})` 也能通过校验，
+    模型调了工具却什么都没填，产出与「判据不足」逐字节相同，整个功能静默失效而没有任何报错
+    （生产首次运行即中招）。必填不妨碍表达「判不出来」：键必须在，值仍可以是空数组，
+    「没回答」与「回答：判不出来」这才分得开。"""
     value: list[BidCategoryValue] = Field(
-        default_factory=list,
+        ...,
         description="货物 goods / 服务 services / 工程 engineering。横跨两类时给 2 个、主类别在前；判据不足给空数组，不要猜")
-    confidence: Literal["high", "medium", "low"] = "low"
-    reason: str = ""                                   # 一句话判据，给用户看，便于判断要不要改判
-    evidence_clause_ids: list[str] = Field(default_factory=list)  # 只能引用消息中出现过的条款 id
+    confidence: Literal["high", "medium", "low"] = Field(
+        ..., description="判据充分且唯一 high；能判但材料单薄或存在混合 medium；勉强或判不出 low")
+    reason: str = Field(
+        ..., description="一句话判据（≤50字），写给用户看，让他一眼判断该不该改判；判不出时写明为什么判不出")
+    evidence_clause_ids: list[str] = Field(
+        ..., description="支撑判定的条款 id，只能填用户消息里出现过的，最多 5 个；没有可引用的就给空数组")
 
     @model_validator(mode="after")
     def _normalize(self) -> "BidCategory":
