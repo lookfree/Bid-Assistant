@@ -179,7 +179,15 @@ export function useStep<T>(step: StepName) {
               if (alive) setError(stepErrorMessage(null))
             })
             .finally(() => {
-              if (alive) setRunning(false)
+              if (!alive) return
+              setRunning(false)
+              // 与 start() 的 finally 同理：info.steps 还是挂载时的快照（该步 status='running'），
+              // 顶部流程导航的「XX进行中」胶囊照它渲染——只关本页横幅不刷新 info，胶囊会一直挂到
+              // 用户手动刷新（实测：30 分钟正文中途切页再回来，生成完成后右上角仍显示「标书生成进行中」）。
+              invalidateProjectCache(projectId)
+              getProject(projectId, { fresh: true })
+                .then((i) => setInfo(i))
+                .catch(() => {})   // 只是刷新展示态，失败不覆盖已给出的结果/错误
             })
         } else if (row?.status === "failed") {
           // 上次生成失败（可能在别的页/刷新前跑挂）——明确报错让用户重试，不要静默回到空态
