@@ -17,10 +17,17 @@ def _is_heading(t: str) -> bool:
     return len(t) <= 40 and bool(_HEADING.match(t))
 
 
-def _split_clauses(lines: list[str]) -> list[dict]:
-    """按章节标题分节、节内非空段落顺序编号 → [{id: sec-N-cN, text}]。
-    启发式（不 OCR/精排版）：无法识别章节时整体退化为 sec-1，供读标/提纲引用作 clause_ids 定位。"""
+def _heading_level(t: str) -> int:
+    """1 = 第N章/节/篇/部分；2 = 「一、」式顶层编号。只用于左栏层级渲染，判错至多是字号不对。"""
+    return 1 if t.lstrip().startswith("第") else 2
+
+
+def _split_clauses(lines: list[str]) -> tuple[list[dict], list[dict]]:
+    """按章节标题分节、节内非空段落顺序编号 → ([{id: sec-N-cN, text}], [{sec, title, level}])。
+    启发式（不 OCR/精排版）：无法识别章节时整体退化为 sec-1，供读标/提纲引用作 clause_ids 定位。
+    标题**另存一份**、不进 clauses：混进去会挤掉条款序号，clause_id 口径一变，定位与引用全线受影响。"""
     clauses: list[dict] = []
+    headings: list[dict] = []
     sec_n = 1
     sec_id = "sec-1"
     c_n = 0
@@ -33,12 +40,13 @@ def _split_clauses(lines: list[str]) -> list[dict]:
             if seen_heading or clauses:      # 前面已有章节或正文，才递增（首个标题保持 sec-1）
                 sec_n += 1
             sec_id = f"sec-{sec_n}"
+            headings.append({"sec": sec_id, "title": t, "level": _heading_level(t)})
             seen_heading = True
             c_n = 0
-            continue                          # 标题本身不作为条款
+            continue                          # 标题本身不作为条款（但已记进 headings）
         c_n += 1
         clauses.append({"id": f"{sec_id}-c{c_n}", "text": t})
-    return clauses
+    return clauses, headings
 
 
 def _docx_lines_in_order(d) -> list[str]:
@@ -69,8 +77,9 @@ def parse_docx(data: bytes) -> ParsedDoc:
     d = Document(io.BytesIO(data))
     lines = _docx_lines_in_order(d)
     tables: list[list[list[str]]] = [[[c.text for c in r.cells] for r in t.rows] for t in d.tables]
+    clauses, headings = _split_clauses(lines)
     return ParsedDoc(text="\n".join(lines), kind="docx", tables=tables,
-                     clauses=_split_clauses(lines))
+                     clauses=clauses, headings=headings)
 
 
 def parse_pdf(data: bytes) -> ParsedDoc:
@@ -79,8 +88,9 @@ def parse_pdf(data: bytes) -> ParsedDoc:
     reader = PdfReader(io.BytesIO(data))
     pages = [(pg.extract_text() or "") for pg in reader.pages]
     text = "\n".join(pages)
+    clauses, headings = _split_clauses(text.split("\n"))
     return ParsedDoc(text=text, kind="pdf", pages=len(reader.pages),
-                     clauses=_split_clauses(text.split("\n")))
+                     clauses=clauses, headings=headings)
 
 
 def parse_xlsx(data: bytes) -> ParsedDoc:
@@ -98,8 +108,9 @@ def parse_xlsx(data: bytes) -> ParsedDoc:
                 lines.append("\t".join(cells))
         if rows:
             tables.append(rows)
+    clauses, headings = _split_clauses(lines)
     return ParsedDoc(text="\n".join(lines), kind="xlsx", tables=tables,
-                     clauses=_split_clauses(lines))
+                     clauses=clauses, headings=headings)
 
 
 _LEGACY_TARGET = {"doc": "docx", "xls": "xlsx"}

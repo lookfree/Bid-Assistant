@@ -24,11 +24,13 @@ export type ChapterProgress = { kind?: string; done: number; total: number; done
 
 /** 步骤运行阶段（node/phase 事件 → 人话标签，如「读标·技术第2/5块」「审查中」）。 */
 export type StepPhase = { label: string }
+import type { DocHeading } from "./doc-sections"
+
 export type StepLiveEvent =
   | { kind: "chapter"; progress: ChapterProgress }
   | { kind: "phase"; phase: StepPhase }
   | { kind: "readPart"; part: Record<string, unknown> }
-  | { kind: "readSections"; sections: { id: string; text: string }[] }
+  | { kind: "readSections"; sections: { id: string; text: string }[]; headings?: DocHeading[] }
   | { kind: "end" }
 
 /** 订阅某步的实时进度事件流（只读、不计费）：任何步骤在跑时打开，从头回放持久事件，
@@ -78,7 +80,11 @@ export function openStepEvents(
           } else if (type === "progress" && (data as { kind?: string })?.kind === "read_sections") {
             // 招标原文分片：条款在模型跑之前就解析好了，先推给左栏——不然半个屏幕空等十几分钟，
             // 右栏流式出来的条目也点不动（点条款定位原文靠的就是左栏）。
-            onEvent({ kind: "readSections", sections: (data as { sections: { id: string; text: string }[] }).sections })
+            onEvent({
+              kind: "readSections",
+              sections: (data as { sections: { id: string; text: string }[] }).sections,
+              headings: (data as { headings?: DocHeading[] }).headings,
+            })
           } else if (type === "progress" && (data as { kind?: string })?.kind === "heartbeat") {
             // 块内心跳：长块生成时 token 持续吐，附「已 N 字」让运行横幅动起来（不再看着卡住）。
             const hb = data as { label: string; chars?: number }

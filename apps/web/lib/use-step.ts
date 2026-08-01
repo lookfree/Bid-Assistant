@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { ApiError } from "./api-client"
+import type { DocHeading } from "./doc-sections"
 import {
   clearCurrentProjectId,
   currentProjectId,
@@ -124,6 +125,7 @@ export function useStep<T>(step: StepName) {
   const [partial, setPartial] = useState<Record<string, unknown> | null>(null)
   // 招标原文条款（read 步实时）：解析在模型之前完成，先到先显示，左栏不必空等
   const [partialSections, setPartialSections] = useState<{ id: string; text: string }[]>([])
+  const [partialHeadings, setPartialHeadings] = useState<DocHeading[]>([])
   // 正文逐章进度（content 步实时）。下方订阅 effect 会在该步 running 时（本次生成/切回/刷新都算）
   // 重连事件流并回放，故切页/刷新回来也能接上进度，不再局限于本次 start()。
   const [progress, setProgress] = useState<ChapterProgress | null>(null)
@@ -210,8 +212,10 @@ export function useStep<T>(step: StepName) {
       if (e.kind === "chapter") setProgress(e.progress)
       else if (e.kind === "phase") setPhase(e.phase)
       else if (e.kind === "readPart") setPartial((prev) => mergeReadPart(prev, e.part))
-      else if (e.kind === "readSections")
+      else if (e.kind === "readSections") {
         setPartialSections((prev) => (prev.length ? [...prev, ...e.sections] : e.sections))
+        if (e.headings?.length) setPartialHeadings(e.headings)
+      }
     })
     return cancel
   }, [projectId, step, running])
@@ -239,6 +243,7 @@ export function useStep<T>(step: StepName) {
         // 权威结果已到：展示态没用了，且大标书那份累加可达数 MB
         setPartial(null)
         setPartialSections([])
+        setPartialHeadings([])
         notifyCreditsChanged()
         return result
       } catch (e) {
@@ -309,7 +314,7 @@ export function useStep<T>(step: StepName) {
           ? { href: prereq.href, label: `前往${prereq.label}` }
           : null
 
-  return { projectId, info, data, dataLoading, running, progress, phase, partial, partialSections, error: displayError, errorStatus, errorAction, start }
+  return { projectId, info, data, dataLoading, running, progress, phase, partial, partialSections, partialHeadings, error: displayError, errorStatus, errorAction, start }
 }
 
 /** 跨步结果按需拉取（slim 首屏配套）：本页需要引用**其他步骤**的结果时用

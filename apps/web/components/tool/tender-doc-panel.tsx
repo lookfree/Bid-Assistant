@@ -128,7 +128,13 @@ export function TenderDocPanel({
               activeSection === sec.id ? "bg-primary/[0.04]" : ""
             } ${sec.id !== visible[0].id ? "mt-6" : ""}`}
           >
-            <h3 className="mb-2 mt-1 text-base font-semibold text-foreground">{sec.title}</h3>
+            {/* 按解析出的层级渲染：一级（第N章/节/篇/部分）大一号，二级（「一、」式）小一号。
+                拿不到真实标题时 title 会是「第N部分」占位——那时层级一律按 1，不装作有结构。 */}
+            {sec.level >= 2 ? (
+              <h4 className="mb-1.5 mt-1 text-sm font-semibold text-foreground">{sec.title}</h4>
+            ) : (
+              <h3 className="mb-2 mt-1 text-base font-bold text-foreground">{sec.title}</h3>
+            )}
             {sec.paragraphs.map((clause) => {
               const hit = activeClauses.includes(clause.id)
               return (

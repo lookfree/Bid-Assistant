@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, it, test } from "bun:test"
 import { clauseLocationIn, groupDocSections } from "../lib/doc-sections"
 
 describe("groupDocSections", () => {
@@ -12,6 +12,7 @@ describe("groupDocSections", () => {
     expect(groups[0]).toEqual({
       id: "sec-1",
       title: "第1部分",
+      level: 1,   // 无解析标题时层级一律 1，不装作有结构
       paragraphs: [
         { id: "sec-1-c1", text: "a" },
         { id: "sec-1-c2", text: "b" },
@@ -23,7 +24,9 @@ describe("groupDocSections", () => {
 
   test("无 -cN 后缀 / 无数字前缀的条目自成一组，标题回落原 id", () => {
     const groups = groupDocSections([{ id: "sec-intro", text: "x" }])
-    expect(groups).toEqual([{ id: "sec-intro", title: "sec-intro", paragraphs: [{ id: "sec-intro", text: "x" }] }])
+    expect(groups).toEqual([
+      { id: "sec-intro", title: "sec-intro", level: 1, paragraphs: [{ id: "sec-intro", text: "x" }] },
+    ])
   })
 })
 
@@ -61,5 +64,34 @@ describe("clauseLocationIn", () => {
 
   test("重复条款 id 去重后再折叠", () => {
     expect(clauseLocationIn(sections, ["sec-1-c2", "sec-1-c2", "sec-1-c3"])).toBe("第1部分 · 第2-3条")
+  })
+})
+
+// 章节标题（2026-08-01）：解析器原来把标题行整行丢掉，左栏只能显示硬造的「第N部分」——
+// 与文档里真正的章节名毫无关系。现在标题与 clauses 并列保留，按层级渲染。
+describe("groupDocSections：真实章节标题", () => {
+  const sents = [
+    { id: "sec-1-c1", text: "投标人须为独立法人" },
+    { id: "sec-2-c1", text: "技术参数应逐条响应" },
+  ]
+
+  it("有解析出的标题就用原文标题，并带上层级", () => {
+    const out = groupDocSections(sents, [
+      { sec: "sec-1", title: "第一章 投标人须知", level: 1 },
+      { sec: "sec-2", title: "一、技术要求", level: 2 },
+    ])
+    expect(out.map((g) => g.title)).toEqual(["第一章 投标人须知", "一、技术要求"])
+    expect(out.map((g) => g.level)).toEqual([1, 2])
+  })
+
+  it("拿不到标题（老结果/未识别章节）回落「第N部分」，层级一律 1——不装作有结构", () => {
+    const out = groupDocSections(sents)
+    expect(out.map((g) => g.title)).toEqual(["第1部分", "第2部分"])
+    expect(out.every((g) => g.level === 1)).toBe(true)
+  })
+
+  it("只有部分节有标题时，其余节仍回落占位，不会串到别的节上", () => {
+    const out = groupDocSections(sents, [{ sec: "sec-2", title: "二、商务条款", level: 2 }])
+    expect(out.map((g) => g.title)).toEqual(["第1部分", "二、商务条款"])
   })
 })

@@ -27,7 +27,7 @@ import type { AnalysisItem, PackageInfo, ScoringRow, StructureItem, StructureKin
 import { stepNotApplicable, useStep } from "@/lib/use-step"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
-import { clauseLocationIn, groupDocSections, type DocSentence } from "@/lib/doc-sections"
+import { clauseLocationIn, groupDocSections, type DocHeading, type DocSentence } from "@/lib/doc-sections"
 import { cloneProject, setProjectPackage, triggerDownload } from "@/lib/project"
 import { exportReadReport } from "@/lib/risk-api"
 
@@ -62,6 +62,7 @@ type RealRead = {
   scoring?: ScoringRow[]
   riskSummary?: string[]
   docSections?: DocSentence[]
+  docHeadings?: DocHeading[]
   /** 投标文件构成清单（spec321），旧项目读标结果无该字段 */
   requiredStructure?: StructureItem[]
   /** 包件划分（spec324），单包标书为空/缺省 */
@@ -87,7 +88,7 @@ import { CategoryCard } from "../category-card"
 import { readCategories } from "./categories"
 
 export default function ReadPage() {
-  const { projectId, info, data: real, dataLoading, running, phase, partial, partialSections, error, errorAction, start } = useStep<RealRead>("read")
+  const { projectId, info, data: real, dataLoading, running, phase, partial, partialSections, partialHeadings, error, errorAction, start } = useStep<RealRead>("read")
   // 线下标书审查项目（无招标文件）不适用读标：绝不亮计费按钮（点了必 409）
   const notApplicable = stepNotApplicable(info, "read")
   const { overview } = useMembership()
@@ -175,10 +176,10 @@ export default function ReadPage() {
   )
   // 左栏原文：权威结果优先，跑的过程中用分片推来的条款兜底——条款在模型之前就解析好，没理由
   // 让半屏空等十几分钟；且没有原文，右栏条目就点不动（定位靠左栏）。
-  const docSections = useMemo(
-    () => groupDocSections(real?.docSections?.length ? real.docSections : partialSections),
-    [real, partialSections],
-  )
+  const docSections = useMemo(() => {
+    const done = real?.docSections?.length
+    return groupDocSections(done ? real.docSections! : partialSections, done ? real.docHeadings ?? [] : partialHeadings)
+  }, [real, partialSections, partialHeadings])
   const locate = (clauseIds?: string[]) => clauseLocationIn(docSections, clauseIds)
   // 头部文件名：项目名（GET /api/projects/:id 的 name，缺省兜底）
   const docFileName = info?.project.name ?? "我的项目"

@@ -140,12 +140,15 @@ _SECTIONS_CHUNK = 300
 _SECTIONS_CAP = 3000   # 超大标只先推前 3000 条，够左栏定位用；完整全文随 step.done 一次到位
 
 
-async def _publish_sections(ctx, clauses: list[dict]) -> None:
+async def _publish_sections(ctx, clauses: list[dict], headings: list[dict]) -> None:
     """把已解析的条款分片推给前端，让左栏原文立刻可读、右栏流式出来的条目立刻可定位。
+    章节标题随第一片一起过去（体量小），左栏一开始就有层级而不是「第N部分」。
     best-effort：推送失败绝不影响读标。"""
     for i in range(0, min(len(clauses), _SECTIONS_CAP), _SECTIONS_CHUNK):
-        await publish_event(getattr(ctx, "redis", None), getattr(ctx, "run_id", None),
-                            {"kind": "read_sections", "sections": clauses[i:i + _SECTIONS_CHUNK]})
+        ev: dict = {"kind": "read_sections", "sections": clauses[i:i + _SECTIONS_CHUNK]}
+        if i == 0 and headings:
+            ev["headings"] = headings
+        await publish_event(getattr(ctx, "redis", None), getattr(ctx, "run_id", None), ev)
 
 
 async def _publish_part(ctx, part: ReadResult) -> None:
@@ -260,7 +263,7 @@ def _parse_fail_reason(e: Exception) -> str:
     return "文件无法解析（可能已损坏、为扫描件或空文件）"
 
 
-async def _parse_multi_files(files: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
+async def _parse_multi_files(files: list[dict]) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
     """spec320：并发解析多份招标文件；单份失败不阻塞其余文件——成功的按 merge_parsed 合并
     （章节号整体偏移，sec-N-cM 锚点体系不变）。失败文件收集为 [{name, reason}] 显式返回
     （bug YFZQ-4：加密/损坏文件此前静默跳过、读标只显示成功的,用户无从知晓——现必须回传告知）。"""
@@ -274,8 +277,8 @@ async def _parse_multi_files(files: list[dict]) -> tuple[list[dict], list[dict],
     results = await asyncio.gather(*[_one(f) for f in files])
     docs = [ok for ok, _ in results if ok is not None]
     failed = [bad for _, bad in results if bad is not None]
-    clauses, file_ranges = merge_parsed(docs)
-    return clauses, file_ranges, failed
+    clauses, file_ranges, headings = merge_parsed(docs)
+    return clauses, file_ranges, failed, headings
 
 
 def _multi_file_prompt(clauses: list[dict], file_ranges: list[dict]) -> str:
@@ -298,8 +301,9 @@ def make_read_node(ctx):
     async def read_node(state):
         files = state.get("files") or []
         extra: dict = {}
+        headings: list[dict] = []   # 章节标题（左栏按层级渲染用；解析失败降级为空，页面回落旧的「第N部分」）
         if files:
-            clauses, file_ranges, failed_files = await _parse_multi_files(files)
+            clauses, file_ranges, failed_files, headings = await _parse_multi_files(files)
             # 全部预解析失败的兜底：列出各文件 key，模型才有 key 可调 parse_document 重试
             keys = "、".join(f"{f.get('name', '')}(key={f.get('key', '')})" for f in files)
             user = (_multi_file_prompt(clauses, file_ranges) if clauses
@@ -313,6 +317,7 @@ def make_read_node(ctx):
             try:
                 parsed = await asyncio.to_thread(read_and_parse, state["file_key"])
                 clauses = parsed.clauses
+                headings = parsed.headings
             except Exception:  # noqa: BLE001 降级：让模型自己调 parse_document 重试
                 clauses = []
             if clauses:
@@ -321,7 +326,7 @@ def make_read_node(ctx):
             else:
                 user = f"请对招标文件读标，key={state['file_key']}"
         # 原文先行：条款此刻已解析完，立刻推给前端——左栏不再空等，右栏流式条目也能点击定位。
-        await _publish_sections(ctx, clauses)
+        await _publish_sections(ctx, clauses, headings)
         # 条款已预解析注入 ⇒ 无需 parse_document 工具，走 _forced_submit 强制提交路径——
         # 它带截断重试（大标书读标输出撞 max_tokens 实测：图路径截断=单轮即失败，无法恢复）。
         # 仅预解析失败（clauses 空）才带工具走图路径，让模型自己调 parse_document 兜底。
@@ -345,5 +350,5 @@ def make_read_node(ctx):
         # 跳过它就意味着重跑读标再也刷不出新判定；用户的确认值另存在项目行，不受影响。
         read_result = result.model_dump()
         read_result["bid_category"] = await classify_from_read(ctx, read_result)
-        return {"read": {**read_result, "doc_sections": clauses, **extra}}
+        return {"read": {**read_result, "doc_sections": clauses, "doc_headings": headings, **extra}}
     return read_node

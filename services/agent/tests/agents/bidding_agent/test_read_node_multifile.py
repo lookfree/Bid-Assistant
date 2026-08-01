@@ -142,7 +142,7 @@ def test_large_clause_count_triggers_segmented_read(monkeypatch, submit_gateway)
     big = [{"id": f"sec-1-c{i}", "text": f"条款{i}"} for i in range(n)]
 
     async def fake_parse_multi(files):
-        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}], []
+        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}], [], []
 
     monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
     args = {"submit_read_result": {
@@ -178,7 +178,7 @@ def test_segmented_read_runs_rounds_concurrently(monkeypatch, submit_gateway):
     big = [{"id": f"sec-1-c{i}", "text": f"条款{i}"} for i in range(n)]
 
     async def fake_parse_multi(files):
-        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}], []
+        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}], [], []
     monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
 
     inflight = {"now": 0, "peak": 0}
@@ -212,7 +212,7 @@ def test_segmented_read_resumes_from_cache_on_retry(monkeypatch, submit_gateway)
     big = [{"id": f"sec-1-c{i}", "text": f"条款{i}"} for i in range(n)]
 
     async def fake_parse_multi(files):
-        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}], []
+        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}], [], []
     monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
 
     class _FakeRedis:                                # 极简 get/set(str) 假 redis
@@ -264,7 +264,7 @@ def test_segmented_tech_items_packages_forced_empty(monkeypatch, submit_gateway)
     big = [{"id": f"sec-1-c{i}", "text": f"条款{i}"} for i in range(n)]
 
     async def fake_parse_multi(files):
-        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}], []
+        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}], [], []
     monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
 
     # fake 模型每轮都交一个"猜了包件"的技术项(packages=[p1])
@@ -289,7 +289,7 @@ def test_tech_chunk_rounds_carry_only_own_chunk(monkeypatch, submit_gateway):
     big = [{"id": f"sec-1-c{i}", "text": f"条款{i}"} for i in range(n)]
 
     async def fake_parse_multi(files):
-        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}], []
+        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}], [], []
     monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
 
     args = {"submit_read_result": {"categories": [{"key": "overview", "title": "概况", "items": []}]}}
@@ -312,7 +312,7 @@ def test_small_clause_count_single_submission(monkeypatch, submit_gateway):
     import agent.agents.bidding_agent.nodes.read as read_mod
 
     async def fake_parse_multi(files):
-        return [{"id": "sec-1-c1", "text": "条款"}], [{"name": "f", "sec_from": 1, "sec_to": 1}], []
+        return [{"id": "sec-1-c1", "text": "条款"}], [{"name": "f", "sec_from": 1, "sec_to": 1}], [], []
 
     monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
     gw = submit_gateway({"submit_read_result": {"categories": [{"key": "overview", "title": "概况", "items": []}]}})
@@ -338,7 +338,7 @@ def test_each_round_publishes_its_partial_result(monkeypatch, submit_gateway):
     big = [{"id": f"sec-1-c{i}", "text": f"条款{i}"} for i in range(n)]
 
     async def fake_parse_multi(files):
-        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}], []
+        return big, [{"name": "采购文件", "sec_from": 1, "sec_to": 1}], [], []
     monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
 
     args = {"submit_read_result": {"categories": [
@@ -409,7 +409,7 @@ def test_clauses_are_published_before_the_model_runs(monkeypatch, submit_gateway
     clauses = [{"id": f"sec-1-c{i}", "text": f"条款{i}"} for i in range(read_mod._SECTIONS_CHUNK + 5)]
 
     async def fake_parse_multi(files):
-        return clauses, [{"name": "f", "sec_from": 1, "sec_to": 1}], []
+        return clauses, [{"name": "f", "sec_from": 1, "sec_to": 1}], [], []
     monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
 
     gw = submit_gateway({"submit_read_result": {"categories": [{"key": "overview", "title": "概况", "items": []}]}})
@@ -435,5 +435,5 @@ def test_huge_tender_caps_the_pushed_clauses(monkeypatch):
     monkeypatch.setattr(read_mod, "publish_event", fake_publish)
     huge = [{"id": f"sec-1-c{i}", "text": "x"} for i in range(read_mod._SECTIONS_CAP + 1000)]
     ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=None)
-    asyncio.run(read_mod._publish_sections(ctx, huge))
+    asyncio.run(read_mod._publish_sections(ctx, huge, []))
     assert sum(len(e["sections"]) for e in events) == read_mod._SECTIONS_CAP

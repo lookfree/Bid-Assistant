@@ -3,17 +3,23 @@
 // 页面按 id 前缀（sec-N）分组渲染，并生成人类可读的定位提示。
 
 export type DocSentence = { id: string; text: string }
-export type DocSectionGroup = { id: string; title: string; paragraphs: DocSentence[] }
+/** 解析器留下的章节标题：level 1=第N章/节/篇/部分，2=「一、」式顶层编号。 */
+export type DocHeading = { sec: string; title: string; level?: number }
+export type DocSectionGroup = { id: string; title: string; level: number; paragraphs: DocSentence[] }
 
-/** 按条款 id 前缀分组：sec-1-c2 → 组 sec-1（标题「第1部分」）；无 -cN 后缀的条目自成一组 */
-export function groupDocSections(sentences: DocSentence[]): DocSectionGroup[] {
+/** 按条款 id 前缀分组：sec-1-c2 → 组 sec-1。
+ *  标题优先用解析器留下的**原文标题**；拿不到（老结果 / 解析没识别出章节）才回落「第N部分」——
+ *  那只是个占位，和文档里真正的章节名毫无关系。 */
+export function groupDocSections(sentences: DocSentence[], headings: DocHeading[] = []): DocSectionGroup[] {
+  const titleBySec = new Map(headings.map((h) => [h.sec, h]))
   const groups = new Map<string, DocSectionGroup>()
   for (const s of sentences) {
     const gid = s.id.replace(/-c\d+$/, "")
     let g = groups.get(gid)
     if (!g) {
+      const h = titleBySec.get(gid)
       const n = /(\d+)$/.exec(gid)?.[1]
-      g = { id: gid, title: n ? `第${n}部分` : gid, paragraphs: [] }
+      g = { id: gid, title: h?.title ?? (n ? `第${n}部分` : gid), level: h?.level ?? 1, paragraphs: [] }
       groups.set(gid, g)
     }
     g.paragraphs.push(s)
