@@ -56,7 +56,7 @@ class ToolCallRecorder(AsyncCallbackHandler):
         try:
             await asyncio.to_thread(
                 recorder.record_tool, self.ctx.run_id, getattr(self.ctx, "agent_type", "unknown"),
-                tool, ok=ok, duration_ms=int((time.monotonic() - t0) * 1000),
+                tool, ok=ok, duration_s=round(time.monotonic() - t0, 3),
                 args_summary=summary or None, error=error, node=self.node,
                 thread_id=getattr(self.ctx, "thread_id", None))
         except Exception:  # noqa: BLE001 埋点 best-effort，绝不影响工具执行

@@ -69,7 +69,7 @@ class Recorder:
         self, run_id: str, agent_type: str, provider: str, model: str,
         input_tokens: int, output_tokens: int, cached_tokens: int = 0, reasoning_tokens: int = 0,
         total_tokens: int | None = None, node: str | None = None,
-        ttft_ms: int | None = None, latency_ms: int | None = None,
+        ttft_s: float | None = None, latency_s: float | None = None,
         finish_reason: str | None = None, thread_id: str | None = None,
     ) -> None:
         total = total_tokens if total_tokens is not None else input_tokens + output_tokens
@@ -77,21 +77,21 @@ class Recorder:
         self._exec(
             """insert into agent.agent_token_usage
                  (run_id, thread_id, agent_type, provider, model, node,
-                  input_tokens, output_tokens, cached_tokens, reasoning_tokens, total_tokens, ttft_ms, latency_ms, finish_reason)
+                  input_tokens, output_tokens, cached_tokens, reasoning_tokens, total_tokens, ttft_s, latency_s, finish_reason)
                values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (run_id, thread_id, agent_type or "unknown", provider or "unknown", model or "unknown", node,
-             input_tokens, output_tokens, cached_tokens, reasoning_tokens, total, ttft_ms, latency_ms, finish_reason),
+             input_tokens, output_tokens, cached_tokens, reasoning_tokens, total, ttft_s, latency_s, finish_reason),
         )
 
     def record_tool(
         self, run_id: str, agent_type: str, tool: str, ok: bool = True,
-        duration_ms: int | None = None, args_summary: dict[str, Any] | None = None,
+        duration_s: float | None = None, args_summary: dict[str, Any] | None = None,
         error: str | None = None, node: str | None = None, thread_id: str | None = None,
     ) -> None:
         self._exec(
-            """insert into agent.agent_tool_call (run_id, thread_id, agent_type, tool, node, ok, duration_ms, args_summary, error)
+            """insert into agent.agent_tool_call (run_id, thread_id, agent_type, tool, node, ok, duration_s, args_summary, error)
                values (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-            (run_id, thread_id, agent_type, tool, node, ok, duration_ms,
+            (run_id, thread_id, agent_type, tool, node, ok, duration_s,
              Jsonb(args_summary) if args_summary is not None else None, error),
         )
 
@@ -109,7 +109,7 @@ class Recorder:
                      node_count=coalesce(%s, node_count),
                      result=coalesce(%s, a.result),
                      finished_at=now(),
-                     duration_ms=cast(extract(epoch from (now()-coalesce(started_at, created_at)))*1000 as int),
+                     duration_s=round(extract(epoch from (now()-coalesce(started_at, created_at)))::numeric, 3),
                      input_tokens=u.i, output_tokens=u.o, cached_tokens=u.c, total_tokens=u.t
                  from (select coalesce(sum(input_tokens),0) i, coalesce(sum(output_tokens),0) o,
                               coalesce(sum(cached_tokens),0) c, coalesce(sum(total_tokens),0) t

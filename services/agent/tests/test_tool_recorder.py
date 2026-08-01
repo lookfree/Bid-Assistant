@@ -29,7 +29,7 @@ def test_tool_start_end_records_one_row_with_duration():
     assert len(rec.rows) == 1
     row = rec.rows[0]
     assert row["tool"] == "write_file" and row["ok"] is True and row["node"] == "content"
-    assert row["duration_ms"] is not None and row["duration_ms"] >= 0
+    assert row["duration_s"] is not None and row["duration_s"] >= 0
     # 参数摘要必须体量可控：write_file 的 content 是整章 HTML，只记长度、绝不整个进库
     summary = row["args_summary"]
     assert summary["file_path"] == "chapters/t1.html"

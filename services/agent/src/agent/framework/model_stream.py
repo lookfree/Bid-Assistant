@@ -162,7 +162,7 @@ async def forced_stream_submit(ctx, messages, submit, tool_name: str, label: str
         _warn_if_no_usage(msg, it)   # 流式用量依赖服务商回 include_usage；缺失=0 token 静默漏计费，先示警
         record_ctx_usage(ctx, msg, node="agent", provider=it.get("provider"),
                          model=getattr(base, "model_name", None) or it.get("model"),
-                         latency_ms=int((time.monotonic() - t0) * 1000))
+                         latency_s=round(time.monotonic() - t0, 3))
         return msg
 
 

@@ -25,7 +25,7 @@ def extract_usage(msg: Any) -> dict[str, Any]:
 def record_llm_usage(recorder: Any, *, run_id: str | None, agent_type: str | None,
                      provider: str | None, model: str | None, msg: Any,
                      node: str | None = None, thread_id: str | None = None,
-                     latency_ms: int | None = None) -> None:
+                     latency_s: float | None = None) -> None:
     """从 msg 抽用量并 best-effort 落库——埋点/DB 失败绝不拖垮已成功的 LLM 调用。
     gateway.invoke 与 framework agent_node 共用（两处都直连 LLM，用量得自己记）。"""
     if recorder is None or not run_id:
@@ -36,7 +36,7 @@ def record_llm_usage(recorder: Any, *, run_id: str | None, agent_type: str | Non
             run_id, agent_type, provider=provider, model=model,
             input_tokens=u["input"], output_tokens=u["output"], cached_tokens=u["cached"],
             reasoning_tokens=u["reasoning"], total_tokens=u["total"], node=node,
-            latency_ms=latency_ms, finish_reason=u["finish_reason"], thread_id=thread_id,
+            latency_s=latency_s, finish_reason=u["finish_reason"], thread_id=thread_id,
         )
         # 截断是异常事件，必须在日志表里可查：此前只落 token_usage 的指标列（没人看），
         # 2026-08-01 正文步 7 次截断引发整章重写循环，事后全靠手写 SQL 对时间线。
@@ -51,21 +51,21 @@ def record_llm_usage(recorder: Any, *, run_id: str | None, agent_type: str | Non
 
 
 def record_ctx_usage(ctx: Any, msg: Any, *, node: str | None, model: str | None = None,
-                     provider: str | None = None, latency_ms: int | None = None) -> None:
+                     provider: str | None = None, latency_s: float | None = None) -> None:
     """按 RunContext 记一条 LLM 用量（best-effort）。make_agent_node 与 UsageCallback 共用，
-    provider/run 维度参数只在这里拼一次，避免两条埋点路径漂移。latency_ms 由调用方计时传入。
+    provider/run 维度参数只在这里拼一次，避免两条埋点路径漂移。latency_s（秒）由调用方计时传入。
     provider 显式给了用它（降级/结构化链跑的是非默认服务商，需按实际归属，否则错记成默认家）。"""
     _s = getattr(ctx.gateway, "s", None) if ctx.gateway else None
     record_llm_usage(ctx.recorder, run_id=ctx.run_id, agent_type=ctx.agent_type,
                      provider=provider or getattr(_s, "model_default_provider", None),
                      model=model or (getattr(msg, "response_metadata", None) or {}).get("model_name"),
-                     msg=msg, node=node, thread_id=ctx.thread_id, latency_ms=latency_ms)
+                     msg=msg, node=node, thread_id=ctx.thread_id, latency_s=latency_s)
 
 
 class UsageCallback(AsyncCallbackHandler):
     """langchain 回调式埋点：deepagent 等「直驱模型、不经 make_agent_node」的路径
     挂到 config.callbacks 上记 token 用量（content 节点是最大消费者，绕过即漏计费）。
-    on_(chat_model|llm)_start 按 langchain run_id 打点开始时间，on_llm_end 算整次调用耗时 latency_ms。"""
+    on_(chat_model|llm)_start 按 langchain run_id 打点开始时间，on_llm_end 算整次调用耗时 latency_s（秒）。"""
 
     def __init__(self, ctx: Any, node: str):
         self.ctx = ctx
@@ -89,5 +89,5 @@ class UsageCallback(AsyncCallbackHandler):
             msg = response.generations[0][0].message
         except (IndexError, AttributeError):
             return                       # 非 chat 型结果（无 .message）不记
-        latency = int((time.monotonic() - t0) * 1000) if t0 is not None else None
-        record_ctx_usage(self.ctx, msg, node=self.node, latency_ms=latency)
+        latency = round(time.monotonic() - t0, 3) if t0 is not None else None
+        record_ctx_usage(self.ctx, msg, node=self.node, latency_s=latency)

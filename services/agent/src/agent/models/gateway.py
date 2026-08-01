@@ -141,10 +141,10 @@ class ModelGateway:
                 self._log_model_error(recorder, run_id, agent_type, prov, mdl, node, thread_id, e)
                 continue
             # LLM 已成功：埋点必须 best-effort——记录失败绝不能丢这次响应或触发（重复计费的）转移。
-            latency = int((time.monotonic() - t0) * 1000)
+            latency = round(time.monotonic() - t0, 3)
             record_llm_usage(recorder, run_id=run_id, agent_type=agent_type, provider=prov,
                              model=getattr(chat, "model_name", mdl) or mdl, msg=resp,
-                             node=node, thread_id=thread_id, latency_ms=latency)
+                             node=node, thread_id=thread_id, latency_s=latency)
             return resp
         assert last_err is not None
         raise last_err

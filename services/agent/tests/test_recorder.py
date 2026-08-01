@@ -31,8 +31,8 @@ def test_full_run_records_and_usage_summary():
                       event_meta={"trace": "t1"})
         rec.record_usage(run_id, agent_type, provider="deepseek", model="deepseek-chat",
                          input_tokens=1200, output_tokens=300, cached_tokens=800, reasoning_tokens=150,
-                         node="read", ttft_ms=120, latency_ms=900, thread_id=thread_id)
-        rec.record_tool(run_id, agent_type, tool="parse_docx", ok=True, duration_ms=42, node="read", thread_id=thread_id)
+                         node="read", ttft_s=0.12, latency_s=0.9, thread_id=thread_id)
+        rec.record_tool(run_id, agent_type, tool="parse_docx", ok=True, duration_s=0.042, node="read", thread_id=thread_id)
         rec.log_event(run_id, agent_type, "node.end", node="read", thread_id=thread_id)
         rec.finish_run(run_id, status="succeeded", node_count=1)
 
@@ -51,9 +51,9 @@ def test_full_run_records_and_usage_summary():
         # 校验 token_usage 的 LLM 耗时字段
         with get_pool().connection() as conn:
             u = conn.execute(
-                "select ttft_ms, latency_ms, reasoning_tokens from agent.agent_token_usage where run_id=%s", (run_id,)
+                "select ttft_s::float, latency_s::float, reasoning_tokens from agent.agent_token_usage where run_id=%s", (run_id,)
             ).fetchone()
-        assert u == (120, 900, 150)
+        assert u == (0.12, 0.9, 150)
 
         # 校验事件：数量 + seq 单调 + event_type + thread_id
         with get_pool().connection() as conn:

@@ -8,7 +8,7 @@ from agent.models.usage import UsageCallback, extract_usage, record_ctx_usage
 
 
 class _CapRecorder:
-    """记下最后一次 record_usage 的 kwargs，供断言 latency_ms 是否落库。"""
+    """记下最后一次 record_usage 的 kwargs，供断言 latency_s 是否落库。"""
 
     def __init__(self):
         self.calls: list[dict] = []
@@ -28,30 +28,30 @@ def _usage_msg():
 
 
 def test_record_ctx_usage_passes_latency():
-    """record_ctx_usage 把调用方计时的 latency_ms 透传到 recorder.record_usage。"""
+    """record_ctx_usage 把调用方计时的 latency_s（秒）透传到 recorder.record_usage。"""
     rec = _CapRecorder()
-    record_ctx_usage(_ctx(rec), _usage_msg(), node="content", model="m", latency_ms=850)
-    assert rec.calls and rec.calls[-1]["latency_ms"] == 850
+    record_ctx_usage(_ctx(rec), _usage_msg(), node="content", model="m", latency_s=0.85)
+    assert rec.calls and rec.calls[-1]["latency_s"] == 0.85
 
 
 async def test_usage_callback_records_latency():
-    """UsageCallback：on_chat_model_start 打点 → on_llm_end 记账，latency_ms 有值且 node 正确。"""
+    """UsageCallback：on_chat_model_start 打点 → on_llm_end 记账，latency_s 有值且 node 正确。"""
     rec = _CapRecorder()
     cb = UsageCallback(_ctx(rec), "content")
     await cb.on_chat_model_start({}, [], run_id="lc1")
     result = LLMResult(generations=[[ChatGeneration(message=_usage_msg())]])
     await cb.on_llm_end(result, run_id="lc1")
     assert rec.calls and rec.calls[-1]["node"] == "content"
-    assert rec.calls[-1]["latency_ms"] is not None and rec.calls[-1]["latency_ms"] >= 0
+    assert rec.calls[-1]["latency_s"] is not None and rec.calls[-1]["latency_s"] >= 0
 
 
 async def test_usage_callback_latency_none_without_start():
-    """缺 start 打点（如回调乱序）时 latency_ms 落 None，仍照常记 token（best-effort 不丢用量）。"""
+    """缺 start 打点（如回调乱序）时 latency_s 落 None，仍照常记 token（best-effort 不丢用量）。"""
     rec = _CapRecorder()
     cb = UsageCallback(_ctx(rec), "content")
     result = LLMResult(generations=[[ChatGeneration(message=_usage_msg())]])
     await cb.on_llm_end(result, run_id="orphan")
-    assert rec.calls and rec.calls[-1]["latency_ms"] is None
+    assert rec.calls and rec.calls[-1]["latency_s"] is None
 
 
 def test_extract_usage_from_usage_metadata():
@@ -97,7 +97,7 @@ def test_truncated_call_logs_warn_event():
     2026-08-01 正文步 7 次截断引发整章重写循环，事后全靠手写 SQL 对时间线。
     现在每次截断落一条 model.truncated(level=warn) 进 agent_event_log。"""
     rec = _CapEventRecorder()
-    record_ctx_usage(_ctx(rec), _truncated_msg(), node="content", model="qwen", latency_ms=100)
+    record_ctx_usage(_ctx(rec), _truncated_msg(), node="content", model="qwen", latency_s=0.1)
     ev = [e for e in rec.events if e["event_type"] == "model.truncated"]
     assert len(ev) == 1 and ev[0]["level"] == "warn" and ev[0]["node"] == "content"
     assert ev[0]["data"]["output_tokens"] == 16384

@@ -52,7 +52,7 @@ async def get_run(run_id: str):
     with get_pool().connection() as conn:
         row = conn.execute(
             """select status, agent_type, input_tokens, output_tokens, cached_tokens, total_tokens,
-                      duration_ms, result
+                      duration_s, result
                from agent.agent_request where run_id=%s""", (run_id,)).fetchone()
     if not row:
         return JSONResponse({"error": "not_found"}, status_code=404)
@@ -62,7 +62,7 @@ async def get_run(run_id: str):
     return {
         "run_id": run_id, "status": row[0], "agent_type": row[1],
         "tokens": {"input": row[2], "output": row[3], "cached": row[4], "total": row[5]},
-        "duration_ms": row[6], "result": result,
+        "duration_s": float(row[6]) if row[6] is not None else None, "result": result,
     }
 
 

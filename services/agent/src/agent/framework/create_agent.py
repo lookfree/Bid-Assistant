@@ -90,10 +90,10 @@ def make_agent_node(ctx, hooks: list, tools: list):
     async def agent_node(state, config=None):
         t0 = time.monotonic()
         turn = await run_turn(hooks, llm_with_tools, state, config)
-        latency = int((time.monotonic() - t0) * 1000)
+        latency = round(time.monotonic() - t0, 3)
         # agent_node 走 get_chat(...).ainvoke 绕过 gateway.invoke，这里补记用量（否则 settle 汇总 0）。
         record_ctx_usage(ctx, turn.result, node="agent",
-                         model=getattr(llm, "model_name", None), latency_ms=latency)
+                         model=getattr(llm, "model_name", None), latency_s=latency)
         return {"messages": [turn.result]}
 
     return agent_node
