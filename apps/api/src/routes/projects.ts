@@ -3,7 +3,7 @@ import { streamSSE } from "hono/streaming"
 import { z } from "zod"
 import { eq, and, desc, sql, inArray, ne, isNotNull } from "drizzle-orm"
 import { getDb } from "../db/client"
-import { bidProjects, projectSteps, projectFiles, libraryItems, BID_CATEGORIES } from "../db/schema"
+import { bidProjects, projectSteps, projectFiles, libraryItems, projectChecklists, BID_CATEGORIES } from "../db/schema"
 import type { User } from "../db/schema"
 import { authMiddleware } from "../middleware/auth"
 import { getUserId } from "../lib/auth-user"
@@ -511,9 +511,18 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     if (!p) return c.json({ error: "not_found" }, 404)
     const parsed = categoryBodySchema.safeParse(await c.req.json().catch(() => undefined))
     if (!parsed.success) return c.json({ error: "invalid_input" }, 400)
-    // 纠偏样本：只在「系统判过、且用户改成了别的」时记——判定为空时的选择不是纠偏（见服务层注释）
-    if (parsed.data) await logCategoryCorrection(p.id, await detectedCategory(p.id), parsed.data)
+    // 纠偏样本：只在「系统判过、且用户改成了另一个类别」时记。
+    // **关掉分类（空数组）不是对「哪个类别对」的判断**，记进去会让判错方向统计里冒出
+    // 「货物标 → （空）」这种既无意义、聚合时主类别还是 NULL 的行。
+    if (parsed.data?.length) await logCategoryCorrection(p.id, await detectedCategory(p.id), parsed.data)
     await getDb().update(bidProjects).set({ bidCategory: parsed.data }).where(eq(bidProjects.id, p.id))
+    // 审核表按分类补该类的投递前核对项，但它**生成一次就缓存**（ensureChecklistTemplate 命中
+    // 已存模板即直返，不再调模型）。而它是在读标收尾就 fire-and-forget 生成的——那时用户还没
+    // 看到分类、更没机会改判。不在这里作废，改判对审核表就永远不生效。
+    await getDb()
+      .update(projectChecklists)
+      .set({ template: null, updatedAt: new Date() })
+      .where(and(eq(projectChecklists.projectId, p.id), eq(projectChecklists.userId, c.get("user").id)))
     return c.json({ ok: true, bidCategory: parsed.data })
   })
 
@@ -766,7 +775,11 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         ...(step === "export" && gen.format ? { format: gen.format } : {}),
         // spec334 标书分类：有效值 = 确认值 ?? 判定值。read 步不带——判定正是在那一步产生的，
         // 带上去会让节点跳过判定、把上一轮的结论钉死，重跑读标就再也刷不出新判定。
-        ...(step !== "read" && runCategory.length ? { bid_category: runCategory } : {}),
+        // **用户明确关掉时（空数组）也必须把键带上**：键缺失在 agent 侧等同「没这个信息」，
+        // 审查节点会回落判定值或现判一次，把用户刚关掉的知识又注回去。
+        ...(step !== "read" && (runCategory.length > 0 || p.bidCategory != null)
+          ? { bid_category: runCategory }
+          : {}),
       },
       state_overrides: await guardedOverrides(p.id, step as Step, userId),
     }
@@ -1075,13 +1088,17 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       const latestSlim = new Map<string, (typeof rows)[number]>()
       for (const s of rows) latestSlim.set(s.step, s)
       // takenPackageIds：兄弟项目已生成大纲的包（选包卡置灰用）；两个小索引查询，毫秒级，不破 slim
-      // effectiveCategory：项目卡/概况的分类标签走 slim，只回确认值会让「已按判定值生成」的项目
-      // 不显示标签——**显示与实际生效的不一致**。它只取 result 里的一个 JSON 键，不碰整列，不破 slim。
+      // 分类两值都要回：**前端只走 slim**（lib/project.ts 的 getProject 恒带 ?slim=1），
+      // 少回 detectedCategory 就等于「系统判定」那条显示链整条是死的——卡片会写「请选择」，
+      // 而后台其实已经按判定值在生成，正是分类卡文案里禁止的那种骗人写法。
+      // 两者都只取 result 里的一个 JSON 键，不碰整列，不破 slim。
+      const slimDetected = await detectedCategory(p.id)
       return c.json({
         project: p,
         steps: [...latestSlim.values()].map((s) => ({ ...s, result: null })),
         takenPackageIds: await takenPackageIds(c.get("user").id, p.tenderFileKey, p.id),
-        effectiveCategory: effectiveCategory(p.bidCategory, await detectedCategory(p.id)),
+        detectedCategory: slimDetected,
+        effectiveCategory: effectiveCategory(p.bidCategory, slimDetected),
       })
     }
     // 失败重试会给同一步留下多行历史（自愈槽位只约束 running 唯一）——每步只回最新一行，

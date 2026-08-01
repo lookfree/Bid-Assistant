@@ -141,6 +141,18 @@ function RejectReview() {
     const gap = stepPrereq(info, "review")
     return (
       <div className="flex flex-col gap-3">
+        {/* 分类卡必须在**第一次付费审查之前**就能改：审查节点是先分类再审查、当轮即用，
+            放到报告出来之后才给改，用户就得再花一次钱重跑才生效——正是这个设计要避免的。
+            只对没有招标文件的线下自查项目渲染（有招标文件的在读标页改）。 */}
+        {!info.project.tenderFileKey && (
+          <CategoryCard
+            projectId={projectId}
+            confirmed={info.project.bidCategory}
+            detected={info.detectedCategory}
+          effective={info.effectiveCategory}
+            applyHint="已保存，本次审查即按此进行"
+          />
+        )}
         {/* 刚传完文件建好项目、正在读标时回到本页，原来只剩一张空白上传面板——
             用户会以为"刚才没传成功"再传一遍，等于重复付一次读标钱。明确告诉他项目在哪。 */}
         {gap && (
@@ -192,6 +204,7 @@ function RejectReview() {
             projectId={projectId}
             confirmed={info.project.bidCategory}
             detected={info.detectedCategory}
+          effective={info.effectiveCategory}
             applyHint="已保存，重跑审查后生效"
           />
         )}

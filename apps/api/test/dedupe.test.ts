@@ -100,7 +100,10 @@ beforeAll(async () => {
   userB = b.user.id
   // 「余额不足」是**花光了**，不是「从来没有过」——注册即赠，谁都不会是零起点。
   // 用运营调整把注册赠送如数扣回，得到一个真实存在的状态：账本有历史、余额不够下一次消费。
-  await adminAdjust(userB, -(await getBalance(userB)), { idempotencyKey: `zero-${userB}`, ref: "test:spend-down" })
+  const bBal = await getBalance(userB)
+  // 赠送额度是运营可配的（signup_grant_credits，0 = 不赠送）；amount=0 会被 adminAdjust 拒绝，
+  // 不判空的话整个 beforeAll 直接抛错，全套件报的是「运营调整金额」而不是余额前提。
+  if (bBal > 0) await adminAdjust(userB, -bBal, { idempotencyKey: `zero-${userB}`, ref: "test:spend-down" })
 
   keyA1 = await makeFile(userA, "A公司投标.docx")
   keyA2 = await makeFile(userA, "B公司投标.docx")

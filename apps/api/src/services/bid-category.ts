@@ -5,13 +5,17 @@ import { bidCategoryCorrections, projectSteps, type BidCategoryValue } from "../
 // 标书分类（spec334）的取值与纠偏记录。**有效值解析只此一处实现**——散在几处各写各的，
 // 迟早出现「提纲按 A 生成、审查按 B 检查」的分叉。
 
-/** agent 产出的判定值（snake_case 原样落在步结果里）。 */
+/** 判定值（对外形状）。**落库是 agent 的 snake_case，出口必须转成 camel**——
+ *  项目详情不走 `resultForUser`/`toCamel`（那只处理 steps[].result），
+ *  原样吐出去前端读 `evidenceClauseIds` 会恒为 undefined 且没有类型报错。 */
 export type DetectedCategory = {
   value: BidCategoryValue[]
   confidence?: string
   reason?: string
-  evidence_clause_ids?: string[]
+  evidenceClauseIds?: string[]
 }
+
+type RawDetected = { value?: unknown; confidence?: string; reason?: string; evidence_clause_ids?: string[] }
 
 /**
  * 系统判定值：取该项目最近一次带分类的 done 步结果（生成流水线与对照审查在 read 步产出，
@@ -22,7 +26,7 @@ export type DetectedCategory = {
  */
 export async function detectedCategory(projectId: string): Promise<DetectedCategory | null> {
   const [row] = await getDb()
-    .select({ cat: sql<DetectedCategory | null>`${projectSteps.result} -> 'bid_category'` })
+    .select({ cat: sql<RawDetected | null>`${projectSteps.result} -> 'bid_category'` })
     .from(projectSteps)
     .where(
       and(
@@ -35,7 +39,13 @@ export async function detectedCategory(projectId: string): Promise<DetectedCateg
     .orderBy(desc(projectSteps.createdAt))
     .limit(1)
   const cat = row?.cat
-  return cat && Array.isArray(cat.value) ? cat : null
+  if (!cat || !Array.isArray(cat.value)) return null
+  return {
+    value: cat.value as BidCategoryValue[],
+    confidence: cat.confidence,
+    reason: cat.reason,
+    evidenceClauseIds: cat.evidence_clause_ids ?? [],
+  }
 }
 
 /**

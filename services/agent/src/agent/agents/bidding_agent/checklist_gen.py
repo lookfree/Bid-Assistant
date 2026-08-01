@@ -32,7 +32,8 @@ async def generate_checklist(ctx, read_result: dict, bid_category: list[str] | N
     bid_category（spec334）：这条是同步接口、没有 run_input，分类只能随 body 进来。
     **App 下发的有效值优先**，缺省才回落 read_result 里的判定值——判定值是系统判的，
     用户改判后的确认值不在里面，只靠回落等于改判对审核表不生效。"""
-    cats = bid_category or ((read_result or {}).get("bid_category") or {}).get("value")
+    # 区分「没传」与「传了空数组」：空数组是用户明确关掉分类，回落到判定值等于关不掉。
+    cats = bid_category if bid_category is not None else ((read_result or {}).get("bid_category") or {}).get("value")
     slim = json.dumps(_slim_for_checklist(read_result or {}), ensure_ascii=False)
     user = f"读标结论：\n{slim}\n请据此产出投递前终极审核表。"
     user += category_scope(cats, "checklist")

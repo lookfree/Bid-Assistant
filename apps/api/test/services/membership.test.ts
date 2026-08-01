@@ -86,6 +86,9 @@ describe("spec308 会员中心聚合（渐进式当前档+下一档）", () => {
     // 价格随运营配置走，断言的是**换算一致**而非某个具体数字（写死就等于把定价焊进测试）
     expect(personal.priceMonthYuan).toBe(personal.priceMonthCents! / 100)
     expect(personal.planIdMonth).toBe(personalId) // 月付按月行 id 下单（避免年付误按月价，反之亦然）
+    // 负向的另一半：月行 id 绝不能同时充当年行 id，否则「年付误按月价」这类回归无人拦截。
+    // 不再断言 planIdYear 为 null——种子部署里年行是真实存在的。
+    if (personal.planIdYear) expect(personal.planIdYear).not.toBe(personal.planIdMonth)
   })
 
   it("rechargePacks 来自配置，amountYuan 一致换算", async () => {

@@ -3,7 +3,7 @@ import asyncio
 import json
 from agent.framework.create_agent import run_submit_agent
 from agent.agents.bidding_agent.nodes.common import slim_read, filter_read_by_package, parse_bid_chapters, publish_phase
-from agent.agents.bidding_agent.nodes.classify import EMPTY as EMPTY_CATEGORY, classify_from_chapters
+from agent.agents.bidding_agent.nodes.classify import classify_from_chapters, empty_category
 from agent.agents.bidding_agent.schemas import RiskReport
 from agent.agents.bidding_agent.prompts.review import REVIEW_SYSTEM_PROMPT
 from agent.agents.bidding_agent.prompts.categories import category_scope, industry_patches
@@ -20,17 +20,22 @@ _SELF_CHECK_NOTE = (
 )
 
 
-async def _resolve_category(ctx, run_input: dict, read_state: dict, chapters: dict[str, str]) -> dict:
-    """本次审查生效的标书分类（spec334）。三条路，优先级从高到低：
-    ① run_input 带用户确认值 → 直接用，不再判；
-    ② 有读标结论 → 读标步已判过，这里不重复烧钱，取那一份；
-    ③ 自查模式（没有招标文件、也就没有读标结论）→ 拿上传标书正文现判。"""
-    given = run_input.get("bid_category")
-    if given:
-        return {**EMPTY_CATEGORY, "value": list(given)}
+async def _resolve_category(ctx, run_input: dict, read_state: dict, chapters: dict[str, str]) -> tuple[dict, bool]:
+    """本次审查生效的分类，以及**它是不是本节点现判出来的**（第二个返回值）。三条路：
+    ① run_input **带这个键**（含空数组）→ 用户已表态，直接用、不再判。
+       **必须按「键在不在」判断而不是真值**：空数组是「用户明确不用分类」，
+       当成缺失会让下面两条路把知识又注回去，用户根本关不掉。
+    ② 有读标结论 → 读标步已判过，不重复烧钱，取那一份；
+    ③ 自查模式（没有招标文件、也就没有读标结论）→ 拿上传标书正文现判。
+
+    为什么要回报「是不是现判的」：只有 ③ 才是真正的**系统判定**，值得随结果落库当判定值。
+    ①②回写的话，App 侧读「最近一条带分类的步结果」会读到用户自己的选择，把它当成系统判定——
+    纠偏样本会记出「系统从没做过的判错」，清除确认值也会回落到用户自己的旧选择。"""
+    if "bid_category" in run_input:
+        return {**empty_category(), "value": list(run_input["bid_category"] or [])}, False
     if read_state:
-        return read_state.get("bid_category") or dict(EMPTY_CATEGORY)
-    return await classify_from_chapters(ctx, chapters)
+        return (read_state.get("bid_category") or empty_category()), False
+    return await classify_from_chapters(ctx, chapters), True
 
 
 def make_review_node(ctx):
@@ -58,7 +63,7 @@ def make_review_node(ctx):
         # 分类判定（spec334）：**在审查之前**做，这一轮就能用上分类知识——放到审查之后的话，
         # 用户看到分类时报告已经出完，得再花一次钱重跑才生效。
         # 有读标结论的项目在读标步已判过，这里不重复判；用户确认过的值优先。
-        category = await _resolve_category(ctx, run_input, read_state, chapters)
+        category, self_detected = await _resolve_category(ctx, run_input, read_state, chapters)
         payload = {"read": slim_read(read_state), "outline": state.get("outline") or {},
                    "chapters": chapters}
         structure = read_state.get("required_structure") or []
@@ -78,6 +83,10 @@ def make_review_node(ctx):
         result = await run_submit_agent(
             ctx, REVIEW_SYSTEM_PROMPT, user,
             "submit_risk_report", RiskReport, "提交审查报告")
-        # 与 read 节点同理：分类并进结果 dict，**不进 submit_risk_report 的工具 schema**
-        return {"risk": {**result.model_dump(), "bid_category": category}}
+        # 与 read 节点同理：分类并进结果 dict，**不进 submit_risk_report 的工具 schema**。
+        # 只有本节点现判出来的才落库当判定值——回显用户的选择会让它被当成系统判定（见 _resolve_category）。
+        risk = result.model_dump()
+        if self_detected:
+            risk["bid_category"] = category
+        return {"risk": risk}
     return review_node

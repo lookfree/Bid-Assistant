@@ -18,7 +18,10 @@ from agent.agents.bidding_agent.schemas import BidCategory
 
 logger = logging.getLogger(__name__)
 
-EMPTY: dict = {"value": [], "confidence": "low", "reason": "", "evidence_clause_ids": []}
+def empty_category() -> dict:
+    """未判定的分类。**必须是工厂而不是模块级常量**——常量的内层 list 会被每个 `dict(EMPTY)`
+    浅拷贝共享，任何消费方往 evidence_clause_ids 里追加一次，就污染了本进程后续所有 run。"""
+    return {"value": [], "confidence": "low", "reason": "", "evidence_clause_ids": []}
 
 _MAX_ITEMS = 25          # 每类最多喂多少条读标条目
 _MAX_CHAPTERS = 20       # 自查模式最多喂多少章
@@ -74,7 +77,7 @@ async def _classify(ctx, summary: str, allowed_ids: set[str], what: str) -> dict
             "submit_bid_category", BidCategory, "提交标书分类", attempts=2)
     except Exception:  # noqa: BLE001 分类是加法，失败只记日志，绝不影响所在步
         logger.warning("标书分类判定失败，按未判定处理", exc_info=True)
-        return dict(EMPTY)
+        return empty_category()
     out = result.model_dump()
     # 证据条款 id 必须真实存在：模型编造的 id 前端点开定位不到，是比没有证据更糟的体验
     out["evidence_clause_ids"] = [i for i in out["evidence_clause_ids"] if i in allowed_ids][:5]
@@ -85,7 +88,7 @@ async def classify_from_read(ctx, read: dict) -> dict:
     """读标结论 → 分类。**多包件招标一律不判**：判定发生在用户选包之前，各包可能分属不同类别，
     拿全文判出来安到某个具体包上是错的（选包入口在读标页，晚于本调用）。"""
     if len(read.get("packages") or []) > 1:
-        return dict(EMPTY)
+        return empty_category()
     summary, ids = _read_summary(read)
     return await _classify(ctx, summary, ids, "读标结论摘要")
 
@@ -93,6 +96,6 @@ async def classify_from_read(ctx, read: dict) -> dict:
 async def classify_from_chapters(ctx, chapters: dict[str, str]) -> dict:
     """上传标书正文 → 分类（自查模式，没有招标文件可读）。"""
     if not chapters:
-        return dict(EMPTY)
+        return empty_category()
     summary, ids = _chapters_summary(chapters)
     return await _classify(ctx, summary, ids, "投标文件正文摘要")

@@ -269,7 +269,7 @@ body 只有 `read_result` + `model`。所以 body 增可选 `bid_category`，由
   默认选中系统判定值，文案「系统判定：X · 已按此生成（可修改）」；判定为空时**不预选**、
   文案「未能可靠判定本标类型，请选择」，多包件时改为「请选择所投包件的类型」；证据条款可点击定位原文）
 - Modify: `app/(tool)/risk/page.tsx`（无招标文件的线下标书没有读标页，同一张卡渲染在审查页；改判后提示「重跑审查后生效」）
-- Modify: 项目卡/概况处展示分类标签（只读）
+- ~~Modify: 项目卡/概况处展示分类标签（只读）~~ **未做**：项目列表走 `GET /api/projects`，那条接口不回分类，要展示得先给列表加字段。分类卡本身已完整，标签是锦上添花，另行安排。
 - Test: tsc + `bun test`；空判定 / 单类 / 双类三态渲染；线下标书（无招标文件）在 `/risk` 页渲染分类卡
 
 - [x] Task D（提交 `feat(web): bid category card`）
@@ -347,6 +347,8 @@ agent / api / web 三门禁绿。**本 spec 的验收不依赖 spec335 的知识
 五个 Task 全部完成，门禁：agent `494 passed`、web `141 pass` + `tsc` 干净、api 分类相关
 `10 pass` + admin `3 pass` + `tsc` 干净。**与方案不符、以实现为准的三处：**
 
+0. **Task D 的「项目卡分类标签」没做**（见 Task D 文件清单里的删除线）：列表接口不回分类，
+   要展示得先扩列表字段。分类卡本身完整可用。
 1. **`BidCategory` 不挂 `ReadResult`。** 方案 Files 一栏原写 `ReadResult.bid_category: BidCategory | None`，
    与同一 Task 第 1 条「不塞进 `submit_read_result`」**直接矛盾**——挂到 `ReadResult` 上，
    `convert_to_openai_tool` 就会把它带进读标的提交工具 schema。实际按 `doc_sections` 的成例做：

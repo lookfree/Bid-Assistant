@@ -57,6 +57,7 @@ export async function ensureChecklistTemplate(
       .from(bidProjects)
       .where(eq(bidProjects.id, projectId))
       .limit(1)
+    // 传 undefined 表示「本项目没有分类信息」，传 [] 表示「用户明确关掉」——两者语义不同
     const category = effectiveCategory(proj?.bidCategory, await detectedCategory(projectId))
     const { groups } = await generate(read, model, category)
     if (!groups?.length) return null

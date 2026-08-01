@@ -24,18 +24,27 @@ export function BidCategoriesClient() {
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
 
+  // 聚合与页码无关：跟着 page 一起拉的话，翻十页就白算十次全表聚合
+  useEffect(() => {
+    let alive = true
+    adminApi.bidCategories
+      .summary()
+      .then((sum) => alive && setSummary(sum.items))
+      .catch((e) => toast.error(e instanceof AdminApiError ? e.message : "加载失败"))
+    return () => {
+      alive = false
+    }
+  }, [])
+
   useEffect(() => {
     let alive = true
     setLoading(true)
-    Promise.all([
-      adminApi.bidCategories.corrections({ page, pageSize: PAGE_SIZE }),
-      adminApi.bidCategories.summary(),
-    ])
-      .then(([list, sum]) => {
+    adminApi.bidCategories
+      .corrections({ page, pageSize: PAGE_SIZE })
+      .then((list) => {
         if (!alive) return
         setRows(list.items)
         setTotal(list.total)
-        setSummary(sum.items)
       })
       .catch((e) => toast.error(e instanceof AdminApiError ? e.message : "加载失败"))
       .finally(() => alive && setLoading(false))
@@ -46,29 +55,7 @@ export function BidCategoriesClient() {
 
   return (
     <div className="flex flex-col gap-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>判错方向</CardTitle>
-          <CardDescription>
-            按主类别聚合「系统判成 A、用户改成 B」的次数。某个方向持续偏高，就该去改分类提示词——
-            这是判定质量唯一的反馈来源。没判出类型时用户的选择不计入——那是覆盖率问题，不是准确率问题。
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {summary.length === 0 ? (
-            <p className="text-sm text-muted-foreground">暂无纠偏记录——判定与用户选择一致，或还没有人改判。</p>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {summary.map((s) => (
-                <Badge key={`${s.detected}-${s.confirmed}`} variant="outline" className="text-sm">
-                  {label(s.detected)} → {label(s.confirmed)}
-                  <span className="ml-1.5 font-semibold">{s.count}</span>
-                </Badge>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      <SummaryCard summary={summary} />
 
       <Card>
         <CardHeader>
@@ -86,31 +73,66 @@ export function BidCategoriesClient() {
                 <TableHead>时间</TableHead>
               </TableRow>
             </TableHeader>
-            <TableBody>
-              {loading ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="text-center text-muted-foreground">加载中…</TableCell>
-                </TableRow>
-              ) : rows.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="text-center text-muted-foreground">暂无记录</TableCell>
-                </TableRow>
-              ) : (
-                rows.map((r) => (
-                  <TableRow key={r.id}>
-                    <TableCell className="max-w-[280px] truncate">{r.projectName ?? r.projectId.slice(0, 8)}</TableCell>
-                    <TableCell>{labels(r.detected)}</TableCell>
-                    <TableCell className="font-medium">{labels(r.confirmed)}</TableCell>
-                    <TableCell className="text-muted-foreground">{r.confidence ?? "—"}</TableCell>
-                    <TableCell className="text-muted-foreground">{formatBeijing(r.createdAt)}</TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
+            <CorrectionRows rows={rows} loading={loading} />
           </Table>
           <TablePagination page={page} pageSize={PAGE_SIZE} total={total} onPageChange={setPage} />
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+
+function CorrectionRows({ rows, loading }: { rows: ApiCategoryCorrection[]; loading: boolean }) {
+  if (loading || rows.length === 0) {
+    return (
+      <TableBody>
+        <TableRow>
+          <TableCell colSpan={5} className="text-center text-muted-foreground">{loading ? "加载中…" : "暂无记录"}</TableCell>
+        </TableRow>
+      </TableBody>
+    )
+  }
+  return (
+    <TableBody>
+      {rows.map((r) => (
+        <TableRow key={r.id}>
+          <TableCell className="max-w-[280px] truncate">{r.projectName ?? r.projectId.slice(0, 8)}</TableCell>
+          <TableCell>{labels(r.detected)}</TableCell>
+          <TableCell className="font-medium">{labels(r.confirmed)}</TableCell>
+          <TableCell className="text-muted-foreground">{r.confidence ?? "—"}</TableCell>
+          <TableCell className="text-muted-foreground">{formatBeijing(r.createdAt)}</TableCell>
+        </TableRow>
+      ))}
+    </TableBody>
+  )
+}
+
+
+function SummaryCard({ summary }: { summary: ApiCategorySummaryRow[] }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>判错方向</CardTitle>
+        <CardDescription>
+          按主类别聚合「系统判成 A、用户改成 B」的次数。某个方向持续偏高，就该去改分类提示词——
+          这是判定质量唯一的反馈来源。没判出类型时用户的选择不计入——那是覆盖率问题，不是准确率问题。
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {summary.length === 0 ? (
+          <p className="text-sm text-muted-foreground">暂无纠偏记录——判定与用户选择一致，或还没有人改判。</p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {summary.map((s) => (
+              <Badge key={`${s.detected}-${s.confirmed}`} variant="outline" className="text-sm">
+                {label(s.detected)} → {label(s.confirmed)}
+                <span className="ml-1.5 font-semibold">{s.count}</span>
+              </Badge>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }

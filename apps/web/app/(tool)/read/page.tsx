@@ -399,6 +399,7 @@ export default function ReadPage() {
           projectId={projectId}
           confirmed={info.project.bidCategory}
           detected={info.detectedCategory}
+          effective={info.effectiveCategory}
           multiPackage={packages.length > 1}
         />
       )}

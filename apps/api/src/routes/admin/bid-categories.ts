@@ -2,7 +2,7 @@ import { Hono } from "hono"
 import { desc, sql } from "drizzle-orm"
 import { getDb } from "../../db/client"
 import { bidCategoryCorrections, bidProjects } from "../../db/schema"
-import { parsePagination, pagedBody } from "../../lib/pagination"
+import { parsePagination, pagedBody, pagedResult } from "../../lib/pagination"
 import type { AdminUser } from "../../db/schema"
 
 // 分类纠偏样本（spec334）：**判定质量的唯一反馈回路**。没有这一页，同一个判错会被一百个用户
@@ -18,7 +18,7 @@ bidCategoriesRouter.get("/corrections", async (c) => {
     return c.json({ error: "invalid_pagination" }, 400)
   }
   const db = getDb()
-  const rows = await db
+  const rowsQuery = db
     .select({
       id: bidCategoryCorrections.id,
       projectId: bidCategoryCorrections.projectId,
@@ -33,10 +33,9 @@ bidCategoriesRouter.get("/corrections", async (c) => {
     .orderBy(desc(bidCategoryCorrections.createdAt))
     .limit(pg.pageSize)
     .offset((pg.page - 1) * pg.pageSize)
-  const [counted] = await db
-    .select({ total: sql<number>`count(*)::int` })
-    .from(bidCategoryCorrections)
-  return c.json(pagedBody(pg, { items: rows, total: counted?.total ?? 0 }))
+  // pagedResult 并发跑 rows + count；串行两次往返在远程 PG 上白白翻倍延迟（其余 admin 路由同法）
+  const countQuery = db.select({ n: sql<number>`count(*)::int` }).from(bidCategoryCorrections)
+  return c.json(pagedBody(pg, await pagedResult(rowsQuery, countQuery)))
 })
 
 /** 聚合：按「判错方向」计数（判成 A 实为 B），一眼看出分类提示词在哪个方向上系统性偏。

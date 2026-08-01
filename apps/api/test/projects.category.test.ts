@@ -4,7 +4,7 @@ import { Hono } from "hono"
 import { projectRoutes, type ProjectDeps } from "../src/routes/projects"
 import { loginWithPhone } from "../src/services/auth"
 import { getDb, closeDb } from "../src/db/client"
-import { users, bidProjects, projectFiles, projectSteps, bidCategoryCorrections } from "../src/db/schema"
+import { users, bidProjects, projectFiles, projectSteps, bidCategoryCorrections, projectChecklists } from "../src/db/schema"
 import { uniquePhone, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB
@@ -121,6 +121,25 @@ describe("PATCH /api/projects/:id/category（spec334）", () => {
     expect(((await slim3.json()) as { effectiveCategory: unknown }).effectiveCategory).toEqual(["engineering"])
   })
 
+  it("slim 同时回判定值——前端只走 slim，不回它「系统判定」整条显示链就是死的", async () => {
+    const id = await createProject(tokenA)
+    await seedDetected(id, ["engineering"], "high")
+    const slim = await app.request(`/api/projects/${id}?slim=1`, { headers: auth(tokenA) })
+    const body = (await slim.json()) as { detectedCategory: { value: string[]; evidenceClauseIds: unknown } }
+    expect(body.detectedCategory.value).toEqual(["engineering"])
+    // 判定值直取自 result 的 jsonb（agent 的 snake），出口必须转 camel——
+    // 详情路由不走 toCamel，原样吐出去前端读 evidenceClauseIds 恒 undefined 且无类型报错
+    expect(Array.isArray(body.detectedCategory.evidenceClauseIds)).toBe(true)
+  })
+
+  it("改判会作废已缓存的审核表模板——它生成一次就缓存，不作废等于改判对审核表永不生效", async () => {
+    const id = await createProject(tokenA)
+    await getDb().insert(projectChecklists).values({ userId: userA, projectId: id, template: [{ id: "1", title: "旧表", items: ["旧条目"] }] })
+    await patchCategory(id, ["goods"], tokenA)
+    const [row] = await getDb().select().from(projectChecklists).where(eq(projectChecklists.projectId, id))
+    expect(row?.template).toBeNull()
+  })
+
   it("去重截断与非法值：重复项去重，非法枚举/超长数组 400", async () => {
     const id = await createProject(tokenA)
     await patchCategory(id, ["goods", "goods"], tokenA)
@@ -153,6 +172,14 @@ describe("纠偏样本（spec334）", () => {
     await patchCategory(id, ["goods"], tokenA) // 改回与判定一致 ⇒ 不是纠偏
     rows = await getDb().select().from(bidCategoryCorrections).where(eq(bidCategoryCorrections.projectId, id))
     expect(rows).toHaveLength(1)
+  })
+
+  it("**关掉分类不记纠偏**——那不是对「哪个类别对」的判断，记进去聚合出的主类别还是 NULL", async () => {
+    const id = await createProject(tokenA)
+    await seedDetected(id, ["goods"])
+    await patchCategory(id, [], tokenA)
+    const rows = await getDb().select().from(bidCategoryCorrections).where(eq(bidCategoryCorrections.projectId, id))
+    expect(rows).toHaveLength(0)
   })
 
   it("**没判过时的用户选择一律不记**——那是覆盖率问题不是准确率问题", async () => {
@@ -196,11 +223,19 @@ describe("run_input 下发（spec334）", () => {
     expect(lastRunInput.bid_category).toEqual(["engineering"])
   })
 
-  it("用户明确不用分类（空数组）⇒ run_input 不带该键，行为回到改动前", async () => {
+  it("用户明确不用分类（空数组）⇒ **下发空数组而不是省略键**", async () => {
     const id = await createProject(tokenA)
     await seedDetected(id, ["services"])
     await patchCategory(id, [], tokenA)
     await runStepFor(id, "outline", tokenA)
+    // 省略键在 agent 侧等同「没这个信息」：审查节点会回落判定值、或干脆现判一次，
+    // 把用户刚关掉的分类知识又注回去——用户根本关不掉。
+    expect(lastRunInput.bid_category).toEqual([])
+  })
+
+  it("从没表态过 ⇒ 既无确认值也无判定值时，不带该键（行为与启用分类前一致）", async () => {
+    const id = await createProject(tokenA)
+    await runStepFor(id, "read", tokenA)
     expect(lastRunInput.bid_category).toBeUndefined()
   })
 })

@@ -299,7 +299,8 @@ export async function generateChecklist(
   if (model) body.model = model
   // spec334：这条是同步接口、没有 run_input，分类只能走 body。**必须显式下发有效值**——
   // agent 侧虽然也会回落 read_result.bid_category，但那是判定值，用户改判后的确认值不在里面。
-  if (bidCategory?.length) body.bid_category = bidCategory
+  // 空数组也要发：那是「用户明确不用分类」，不发等于让 agent 回落判定值，用户关不掉。
+  if (bidCategory) body.bid_category = bidCategory
   return postSync("/generate/checklist", body)
 }
 

@@ -112,8 +112,10 @@ def test_self_check_project_classifies_from_uploaded_bid(submit_gateway):
     assert any("submit_bid_category" in c.tool_names for c in gw.chats), "自查模式必须现判一次"
 
 
-def test_review_reuses_the_category_from_the_read_step(submit_gateway):
-    """有读标结论 ⇒ 读标步已判过，审查不重复判（不重复烧钱），直接取那一份。"""
+def test_review_reuses_the_read_verdict_but_does_not_restate_it(submit_gateway):
+    """有读标结论 ⇒ 读标步已判过：审查**照用**它做注入，但**不再把它写回自己的结果**。
+    回写的话，App 侧「取最近一条带分类的步结果」会把它当成新的系统判定——而它可能只是用户
+    自己确认过的值，于是纠偏样本会记出系统从没做过的判错，清除确认值也会回落到用户的旧选择。"""
     gw = submit_gateway({"submit_risk_report": _RISK_ARGS, "submit_bid_category": _CAT_ARGS})
     ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
     out = asyncio.run(make_review_node(ctx)({
@@ -121,5 +123,20 @@ def test_review_reuses_the_category_from_the_read_step(submit_gateway):
                                                       "reason": "", "evidence_clause_ids": []}},
         "chapters": {"c1": "<p>正文</p>"},
     }))
-    assert out["risk"]["bid_category"]["value"] == ["engineering"]
-    assert all("submit_bid_category" not in c.tool_names for c in gw.chats)
+    assert "bid_category" not in out["risk"], "复用来的分类不该被当成本步的判定值落库"
+    assert all("submit_bid_category" not in c.tool_names for c in gw.chats), "不该重复判定"
+    assert "工程标" in gw.chats[-1].last_messages[1].content, "但必须照它注入该类必查项"
+
+
+def test_explicit_off_is_honoured_and_not_re_detected(submit_gateway):
+    """用户明确关掉分类（下发空数组）⇒ 既不注入任何分类知识，也不许现判一次把它注回去。
+    这一条要按「键在不在」判断：空数组的真值是 False，当成缺失就等于用户根本关不掉。"""
+    gw = submit_gateway({"submit_risk_report": _RISK_ARGS, "submit_bid_category": _CAT_ARGS})
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
+    asyncio.run(make_review_node(ctx)({
+        "chapters": {"c1": "<h3>施工组织设计</h3>"},
+        "run_input": {"bid_category": []},
+    }))
+    assert all("submit_bid_category" not in c.tool_names for c in gw.chats), "关掉了就不该再判"
+    msg = gw.chats[-1].last_messages[1].content
+    assert "必查项】" not in msg, "关掉了就不该注入任何分类知识"
