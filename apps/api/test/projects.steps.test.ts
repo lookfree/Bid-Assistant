@@ -4,7 +4,7 @@ import { Hono } from "hono"
 import { projectRoutes, buildStateOverrides, type ProjectDeps } from "../src/routes/projects"
 import { loginWithPhone } from "../src/services/auth"
 import { getDb, closeDb } from "../src/db/client"
-import { users, bidProjects, projectSteps, projectFiles, libraryItems } from "../src/db/schema"
+import { users, bidProjects, projectSteps, projectFiles, libraryItems, plans, subscriptions } from "../src/db/schema"
 import { ContentTiersConfigError, holdAmountFor, type ContentTier } from "../src/services/content-pricing"
 import { uniquePhone, TEST_TIMEOUT_MS } from "./repos/helpers"
 
@@ -441,6 +441,22 @@ describe("/api/projects 按步编排", () => {
 })
 
 describe("present 步：企业 PPT 母版解析（enterpriseTemplateItemId → run_input.enterprise_template_key）", () => {
+  // 企业 PPT 母版是**专业版权益**（free 档 features.pptTemplate=false → 403）。会用这个功能的用户
+  // 必然持有相应订阅，测试就给他这个真实身份；订阅只在本组内有效，用完即撤——留着会让同文件
+  // 其它用例意外拿到会员权益，把权益门的回归悄悄遮掉。
+  beforeAll(async () => {
+    const [pro] = await getDb().select({ id: plans.id }).from(plans).where(eq(plans.code, "professional")).limit(1)
+    if (pro) {
+      await getDb()
+        .insert(subscriptions)
+        .values({ userId, planId: pro.id, status: "active", currentPeriodEnd: new Date(Date.now() + 30 * 86_400_000) })
+        .onConflictDoNothing()
+    }
+  })
+  afterAll(async () => {
+    await getDb().delete(subscriptions).where(eq(subscriptions.userId, userId))
+  })
+
   /** 新建项目并快速推进到 present 步（read/outline/content/review 用默认 body，走同一套 mockDeps）。 */
   async function projectAtPresent(): Promise<string> {
     const create = await app.request("/api/projects", {

@@ -25,6 +25,12 @@ afterAll(async () => {
   await setConfig("reward_expire_days", 0) // 还原种子默认（0=不过期）
   await setConfig("signup_grant_credits", 200) // 还原种子默认（新增两键测试改过；放 afterAll 保证断言失败也还原）
   await setConfig("grant_expire_days", 0)
+  // 还原种子默认：**运营配置是全局共享的**，改了不还原会顺着这个库污染别的用例（充值档位缺 id
+  // 时，会员中心断言 id 必为 string 直接挂），连开发环境都被留成一份下不了单的坏配置。
+  await setConfig("recharge_packs", [
+    { id: "pack_100", amountCents: 100, credits: 100 },
+    { id: "pack_1000", amountCents: 1000, credits: 1100 },
+  ])
   await getDb().delete(billingConfigs).where(eq(billingConfigs.key, "test_free_key"))
   await closeDb()
 })
@@ -50,9 +56,11 @@ describe("spec310 套餐&配置页", () => {
   })
 
   it("复杂配置整体替换（recharge_packs）", async () => {
-    await setConfig("recharge_packs", [{ amountCents: 100, credits: 100 }])
-    await setConfig("recharge_packs", [{ amountCents: 1000, credits: 1200 }])
-    expect(await getConfig<unknown[]>("recharge_packs")).toEqual([{ amountCents: 1000, credits: 1200 }])
+    // 写合法形状（带 id）：setConfig 绕过了后台路由的 zod，写坏形状等于把一份产品认定非法的配置
+    // 留在库里——断言失败时 afterAll 之前的那段时间，别的用例读到的就是它。
+    await setConfig("recharge_packs", [{ id: "pack_100", amountCents: 100, credits: 100 }])
+    await setConfig("recharge_packs", [{ id: "pack_1000", amountCents: 1000, credits: 1200 }])
+    expect(await getConfig<unknown[]>("recharge_packs")).toEqual([{ id: "pack_1000", amountCents: 1000, credits: 1200 }])
   })
 
   it("plans CRUD：新建/改价 version 自增/下架 + 审计", async () => {
