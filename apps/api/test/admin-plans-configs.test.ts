@@ -4,6 +4,7 @@ import { eq, inArray } from "drizzle-orm"
 import { Hono } from "hono"
 import { adminRoutes } from "../src/routes/admin"
 import { setConfig, getConfig } from "../src/services/config"
+import { BILLING_SEED } from "../src/config/billing-seed"
 import { createPlan, updatePlan } from "../src/services/admin/admin-plans"
 import { getDb, closeDb } from "../src/db/client"
 import { plans, adminUsers, adminAuditLogs, billingConfigs } from "../src/db/schema"
@@ -20,17 +21,15 @@ const regA = (id: string) => madeAdmins.push(id)
 afterAll(async () => {
   await getDb().delete(plans).where(inArray(plans.id, madePlans))
   for (const id of madeAdmins) await getDb().delete(adminUsers).where(eq(adminUsers.id, id))
-  await setConfig("credit_cost.read", 10) // 还原种子占位
-  await setConfig("referral_rules", { inviterReward: 50, inviteeReward: 50, unlockOn: "invitee_first_paid", capPerUser: 500, riskMaxPerIpPerHour: 20, abandonDays: 0 }) // 还原种子占位
-  await setConfig("reward_expire_days", 0) // 还原种子默认（0=不过期）
-  await setConfig("signup_grant_credits", 200) // 还原种子默认（新增两键测试改过；放 afterAll 保证断言失败也还原）
-  await setConfig("grant_expire_days", 0)
-  // 还原种子默认：**运营配置是全局共享的**，改了不还原会顺着这个库污染别的用例（充值档位缺 id
-  // 时，会员中心断言 id 必为 string 直接挂），连开发环境都被留成一份下不了单的坏配置。
-  await setConfig("recharge_packs", [
-    { id: "pack_100", amountCents: 100, credits: 100 },
-    { id: "pack_1000", amountCents: 1000, credits: 1100 },
-  ])
+  // 还原**一律取自种子常量，绝不手抄数字**：运营配置是全局共享的，本文件改完不还原、或还原成一个
+  // 并非种子默认的值，都会顺着这个库污染后面跑的用例。这两种都真的发生过——
+  //   · credit_cost.read 曾被"还原"成 10（种子其实是 20）→ 后面按 20 算账的过期/孤儿 hold 用例全错；
+  //   · recharge_packs 曾根本不还原、且写的是缺 id 的形状 → 会员中心断言 id 必为 string 直接挂，
+  //     连开发库都被留成一份点了必 400 的坏配置。
+  for (const key of ["credit_cost.read", "referral_rules", "reward_expire_days",
+                     "signup_grant_credits", "grant_expire_days", "recharge_packs"]) {
+    await setConfig(key, BILLING_SEED[key])
+  }
   await getDb().delete(billingConfigs).where(eq(billingConfigs.key, "test_free_key"))
   await closeDb()
 })
