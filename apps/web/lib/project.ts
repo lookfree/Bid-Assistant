@@ -51,7 +51,9 @@ export function openStepEvents(
       for (;;) {
         const { value, done } = await reader.read()
         if (done) break
-        buf += dec.decode(value)
+        // stream: true 不可省——多字节汉字被网络分片切断时，逐片当完整流解码会把
+        // 半个字符替换成 U+FFFD。JSON 仍能解析（U+FFFD 在字符串里合法），于是**静默乱码**。
+        buf += dec.decode(value, { stream: true })
         // 按 SSE 空行切帧，逐帧解析（event: <type>\ndata: <json>）；兼容 \r\n 分隔。
         const frames = buf.split(/\r?\n\r?\n/)
         buf = frames.pop() ?? ""
@@ -313,7 +315,9 @@ export async function runStep<T>(
   for (;;) {
     const { value, done } = await reader.read()
     if (done) break
-    const text = dec.decode(value)
+    // stream: true 同上。这条流带的是 step.done 的最终结果（大标书可达 1MB 中文），
+    // 少了它，被分片切断的汉字会变成 U+FFFD 混进解读内容里——JSON 照样解析得开，静默乱码。
+    const text = dec.decode(value, { stream: true })
     buf += text
     onChunk?.(text)
     // 逐章/阶段进度不在这里解析：改由 openStepEvents 订阅 GET /events 事件流统一处理，

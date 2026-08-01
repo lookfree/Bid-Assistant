@@ -356,9 +356,39 @@ def test_each_round_publishes_its_partial_result(monkeypatch, submit_gateway):
     assert item["title"] == "项目名称"
 
 
-def test_empty_round_publishes_nothing(monkeypatch, submit_gateway):
-    """某轮什么都没提取到（如最低价法项目的评分轮）⇒ 不推空事件，免得前端闪一下空块。"""
+def test_empty_round_publishes_nothing(monkeypatch):
+    """某轮什么都没提取到（如最低价法项目的评分轮）⇒ **一条事件都不推**，免得前端闪一下空块。
+    断言必须打在 _publish_part 上：只验 _slim_part 返回 {} 的话，把那句 `if not payload: return`
+    删掉测试照样绿，而空帧已经在往客户端发了。"""
     import agent.agents.bidding_agent.nodes.read as read_mod
     from agent.agents.bidding_agent.schemas import ReadResult
 
-    assert read_mod._slim_part(ReadResult(categories=[])) == {}
+    events: list[dict] = []
+
+    async def fake_publish(redis, run_id, data):
+        events.append(data)
+
+    monkeypatch.setattr(read_mod, "publish_event", fake_publish)
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=None)
+    asyncio.run(read_mod._publish_part(ctx, ReadResult(categories=[])))
+    assert events == []
+
+
+def test_partial_never_leaks_source_quote_or_package_tags(monkeypatch):
+    """展示态只留能上屏的部分：source_quote 是体积大头；packages 是分块轮里模型猜的标签——
+    它要到最终合并处才被强制清空，提前外传等于把「选包过滤静默丢 ★ 需求」那类事故的输入
+    交到客户端手上。"""
+    import agent.agents.bidding_agent.nodes.read as read_mod
+    from agent.agents.bidding_agent.schemas import ReadResult, ReadCategory, ReadItem, ScoringRow
+
+    part = ReadResult(
+        categories=[ReadCategory(key="technical", title="技术需求",
+                                 items=[ReadItem(title="参数", value="v",
+                                                 source_quote="原文" * 200, packages=["p2"])])],
+        scoring=[ScoringRow(id="s1", category="技术方案", name="n", score=10)],
+    )
+    slim = read_mod._slim_part(part)
+    item = slim["categories"][0]["items"][0]
+    assert "source_quote" not in item and "packages" not in item
+    # 页面拿分轮产出只渲染分类解读一栏；其余字段推过去也是白丢，重连还要整段重放
+    assert set(slim) <= {"project_meta", "categories"}

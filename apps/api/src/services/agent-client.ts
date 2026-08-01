@@ -149,7 +149,9 @@ export async function* relayStream(runId: string, heartbeatMs = RELAY_HEARTBEAT_
       chunk = winner.v
     }
     if (chunk.done) break
-    yield dec.decode(chunk.value) // 透传 SSE 分片给前端
+    // stream: true 不可省：多字节汉字被分片切断时，逐片独立解码会产生 U+FFFD 静默乱码。
+    // 这是比前端更早的一跳——这里坏了，前端怎么修都白搭。
+    yield dec.decode(chunk.value, { stream: true }) // 透传 SSE 分片给前端
   }
 }
 

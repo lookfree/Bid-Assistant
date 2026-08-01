@@ -84,6 +84,8 @@ import { AiNotice } from "@/components/tool/ai-notice"
 
 import { CategoryCard } from "../category-card"
 
+import { buildCategories, partialToCategories } from "./categories"
+
 export default function ReadPage() {
   const { projectId, info, data: real, dataLoading, running, phase, partial, error, errorAction, start } = useStep<RealRead>("read")
   // 线下标书审查项目（无招标文件）不适用读标：绝不亮计费按钮（点了必 409）
@@ -105,40 +107,23 @@ export default function ReadPage() {
     void start()
   }, [projectId, info, real, running, start])
   // 数据一律来自真实 read 步结果；该步未跑时页面停在显式生成入口，绝不渲染示例。
-  // 单轮读标（小标书）直接用模型原始 categories，模型可能对同一 key 产出多个块（如把资格拆成两段）；
-  // 右栏按 key 过滤渲染，重复 key 会让一次点击把多类内容全堆出来（实测「点几次就对不上号/展示全部」）。
-  // 此处按 key 合并去重：items 顺序拼接、保留首个 title/icon，保证每类唯一（tab 也不再重复）。
-  // 跑完前先用分轮产出上屏（spec334 之外的体验改进）：大标书分 10 轮跑十几分钟，基础轮一两分钟
-  // 就能出「项目概况/资格要求/商务条款」，没理由让用户干等。**只拿它渲染分类解读这一栏**——
-  // 分轮事件从 agent 直穿、是 snake_case，转换面越小越不容易错；评分表/构成清单等最终结果。
-  const partialCategories = useMemo(() => {
-    const raw = (partial?.categories ?? []) as {
-      key: string; title: string; items: Record<string, unknown>[]
-    }[]
-    return raw.map((c) => ({
-      key: c.key,
-      title: c.title,
-      items: c.items.map((i) => ({ ...i, clauseIds: (i.clause_ids as string[]) ?? [] })) as AnalysisItem[],
-    }))
-  }, [partial])
-
+  // 类目派生见 ./categories：合并去重 + 定序 + 补齐评分类目。跑完前先用分轮产出上屏——
+  // 大标书 10 轮跑十几分钟，基础轮一两分钟就能出「项目概况/资格要求」，**只渲染分类解读这一栏**。
+  const scoringRows = useMemo(() => real?.scoring ?? [], [real])
   const categories = useMemo(() => {
     // 权威结果一到就整体取代分轮产出——前端不复刻服务端的合并语义（按包过滤等），只作展示
     const src = real
-      ? real.categories.map((c) => ({ ...c, items: c.items.map((i) => ({ ...i, clauseIds: i.clauseIds ?? [] })) }))
-      : partialCategories
-    if (!src.length) return []
-    const byKey = new Map<string, { key: string; title: string; icon: LucideIcon; items: AnalysisItem[] }>()
-    for (const c of src) {
-      const prev = byKey.get(c.key)
-      if (prev) prev.items.push(...c.items)
-      else byKey.set(c.key, { key: c.key, title: c.title, icon: CATEGORY_ICONS[c.key] ?? FileText, items: [...c.items] })
-    }
-    return [...byKey.values()]
-  }, [real, partialCategories])
+      ? real.categories.map((c) => ({
+          key: c.key, title: c.title, icon: FileText as LucideIcon,
+          items: c.items.map((i) => ({ ...i, clauseIds: i.clauseIds ?? [] })),
+        }))
+      : partialToCategories<AnalysisItem>(partial)
+    return buildCategories<AnalysisItem>(src, scoringRows.length > 0, (k) => CATEGORY_ICONS[k] ?? FileText)
+  }, [real, partial, scoringRows])
+
   // 只有分轮产出、还没有权威结果：页面按「读标进行中但已有部分内容」渲染
   const hasPartial = !real && categories.length > 0
-  const scoringTable = real?.scoring ?? []
+  const scoringTable = scoringRows   // 评分表数据源；类目入口由 buildCategories 按它补齐
   const requiredStructure = real?.requiredStructure ?? []
   const packages = real?.packages ?? []
 
@@ -311,17 +296,20 @@ export default function ReadPage() {
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
       <FlowNav current="read" info={info} />
       {/* 边解读边显示时这条必须在：页面已经有内容了，用户得知道它**还没完**——
-          否则会拿一份只解读了一半的结论当最终结果去做判断。 */}
-      {running && (
+          否则会拿一份只解读了一半的结论当最终结果去做判断。
+          **失败也要走这里**：分轮已上屏后早返回分支就不再经过，若只在 running 时渲染，
+          读标中途失败会留下一屏半截内容、没有任何报错、也没有重试入口（只能手动刷新）。 */}
+      {(running || error) && (
         <StepBanner
-          running
-          error={null}
+          running={running}
+          error={error}
           runningText={
             phase
-              ? `AI 读标中：${phase.label}…（下方为已解读部分，完成后自动补全）`
-              : "AI 正在通读招标文件…（下方为已解读部分，完成后自动补全）"
+              ? `AI 读标中：${phase.label}…${hasPartial ? "（下方为已解读部分，完成后自动补全）" : ""}`
+              : "AI 正在通读招标文件…"
           }
           onRetry={() => void start()}
+          action={errorAction ?? undefined}
         />
       )}
       <StepPageHeader icon={FileText} title="招标解读" desc="AI 通读招标文件，自动提取评分点、资格要求与废标红线，点击逐条定位原文">
@@ -430,7 +418,10 @@ export default function ReadPage() {
 
       {/* 标书分类（spec334）：**在选包卡下方**——多包件时判定发生在选包之前，系统不判，
           用户要按「所投的那个包」选类型，先选包再选类型才是对的顺序 */}
-      {projectId && info && (
+      {/* 读标跑完才渲染：分类是在**所有轮合并之后**才判的，跑的过程中 detected 必然为空，
+          卡片会写「未能可靠判定，请选择」——诱导用户提前定死一个值，而确认值按设计压过十分钟后
+          才到的真实判定。半截状态下问这个问题本身就是错的。 */}
+      {projectId && info && real && (
         <CategoryCard
           projectId={projectId}
           confirmed={info.project.bidCategory}

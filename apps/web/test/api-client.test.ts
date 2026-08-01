@@ -105,3 +105,24 @@ describe("api-client", () => {
     }
   })
 })
+
+// SSE/流式解码（2026-08-01 评审）：多字节汉字被网络分片切断时，逐片当完整流解码会产生 U+FFFD，
+// 而 JSON 仍能解析（U+FFFD 在字符串里合法）→ 静默乱码。这里钉住三处解码都带 stream: true。
+describe("流式解码必须带 stream: true", () => {
+  it("TextDecoder 分片解码：不带 stream 会把半个汉字变成替换字符", () => {
+    const bytes = new TextEncoder().encode("招标文件")
+    const a = bytes.slice(0, 5) // 切在第二个汉字中间
+    const b = bytes.slice(5)
+    const naive = new TextDecoder()
+    expect(naive.decode(a) + naive.decode(b)).toContain("�")
+    const streaming = new TextDecoder()
+    expect(streaming.decode(a, { stream: true }) + streaming.decode(b, { stream: true })).toBe("招标文件")
+  })
+
+  it("project.ts 的三处解码都已带 stream", async () => {
+    const src = await Bun.file(new URL("../lib/project.ts", import.meta.url)).text()
+    const calls = [...src.matchAll(/dec\.decode\(([^)]*)\)/g)].map((m) => m[1]!)
+    expect(calls.length).toBeGreaterThan(0)
+    expect(calls.every((c) => c.includes("stream: true"))).toBe(true)
+  })
+})

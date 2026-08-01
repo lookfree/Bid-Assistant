@@ -221,6 +221,9 @@ export function useStep<T>(step: StepName) {
       setError(null)
       setProgress(null)
       setPhase(null)
+      // 必须清空：事件流订阅是从流首回放的，不清就会把上一轮的条目再叠一遍（条目翻倍、
+      // 头部「已识别 N」也跟着翻倍）。
+      setPartial(null)
       setErrorStatus(null)
       setErrorCode(null)
       // 立刻失效项目缓存：缓存快照是「点击前」抓的（无 running 行）,30s TTL 内切走再切回
@@ -229,6 +232,7 @@ export function useStep<T>(step: StepName) {
       try {
         const result = await runStep<T>(projectId, step, undefined, body)
         setData(result)
+        setPartial(null)   // 权威结果已到：展示态没用了，且大标书那份累加可达数 MB
         notifyCreditsChanged()
         return result
       } catch (e) {
@@ -334,6 +338,11 @@ export function useOtherStepResult<T>(projectId: string | null, info: ProjectInf
 }
 
 
+/** 每类累计展示的条目上限。大标书可达 92 个技术块，逐块追加会把技术需求堆到几千条：
+ *  每来一条事件都要整表复制 + 全量重渲，越到后面越卡（同一类「每片重处理全量」的账已经在
+ *  模型流那边付过一次）。展示态封顶即可——权威结果随 step.done 整体覆盖，一条不少。 */
+const PARTIAL_ITEMS_CAP = 400
+
 /** 累加读标分轮产出（**只为展示**）：各轮只产自己负责的字段，取并集；分类按 key 合并、条目追加。
  *  刻意不复刻服务端的完整合并语义（包件过滤、技术项清包件标签…）——权威结果随 step.done 整体覆盖，
  *  两处各写一份迟早漂。 */
@@ -349,8 +358,8 @@ export function mergeReadPart(
         key: string; title: string; items: unknown[]
       }[]) {
         const hit = byKey.get(c.key)
-        if (hit) hit.items = [...hit.items, ...c.items]
-        else byKey.set(c.key, { ...c, items: [...c.items] })
+        if (hit) hit.items = [...hit.items, ...c.items].slice(0, PARTIAL_ITEMS_CAP)
+        else byKey.set(c.key, { ...c, items: c.items.slice(0, PARTIAL_ITEMS_CAP) })
       }
       out.categories = [...byKey.values()]
     } else if (Array.isArray(v)) {

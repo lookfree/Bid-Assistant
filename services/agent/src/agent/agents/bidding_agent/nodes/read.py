@@ -104,16 +104,26 @@ async def _seg_cache_set(ctx, key: str, part: ReadResult) -> None:
 
 
 
-# 单轮结果里各类条目的推送上限：进度流按 maxlen=1000 截断，整轮原样推会把技术块那种大结果
-# 塞爆流、把更早的事件挤掉。展示态够用即可，权威结果仍以 step.done 的合并结果为准。
+# 单轮推送的条目上限：控的是**单条事件的体积**（几十条中文条目已是几十 KB，经 Redis→API 中继→
+# 浏览器，且每次重连都整段回放）。注意不是为了防流被挤爆——xadd 的 maxlen 按**条数**截断，
+# 与单条大小无关，一次分段读标最多 ~2N 条，离 1000 很远。
 _PART_ITEMS_CAP = 60
+
+# 展示态只需要这两样：页面拿分轮产出**只渲染「分类解读」那一栏**（评分表/构成清单/包件都等最终
+# 结果）。多推的字段一路走到浏览器再被丢掉，纯属白占带宽，重连时还要整段重放。
+_PART_DROP_ITEM_FIELDS = (
+    "source_quote",   # 体积大头，前端本就按 clause_ids 回看原文
+    "packages",       # 分块轮看不到全局包件表，模型猜的标签在最终合并处才被强制清空
+                      # （见 _segmented_read）——展示态提前泄露未净化的标签，正是「选包过滤
+                      # 静默丢 ★ 需求」那类事故的输入，这里同样不外传。
+)
 
 
 def _slim_part(part: ReadResult) -> dict:
-    """把一轮的产出裁成「能直接上屏」的展示态：丢掉 source_quote（token/体积大头，
-    前端左栏本就按 clause_ids 回看原文），条目按上限截断。"""
+    """把一轮的产出裁成「能直接上屏」的展示态：只留 project_meta 与 categories，
+    条目去掉体积大头与未净化字段，并按上限截断。"""
     cats = [{"key": c.key, "title": c.title,
-             "items": [{k: v for k, v in it.model_dump().items() if k != "source_quote"}
+             "items": [{k: v for k, v in it.model_dump().items() if k not in _PART_DROP_ITEM_FIELDS}
                        for it in c.items[:_PART_ITEMS_CAP]]}
             for c in part.categories if c.items]
     out: dict = {}
@@ -121,14 +131,6 @@ def _slim_part(part: ReadResult) -> dict:
         out["project_meta"] = part.project_meta
     if cats:
         out["categories"] = cats
-    if part.scoring:
-        out["scoring"] = [s.model_dump() for s in part.scoring[:_PART_ITEMS_CAP]]
-    if part.risk_summary:
-        out["risk_summary"] = part.risk_summary[:_PART_ITEMS_CAP]
-    if part.required_structure:
-        out["required_structure"] = [s.model_dump() for s in part.required_structure[:_PART_ITEMS_CAP]]
-    if part.packages:
-        out["packages"] = [p.model_dump() for p in part.packages]
     return out
 
 
