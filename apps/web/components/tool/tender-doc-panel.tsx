@@ -112,7 +112,7 @@ export function TenderDocPanel({
       <div className="flex-1 overflow-y-auto px-6 py-5">
         {/* 真实项目读标未完成时不回落示例原文，给占位 */}
         {sections.length === 0 && (
-          <p className="py-16 text-center text-sm text-muted-foreground">读标完成后显示招标原文</p>
+          <p className="py-16 text-center text-sm text-muted-foreground">正在解析招标原文…</p>
         )}
         {sections.length > 0 && visible.length === 0 && (
           <p className="py-16 text-center text-sm text-muted-foreground">该文件无可解析条款</p>

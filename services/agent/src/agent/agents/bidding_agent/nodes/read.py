@@ -134,6 +134,20 @@ def _slim_part(part: ReadResult) -> dict:
     return out
 
 
+# 原文分片推送：条款是**模型跑之前**就确定性解析好的，没理由让左栏「原文」空等十几分钟。
+# 分片是因为整份推会撑爆单条事件（9000 条款标≈1MB），且每次重连都要整段回放。
+_SECTIONS_CHUNK = 300
+_SECTIONS_CAP = 3000   # 超大标只先推前 3000 条，够左栏定位用；完整全文随 step.done 一次到位
+
+
+async def _publish_sections(ctx, clauses: list[dict]) -> None:
+    """把已解析的条款分片推给前端，让左栏原文立刻可读、右栏流式出来的条目立刻可定位。
+    best-effort：推送失败绝不影响读标。"""
+    for i in range(0, min(len(clauses), _SECTIONS_CAP), _SECTIONS_CHUNK):
+        await publish_event(getattr(ctx, "redis", None), getattr(ctx, "run_id", None),
+                            {"kind": "read_sections", "sections": clauses[i:i + _SECTIONS_CHUNK]})
+
+
 async def _publish_part(ctx, part: ReadResult) -> None:
     """把刚跑完那一轮的结果推给前端，让用户在整轮读标结束前就看到已解读的部分——
     大标书要十几分钟，干等到最后才出内容是最难熬的。best-effort：推送失败绝不影响读标本身。"""
@@ -306,6 +320,8 @@ def make_read_node(ctx):
                         f"{json.dumps(clauses, ensure_ascii=False)}\n\n请读标。")
             else:
                 user = f"请对招标文件读标，key={state['file_key']}"
+        # 原文先行：条款此刻已解析完，立刻推给前端——左栏不再空等，右栏流式条目也能点击定位。
+        await _publish_sections(ctx, clauses)
         # 条款已预解析注入 ⇒ 无需 parse_document 工具，走 _forced_submit 强制提交路径——
         # 它带截断重试（大标书读标输出撞 max_tokens 实测：图路径截断=单轮即失败，无法恢复）。
         # 仅预解析失败（clauses 空）才带工具走图路径，让模型自己调 parse_document 兜底。

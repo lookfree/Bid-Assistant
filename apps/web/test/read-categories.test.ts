@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test"
-import { buildCategories, partialToCategories } from "../app/(tool)/read/categories"
+import { buildCategories, partialToCategories, readCategories } from "../app/(tool)/read/categories"
 
 const icon = (() => ({}) as never) as (k: string) => never
 const cat = (key: string, items: unknown[] = []) => ({ key, title: key, icon: icon(key), items })
@@ -34,5 +34,20 @@ describe("读标类目派生", () => {
 
   it("没有分轮产出时返回空表（不渲染任何类目）", () => {
     expect(partialToCategories(null)).toEqual([])
+  })
+})
+
+describe("readCategories：权威结果与分轮产出的取舍", () => {
+  it("权威结果一到就整体取代分轮产出（不做两边合并，避免复刻服务端语义）", () => {
+    const partial = { categories: [{ key: "technical", title: "技术", items: [{ title: "分轮的" }] }] }
+    const real = { categories: [{ key: "overview", title: "概况", items: [{ title: "权威的" }] }] }
+    const out = readCategories<{ title: string; clauseIds: string[] }>(real as never, partial, false, icon)
+    expect(out.map((c) => c.key)).toEqual(["overview"])
+  })
+
+  it("还没有权威结果时用分轮产出", () => {
+    const partial = { categories: [{ key: "overview", title: "概况", items: [{ title: "分轮的" }] }] }
+    const out = readCategories<{ title: string; clauseIds: string[] }>(null, partial, false, icon)
+    expect(out[0]!.items[0]!.title).toBe("分轮的")
   })
 })

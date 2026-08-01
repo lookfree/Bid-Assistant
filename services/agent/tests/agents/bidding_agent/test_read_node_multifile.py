@@ -392,3 +392,48 @@ def test_partial_never_leaks_source_quote_or_package_tags(monkeypatch):
     assert "source_quote" not in item and "packages" not in item
     # 页面拿分轮产出只渲染分类解读一栏；其余字段推过去也是白丢，重连还要整段重放
     assert set(slim) <= {"project_meta", "categories"}
+
+
+def test_clauses_are_published_before_the_model_runs(monkeypatch, submit_gateway):
+    """条款在模型跑之前就确定性解析好了 ⇒ **先推给左栏**。不推的话半个屏幕要空等十几分钟，
+    而且右栏流式出来的条目点不动——点条款定位原文靠的就是左栏那份原文。
+    分片是因为整份推会撑爆单条事件（9000 条款标≈1MB），且每次重连都要整段回放。"""
+    import agent.agents.bidding_agent.nodes.read as read_mod
+
+    events: list[dict] = []
+
+    async def fake_publish(redis, run_id, data):
+        events.append(data)
+
+    monkeypatch.setattr(read_mod, "publish_event", fake_publish)
+    clauses = [{"id": f"sec-1-c{i}", "text": f"条款{i}"} for i in range(read_mod._SECTIONS_CHUNK + 5)]
+
+    async def fake_parse_multi(files):
+        return clauses, [{"name": "f", "sec_from": 1, "sec_to": 1}], []
+    monkeypatch.setattr(read_mod, "_parse_multi_files", fake_parse_multi)
+
+    gw = submit_gateway({"submit_read_result": {"categories": [{"key": "overview", "title": "概况", "items": []}]}})
+    ctx = RunContext(run_id="r-sec", agent_type="bidding_agent", thread_id="t-sec", gateway=gw)
+    asyncio.run(read_mod.make_read_node(ctx)({"file_key": "a.docx", "files": [{"key": "a.docx", "name": "f"}]}))
+
+    secs = [e for e in events if e.get("kind") == "read_sections"]
+    assert len(secs) == 2, "超过一片就要分片推"
+    assert sum(len(e["sections"]) for e in secs) == len(clauses)
+    assert secs[0]["sections"][0]["id"] == "sec-1-c0"
+
+
+def test_huge_tender_caps_the_pushed_clauses(monkeypatch):
+    """超大标只先推前 _SECTIONS_CAP 条：够左栏定位用，完整全文随 step.done 一次到位。
+    不封顶的话一份 9000 条款的标会往进度流里灌 1MB，且每次重连整段回放。"""
+    import agent.agents.bidding_agent.nodes.read as read_mod
+
+    events: list[dict] = []
+
+    async def fake_publish(redis, run_id, data):
+        events.append(data)
+
+    monkeypatch.setattr(read_mod, "publish_event", fake_publish)
+    huge = [{"id": f"sec-1-c{i}", "text": "x"} for i in range(read_mod._SECTIONS_CAP + 1000)]
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=None)
+    asyncio.run(read_mod._publish_sections(ctx, huge))
+    assert sum(len(e["sections"]) for e in events) == read_mod._SECTIONS_CAP

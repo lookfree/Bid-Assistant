@@ -84,10 +84,10 @@ import { AiNotice } from "@/components/tool/ai-notice"
 
 import { CategoryCard } from "../category-card"
 
-import { buildCategories, partialToCategories } from "./categories"
+import { readCategories } from "./categories"
 
 export default function ReadPage() {
-  const { projectId, info, data: real, dataLoading, running, phase, partial, error, errorAction, start } = useStep<RealRead>("read")
+  const { projectId, info, data: real, dataLoading, running, phase, partial, partialSections, error, errorAction, start } = useStep<RealRead>("read")
   // 线下标书审查项目（无招标文件）不适用读标：绝不亮计费按钮（点了必 409）
   const notApplicable = stepNotApplicable(info, "read")
   const { overview } = useMembership()
@@ -110,16 +110,10 @@ export default function ReadPage() {
   // 类目派生见 ./categories：合并去重 + 定序 + 补齐评分类目。跑完前先用分轮产出上屏——
   // 大标书 10 轮跑十几分钟，基础轮一两分钟就能出「项目概况/资格要求」，**只渲染分类解读这一栏**。
   const scoringRows = useMemo(() => real?.scoring ?? [], [real])
-  const categories = useMemo(() => {
-    // 权威结果一到就整体取代分轮产出——前端不复刻服务端的合并语义（按包过滤等），只作展示
-    const src = real
-      ? real.categories.map((c) => ({
-          key: c.key, title: c.title, icon: FileText as LucideIcon,
-          items: c.items.map((i) => ({ ...i, clauseIds: i.clauseIds ?? [] })),
-        }))
-      : partialToCategories<AnalysisItem>(partial)
-    return buildCategories<AnalysisItem>(src, scoringRows.length > 0, (k) => CATEGORY_ICONS[k] ?? FileText)
-  }, [real, partial, scoringRows])
+  const categories = useMemo(
+    () => readCategories<AnalysisItem>(real, partial, scoringRows.length > 0, (k) => CATEGORY_ICONS[k] ?? FileText),
+    [real, partial, scoringRows],
+  )
 
   // 只有分轮产出、还没有权威结果：页面按「读标进行中但已有部分内容」渲染
   const hasPartial = !real && categories.length > 0
@@ -179,10 +173,11 @@ export default function ReadPage() {
   const cloneCandidates = packages.filter(
     (pkg) => !takenPackageIds.includes(pkg.id) && !(outlineStarted && pkg.id === selectedPackageId),
   )
-  // 左栏原文：read 结果带分句时按 id 前缀分组渲染真实原文
+  // 左栏原文：权威结果优先，跑的过程中用分片推来的条款兜底——条款在模型之前就解析好，没理由
+  // 让半屏空等十几分钟；且没有原文，右栏条目就点不动（定位靠左栏）。
   const docSections = useMemo(
-    () => (real?.docSections?.length ? groupDocSections(real.docSections) : []),
-    [real],
+    () => groupDocSections(real?.docSections?.length ? real.docSections : partialSections),
+    [real, partialSections],
   )
   const locate = (clauseIds?: string[]) => clauseLocationIn(docSections, clauseIds)
   // 头部文件名：项目名（GET /api/projects/:id 的 name，缺省兜底）
@@ -194,12 +189,15 @@ export default function ReadPage() {
   const [activeSection, setActiveSection] = useState<string>(docSections[0]?.id ?? "")
   const [activeItem, setActiveItem] = useState<string>("")
   const [activeCategory, setActiveCategory] = useState<string>(categories[0]?.key ?? "")
+  // 用户手动切过没有：没切过就跟首个类目走。分轮并发、技术块常先于基础轮到达，只在「当前 key
+  // 消失」时重选的话，选中态会被钉死在技术需求（可能几千条）上不再回来。
+  const pickedRef = useRef(false)
   const [reportState, setReportState] = useState<"idle" | "generating" | "ready">("idle")
-  // 真实结果异步到达后，把类目选中态对齐到第一个真实类目
+  // 类目陆续到达时对齐选中态：用户手动切过就尊重他的选择，否则始终停在首个类目
   useEffect(() => {
-    if (categories.length && !categories.some((c) => c.key === activeCategory)) {
-      setActiveCategory(categories[0].key)
-    }
+    if (!categories.length) return
+    const gone = !categories.some((c) => c.key === activeCategory)
+    if (gone || !pickedRef.current) setActiveCategory(categories[0].key)
   }, [categories, activeCategory])
 
   const allItems = categories.flatMap((c) => c.items)
@@ -295,10 +293,9 @@ export default function ReadPage() {
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
       <FlowNav current="read" info={info} />
-      {/* 边解读边显示时这条必须在：页面已经有内容了，用户得知道它**还没完**——
-          否则会拿一份只解读了一半的结论当最终结果去做判断。
-          **失败也要走这里**：分轮已上屏后早返回分支就不再经过，若只在 running 时渲染，
-          读标中途失败会留下一屏半截内容、没有任何报错、也没有重试入口（只能手动刷新）。 */}
+      {/* 已有内容时用户仍须知道它**还没完**，否则会把半截结论当最终结果。**失败也走这里**：
+          分轮上屏后早返回分支不再经过，只在 running 时渲染的话，中途失败会留下一屏半截内容、
+          无报错也无重试入口（只能手动刷新）。 */}
       {(running || error) && (
         <StepBanner
           running={running}
@@ -460,7 +457,10 @@ export default function ReadPage() {
               return (
                 <button
                   key={cat.key}
-                  onClick={() => setActiveCategory(cat.key)}
+                  onClick={() => {
+                    pickedRef.current = true   // 用户手动切过：后续类目到达不再改动他的选择
+                    setActiveCategory(cat.key)
+                  }}
                   className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
                     isActive
                       ? "gradient-brand text-white"

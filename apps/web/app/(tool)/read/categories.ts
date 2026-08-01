@@ -52,3 +52,22 @@ export function buildCategories<I>(
   }
   return sorted
 }
+
+/** 本次要渲染的类目：权威结果优先，跑的过程中用分轮产出兜底。
+ *  权威结果一到就**整体取代**分轮产出——前端不复刻服务端的合并语义（按包过滤等），只作展示。 */
+export function readCategories<I extends { clauseIds: string[] }>(
+  real: { categories: { key: string; title: string; items: (Omit<I, "clauseIds"> & { clauseIds?: string[] })[] }[] } | null,
+  partial: Record<string, unknown> | null,
+  hasScoringRows: boolean,
+  iconFor: (key: string) => LucideIcon,
+): CategoryView<I>[] {
+  const src = real
+    ? real.categories.map((c) => ({
+        key: c.key,
+        title: c.title,
+        icon: iconFor(c.key),
+        items: c.items.map((i) => ({ ...i, clauseIds: i.clauseIds ?? [] })) as I[],
+      }))
+    : partialToCategories<I>(partial)
+  return buildCategories<I>(src, hasScoringRows, iconFor)
+}
