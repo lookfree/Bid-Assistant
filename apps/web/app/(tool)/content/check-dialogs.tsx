@@ -2,7 +2,6 @@
 
 import { ArrowRight, ShieldAlert, ShieldCheck, X } from "lucide-react"
 import { CreditEstimate } from "@/components/credit-estimate"
-import { AdviceLockHint } from "@/components/tool/advice-lock-hint"
 import { type CheckItem, type HealthReport } from "@/lib/risk-derive"
 
 export const checkToneClasses: Record<CheckItem["tone"], { badge: string; border: string }> = {
@@ -12,7 +11,7 @@ export const checkToneClasses: Record<CheckItem["tone"], { badge: string; border
 
 /** 体检摘要弹层里的单条风险。整改建议的可见性由**服务端**决定（评审修正:此前全量下发靠前端
  *  模糊遮挡,F12 可读）——非会员时 advice 为空 + report.adviceLocked,这里只渲染解锁引导。 */
-function SummaryItem({ item, locked }: { item: CheckItem; locked: boolean }) {
+function SummaryItem({ item }: { item: CheckItem }) {
   const tc = checkToneClasses[item.tone]
   return (
     <div className={`rounded-xl border ${tc.border} p-2.5`}>
@@ -21,11 +20,7 @@ function SummaryItem({ item, locked }: { item: CheckItem; locked: boolean }) {
         <span className="truncate text-[12px] font-medium text-foreground">{item.title}</span>
       </div>
       <p className="mt-1 text-[11px] text-muted-foreground">{item.chapter}</p>
-      {locked ? (
-        <AdviceLockHint className="mt-1.5" />
-      ) : (
-        <p className="mt-1 text-[11px] leading-relaxed text-foreground">{item.advice}</p>
-      )}
+      <p className="mt-1 text-[11px] leading-relaxed text-foreground">{item.advice}</p>
     </div>
   )
 }
@@ -69,7 +64,7 @@ export function CheckSummary({
         {/* 逐条风险 */}
         <div className="mt-3 flex max-h-56 flex-col gap-2 overflow-y-auto">
           {report.items.map((it, i) => (
-            <SummaryItem key={i} item={it} locked={report.adviceLocked} />
+            <SummaryItem key={i} item={it} />
           ))}
         </div>
 

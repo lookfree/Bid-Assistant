@@ -16,11 +16,10 @@ import { failStepAndRefund } from "../services/stuck-steps"
 import { ensureChecklistTemplate } from "../services/checklist-template"
 import { ragRunInput } from "../services/rag-config"
 import { generationRunInput } from "../services/generation-config"
-import { getEntitlements, featureLocked, lockRiskAdvice } from "../services/entitlements"
+import { getEntitlements, featureLocked } from "../services/entitlements"
 import { resultShapeOk, SHAPE_MISMATCH_ERROR } from "../services/step-result-shape"
 import { detectedCategory, effectiveCategory, logCategoryCorrection } from "../services/bid-category"
 import { markExportDirty, shouldChargeExport } from "../services/export-dirty"
-import { createAdviceScrubber } from "../services/sse-scrub"
 import { getConfig } from "../services/config"
 import { credentialsRunInput, type CredentialInput } from "../services/credentials"
 import { toCamel, toSnake } from "../lib/case"
@@ -356,13 +355,10 @@ function resultToClient(step: string, result: unknown): unknown {
   return step === "content" ? result : toCamel(result)
 }
 
-/** review 结果出口按请求者会员态裁剪（评审修正,方案 A）：整改建议此前全量下发、仅前端模糊遮挡
- *  （F12 可读）——非会员在此不下发 advice（置空+adviceLocked 标志）。其余步原样。 */
-async function resultForUser(step: string, result: unknown, userId: string): Promise<unknown> {
-  const out = resultToClient(step, result)
-  if (step !== "review" || out == null) return out
-  const ents = await getEntitlements(userId)
-  return ents.member ? out : lockRiskAdvice(out)
+/** 2026-08-01 产品口径：审查整改建议对所有用户免费下发，不再按会员态裁剪（原 lockRiskAdvice/
+ *  SSE 裁剪器一并移除）。保留本函数壳：result 出口统一走这一个口，将来要再分级只改这里。 */
+async function resultForUser(step: string, result: unknown, _userId: string): Promise<unknown> {
+  return resultToClient(step, result)
 }
 
 export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
@@ -545,16 +541,10 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         try { await stream.writeSSE({ event: "idle", data: "{}" }) } catch { /* client gone */ }
         return
       }
-      // 评审二轮 F1：review 事件流带全量整改建议——非会员挂帧级裁剪器,其余原样零开销
-      const scrub = step === "review" && !(await getEntitlements(c.get("user").id)).member ? createAdviceScrubber() : null
       try {
         for await (const chunk of relayStream(row.runId)) {
-          const out = scrub ? scrub.push(chunk) : chunk
-          if (!out) continue
-          try { await stream.write(out) } catch { break }  // 客户端断开即停，run 不受影响
+          try { await stream.write(chunk) } catch { break }  // 客户端断开即停，run 不受影响
         }
-        const rest = scrub?.flush()
-        if (rest) await stream.write(rest).catch(() => {})
       } catch { /* agent 结束/掉线：正常收尾 */ }
     })
   })
@@ -872,14 +862,9 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         },
       }
       try {
-        // 评审二轮 F1：review 的 agent 事件流带全量整改建议——非会员挂帧级裁剪器,其余步原样零开销
-        const scrub = step === "review" && !(await getEntitlements(userId)).member ? createAdviceScrubber() : null
         for await (const chunk of relayStream(run_id)) {
-          const out = scrub ? scrub.push(chunk) : chunk // 透传 agent SSE(必要时裁剪)
-          if (out) await safe.write(out)
+          await safe.write(chunk) // 透传 agent SSE
         }
-        const rest = scrub?.flush()
-        if (rest) await safe.write(rest)
         await finishStep(safe, { project: p, stepRow: s, step: step as Step, runId: run_id, hold })
       } catch (e) {
         // 中继/收尾真炸（agent 掉线等，非客户端断连）：走条件翻转的判死收尾（failStepAndRefund:

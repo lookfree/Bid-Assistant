@@ -1,6 +1,6 @@
 import { describe, it, expect, afterAll, setDefaultTimeout } from "bun:test"
 import { eq, inArray } from "drizzle-orm"
-import { getEntitlements, featureLocked, lockRiskAdvice } from "../src/services/entitlements"
+import { getEntitlements, featureLocked } from "../src/services/entitlements"
 import { getDb, closeDb } from "../src/db/client"
 import { users, plans, subscriptions } from "../src/db/schema"
 import { makeTestPlan, makeLedgerUser, TEST_TIMEOUT_MS } from "./repos/helpers"
@@ -63,22 +63,3 @@ describe("featureLocked：显式 false 才锁", () => {
   })
 })
 
-describe("lockRiskAdvice：advice 出口裁剪", () => {
-  it("items[].advice 置空 + adviceLocked 标志；其余字段原样", () => {
-    const out = lockRiskAdvice({
-      score: 45,
-      items: [{ title: "缺认证", advice: "补 ISO27001", level: "高" }, { title: "无授权", advice: "补授权书" }],
-      passedItems: ["格式合规"],
-    }) as { adviceLocked: boolean; items: Array<{ advice: string; title: string }>; passedItems: string[] }
-    expect(out.adviceLocked).toBe(true)
-    expect(out.items.map((i) => i.advice)).toEqual(["", ""])
-    expect(out.items[0]!.title).toBe("缺认证")
-    expect(out.passedItems).toEqual(["格式合规"])
-  })
-
-  it("形状不符（null/数组/无 items）原样透传，绝不抛", () => {
-    expect(lockRiskAdvice(null)).toBe(null)
-    expect(lockRiskAdvice([1])).toEqual([1])
-    expect(lockRiskAdvice({ findings: [] })).toEqual({ findings: [] })
-  })
-})

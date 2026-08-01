@@ -2,21 +2,18 @@ import { describe, expect, it } from "bun:test"
 import { deriveRisk, deriveHealthReport } from "@/lib/risk-derive"
 import type { RiskReport } from "@/lib/bid-types"
 
-// adviceLocked 透传（评审修正,方案 A）：非会员时 App 出口裁掉 items[].advice 并带 adviceLocked,
-// 三个展示面（体检摘要/完整报告/审查页）都以它为唯一渲染依据——此前一锁两不锁自相矛盾。
+// 2026-08-01 产品口径：整改建议对所有用户免费下发，原 adviceLocked 裁剪与透传已移除。
 const base: RiskReport = {
   score: 45, high: 1, mid: 0, passed: 2,
   items: [{ level: "高", tone: "destructive", title: "缺认证", advice: "", tenderRef: "第三章", chapterTitle: "资质", targetTab: "business", targetId: "b2" }],
   passedItems: ["格式合规"],
 }
 
-describe("risk-derive adviceLocked 透传", () => {
-  it("裁剪结果（adviceLocked:true）→ 两个派生视图都为 true", () => {
-    expect(deriveRisk({ ...base, adviceLocked: true }).adviceLocked).toBe(true)
-    expect(deriveHealthReport({ ...base, adviceLocked: true }).adviceLocked).toBe(true)
-  })
-  it("会员结果（无该字段）→ false（绝不误锁）", () => {
-    expect(deriveRisk(base).adviceLocked).toBe(false)
-    expect(deriveHealthReport(base).adviceLocked).toBe(false)
+describe("risk-derive advice 透传", () => {
+  it("整改建议原样进入两个派生视图（对所有用户免费，无任何裁剪标志）", () => {
+    const withAdvice = { ...base, items: [{ ...base.items[0]!, advice: "补 ISO27001 证书" }] }
+    expect(deriveRisk(withAdvice).riskItems[0]!.advice).toBe("补 ISO27001 证书")
+    expect(deriveHealthReport(withAdvice).items[0]!.advice).toBe("补 ISO27001 证书")
+    expect("adviceLocked" in deriveRisk(withAdvice)).toBe(false)
   })
 })

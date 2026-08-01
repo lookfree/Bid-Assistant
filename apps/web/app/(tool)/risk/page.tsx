@@ -20,7 +20,6 @@ import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { StepRunCta } from "@/components/tool/step-run-cta"
 import { AiNotice } from "@/components/tool/ai-notice"
 import { deriveRisk, type RealRisk } from "@/lib/risk-derive"
-import { AdviceLockHint } from "@/components/tool/advice-lock-hint"
 import { stepPrereq, useStep } from "@/lib/use-step"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
@@ -192,7 +191,7 @@ function RejectReview() {
     )
   }
 
-  const { score, overview, riskItems, passed, adviceLocked } = deriveRisk(real)
+  const { score, overview, riskItems, passed } = deriveRisk(real)
   return (
     <div className="flex flex-col gap-6">
         <EntryBar onOpen={goEntry} />
@@ -248,15 +247,10 @@ function RejectReview() {
                   <h3 className="mt-2 text-sm font-semibold text-foreground">{item.title}</h3>
                   <div className="mt-3 flex items-start gap-2 rounded-xl bg-secondary/60 p-3">
                     <Lightbulb className="mt-0.5 size-4 shrink-0 text-primary" />
-                    {adviceLocked ? (
-                      // 非会员整改建议由服务端裁剪不下发（评审修正）,与体检弹层同一套解锁引导
-                      <AdviceLockHint />
-                    ) : (
-                      <p className="text-xs leading-relaxed text-muted-foreground">
-                        <span className="font-medium text-foreground">整改建议：</span>
-                        {item.advice}
-                      </p>
-                    )}
+<p className="text-xs leading-relaxed text-muted-foreground">
+                      <span className="font-medium text-foreground">整改建议：</span>
+                      {item.advice}
+                    </p>
                   </div>
                 </div>
               </div>
