@@ -9,6 +9,8 @@ import {
   mergeModelSecrets,
   InvalidParamsError,
   ChainRequiresTestedError,
+  retestChain,
+  ChainMemberTestFailedError,
   type ModelConfig,
   type ModelEntry,
 } from "../src/services/model-config"
@@ -285,5 +287,51 @@ describe("spec319 model-config 服务（连库，mbp 跑）", () => {
     }
     await saveModelConfig(cfg)
     expect(await getModelConfig()).toEqual(cfg)
+  })
+})
+
+// retestChain（2026-08-01 生产实测的闸门漏洞）：test.status 是客户端自报的——改 key/换链路时
+// 旧 "passed" 原样随保存生效，无效 key（恒 401）照样进链路当主力，首个 run 才炸。
+// 保存前对链路成员真实测活是唯一可靠判据。
+describe("retestChain：保存前链路成员真实测活", () => {
+  const entry = (id: string, over: Partial<ModelEntry> = {}): ModelEntry => ({
+    id, provider: "deepseek", model: "deepseek-v4-flash",
+    params: { temperature: 0.7, maxTokens: 8192, topP: 1 },
+    enabled: true, test: { status: "passed", at: "2026-07-01T00:00:00Z", latencyMs: 999 },
+    ...over,
+  })
+
+  it("链路成员逐个真实测活并盖新测试章；非链路成员不测", async () => {
+    const cfg: ModelConfig = { models: [entry("m1"), entry("m2"), entry("m3", { apiKey: "sk-x" })], chain: ["m1", "m3"] }
+    const tested: string[] = []
+    await retestChain(cfg, async (o) => {
+      tested.push(o.api_key ?? o.provider)
+      return { ok: true, latencyMs: 42 }
+    })
+    expect(tested.sort()).toEqual(["deepseek", "sk-x"])   // m2 不在链路,没被测
+    expect(cfg.models[0]!.test).toMatchObject({ status: "passed", latencyMs: 42 })
+    expect(cfg.models[0]!.test.at).not.toBe("2026-07-01T00:00:00Z")   // 旧章被新章覆盖
+    expect(cfg.models[1]!.test.latencyMs).toBe(999)                    // 非链路成员原样
+  })
+
+  it("任一成员测活失败 → ChainMemberTestFailedError 点名条目，保存不会发生", async () => {
+    const cfg: ModelConfig = { models: [entry("m1"), entry("m2")], chain: ["m1", "m2"] }
+    await expect(
+      retestChain(cfg, async (o) =>
+        o.provider === "deepseek" && cfg.models[0]!.id === "m1" && o.api_key === undefined
+          ? { ok: false, error: "Authentication Fails 401" }
+          : { ok: true, latencyMs: 10 },
+      ),
+    ).rejects.toThrow(ChainMemberTestFailedError)
+  })
+
+  it("生产复现：带着旧 passed 的无效 key 上链 → 保存被拒（此前静默放行,首个 run 才 401）", async () => {
+    const bad = entry("mds", { apiKey: "sk-invalid-5631" })   // test.status 自报 passed
+    const cfg: ModelConfig = { models: [bad], chain: ["mds"] }
+    await expect(
+      retestChain(cfg, async (o) =>
+        o.api_key === "sk-invalid-5631" ? { ok: false, error: "401 invalid key" } : { ok: true },
+      ),
+    ).rejects.toThrow(/mds.*401/)
   })
 })

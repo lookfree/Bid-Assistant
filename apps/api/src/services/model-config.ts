@@ -198,6 +198,43 @@ export async function saveModelConfig(cfg: ModelConfig): Promise<void> {
   await setConfig("agent_model", cfg)
 }
 
+export class ChainMemberTestFailedError extends Error {
+  constructor(
+    public readonly id: string,
+    public readonly detail: string,
+  ) {
+    super(`chain member ${id} test failed: ${detail}`)
+  }
+}
+
+/** 保存前对链路成员**真实测活**并就地盖新测试章（2026-08-01 生产实测的闸门漏洞）：
+ *  test.status 是客户端自报的——改 key/换链路时旧的 "passed" 原样随保存生效,无效 key(恒 401)
+ *  照样进链路当主力。served 状态核不出"这个 passed 是不是对当前这把 key 测的",唯一可靠的判据
+ *  是保存那一刻真的连一次。只测链路成员(库存条目不上链不拦,上链必经保存=必经这里);
+ *  全部通过才允许保存,失败点名到条目。tester 注入便于测试(生产传 agent-client.testModel)。 */
+export async function retestChain(
+  cfg: ModelConfig,
+  tester: (opts: { provider: string; model?: string; base_url?: string; api_key?: string }) =>
+    Promise<{ ok: boolean; latencyMs?: number; error?: string }>,
+): Promise<void> {
+  const byId = new Map(cfg.models.map((m) => [m.id, m]))
+  await Promise.all(
+    [...new Set(cfg.chain)].map(async (id) => {
+      const m = byId.get(id)
+      if (!m) return // 链路引用缺失由 validateModelConfig 报,这里不重复
+      let r: { ok: boolean; latencyMs?: number; error?: string }
+      try {
+        r = await tester({ provider: m.provider, model: m.model, base_url: m.baseUrl, api_key: m.apiKey })
+      } catch (e) {
+        // agent 服务不可达 = 无法核实连通性 → 同样拒绝保存：这条保证不打折("能保存的链路=真实连通")
+        throw new ChainMemberTestFailedError(id, `连通性测试不可用: ${String(e).slice(0, 120)}`)
+      }
+      if (!r.ok) throw new ChainMemberTestFailedError(id, r.error ?? "unknown")
+      m.test = { status: "passed", at: new Date().toISOString(), latencyMs: r.latencyMs }
+    }),
+  )
+}
+
 // —— 密钥策略（spec319.1）：GET 出参打码、PUT 入参合并旧密钥，二者都只在 route 层调用 ——
 
 /** len>5 ⇒ 首3+****+尾2；否则一律 "****"（太短没法留可辨认前后缀）。 */

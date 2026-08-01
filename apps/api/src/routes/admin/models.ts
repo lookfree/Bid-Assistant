@@ -8,9 +8,11 @@ import {
   saveModelConfig,
   maskModelConfig,
   mergeModelSecrets,
+  retestChain,
   UnknownProviderError,
   InvalidParamsError,
   ChainRequiresTestedError,
+  ChainMemberTestFailedError,
 } from "../../services/model-config"
 import { testModel, listModels } from "../../services/agent-client"
 import type { AdminUser } from "../../db/schema"
@@ -30,11 +32,16 @@ modelsRouter.put("/", requirePermission("config.write"), async (c) => {
   // 自建条目未带新 apiKey（前端展示的是打码 hint，不是明文）⇒ 按 id 从库里旧值合并回填，避免覆盖成空。
   const merged = mergeModelSecrets(parsed.data, stored)
   try {
+    // 保存前对链路成员真实测活（生产实测：test.status 客户端自报,无效 key 带着旧 "passed" 上链当主力,
+    // 首个 run 才 401 暴露）。每家 1~3s、管理操作低频,同步等待可接受;通过即盖新测试章。
+    await retestChain(merged, testModel)
     await saveModelConfig(merged)
   } catch (e) {
     if (e instanceof UnknownProviderError) return c.json({ error: "unknown_provider" }, 400)
     if (e instanceof InvalidParamsError) return c.json({ error: "invalid_params" }, 400)
     if (e instanceof ChainRequiresTestedError) return c.json({ error: "chain_requires_tested_models" }, 400)
+    if (e instanceof ChainMemberTestFailedError)
+      return c.json({ error: "chain_member_test_failed", id: e.id, detail: e.detail }, 400)
     throw e
   }
   // 审计 before/after 一律打码——明文 apiKey 不进 adminAuditLogs。

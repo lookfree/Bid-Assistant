@@ -24,6 +24,18 @@ afterAll(async () => {
   await closeDb()
 })
 
+
+// PUT 现在会对链路成员真实测活（2026-08-01 闸门修复）：测试里 mock agent 中继。
+const withAgentTest = async <T>(reply: { ok: boolean; latency_ms?: number; error?: string }, fn: () => T | Promise<T>): Promise<T> => {
+  const orig = (globalThis as any).fetch
+  ;(globalThis as any).fetch = (async () => new Response(JSON.stringify(reply), { status: 200 })) as unknown as typeof fetch
+  try {
+    return await fn()
+  } finally {
+    ;(globalThis as any).fetch = orig
+  }
+}
+
 describe("spec319 /admin-api/models", () => {
   it("GET 返回当前配置（空 → {models:[],chain:[]}）", async () => {
     await clearAgentModel()
@@ -33,18 +45,33 @@ describe("spec319 /admin-api/models", () => {
     expect(await res.json()).toEqual({ models: [], chain: [] })
   })
 
-  it("PUT chain 引用未测通 model → 400 chain_requires_tested_models，不落库", async () => {
+  it("PUT 链路成员测活失败 → 400 chain_member_test_failed 点名条目，不落库（生产复现：无效 key 带旧 passed 上链）", async () => {
+    await clearAgentModel()
+    const { headers } = await makeAdminSession("ops", regA)
+    const body = {
+      models: [{ id: "m1", provider: "deepseek", model: "deepseek-chat", params: { temperature: 0.7, maxTokens: 8192, topP: 1 }, enabled: true, test: { status: "passed" } }],
+      chain: ["m1"],
+    }
+    const res = await withAgentTest({ ok: false, error: "Authentication Fails 401" }, () =>
+      app.request("http://x/admin-api/models", { method: "PUT", headers, body: JSON.stringify(body) }))
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ error: "chain_member_test_failed", id: "m1" })
+    const after = await app.request("http://x/admin-api/models", { headers })
+    expect(await after.json()).toEqual({ models: [], chain: [] })
+  })
+
+  it("PUT 未测通成员上链但真实测活通过 → 200 且服务端盖新测试章（活测取代自报状态）", async () => {
     await clearAgentModel()
     const { headers } = await makeAdminSession("ops", regA)
     const body = {
       models: [{ id: "m1", provider: "deepseek", model: "deepseek-chat", params: { temperature: 0.7, maxTokens: 8192, topP: 1 }, enabled: true, test: { status: "untested" } }],
       chain: ["m1"],
     }
-    const res = await app.request("http://x/admin-api/models", { method: "PUT", headers, body: JSON.stringify(body) })
-    expect(res.status).toBe(400)
-    expect(await res.json()).toEqual({ error: "chain_requires_tested_models" })
-    const after = await app.request("http://x/admin-api/models", { headers })
-    expect(await after.json()).toEqual({ models: [], chain: [] })
+    const res = await withAgentTest({ ok: true, latency_ms: 66 }, () =>
+      app.request("http://x/admin-api/models", { method: "PUT", headers, body: JSON.stringify(body) }))
+    expect(res.status).toBe(200)
+    const stored = await getModelConfig()
+    expect(stored.models[0]!.test).toMatchObject({ status: "passed", latencyMs: 66 })
   })
 
   it("PUT 全合法 → 200 落库", async () => {
@@ -53,7 +80,8 @@ describe("spec319 /admin-api/models", () => {
       models: [{ id: "m1", provider: "deepseek", model: "deepseek-chat", params: { temperature: 0.7, maxTokens: 8192, topP: 1 }, enabled: true, test: { status: "passed" } }],
       chain: ["m1"],
     }
-    const res = await app.request("http://x/admin-api/models", { method: "PUT", headers, body: JSON.stringify(body) })
+    const res = await withAgentTest({ ok: true, latency_ms: 5 }, () =>
+      app.request("http://x/admin-api/models", { method: "PUT", headers, body: JSON.stringify(body) }))
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ ok: true })
   })
@@ -136,11 +164,12 @@ describe("spec319 /admin-api/models", () => {
       baseUrl: "http://h:8000/v1",
       apiKey: "sk-secret-real",
     }
-    const putRes1 = await app.request("http://x/admin-api/models", {
-      method: "PUT",
-      headers,
-      body: JSON.stringify({ models: [custom], chain: ["c1"] }),
-    })
+    const putRes1 = await withAgentTest({ ok: true, latency_ms: 5 }, () =>
+      app.request("http://x/admin-api/models", {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ models: [custom], chain: ["c1"] }),
+      }))
     expect(putRes1.status).toBe(200)
 
     const getRes = await app.request("http://x/admin-api/models", { headers })
@@ -151,11 +180,12 @@ describe("spec319 /admin-api/models", () => {
 
     // 用 GET 回来的（打码、无明文 apiKey）形状原样 PUT 回去——模拟前端"未改密钥"的保存路径。
     const { apiKeyHint, ...withoutHint } = got.models[0]
-    const putRes2 = await app.request("http://x/admin-api/models", {
+    const putRes2 = await withAgentTest({ ok: true, latency_ms: 5 }, () =>
+      app.request("http://x/admin-api/models", {
       method: "PUT",
       headers,
       body: JSON.stringify({ models: [withoutHint], chain: got.chain }),
-    })
+    }))
     expect(putRes2.status).toBe(200)
 
     // 直接读库（跳过 maskModelConfig）核实旧 key 被保留，没有被空值覆盖。
@@ -178,11 +208,12 @@ describe("spec319 /admin-api/models", () => {
       baseUrl: "http://h:8000/v1",
       apiKey: "sk-stored-key",
     }
-    await app.request("http://x/admin-api/models", {
-      method: "PUT",
-      headers,
-      body: JSON.stringify({ models: [custom], chain: ["c2"] }),
-    })
+    await withAgentTest({ ok: true, latency_ms: 5 }, () =>
+      app.request("http://x/admin-api/models", {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ models: [custom], chain: ["c2"] }),
+      }))
     const orig = (globalThis as any).fetch
     let testBody: any
     let listBody: any
@@ -227,11 +258,12 @@ describe("spec319 /admin-api/models", () => {
       test: { status: "passed" as const },
       apiKey: "sk-builtin-override",
     }
-    await app.request("http://x/admin-api/models", {
-      method: "PUT",
-      headers,
-      body: JSON.stringify({ models: [builtin], chain: ["m-builtin"] }),
-    })
+    await withAgentTest({ ok: true, latency_ms: 5 }, () =>
+      app.request("http://x/admin-api/models", {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ models: [builtin], chain: ["m-builtin"] }),
+      }))
     const orig = (globalThis as any).fetch
     let testBody: any
     ;(globalThis as any).fetch = (async (_url: string, init: any) => {
