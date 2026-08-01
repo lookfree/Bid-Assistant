@@ -29,9 +29,11 @@ type Props = {
   onSaved?: () => void
 }
 
-/** 卡片说明文案。用户看到的每一句都必须与**实际生效的值**一致。 */
-function hintText(p: Props, primary: BidCategoryValue | null, off: boolean): string {
-  const byDetection = p.confirmed == null && (p.detected?.value.length ?? 0) > 0
+/** 卡片说明文案。用户看到的每一句都必须与**实际生效的值**一致。
+ *  confirmed 传的是**本地最新值**而非 props——保存后父组件不会重拉，用 props 的话文案会停在旧状态。 */
+function hintText(p: Props, confirmed: BidCategoryValue[] | null | undefined,
+                  primary: BidCategoryValue | null, off: boolean): string {
+  const byDetection = confirmed == null && (p.detected?.value.length ?? 0) > 0
   if (off) return "已设为不使用分类，生成与审查不会带入类型知识。"
   if (byDetection) {
     const why = p.detected?.reason ? ` · ${p.detected.reason}` : ""
@@ -53,14 +55,18 @@ export function CategoryCard(props: Props) {
   const [state, setState] = useState<"idle" | "saving" | "saved" | "error">("idle")
   const [primary, setPrimary] = useState<BidCategoryValue | null>(effective[0] ?? null)
   const [second, setSecond] = useState<BidCategoryValue | null>(effective[1] ?? null)
+  // 确认值也必须进本地态：保存后父组件不会重新拉 info，只看 props 的话点了「不使用分类」
+  // 界面纹丝不动——服务端已经存了、用户却以为没生效（生产实测）。
+  const [saved, setSaved] = useState<BidCategoryValue[] | null | undefined>(confirmed)
 
   // 有效值来自父组件的 info：读标跑完、别处改判、切项目后 info 都会重新拉。**必须跟着同步**——
   // 只在挂载时取一次的话，卡片会永远停在那一刻的空状态，一边显示「未能可靠判定，请选择」，
   // 一边后台早已按判定值在生成。
-  const fingerprint = `${projectId}:${effective.join(",")}`
+  const fingerprint = `${projectId}:${effective.join(",")}:${confirmed === undefined ? "u" : JSON.stringify(confirmed)}`
   useEffect(() => {
     setPrimary(effective[0] ?? null)
     setSecond(effective[1] ?? null)
+    setSaved(confirmed)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fingerprint])
 
@@ -68,6 +74,7 @@ export function CategoryCard(props: Props) {
     setState("saving")
     try {
       await setProjectCategory(projectId, next)
+      setSaved(next)          // 乐观更新：父组件不重拉，本地不更新就等于点了没反应
       setState("saved")
       onSaved?.()
     } catch {
@@ -82,7 +89,7 @@ export function CategoryCard(props: Props) {
     void save(nextSecond ? [v, nextSecond] : [v])
   }
 
-  const off = Array.isArray(confirmed) && confirmed.length === 0
+  const off = Array.isArray(saved) && saved.length === 0
   return (
     <div className="mt-5 rounded-xl border border-border bg-card p-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -92,7 +99,7 @@ export function CategoryCard(props: Props) {
         {state === "error" && <span className="text-xs text-destructive">保存失败，请重试</span>}
       </div>
 
-      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{hintText(props, primary, off)}</p>
+      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{hintText(props, saved, primary, off)}</p>
 
       <div className="mt-3 flex flex-wrap gap-2">
         {BID_CATEGORIES.map((v) => (
