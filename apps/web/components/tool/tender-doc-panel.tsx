@@ -47,6 +47,9 @@ export function TenderDocPanel({
   const [activeFile, setActiveFile] = useState(-1) // -1 = 全部
   const showTabs = (files?.length ?? 0) > 1
   const visible = showTabs && activeFile >= 0 ? sections.filter((s) => inFile(s, files![activeFile]!)) : sections
+  // 标题跟着选中的文件走。fileName 是**项目名**（取上传时第一个文件名，也带 .docx），单独挂在页签栏
+  // 上方时会被读成"我正在看这份文件"——选了第 3 份、正文也是第 3 份，标题却写着第 1 份的名字。
+  const headerName = showTabs && activeFile >= 0 ? files![activeFile]!.name : fileName
 
   // 本地条款 ref 表：页签过滤会卸载隐藏文件的段落，页面侧同步 scrollIntoView 会扑空——
   // 由下面的效果在（可能的）切页签渲染完成后兜底滚动。
@@ -75,9 +78,9 @@ export function TenderDocPanel({
     <section className="flex flex-col rounded-2xl border border-border bg-card lg:h-[calc(100vh-11rem)] lg:min-h-[600px]">
       <header className="flex items-center gap-2 border-b border-border px-5 py-3.5">
         <FileText className="size-4 shrink-0 text-primary" />
-        <span className="truncate text-sm font-semibold text-foreground">{fileName}</span>
+        <span className="truncate text-sm font-semibold text-foreground">{headerName}</span>
         <span className="ml-auto shrink-0 rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-          {showTabs ? `原文 · ${files!.length} 份文件` : "原文"}
+          {showTabs ? (activeFile >= 0 ? `原文 · 第 ${activeFile + 1}/${files!.length} 份` : `原文 · ${files!.length} 份文件`) : "原文"}
         </span>
       </header>
       {showTabs && (
