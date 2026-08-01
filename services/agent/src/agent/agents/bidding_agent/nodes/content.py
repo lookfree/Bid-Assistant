@@ -8,6 +8,7 @@ from deepagents import create_deep_agent          # 全流程唯一 deepagent �
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import HumanMessage
 from agent.models.usage import UsageCallback
+from agent.telemetry.tool_recorder import ToolCallRecorder
 from agent.framework.create_agent import build_create_agent
 from agent.agents.bidding_agent.nodes.common import slim_read, package_scope, filter_read_by_package
 from agent.agents.bidding_agent.prompts.categories import category_scope
@@ -29,6 +30,21 @@ class ChapterProgressCallback(AsyncCallbackHandler):
         self.total = total
         self.titles = titles          # chapter_id → 标题(前端展示用)
         self.done: list[str] = []
+        self.rewrites: dict[str, int] = {}   # chapter_id → 重写次数（首写不算）
+
+    async def _log_pg(self, event_type: str, data: dict, level: str = "info") -> None:
+        """章节事件同步落 agent_event_log（best-effort）。Redis 进度流 24h 过期，2026-08-01 空转
+        事故复盘时 PG 里只有一条 run.start——正文步跑了什么必须能事后查。"""
+        recorder = getattr(self.ctx, "recorder", None)
+        if recorder is None or not getattr(self.ctx, "run_id", None):
+            return
+        try:
+            await asyncio.to_thread(
+                recorder.log_event, self.ctx.run_id, getattr(self.ctx, "agent_type", "unknown"),
+                event_type, node="content", level=level, data=data,
+                thread_id=getattr(self.ctx, "thread_id", None))
+        except Exception:  # noqa: BLE001 埋点 best-effort，绝不影响正文生成
+            logger.warning("chapter event log failed", exc_info=True)
 
     async def on_tool_start(self, serialized, input_str, *, inputs=None, **kwargs):
         # 只认 write_file 工具：deepagent 的 write_todos 等规划工具 input 里也含 "chapters/<id>.html"
@@ -48,6 +64,12 @@ class ChapterProgressCallback(AsyncCallbackHandler):
             return
         cid = m.group(1)
         if cid in self.done:
+            # 同一章第二次被写入 = 模型在重写已完成的章。这是上下文压缩丢进度的信号（2026-08-01
+            # 实测：5 次整章重写、计数 45 分钟不动，只能靠人肉对 token_usage 时间线才看出来）。
+            # 只进 PG 不进 Redis——前端计数不能虚高。
+            self.rewrites[cid] = self.rewrites.get(cid, 0) + 1
+            await self._log_pg("chapter.rewrite", {"chapterId": cid, "title": self.titles.get(cid, cid),
+                               "rewrite": self.rewrites[cid]}, level="warn")
             return
         self.done.append(cid)
         ev = {"type": "progress", "data": {"kind": "chapter", "chapterId": cid,
@@ -59,6 +81,8 @@ class ChapterProgressCallback(AsyncCallbackHandler):
                                         {"event": json.dumps(ev, ensure_ascii=False)})
         except Exception:  # noqa: BLE001 进度埋点 best-effort,推送失败绝不影响正文生成
             logger.warning("chapter progress publish failed", exc_info=True)
+        await self._log_pg("chapter.done", {"chapterId": cid, "title": self.titles.get(cid, cid),
+                           "done": len(self.done), "total": self.total})
 
 _CHAPTER_PREFIX = "/chapters/"
 _REWRITE_QUERY_CHARS = 200   # 改写检索 query 取原章前 N 字，避免整章 HTML 顶穿 embed 输入
@@ -411,7 +435,8 @@ def make_content_node(ctx):
             {"messages": [HumanMessage(content=user)]},
             config={"recursion_limit": recursion_limit, "callbacks": [
                 UsageCallback(ctx, "content"),
-                ChapterProgressCallback(ctx, len(chapters_meta), chapters_meta)]})
+                ChapterProgressCallback(ctx, len(chapters_meta), chapters_meta),
+                ToolCallRecorder(ctx, "content")]})  # agent_tool_call 落库（此前全库 0 行）
         chapters = _collect_chapters(res.get("files"))
         if not chapters:
             raise RuntimeError("deepagent 未产出任何章节草稿（chapters/*.html）")

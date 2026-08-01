@@ -38,6 +38,14 @@ def record_llm_usage(recorder: Any, *, run_id: str | None, agent_type: str | Non
             reasoning_tokens=u["reasoning"], total_tokens=u["total"], node=node,
             latency_ms=latency_ms, finish_reason=u["finish_reason"], thread_id=thread_id,
         )
+        # 截断是异常事件，必须在日志表里可查：此前只落 token_usage 的指标列（没人看），
+        # 2026-08-01 正文步 7 次截断引发整章重写循环，事后全靠手写 SQL 对时间线。
+        # level=warn 而非 error：框架会压缩重试，单次截断 ≠ run 失败；run 级失败仍由 finish_run 落
+        # agent_request.error。放在共享的 record_llm_usage 里 ⇒ 所有直驱模型的路径一并覆盖。
+        if u["finish_reason"] == "length" and hasattr(recorder, "log_event"):
+            recorder.log_event(run_id, agent_type, "model.truncated", node=node, level="warn",
+                               data={"model": model, "output_tokens": u["output"]},
+                               thread_id=thread_id)
     except Exception:  # noqa: BLE001 埋点 best-effort
         pass
 

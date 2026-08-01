@@ -73,3 +73,44 @@ def test_extract_usage_defaults_when_missing():
     msg = SimpleNamespace(usage_metadata=None, response_metadata={})
     u = extract_usage(msg)
     assert u["input"] == 0 and u["output"] == 0 and u["cached"] == 0 and u["reasoning"] == 0 and u["total"] == 0
+
+
+class _CapEventRecorder(_CapRecorder):
+    """record_usage 照记，另捕获 log_event——校验截断异常事件。"""
+
+    def __init__(self):
+        super().__init__()
+        self.events: list[dict] = []
+
+    def log_event(self, run_id, agent_type, event_type, **kw):
+        self.events.append({"event_type": event_type, **kw})
+
+
+def _truncated_msg():
+    return AIMessage(content="…", usage_metadata={"input_tokens": 90000, "output_tokens": 16384,
+                                                  "total_tokens": 106384},
+                     response_metadata={"finish_reason": "length"})
+
+
+def test_truncated_call_logs_warn_event():
+    """finish_reason=length 是异常事件：此前只落 token_usage 的指标列，没有任何日志/告警入口，
+    2026-08-01 正文步 7 次截断引发整章重写循环，事后全靠手写 SQL 对时间线。
+    现在每次截断落一条 model.truncated(level=warn) 进 agent_event_log。"""
+    rec = _CapEventRecorder()
+    record_ctx_usage(_ctx(rec), _truncated_msg(), node="content", model="qwen", latency_ms=100)
+    ev = [e for e in rec.events if e["event_type"] == "model.truncated"]
+    assert len(ev) == 1 and ev[0]["level"] == "warn" and ev[0]["node"] == "content"
+    assert ev[0]["data"]["output_tokens"] == 16384
+
+
+def test_normal_finish_logs_no_truncation_event():
+    rec = _CapEventRecorder()
+    record_ctx_usage(_ctx(rec), _usage_msg(), node="content", model="qwen")
+    assert [e for e in rec.events if e["event_type"] == "model.truncated"] == []
+
+
+def test_recorder_without_log_event_still_records_usage():
+    """旧 recorder（无 log_event 方法）兼容：用量照记，不因埋点缺方法抛错。"""
+    rec = _CapRecorder()
+    record_ctx_usage(_ctx(rec), _truncated_msg(), node="content", model="qwen")
+    assert rec.calls   # record_usage 正常
