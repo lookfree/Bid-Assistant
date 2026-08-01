@@ -91,46 +91,62 @@ class ReadResult(BaseModel):
 # **逐级显式建模、不用自引用**（评审修正）：自引用 schema 经 langchain 转 LLM tool schema 时
 # 递归 $ref 被抹平成空对象，模型对下级结构零引导、易产垃圾 children 烧尽 submit 重试；
 # 显式到第五级同时把「五级封顶」变成 schema 硬约束——更深的数据在校验时被静默剪掉，下游天然安全。
+# 字段说明写全的理由（2026-08-01 生产事故）：主模型换成客户本地的 Qwen3.6-35B-A3B-W4A8 后，
+# 整份提纲只剩章节标题——模型把没标 required、没写 description 的 items **整个字段省略**，
+# pydantic 默认值补成 [] 后校验照样通过（`outcome: ok`，无任何报错）。同期 deepseek 会照系统
+# 提示词补全，于是问题被掩盖到换模型才暴露。**弱模型只认工具 schema**：提纲的层级/编号/id 用法
+# 这些提示词里的硬要求必须同时写进字段说明，承载内容的字段必须 required。
+_DESC_HAND_WRITTEN = "留空。该字段由用户在页面上手写，模型不要填写"
+_CLAUSE_IDS_DESC = "招标依据条款 id，形如 sec-3-c2（第 N 章第 M 段）；对齐读标结论里的 clause_ids，没有直接依据给空数组"
+_ID_DESC = "内部键，用「章id-序号」形如 t3-1。**只是键、绝不是编号**：不要写进 label，更不要出现在正文标题里"
+
+
 class OutlineLeafItem(BaseModel):
     """五级（明细）：封顶层，无 children。"""
-    id: str
-    label: str                                    # 如 "① 值班安排"
+    id: str = Field(..., description=_ID_DESC)
+    label: str = Field(..., description="五级明细标题，带本层编号前缀，如「① 值班安排」")
     # 用户在「添加/编辑标题」弹窗里手写的写作说明（这一节要写什么），随提纲保存并进入正文生成提示词。
     # **模型产提纲时必须留空**（提示词已明写）：写手把 desc 当作用户的明确要求、优先级高于自身判断，
     # 模型往里填等于把自己的话冒充成用户指令，用户还会在编辑弹窗里看到一段自己没写过的文字。
-    desc: str = Field(default="", description="留空。该字段由用户在页面上手写，模型不要填写")
-    clause_ids: list[str] = Field(default_factory=list)
+    desc: str = Field(default="", description=_DESC_HAND_WRITTEN)
+    clause_ids: list[str] = Field(default_factory=list, description=_CLAUSE_IDS_DESC)
     is_new: bool = False
 
 
 class OutlineGrandChildItem(BaseModel):
     """四级（细分）：如「（1）人员配置」。"""
-    id: str
-    label: str
-    desc: str = Field(default="", description="留空。该字段由用户在页面上手写，模型不要填写")   # 见 OutlineLeafItem.desc
-    clause_ids: list[str] = Field(default_factory=list)
+    id: str = Field(..., description=_ID_DESC)
+    label: str = Field(..., description="四级细分标题，带本层编号前缀，如「（1）人员配置」（右括号后不留空格）")
+    desc: str = Field(default="", description=_DESC_HAND_WRITTEN)   # 见 OutlineLeafItem.desc
+    clause_ids: list[str] = Field(default_factory=list, description=_CLAUSE_IDS_DESC)
     is_new: bool = False
-    children: list[OutlineLeafItem] = Field(default_factory=list)
+    children: list[OutlineLeafItem] = Field(
+        default_factory=list,
+        description="本细分下的五级明细（「① xxx」）。仅特别复杂的技术方案局部才用，其余给空数组 []")
 
 
 class OutlineChildItem(BaseModel):
     """三级（小节）：如「1. 项目背景分析」。"""
-    id: str
-    label: str
-    desc: str = Field(default="", description="留空。该字段由用户在页面上手写，模型不要填写")   # 见 OutlineLeafItem.desc
-    clause_ids: list[str] = Field(default_factory=list)
+    id: str = Field(..., description=_ID_DESC)
+    label: str = Field(..., description="三级小节标题，带本层编号前缀，如「1. 项目背景分析」（「1.」后留一个空格）")
+    desc: str = Field(default="", description=_DESC_HAND_WRITTEN)   # 见 OutlineLeafItem.desc
+    clause_ids: list[str] = Field(default_factory=list, description=_CLAUSE_IDS_DESC)
     is_new: bool = False
-    children: list[OutlineGrandChildItem] = Field(default_factory=list)
+    children: list[OutlineGrandChildItem] = Field(
+        default_factory=list,
+        description="本小节下的四级细分（「（1）xxx」）。内容确需再拆时才给，否则空数组 []")
 
 
 class OutlineItem(BaseModel):
     """二级（节）：如「一、项目理解」。"""
-    id: str
-    label: str
-    desc: str = Field(default="", description="留空。该字段由用户在页面上手写，模型不要填写")   # 见 OutlineLeafItem.desc
-    clause_ids: list[str] = Field(default_factory=list)  # 招标依据条款 id（${secId}-cN，对齐原型 clauseIds）
-    is_new: bool = False                          # 提纲新增（招标无直接来源）
-    children: list[OutlineChildItem] = Field(default_factory=list)
+    id: str = Field(..., description=_ID_DESC)
+    label: str = Field(..., description="二级节标题，带本层编号前缀，如「一、项目理解」（顿号后不留空格）")
+    desc: str = Field(default="", description=_DESC_HAND_WRITTEN)   # 见 OutlineLeafItem.desc
+    clause_ids: list[str] = Field(default_factory=list, description=_CLAUSE_IDS_DESC)
+    is_new: bool = Field(default=False, description="招标文件无直接来源的加分/补强项=true")
+    children: list[OutlineChildItem] = Field(
+        default_factory=list,
+        description="本节下的三级小节（「1. xxx」）。分值高、条款条目多的节应继续往下拆；程序性/表单类节给空数组 []")
 
 
 class OutlineChapter(BaseModel):
@@ -139,8 +155,11 @@ class OutlineChapter(BaseModel):
     title: str
     group: Literal["tech", "business"]
     sourced: bool = True                          # 能否在招标文件索引到来源
-    desc: str = Field(default="", description="留空。该字段由用户在页面上手写，模型不要填写")
-    items: list[OutlineItem] = Field(default_factory=list)
+    desc: str = Field(default="", description=_DESC_HAND_WRITTEN)
+    # required（不是 default_factory）：这是全章唯一承载内容的字段，可省略 = 整份提纲退化成一串标题。
+    items: list[OutlineItem] = Field(
+        ..., description="本章的二级节（「一、xxx」）**必填**：除纯表单/承诺函类占位章节外，每章通常 3 个左右；"
+                         "确实无可拆分内容时给空数组 []，但**绝不可省略本字段**")
     structure_ref: str | None = None              # 对应 required_structure 项 id（spec321，可空）
 
 
