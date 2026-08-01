@@ -74,11 +74,15 @@ export default function ContentPage() {
   const [bizFirst, setBizFirst] = useState(false)
 
   // outline 树 + content 各章 HTML → 构建章节树；计费步绝不自动触发，生成一律走显式按钮
-  const { projectId, info, data: realBodies, dataLoading, running, progress, error, errorAction, start } = useStep<RealChapters>("content")
-  // 正文运行态文案：有逐章进度就实时显示「X/N 章」，否则给不吓人的耗时预期(大标书本就慢)。
-  const contentRunningText = progress
-    ? `AI 正在逐章撰写：已完成 ${progress.done}/${progress.total} 章${progress.title ? `（刚写完「${progress.title}」）` : ""}，请稍候…`
-    : "AI 写手团队正在逐章撰写正文…章节多、招标文件大时约需 5–15 分钟，可离开本页，回来会自动接着显示进度。"
+  const { projectId, info, data: realBodies, dataLoading, running, progress, phase, error, errorAction, start } = useStep<RealChapters>("content")
+  // 正文运行态文案：心跳（每 5s 一条，「第 N 章成稿中·本章已 X 分」）让横幅持续动——单章一次长调用
+  // 要 2~8 分钟，只靠章节事件横幅会定格几分钟，用户会读成"卡住了"（实测反馈）。
+  // 心跳与逐章进度都在时拼着显示；都没有才给静态耗时预期。
+  const contentRunningText = phase
+    ? `AI 正在逐章撰写：${progress ? `已完成 ${progress.done}/${progress.total} 章，` : ""}${phase.label}…`
+    : progress
+      ? `AI 正在逐章撰写：已完成 ${progress.done}/${progress.total} 章${progress.title ? `（刚写完「${progress.title}」）` : ""}，请稍候…`
+      : "AI 写手团队正在逐章撰写正文…章节多、招标文件大时约需 5–15 分钟，可离开本页，回来会自动接着显示进度。"
   // outline 结果按需拉取（slim 首屏不携带跨步结果）：到位后先建树（正文缺失章显示"待生成"占位），
   // content 结果到位后填充各章 HTML
   const { data: outlineResult, loading: outlineLoading, error: outlineError } = useOtherStepResult<RealOutline>(projectId, info, "outline")

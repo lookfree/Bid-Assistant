@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from typing import Any
 from deepagents import create_deep_agent          # 全流程唯一 deepagent 节点（§4.5）
 from langchain_core.callbacks import AsyncCallbackHandler
@@ -28,9 +29,10 @@ class ChapterProgressCallback(AsyncCallbackHandler):
     def __init__(self, ctx: Any, total: int, titles: dict[str, str]):
         self.ctx = ctx
         self.total = total
-        self.titles = titles          # chapter_id → 标题(前端展示用)
+        self.titles = titles          # chapter_id → 标题(前端展示用)；键集合即提纲的合法章 id
         self.done: list[str] = []
         self.rewrites: dict[str, int] = {}   # chapter_id → 重写次数（首写不算）
+        self.chapter_started = time.monotonic()   # 当前章起笔时刻（心跳显示"本章已 N 分"）
 
     async def _log_pg(self, event_type: str, data: dict, level: str = "info") -> None:
         """章节事件同步落 agent_event_log（best-effort）。Redis 进度流 24h 过期，2026-08-01 空转
@@ -63,6 +65,12 @@ class ChapterProgressCallback(AsyncCallbackHandler):
         if not m:
             return
         cid = m.group(1)
+        if self.titles and cid not in self.titles:
+            # 幽灵章：模型写了提纲里不存在的章 id（实测 2026-08-01：t6 重写混乱中造出 "t6-new"，
+            # 前端横幅显示「已完成 16/15 章（刚写完「t6-new」）」）。不计数、不推前端，只记 warn 供排查；
+            # 收稿侧 _collect_chapters 同样按提纲过滤——两道闸，任何一道漏了幽灵章都到不了交付。
+            await self._log_pg("chapter.phantom", {"chapterId": cid}, level="warn")
+            return
         if cid in self.done:
             # 同一章第二次被写入 = 模型在重写已完成的章。这是上下文压缩丢进度的信号（2026-08-01
             # 实测：5 次整章重写、计数 45 分钟不动，只能靠人肉对 token_usage 时间线才看出来）。
@@ -83,6 +91,7 @@ class ChapterProgressCallback(AsyncCallbackHandler):
             logger.warning("chapter progress publish failed", exc_info=True)
         await self._log_pg("chapter.done", {"chapterId": cid, "title": self.titles.get(cid, cid),
                            "done": len(self.done), "total": self.total})
+        self.chapter_started = time.monotonic()   # 下一章从现在起算
 
 _CHAPTER_PREFIX = "/chapters/"
 _REWRITE_QUERY_CHARS = 200   # 改写检索 query 取原章前 N 字，避免整章 HTML 顶穿 embed 输入
@@ -371,20 +380,47 @@ async def _content_reference_block(ctx, state: dict) -> str:
         ctx.user_id, queries, _default_top_k(run_input), tender_thread_id=ctx.thread_id)
 
 
-def _collect_chapters(files: dict | None) -> dict[str, str]:
-    """从 deepagent 虚拟 FS 结果（v2：{path: {content,...}}，路径带前导斜杠）按前缀收稿。"""
+def _collect_chapters(files: dict | None, allowed: set[str] | None = None) -> dict[str, str]:
+    """从 deepagent 虚拟 FS 结果（v2：{path: {content,...}}，路径带前导斜杠）按前缀收稿。
+    allowed=提纲章 id 集合：不在提纲里的幽灵章（模型混乱时自造 id，实测 "t6-new"）一律不收——
+    上次没混进交付纯属模型后来自己覆盖了它，不过滤等于把交付质量押在运气上。"""
     chapters: dict[str, str] = {}
+    dropped: list[str] = []
     for path, data in (files or {}).items():
         norm = path if path.startswith("/") else f"/{path}"
         if not norm.startswith(_CHAPTER_PREFIX):
             continue
         cid = norm[len(_CHAPTER_PREFIX):].removesuffix(".html")
+        if allowed is not None and cid not in allowed:
+            dropped.append(cid)
+            continue
         # content 允许缺省（deepagents 自身也按可缺处理）；空稿跳过——全空最终触发 fail-loud
         content = data.get("content", "") if isinstance(data, dict) else str(data)
         content = strip_document_shell(strip_chat_wrapper(content))  # 收稿统一清洗：剥对话包装 + 文档壳（防样式泄漏/围栏入库）
         if content:
             chapters[cid] = content
+    if dropped:
+        logger.warning("collect_chapters dropped phantom ids: %s", dropped)
     return chapters
+
+
+def _heartbeat_label(done: int, total: int, chapter_elapsed_s: float) -> str:
+    """正文心跳文案：横幅每 5s 动一次，用户能看到"写到第几章、本章写了多久"。
+    正文没有读标那种流式字数（deepagent 直驱模型非流式），能给的活信息就是章序 + 本章计时。"""
+    n = min(done + 1, total)
+    m, s = divmod(int(chapter_elapsed_s), 60)
+    return f"正文·第 {n}/{total} 章成稿中（本章已 {m} 分 {s:02d} 秒）"
+
+
+async def _chapter_heartbeat(ctx, cb: "ChapterProgressCallback", interval_s: float = 5.0) -> None:
+    """正文步心跳泵：deepagent 单章一次长调用（大章 4~8 分钟），期间没有任何事件——
+    横幅定格会被用户读成"卡住了"（实测反馈）。每 interval 推一条 heartbeat 直到被取消。"""
+    from agent.runtime.progress import publish_event
+    while True:
+        await asyncio.sleep(interval_s)
+        label = _heartbeat_label(len(cb.done), cb.total, time.monotonic() - cb.chapter_started)
+        await publish_event(getattr(ctx, "redis", None), getattr(ctx, "run_id", None),
+                            {"kind": "heartbeat", "label": label, "chars": 0})
 
 
 def make_content_node(ctx):
@@ -431,13 +467,18 @@ def make_content_node(ctx):
         # 封顶 600 防失控。选包过滤(spec324)缩了章数时这里也随之更省。
         recursion_limit = min(600, max(100, len(chapters_meta) * 15 + 60))
         # UsageCallback 补记 token（deepagent 直驱模型，不经 make_agent_node 埋点）。
-        res = await deep.ainvoke(
-            {"messages": [HumanMessage(content=user)]},
-            config={"recursion_limit": recursion_limit, "callbacks": [
-                UsageCallback(ctx, "content"),
-                ChapterProgressCallback(ctx, len(chapters_meta), chapters_meta),
-                ToolCallRecorder(ctx, "content")]})  # agent_tool_call 落库（此前全库 0 行）
-        chapters = _collect_chapters(res.get("files"))
+        progress_cb = ChapterProgressCallback(ctx, len(chapters_meta), chapters_meta)
+        hb = asyncio.create_task(_chapter_heartbeat(ctx, progress_cb))  # 横幅每 5s 动一次
+        try:
+            res = await deep.ainvoke(
+                {"messages": [HumanMessage(content=user)]},
+                config={"recursion_limit": recursion_limit, "callbacks": [
+                    UsageCallback(ctx, "content"),
+                    progress_cb,
+                    ToolCallRecorder(ctx, "content")]})  # agent_tool_call 落库（此前全库 0 行）
+        finally:
+            hb.cancel()
+        chapters = _collect_chapters(res.get("files"), allowed=set(chapters_meta))
         if not chapters:
             raise RuntimeError("deepagent 未产出任何章节草稿（chapters/*.html）")
         await _log_length_telemetry(ctx, state.get("run_input") or {}, chapters)  # 超写系数的校准数据源（评审 F2）

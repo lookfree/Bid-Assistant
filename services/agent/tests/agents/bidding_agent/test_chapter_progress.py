@@ -124,3 +124,25 @@ def test_pg_logging_failure_never_breaks_progress():
     cb = ChapterProgressCallback(_ctx_pg(r, _Boom()), total=1, titles={})
     asyncio.run(cb.on_tool_start({"name": "write_file"}, "", inputs={"file_path": "chapters/t1.html"}))
     assert len(r.events) == 1   # PG 埋点炸了，Redis 进度照推
+
+
+def test_phantom_chapter_not_counted_not_pushed():
+    """实测 2026-08-01：模型混乱中写出提纲里不存在的 "t6-new"，横幅显示「已完成 16/15 章
+    （刚写完「t6-new」）」——计数被顶爆、标题是裸 id。幽灵写入不计数、不推前端，只落 PG warn。"""
+    rec = _CapRecorder()
+    r = _FakeRedis()
+    cb = ChapterProgressCallback(_ctx_pg(r, rec), total=2, titles={"t1": "项目理解", "t2": "服务方案"})
+    asyncio.run(cb.on_tool_start({"name": "write_file"}, "", inputs={"file_path": "chapters/t1.html"}))
+    asyncio.run(cb.on_tool_start({"name": "write_file"}, "", inputs={"file_path": "chapters/t6-new.html"}))
+    assert len(r.events) == 1                       # 幽灵章没推前端
+    assert cb.done == ["t1"]                        # 也没计数
+    ph = [e for e in rec.events if e["event_type"] == "chapter.phantom"]
+    assert len(ph) == 1 and ph[0]["level"] == "warn" and ph[0]["data"]["chapterId"] == "t6-new"
+
+
+def test_titles_empty_keeps_legacy_behavior():
+    """titles 为空（异常装配）时不启用过滤——宁可放行也不能把真章全拦了。"""
+    r = _FakeRedis()
+    cb = ChapterProgressCallback(_ctx_pg(r, _CapRecorder()), total=1, titles={})
+    asyncio.run(cb.on_tool_start({"name": "write_file"}, "", inputs={"file_path": "chapters/x9.html"}))
+    assert len(r.events) == 1

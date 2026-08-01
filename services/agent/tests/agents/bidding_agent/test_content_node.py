@@ -511,3 +511,33 @@ def test_iter_items_recurses_to_the_deepest_outline_level():
     loop: dict = {"id": "x", "label": "自引用"}
     loop["children"] = [loop]  # 脏数据（API 对 items 内部零校验）：深度封顶兜住，不递归到栈溢出
     assert len(_iter_items([loop])) <= 10
+
+
+def test_collect_chapters_drops_phantom_ids():
+    """收稿按提纲过滤：实测 "t6-new" 上次没进交付纯属模型后来自己覆盖了它——不过滤等于赌运气。"""
+    from agent.agents.bidding_agent.nodes.content import _collect_chapters
+
+    files = {"/chapters/t1.html": {"content": "<p>正文</p>"},
+             "/chapters/t6-new.html": {"content": "<p>幽灵</p>"}}
+    got = _collect_chapters(files, allowed={"t1", "t6"})
+    assert got == {"t1": "<p>正文</p>"}
+    # 不传 allowed 保持旧行为（其他调用方不受影响）
+    assert set(_collect_chapters(files)) == {"t1", "t6-new"}
+
+
+def test_heartbeat_label_shows_chapter_and_elapsed():
+    """心跳文案：横幅每 5s 动一次——单章一次长调用 2~8 分钟，定格会被读成"卡住"（实测反馈）。"""
+    from agent.agents.bidding_agent.nodes.content import _heartbeat_label
+
+    assert _heartbeat_label(3, 15, 130) == "正文·第 4/15 章成稿中（本章已 2 分 10 秒）"
+    assert _heartbeat_label(15, 15, 5) == "正文·第 15/15 章成稿中（本章已 0 分 05 秒）"  # 收尾不越界
+
+
+def test_prompts_carry_length_budget_discipline():
+    """字数纪律必须同时写进规划派工与子写手两层（实测：一章写爆 32768 上限被截断，
+    返工后 t5/t6/t7 只剩几百字残稿）。规划层丢了预算，子写手那条「若主笔告知」就永远不触发。"""
+    from agent.agents.bidding_agent.prompts.content import CONTENT_PLANNER_PROMPT, CHAPTER_WRITER_PROMPT
+
+    assert "每次派工必须写明本章目标字数" in CONTENT_PLANNER_PROMPT
+    assert "绝不自造新 id" in CONTENT_PLANNER_PROMPT
+    assert "宁短勿爆" in CHAPTER_WRITER_PROMPT
