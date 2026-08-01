@@ -341,3 +341,61 @@ async def test_stream_collect_merges_once_not_per_chunk(_fast_timeout, monkeypat
     assert len(msg.tool_calls[0]["args"]["items"]) == n
     # 性能不回归：逐片 __add__ 合并次数是常数级，而不是 ~n 次（O(n²) 逐片重解析的病根）
     assert calls["add"] <= 2, f"逐片合并 {calls['add']} 次（应收完一次性合并，避免每片重解析全量 JSON）"
+
+
+class _AuthenticationError(Exception):
+    """模拟 openai.AuthenticationError（按类型名判定，不引入 openai 依赖）。"""
+
+
+AuthenticationError = _AuthenticationError
+AuthenticationError.__name__ = "AuthenticationError"
+
+
+class _AuthFailChat:
+    def bind_tools(self, tools, **kw):
+        return self
+
+    async def astream(self, messages, **kw):
+        raise AuthenticationError(
+            "Error code: 401 - {'error': {'message': 'Authentication Fails, Your api key: ****5631 is invalid'}}")
+        yield  # pragma: no cover
+
+
+async def test_auth_error_on_primary_falls_back(_fast_timeout):
+    """2026-08-01 生产实测（run 7111d563）：主模型 deepseek key 无效 → 401 直接把整个 run 打死
+    （3 秒、零调用），降级模型根本没被尝试。鉴权失败对该服务商是确定性的——重试同一家毫无意义，
+    换下一家正是降级链存在的意义。"""
+    async def _submit(**kw):
+        return "ok"
+    gw = _Gateway([_AuthFailChat(), _StreamChat([0.01, 0.01])],
+                  [{"provider": "deepseek"}, {"provider": "custom"}])
+    msg = await ms.forced_stream_submit(_ctx(gw), [], _submit, "submit_x", label="述标")
+    assert msg.tool_calls and msg.tool_calls[0]["name"] == "submit_x"
+
+
+async def test_auth_error_on_both_tries_raises(_fast_timeout):
+    async def _submit(**kw):
+        return "ok"
+    gw = _Gateway([_AuthFailChat(), _AuthFailChat()],
+                  [{"provider": "deepseek"}, {"provider": "custom"}])
+    with pytest.raises(Exception, match="Authentication Fails"):
+        await ms.forced_stream_submit(_ctx(gw), [], _submit, "submit_x", label="述标")
+
+
+class _BadRequestChat:
+    def bind_tools(self, tools, **kw):
+        return self
+
+    async def astream(self, messages, **kw):
+        raise ValueError("Error code: 400 - invalid request")
+        yield  # pragma: no cover
+
+
+async def test_semantic_4xx_still_raises_immediately(_fast_timeout):
+    """语义错误（400 等）不进降级通道：请求本身有问题，换一家模型多半照样失败,原样抛保留现行为。"""
+    async def _submit(**kw):
+        return "ok"
+    gw = _Gateway([_BadRequestChat(), _StreamChat([0.01])],
+                  [{"provider": "deepseek"}, {"provider": "custom"}])
+    with pytest.raises(ValueError, match="invalid request"):
+        await ms.forced_stream_submit(_ctx(gw), [], _submit, "submit_x", label="述标")

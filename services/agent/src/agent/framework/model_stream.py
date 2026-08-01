@@ -52,6 +52,25 @@ def _is_transient_stream_error(e: BaseException) -> bool:
     return False
 
 
+def _is_auth_error(e: BaseException) -> bool:
+    """服务商鉴权失败（401 invalid key / 403 permission）——对该服务商是**确定性**错误，
+    重试同一家毫无意义，换下一家正是降级链存在的意义。2026-08-01 生产实测（run 7111d563）：
+    主模型 deepseek key 无效，401 三秒打死整个 run（零调用），降级模型根本没被尝试。
+    判定同 _is_transient_stream_error：类型名 + 文案，沿 __cause__/__context__ 链下钻。"""
+    cur: BaseException | None = e
+    for _ in range(5):
+        if cur is None:
+            return False
+        name = type(cur).__name__.lower()
+        if "authenticationerror" in name or "permissiondenied" in name:
+            return True
+        s = str(cur).lower()
+        if "error code: 401" in s or "authentication fail" in s:
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def _is_thinking_toolchoice_error(e: BaseException) -> bool:
     """思考模式与强制 tool_choice 不兼容的 400（如 'Thinking mode does not support this tool_choice'）。
     内置服务商已由 THINKING_DISABLE 默认关思考,撞不到;这里兜自建端点(spec319.1,表外 provider
@@ -122,6 +141,22 @@ async def astream_collect(chat, messages, ctx, label: str | None):
     return add_ai_message_chunks(chunks[0], *chunks[1:])   # 一次性合并，工具 JSON 只解析一次（O(n)）
 
 
+def _log_auth_failed(ctx, it: dict, e: BaseException) -> None:
+    """鉴权失败落 agent_event_log（warn，best-effort）：key 无效是配置事故不是偶发，
+    降级兜住后 run 照常成功——没有这条记录，运营根本不知道主模型一直在 401。"""
+    recorder = getattr(ctx, "recorder", None)
+    if recorder is None or not getattr(ctx, "run_id", None):
+        return
+    try:
+        recorder.log_event(ctx.run_id, getattr(ctx, "agent_type", "unknown"), "model.auth_failed",
+                           node="agent", level="warn",
+                           data={"provider": it.get("provider"), "model": it.get("model"),
+                                 "error": str(e)[:200]},
+                           thread_id=getattr(ctx, "thread_id", None))
+    except Exception:  # noqa: BLE001 埋点 best-effort
+        pass
+
+
 async def forced_stream_submit(ctx, messages, submit, tool_name: str, label: str | None):
     """强制 submit 工具的调用（每模型思考开关驱动，配置说了算，不靠捕错猜）：
     - 思考关（默认）：get_chat 下发关闭思考参 → 流式 + 空闲超时（连续无 token → 换降级模型再试，
@@ -149,10 +184,13 @@ async def forced_stream_submit(ctx, messages, submit, tool_name: str, label: str
                         raise
                     logger.info("思考模型不支持流式强制 tool_choice → 本次改走 ainvoke（model=%s）", it.get("model"))
                     msg = await chat.ainvoke(messages)
-        except Exception as e:  # noqa: BLE001 只接管挂死/瞬断（ainvoke 与流式同待遇），其余（4xx 语义错误等）原样抛
-            if not (isinstance(e, ModelIdleTimeout) or _is_transient_stream_error(e)):
+        except Exception as e:  # noqa: BLE001 只接管挂死/瞬断/鉴权失败（ainvoke 与流式同待遇），其余（400 语义错误等）原样抛
+            auth = _is_auth_error(e)
+            if not (isinstance(e, ModelIdleTimeout) or _is_transient_stream_error(e) or auth):
                 raise
-            kind = "超时" if isinstance(e, ModelIdleTimeout) else "网络中断"
+            kind = "超时" if isinstance(e, ModelIdleTimeout) else ("鉴权失败" if auth else "网络中断")
+            if auth:   # key 无效属配置事故,除阶段事件外落 PG warn,运营可查（与 model.truncated 同范式）
+                _log_auth_failed(ctx, it, e)
             if i == 0:
                 await publish_phase(ctx, f"{label or tool_name}·模型{kind}，切换重试")
                 continue
