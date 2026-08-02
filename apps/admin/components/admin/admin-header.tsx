@@ -12,12 +12,18 @@ import { Button } from "@/components/ui/button"
 import { adminApi, type AdminMe } from "@/lib/admin-api"
 import { adminTokenStore } from "@/lib/admin-token-store"
 
+// 路由 → 顶栏标题。QA 实测：漏登记的页面回落「概览看板」——新增页面必须同步登记
+// （2026-08-02 补齐 models/feedback/invoices/bid-categories 四个漏项,标题与侧边栏菜单一致）。
 const titles: Record<string, string> = {
   "/": "概览看板",
   "/users": "用户与会员",
   "/orders": "订单与对账",
   "/ledger": "积分账本审计",
   "/plans": "套餐与积分口径配置",
+  "/models": "模型管理",
+  "/feedback": "反馈工单",
+  "/invoices": "发票管理",
+  "/bid-categories": "标书分类纠偏",
   "/system": "系统与权限",
 }
 
