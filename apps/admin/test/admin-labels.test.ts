@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test"
-import { permLabel, actionLabel, diffRows } from "../lib/admin-labels"
+import { permLabel, actionLabel, diffRows, targetLabel } from "../lib/admin-labels"
 
 describe("运营后台展示映射：中文标签兜底", () => {
   it("权限项/操作命中中文，未命中回退原键", () => {
@@ -76,5 +76,24 @@ describe("role 字段值中文化", () => {
     const rows = diffRows({ role: "ops" }, { role: "finance" })
     expect(rows[0]!.before).toBe("运营")
     expect(rows[0]!.after).toBe("财务")
+  })
+})
+
+describe("统一中文化收口（QA：操作列 user.note、对象列 config:agent_model 直出英文）", () => {
+  it("全部落库 action 都有中文标签（新加 action 忘登记会在此红灯）", () => {
+    const ALL_AUDIT_ACTIONS = [
+      "admin.manage", "config.write", "credit.adjust", "diff.fix_unknown_paid", "diff.resolve",
+      "feedback.handle", "invoice.issue", "invoice.reject", "plan.write",
+      "refund.ambiguous", "refund.done", "refund.failed", "refund.write", "user.note", "user.write",
+    ]
+    for (const a of ALL_AUDIT_ACTIONS) expect(actionLabel(a)).not.toBe(a)
+  })
+  it("对象列：已知配置整替,类型前缀中文化,id 保留", () => {
+    expect(targetLabel("config:agent_model")).toBe("配置：模型编排")
+    expect(targetLabel("config:admin_rbac")).toBe("配置：角色权限矩阵")
+    expect(targetLabel("user:abc-123")).toBe("用户：abc-123")
+    expect(targetLabel("plan:p1")).toBe("套餐：p1")
+    expect(targetLabel("unknown:x")).toBe("unknown:x")
+    expect(targetLabel(null)).toBe("-")
   })
 })

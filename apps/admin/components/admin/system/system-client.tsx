@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 import { Search, ShieldCheck } from "lucide-react"
-import { permLabel, actionLabel, diffRows } from "@/lib/admin-labels"
+import { permLabel, actionLabel, diffRows, targetLabel } from "@/lib/admin-labels"
 import {
   Card,
   CardContent,
@@ -576,7 +576,7 @@ function AuditTab() {
                   </Badge>
                 </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
-                  {log.target ?? "-"}
+                  {targetLabel(log.target)}
                 </TableCell>
                 <TableCell className="text-right">
                   <Button variant="ghost" size="sm" className="h-7 text-primary" onClick={() => setDiffLog(log)}>
@@ -626,7 +626,7 @@ function AuditDiffDialog({ log, onClose }: { log: ApiAuditLog; onClose: () => vo
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
           <span>操作人：{log.operator}</span>
           <span>时间：{formatDateTime(log.createdAt)}</span>
-          <span>对象：{log.target ?? "-"}</span>
+          <span>对象：{targetLabel(log.target)}</span>
         </div>
         {rows.length === 0 ? (
           <p className="py-6 text-center text-sm text-muted-foreground">本次操作无字段级变更记录。</p>

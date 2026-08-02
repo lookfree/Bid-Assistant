@@ -35,6 +35,7 @@ export const ACTION_LABELS: Record<string, string> = {
   "refund.failed": "退款失败",
   "refund.write": "发起退款",
   "user.write": "用户管理操作",
+  "user.note": "编辑用户备注",
   "invoice.issue": "开具发票",
   "invoice.reject": "驳回开票",
 }
@@ -61,6 +62,25 @@ const FIELD_LABELS: Record<string, string> = {
   invoiceNo: "发票号",
   titleType: "抬头类型",
   taxNo: "税号",
+}
+
+// 对象列（target="类型:id"）：类型前缀中文化,已知配置对象整个替换,id 保留便于回溯。
+const TARGET_PREFIX_CN: Record<string, string> = {
+  user: "用户", plan: "套餐", order: "订单", invoice: "发票",
+  admin: "管理员账号", feedback: "反馈工单", diff: "对账差异", config: "配置",
+}
+const TARGET_FULL_CN: Record<string, string> = {
+  "config:agent_model": "配置：模型编排",
+  "config:admin_rbac": "配置：角色权限矩阵",
+}
+
+export function targetLabel(t?: string | null): string {
+  if (!t) return "-"
+  if (TARGET_FULL_CN[t]) return TARGET_FULL_CN[t]
+  const i = t.indexOf(":")
+  if (i <= 0) return t
+  const prefix = TARGET_PREFIX_CN[t.slice(0, i)]
+  return prefix ? `${prefix}：${t.slice(i + 1)}` : t
 }
 
 export const permLabel = (p: string) => PERM_LABELS[p] ?? p
