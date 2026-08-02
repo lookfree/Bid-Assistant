@@ -4,6 +4,7 @@ import { getDb } from "../db/client"
 import { paymentOrders, refunds, creditTransactions } from "../db/schema"
 import { getBalance } from "./credits"
 import type { PaymentProvider } from "./payment/provider"
+import { writeAudit } from "./audit"
 import type { Tx } from "./credits"
 
 // 退款编排（架构 §6.2(D)，spec306）：唯一入口收口到 spec310 POST /admin-api/refunds（过 admin RBAC+审计），
@@ -29,9 +30,18 @@ export function refundRequestNo(refundId: string): string {
 /** 退款只需要 refund 能力：Pick 收窄，便于注入 mock。 */
 export type RefundProvider = Pick<PaymentProvider, "refund">
 
-// TODO(spec310)：接 admin_audit_logs 审计装置（operator + 前后值）；当前 operator 落 refunds + console 审计
+// 退款结果落 admin_audit_logs（评审实测缺陷：此前只 console.info，审计里只有「发起退款」这一条，
+// 查纠纷时看不到到底成功、失败、还是落在需人工核对的 pending 态）。best-effort：审计写失败绝不
+// 影响已经完成的退款事务本身，只记日志（与其它埋点同范式）。
 function auditLog(entry: { operator: string; action: string; orderId: string; before: unknown; after: unknown }) {
   console.info("[audit]", JSON.stringify(entry))
+  void writeAudit({
+    operator: entry.operator,
+    action: entry.action,
+    target: `order:${entry.orderId}`,
+    before: entry.before,
+    after: entry.after,
+  }).catch((e) => console.warn("[audit] 退款结果审计写入失败（不影响退款本身）:", e))
 }
 
 const InputSchema = z.object({

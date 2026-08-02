@@ -62,25 +62,58 @@ const FIELD_LABELS: Record<string, string> = {
   invoiceNo: "发票号",
   titleType: "抬头类型",
   taxNo: "税号",
+  // 各审计动作快照里实际出现的字段（评审实测遗漏）：user.note / admin.manage / refund.write /
+  // diff.* / feedback.handle / plan.write 的 before/after 键
+  adminNote: "运营备注",
+  username: "账号名",
+  refundId: "退款单号",
+  amountCents: "金额(分)",
+  refundStatus: "退款状态",
+  orderStatus: "订单状态",
+  resolved: "已处理",
+  markPaid: "标记为已支付",
+  reply: "回复内容",
+  error: "错误信息",
+  code: "套餐代码",
+  name: "名称",
+  features: "权益开关",
+  limits: "额度限制",
+  version: "版本",
+  currency: "币种",
+  billingCycle: "计费周期",
+  createdAt: "创建时间",
+  id: "ID",
 }
 
-// 对象列（target="类型:id"）：类型前缀中文化,已知配置对象整个替换,id 保留便于回溯。
+// 对象列（target="类型:id"）：类型前缀中文化,id 保留便于回溯。
 const TARGET_PREFIX_CN: Record<string, string> = {
   user: "用户", plan: "套餐", order: "订单", invoice: "发票",
   admin: "管理员账号", feedback: "反馈工单", diff: "对账差异", config: "配置",
 }
-const TARGET_FULL_CN: Record<string, string> = {
-  "config:agent_model": "配置：模型编排",
-  "config:admin_rbac": "配置：角色权限矩阵",
+// config:<key> 的 key 中文名——与 CONFIG_SCHEMAS（apps/api/routes/admin/plans.ts）和各配置卡片同口径。
+// 只列全串会漏掉多数配置（评审实测：只覆盖 2/8）,故按冒号后的 key 单独查表,未知 key 保留原样。
+const CONFIG_KEY_CN: Record<string, string> = {
+  agent_model: "模型编排",
+  admin_rbac: "角色权限矩阵",
+  referral_rules: "邀请奖励规则",
+  recharge_packs: "充值档位",
+  signup_grant_credits: "注册赠送积分",
+  grant_expire_days: "赠送积分有效期",
+  reward_expire_days: "奖励积分有效期",
+  "credit_cost.content_tiers": "标书生成计费阶梯",
 }
+// 用 Object.hasOwn 取值：裸下标会把 constructor/toString 等原型键当命中,返回函数而 : string 类型看不出来
+const pick = (m: Record<string, string>, k: string): string | undefined => (Object.hasOwn(m, k) ? m[k] : undefined)
 
 export function targetLabel(t?: string | null): string {
-  if (!t) return "-"
-  if (TARGET_FULL_CN[t]) return TARGET_FULL_CN[t]
+  if (!t) return EMPTY   // 与 fmtVal 同一空值符号,同一弹窗里不能一个「-」一个「—」
   const i = t.indexOf(":")
   if (i <= 0) return t
-  const prefix = TARGET_PREFIX_CN[t.slice(0, i)]
-  return prefix ? `${prefix}：${t.slice(i + 1)}` : t
+  const prefix = pick(TARGET_PREFIX_CN, t.slice(0, i))
+  if (!prefix) return t
+  const rest = t.slice(i + 1)
+  if (t.slice(0, i) === "config") return `${prefix}：${pick(CONFIG_KEY_CN, rest) ?? rest}`
+  return `${prefix}：${rest}`
 }
 
 export const permLabel = (p: string) => PERM_LABELS[p] ?? p
@@ -108,8 +141,10 @@ function fmtBoolMap(o: Record<string, unknown>): string | null {
   return entries.map(([k, v]) => `${FEATURE_CN[k] ?? k}:${v ? "开" : "关"}`).join("、")
 }
 
+const EMPTY = "—"   // 全审计视图统一的「无值」符号
+
 function fmtVal(v: unknown): string {
-  if (v == null) return "—"
+  if (v == null) return EMPTY
   if (typeof v === "boolean") return v ? "是" : "否"
   if (Array.isArray(v) && v.every((x) => typeof x === "string")) {
     // 权限列表等字符串数组：逐项中文化（QA:审计里角色/权限直出英文关键字）,未知项回退原文
@@ -127,7 +162,12 @@ function fmtVal(v: unknown): string {
 /** 审计 before/after → 字段级对照行,替代裸 JSON。合并两侧键（标量快照归到「值」行）,
  *  逐字段给出变更前/后展示值,changed 标记有变化的行（供 UI 高亮前后对照）。 */
 export function diffRows(before: unknown, after: unknown): { key: string; label: string; before: string; after: string; changed: boolean }[] {
-  const toObj = (s: unknown): Record<string, unknown> => (s == null ? {} : typeof s === "object" ? (s as Record<string, unknown>) : { 值: s })
+  // 数组快照（充值档位/计费阶梯等）：键归一成「第 N 项」,否则渲染成 0/1/2 + 裸 JSON（评审实测）
+  const toObj = (s: unknown): Record<string, unknown> => {
+    if (s == null) return {}
+    if (Array.isArray(s)) return Object.fromEntries(s.map((v, i) => [`第 ${i + 1} 项`, v]))
+    return typeof s === "object" ? (s as Record<string, unknown>) : { 值: s }
+  }
   const b = toObj(before)
   const a = toObj(after)
   const keys = Array.from(new Set([...Object.keys(b), ...Object.keys(a)]))
@@ -136,8 +176,8 @@ export function diffRows(before: unknown, after: unknown): { key: string; label:
   const fmt = (k: string, v: unknown): string =>
     k === "role" && typeof v === "string" ? (ROLE_CN[v] ?? v) : fmtVal(v)
   return keys.map((k) => {
-    const bv = k in b ? fmt(k, b[k]) : "—"
-    const av = k in a ? fmt(k, a[k]) : "—"
+    const bv = k in b ? fmt(k, b[k]) : EMPTY
+    const av = k in a ? fmt(k, a[k]) : EMPTY
     return { key: k, label: fieldLabel(k), before: bv, after: av, changed: bv !== av }
   })
 }

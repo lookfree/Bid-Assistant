@@ -234,3 +234,29 @@ describe("扣回护栏拒绝后，操作员确认重试必须真的重试", () =
     expect(calls.length).toBe(1)   // 通道被真正调用过一次——这正是此前缺失的
   })
 })
+
+describe("退款结果落审计（评审实测：此前只 console.info，审计里只有「发起退款」没有成败）", () => {
+  it("成功 → refund.done；通道拒绝 → refund.failed；target 指向该订单", async () => {
+    const { adminAuditLogs } = await import("../src/db/schema")
+    const auditOf = async (action: string, orderId: string) => {
+      // auditLog 是 best-effort 异步（不阻塞退款事务）——轮询等它落库，不用固定 sleep
+      for (let i = 0; i < 20; i++) {
+        const rows = await getDb().select().from(adminAuditLogs)
+          .where(and(eq(adminAuditLogs.action, action), eq(adminAuditLogs.target, `order:${orderId}`)))
+        if (rows.length > 0) return rows
+        await new Promise((r) => setTimeout(r, 100))
+      }
+      return []
+    }
+
+    const okOrder = await mkPaidOrder(await mkUser(), 1000)
+    await createRefund({ orderId: okOrder.id, amountCents: 1000, reason: "审计验证", operator: "ops_audit" },
+      { provider: okProvider() })
+    expect((await auditOf("refund.done", okOrder.id)).length).toBe(1)
+
+    const badOrder = await mkPaidOrder(await mkUser(), 1000)
+    await createRefund({ orderId: badOrder.id, amountCents: 1000, reason: "审计验证", operator: "ops_audit" },
+      { provider: failProvider })
+    expect((await auditOf("refund.failed", badOrder.id)).length).toBe(1)
+  })
+})

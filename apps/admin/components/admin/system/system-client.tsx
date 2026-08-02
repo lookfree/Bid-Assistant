@@ -518,11 +518,14 @@ function AuditTab() {
   const filtered = useMemo(() => {
     const kw = query.trim()
     if (!kw) return logs
+    // 中文与原文都参与匹配（评审实测：列渲染中文后,按屏幕上看到的字搜索零结果）
     return logs.filter(
       (log) =>
         log.operator.includes(kw) ||
         (log.target ?? "").includes(kw) ||
-        log.action.includes(kw)
+        targetLabel(log.target).includes(kw) ||
+        log.action.includes(kw) ||
+        actionLabel(log.action).includes(kw)
     )
   }, [logs, query])
 

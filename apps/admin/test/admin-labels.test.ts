@@ -80,20 +80,46 @@ describe("role 字段值中文化", () => {
 })
 
 describe("统一中文化收口（QA：操作列 user.note、对象列 config:agent_model 直出英文）", () => {
-  it("全部落库 action 都有中文标签（新加 action 忘登记会在此红灯）", () => {
-    const ALL_AUDIT_ACTIONS = [
-      "admin.manage", "config.write", "credit.adjust", "diff.fix_unknown_paid", "diff.resolve",
-      "feedback.handle", "invoice.issue", "invoice.reject", "plan.write",
-      "refund.ambiguous", "refund.done", "refund.failed", "refund.write", "user.note", "user.write",
-    ]
-    for (const a of ALL_AUDIT_ACTIONS) expect(actionLabel(a)).not.toBe(a)
+  it("全部落库 action 都有中文标签——从 apps/api 源码实扫,不用手抄清单", async () => {
+    // 手抄清单等于没守卫（评审实测：新增 action 时清单不会自己长出来）。这里 grep 真实
+    // writeAudit 调用点,任何新 action 忘配中文都会在此红灯。
+    const { $ } = await import("bun")
+    const out = await $`grep -rhoE 'action: "[a-z_.]+"' ../api/src`.text()
+    const actions = [...new Set(out.match(/"[a-z_.]+"/g)?.map((s) => s.slice(1, -1)) ?? [])]
+    expect(actions.length).toBeGreaterThan(5)   // grep 挂了要看得出来,别静默通过
+    for (const a of actions) {
+      const label = actionLabel(a)
+      expect(label).not.toBe(a)                 // 有登记
+      expect(label).toMatch(/[\u4e00-\u9fa5]/) // 且真的是中文（空串/英文都不算,评审 #8）
+    }
   })
-  it("对象列：已知配置整替,类型前缀中文化,id 保留", () => {
+  it("对象列：类型前缀 + config key 双层中文化,id 保留,空值与 fmtVal 同符号", () => {
     expect(targetLabel("config:agent_model")).toBe("配置：模型编排")
     expect(targetLabel("config:admin_rbac")).toBe("配置：角色权限矩阵")
+    // 评审实测漏项：套餐页写的 config key 此前半英文
+    expect(targetLabel("config:referral_rules")).toBe("配置：邀请奖励规则")
+    expect(targetLabel("config:recharge_packs")).toBe("配置：充值档位")
+    expect(targetLabel("config:credit_cost.content_tiers")).toBe("配置：标书生成计费阶梯")
+    expect(targetLabel("config:brand_new_key")).toBe("配置：brand_new_key")   // 未知 key 保留原样
     expect(targetLabel("user:abc-123")).toBe("用户：abc-123")
     expect(targetLabel("plan:p1")).toBe("套餐：p1")
     expect(targetLabel("unknown:x")).toBe("unknown:x")
-    expect(targetLabel(null)).toBe("-")
+    expect(targetLabel(null)).toBe("—")   // 与变更前/后单元格同一空值符号
+  })
+
+  it("原型链键不当成命中（裸下标会返回函数,: string 类型看不出来）", () => {
+    expect(targetLabel("constructor:x")).toBe("constructor:x")
+    expect(targetLabel("toString:1")).toBe("toString:1")
+  })
+
+  it("数组快照按「第 N 项」展开,不再吐 0/1/2 + 裸 JSON", () => {
+    const rows = diffRows([{ id: "p100", credits: 100 }], [{ id: "p100", credits: 120 }])
+    expect(rows[0]!.key).toBe("第 1 项")
+    expect(rows[0]!.changed).toBe(true)
+  })
+
+  it("user.note 的快照字段 adminNote 有中文标签", () => {
+    const rows = diffRows({ adminNote: "老客户" }, { adminNote: "老客户·续约中" })
+    expect(rows[0]!.label).toBe("运营备注")
   })
 })
