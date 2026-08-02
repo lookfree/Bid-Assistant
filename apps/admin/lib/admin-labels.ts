@@ -18,6 +18,7 @@ export const PERM_LABELS: Record<string, string> = {
   "user.read": "查看用户",
   "user.write": "管理用户（封禁/编辑）",
   "invoice.write": "开具发票",
+  "category.read": "查看标书分类纠偏",
 }
 
 /** 审计日志「操作」中文名。 */
@@ -40,6 +41,10 @@ export const ACTION_LABELS: Record<string, string> = {
 
 /** 审计快照里常见字段名 → 中文（before/after 展开时用；未命中回退原键）。 */
 const FIELD_LABELS: Record<string, string> = {
+  finance: "财务角色权限",
+  ops: "运营角色权限",
+  support: "客服角色权限",
+  superadmin: "超管角色权限",
   status: "状态",
   balance: "余额",
   amount: "金额",
@@ -86,6 +91,10 @@ function fmtBoolMap(o: Record<string, unknown>): string | null {
 function fmtVal(v: unknown): string {
   if (v == null) return "—"
   if (typeof v === "boolean") return v ? "是" : "否"
+  if (Array.isArray(v) && v.every((x) => typeof x === "string")) {
+    // 权限列表等字符串数组：逐项中文化（QA:审计里角色/权限直出英文关键字）,未知项回退原文
+    return v.length ? (v as string[]).map((x) => PERM_LABELS[x] ?? x).join("、") : "（无）"
+  }
   if (typeof v === "object" && !Array.isArray(v)) {
     const asBoolMap = fmtBoolMap(v as Record<string, unknown>)
     if (asBoolMap) return asBoolMap
@@ -102,9 +111,13 @@ export function diffRows(before: unknown, after: unknown): { key: string; label:
   const b = toObj(before)
   const a = toObj(after)
   const keys = Array.from(new Set([...Object.keys(b), ...Object.keys(a)]))
+  // role 字段的值也中文化（QA:审计里角色直出 ops/finance 英文关键字）
+  const ROLE_CN: Record<string, string> = { superadmin: "超级管理员", finance: "财务", ops: "运营", support: "客服" }
+  const fmt = (k: string, v: unknown): string =>
+    k === "role" && typeof v === "string" ? (ROLE_CN[v] ?? v) : fmtVal(v)
   return keys.map((k) => {
-    const bv = k in b ? fmtVal(b[k]) : "—"
-    const av = k in a ? fmtVal(a[k]) : "—"
+    const bv = k in b ? fmt(k, b[k]) : "—"
+    const av = k in a ? fmt(k, a[k]) : "—"
     return { key: k, label: fieldLabel(k), before: bv, after: av, changed: bv !== av }
   })
 }

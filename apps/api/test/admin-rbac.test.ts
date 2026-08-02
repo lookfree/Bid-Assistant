@@ -102,3 +102,16 @@ describe("PUT /rbac：矩阵可编辑", () => {
     expect(res.status).toBe(403)
   })
 })
+
+describe("账本页用户选择器（QA:财务有 ledger.read 无 user.read,整页不可用）", () => {
+  it("财务可用 /ledger/user-options（打码手机号）,全量用户接口仍 403", async () => {
+    await restoreDefaults()
+    const fin = await makeAdminSession("finance", regA)
+    const res = await app.request("http://x/admin-api/ledger/user-options", { headers: fin.headers })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { items: { id: string; name: string }[] }
+    // 展示名不含完整 11 位手机号（昵称或打码 138****1234）
+    for (const it of body.items.slice(0, 20)) expect(it.name).not.toMatch(/1\d{10}/)
+    expect((await app.request("http://x/admin-api/users?page=1&pageSize=10", { headers: fin.headers })).status).toBe(403)
+  })
+})

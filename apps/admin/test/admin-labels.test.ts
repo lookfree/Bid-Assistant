@@ -13,7 +13,7 @@ describe("运营后台展示映射：中文标签兜底", () => {
 describe("审计 diffRows：字段级前后对照", () => {
   it("合并两侧键，同值不标 changed，异值标 changed", () => {
     const rows = diffRows({ role: "ops", status: "active" }, { role: "finance", status: "active" })
-    expect(rows.find((r) => r.key === "role")).toMatchObject({ label: "角色", before: "ops", after: "finance", changed: true })
+    expect(rows.find((r) => r.key === "role")).toMatchObject({ label: "角色", before: "运营", after: "财务", changed: true })
     expect(rows.find((r) => r.key === "status")).toMatchObject({ before: "active", after: "active", changed: false })
   })
 
@@ -50,5 +50,31 @@ describe("fmtVal（经 diffRows 观察）：套餐 features 中文化（QA：生
     const rows = diffRows({ features: { newThing: true } }, { limits: { max: 3 } })
     expect(rows.find((r) => r.key === "features")!.before).toBe("newThing:开")
     expect(rows.find((r) => r.key === "limits")!.after).toBe('{"max":3}')
+  })
+})
+
+describe("审计对照中文化：角色键与权限数组（QA：不要英文关键字）", () => {
+  it("RBAC 矩阵审计：角色键→中文标签,权限数组→中文顿号相连", () => {
+    const rows = diffRows(
+      { finance: ["order.read", "ledger.read"] },
+      { finance: ["order.read", "ledger.read", "user.read"] },
+    )
+    const f = rows[0]!
+    expect(f.label).toBe("财务角色权限")
+    expect(f.before).toBe("查看订单、查看积分账本")
+    expect(f.after).toBe("查看订单、查看积分账本、查看用户")
+  })
+  it("空数组显示（无）,未知字符串回退原文", () => {
+    const rows = diffRows({ support: [] }, { support: ["mystery.perm"] })
+    expect(rows[0]!.before).toBe("（无）")
+    expect(rows[0]!.after).toBe("mystery.perm")
+  })
+})
+
+describe("role 字段值中文化", () => {
+  it("ops → 运营；未知值回退原文", () => {
+    const rows = diffRows({ role: "ops" }, { role: "finance" })
+    expect(rows[0]!.before).toBe("运营")
+    expect(rows[0]!.after).toBe("财务")
   })
 })

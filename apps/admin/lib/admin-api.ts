@@ -88,6 +88,8 @@ export const adminApi = {
     list: (p: { userId: string; type?: string; page?: number; pageSize?: number }) =>
       req<Paged<ApiLedgerTx>>(`/ledger${qs(p)}`),
     check: (userId: string) => req<{ userId: string; cached: number; actual: number; consistent: boolean }>(`/ledger/${userId}/check`),
+    // 账本页用户选择器（权限随本页 ledger.read;昵称/打码手机号,不含完整用户信息）
+    userOptions: () => req<{ items: { id: string; name: string }[] }>(`/ledger/user-options`),
   },
   overview: {
     get: () => req<ApiOverview>("/overview"),

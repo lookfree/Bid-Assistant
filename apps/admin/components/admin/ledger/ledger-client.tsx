@@ -71,10 +71,10 @@ export function LedgerClient() {
   useEffect(() => {
     async function loadUsers() {
       try {
-        const res = await adminApi.users.list({ pageSize: 100 })
-        const opts = res.items.map((u) => ({ id: u.id, name: u.nickname ?? u.phone ?? u.id }))
-        setUserOptions(opts)
-        if (opts.length > 0) setUserId(opts[0].id)
+        // 权限随本页（QA:财务有 ledger.read 无 user.read,借全量用户接口做选择器被 403,整页不可用）
+        const res = await adminApi.ledger.userOptions()
+        setUserOptions(res.items)
+        if (res.items.length > 0) setUserId(res.items[0].id)
       } catch {
         toast.error("加载用户失败")
       }
