@@ -28,6 +28,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { TablePagination } from "@/components/admin/table-pagination"
+import { formatDateTime } from "@/lib/format"
 import { adminApi, AdminApiError, type ApiAdmin, type ApiAuditLog } from "@/lib/admin-api"
 
 // 角色 → 中文标签。真实角色枚举固定为 superadmin/finance/ops/support（apps/api AdminRole）。
@@ -561,7 +562,7 @@ function AuditTab() {
             {paged.map((log) => (
               <TableRow key={log.id}>
                 <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
-                  {log.createdAt}
+                  {formatDateTime(log.createdAt)}
                 </TableCell>
                 <TableCell className="text-sm font-medium text-foreground">
                   {log.operator}
@@ -621,7 +622,7 @@ function AuditDiffDialog({ log, onClose }: { log: ApiAuditLog; onClose: () => vo
         </DialogHeader>
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
           <span>操作人：{log.operator}</span>
-          <span>时间：{log.createdAt}</span>
+          <span>时间：{formatDateTime(log.createdAt)}</span>
           <span>对象：{log.target ?? "-"}</span>
         </div>
         {rows.length === 0 ? (
