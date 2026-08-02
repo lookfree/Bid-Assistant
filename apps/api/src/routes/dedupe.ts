@@ -5,6 +5,7 @@ import { getDb } from "../db/client"
 import { projectFiles, dedupeRuns } from "../db/schema"
 import type { User } from "../db/schema"
 import { authMiddleware } from "../middleware/auth"
+import { getEntitlements, featureLocked } from "../services/entitlements"
 import { toCamel } from "../lib/case"
 import * as billing from "../services/billing-stub"
 import * as client from "../services/agent-client"
@@ -53,6 +54,12 @@ export function dedupeRoutes(deps: Partial<DedupeDeps> = {}) {
     }
     const userId = c.get("user").id
     const body = parsed.data
+
+    // 档位权益门禁（QA 假开关整改：dedupe 此前只是计费项,权限键无执行点）。显式 false 才拦,
+    // 先于属主校验/预扣——不触计费、无 hold 残留。
+    if (featureLocked(await getEntitlements(userId), "dedupe")) {
+      return c.json({ error: "feature_locked", feature: "dedupe" }, 403)
+    }
 
     // 每个 fileKey（含 tenderKey）属主校验：必须是本人已上传完成（status=uploaded）的文件；
     // 非本人/不存在/未完成一律 400 invalid_files（不触计费，也不向 agent 泄露他人对象 key）。

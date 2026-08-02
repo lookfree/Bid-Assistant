@@ -41,6 +41,7 @@ const dimLabels: Record<string, string> = { text: "文本", image: "图片", met
 function dedupeError(e: unknown): { status: number | null; msg: string } {
   const status = e instanceof ApiError ? e.status : null
   if (status === 402) return { status, msg: "积分不足，无法开始查重" }
+  if (status === 403) return { status, msg: "当前会员档位未包含标书查重权益，可在会员中心升级后使用" }
   if (status === 400) return { status, msg: "文件校验失败，请删除后重新上传再试" }
   if (status === 422) return { status, msg: "有文件解析失败：请确认为文本可读的 PDF / Word 文档（扫描件暂不支持）" }
   if (status === 502) return { status, msg: "查重服务暂时不可用，请稍后重试" }

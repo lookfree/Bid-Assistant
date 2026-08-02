@@ -294,8 +294,9 @@ export function useStep<T>(step: StepName) {
             : code === "package_required"
               ? "本项目为多包件招标，请先在「招标解读」页选择投标包件，再生成大纲"
               // 档位权益门禁（评审二轮 F15:此前无文案,个人版选企业模板被 403 只见笼统失败）
+              // 2026-08-02 起 export/riskReview 也走此码（QA 假开关整改）,文案不再特指 PPT 模板
               : code === "feature_locked"
-                ? "当前会员档位未包含该功能权益（如企业 PPT 模板），可在会员中心升级后重试"
+                ? "当前会员档位未包含该功能权益，可在会员中心升级后重试"
                 : stepErrorMessage(status))
         return null
       } finally {
@@ -321,7 +322,9 @@ export function useStep<T>(step: StepName) {
   const errorAction: { href: string; label: string } | null =
     errorStatus === 402
       ? { href: "/membership", label: "去充值" }
-      : errorCode === "package_required"
+      : errorCode === "feature_locked"
+        ? { href: "/membership", label: "去会员中心" }
+        : errorCode === "package_required"
         ? { href: "/read", label: "去选择包件" }
         : prereq
           ? { href: prereq.href, label: `前往${prereq.label}` }

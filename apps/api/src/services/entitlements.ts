@@ -16,6 +16,11 @@ export type Entitlements = { member: boolean; features: Record<string, unknown> 
 // TTL 60s:运营改免费档权益最迟一分钟生效,与「无缓存直查」的付费档不冲突（付费档仍逐请求查）。
 let freeCache: { features: Record<string, unknown>; exp: number } | null = null
 
+/** 测试用：清掉免费档 features 缓存（测试内改 plans.features 后立即生效,不等 60s TTL）。 */
+export function resetFreeEntitlementsCache(): void {
+  freeCache = null
+}
+
 export async function getEntitlements(userId: string): Promise<Entitlements> {
   const db = getDb()
   const [row] = await db

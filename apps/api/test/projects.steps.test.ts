@@ -7,6 +7,7 @@ import { getDb, closeDb } from "../src/db/client"
 import { users, bidProjects, projectSteps, projectFiles, libraryItems, plans, subscriptions } from "../src/db/schema"
 import { ContentTiersConfigError, holdAmountFor, type ContentTier } from "../src/services/content-pricing"
 import { uniquePhone, TEST_TIMEOUT_MS } from "./repos/helpers"
+import { resetFreeEntitlementsCache } from "../src/services/entitlements"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连真库
 
@@ -679,6 +680,65 @@ describe("GET /:id/steps/:step/events 进度事件流", () => {
       expect(slots.length).toBe(0) // 未占步位（上抛点仍在 acquireStepSlot 之前）
     } finally {
       holdAmountFault = "none"
+    }
+  })
+})
+
+// 档位权益门禁（2026-08-02 QA 整改）：export/riskReview 此前只是配置键、无执行点——后台把免费版
+// 权限清了/置 false,免费用户照样导出 PDF、跑废标检查(QA 实测)。现接上执行点:显式 false 即 403,
+// 先于占位/预扣(无 hold 残留、不占步位)。
+describe("档位权益门禁：export / riskReview 假开关接线", () => {
+  const setFreeFeature = async (key: string, val: boolean | null) => {
+    const rows = await getDb().select({ id: plans.id, features: plans.features }).from(plans).where(eq(plans.code, "free"))
+    for (const r of rows) {
+      const f = { ...((r.features as Record<string, unknown>) ?? {}) }
+      if (val === null) delete f[key]
+      else f[key] = val
+      await getDb().update(plans).set({ features: f }).where(eq(plans.id, r.id))
+    }
+    resetFreeEntitlementsCache()
+  }
+
+  const mkProject = async (currentStep: string) => {
+    const [p] = await getDb().insert(bidProjects)
+      .values({ userId, threadId: `proj-${crypto.randomUUID()}`, tenderFileKey: "uploads/x/tender.pdf",
+                name: "gate", currentStep, status: "running" })
+      .returning()
+    return p!.id
+  }
+
+  it("features.export=false → 导出 403 feature_locked，不占步位不预扣；恢复后照常", async () => {
+    const pid = await mkProject("export")
+    const before = captured.preDeductSteps.length
+    try {
+      await setFreeFeature("export", false)
+      const res = await app.request(`/api/projects/${pid}/steps/export`, { method: "POST", headers: auth() })
+      expect(res.status).toBe(403)
+      expect(await res.json()).toEqual({ error: "feature_locked", feature: "export" })
+      expect(captured.preDeductSteps.length).toBe(before)  // 未预扣
+      const rows = await getDb().select().from(projectSteps)
+        .where(and(eq(projectSteps.projectId, pid), eq(projectSteps.step, "export")))
+      expect(rows.length).toBe(0)                          // 未占步位
+    } finally {
+      await setFreeFeature("export", true)
+    }
+    const ok = await app.request(`/api/projects/${pid}/steps/export`, { method: "POST", headers: auth() })
+    expect(ok.status).toBe(200)                            // 恢复 true 即放行
+  })
+
+  it("features.riskReview=false → 废标检查 403；缺键（清除权限）按语义放行", async () => {
+    const pid = await mkProject("review")
+    try {
+      await setFreeFeature("riskReview", false)
+      const res = await app.request(`/api/projects/${pid}/steps/review`, { method: "POST", headers: auth() })
+      expect(res.status).toBe(403)
+      expect(await res.json()).toEqual({ error: "feature_locked", feature: "riskReview" })
+      // 缺键 = 未配置,一律放行(featureLocked 既有语义:清除权限≠禁用,置 false 才禁)
+      await setFreeFeature("riskReview", null)
+      const res2 = await app.request(`/api/projects/${pid}/steps/review`, { method: "POST", headers: auth() })
+      expect(res2.status).toBe(200)
+    } finally {
+      await setFreeFeature("riskReview", true)
     }
   })
 })

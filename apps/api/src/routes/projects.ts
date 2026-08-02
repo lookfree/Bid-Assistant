@@ -697,10 +697,21 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const p = await ownedProject(id, userId)
     if (!p) return c.json({ error: "not_found" }, 404)
 
-    // 档位权益门禁（评审修正,方案 A）：企业 PPT 模板是档位权益,features.pptTemplate 显式 false
-    // 且本次真带了模板才拦（先于占位/预扣,不留残行不占额度）;不带模板照常走既有校验链。
-    if (runInput.enterprise_template_key != null && featureLocked(await getEntitlements(userId), "pptTemplate")) {
-      return c.json({ error: "feature_locked", feature: "pptTemplate" }, 403)
+    // 档位权益门禁（先于占位/预扣,不留残行不占额度）。显式 false 才拦（缺键放行,featureLocked 语义）：
+    // - pptTemplate：企业 PPT 模板,本次真带了模板才拦;
+    // - export / riskReview：QA 实测的假开关——此前只是配置键、无任何执行点,后台拨了不生效
+    //   （免费版清权限照样导出/废标检查）。接上执行点;线上各档现值全 true,行为不变、开关变真。
+    if (step === "export" || step === "review" || runInput.enterprise_template_key != null) {
+      const ents = await getEntitlements(userId)
+      if (runInput.enterprise_template_key != null && featureLocked(ents, "pptTemplate")) {
+        return c.json({ error: "feature_locked", feature: "pptTemplate" }, 403)
+      }
+      if (step === "export" && featureLocked(ents, "export")) {
+        return c.json({ error: "feature_locked", feature: "export" }, 403)
+      }
+      if (step === "review" && featureLocked(ents, "riskReview")) {
+        return c.json({ error: "feature_locked", feature: "riskReview" }, 403)
+      }
     }
 
     // 跳步校验：只允许推进「当前步」（draft 项目限 read），避免与 agent checkpoint 顺序错位。

@@ -98,15 +98,15 @@ type PlanForm = {
 }
 
 // 权益中文标签（参考产品定价图）：仅展示已开启项。
+// 只陈列**有执行点**的权限键（2026-08-02 QA 整改：fullDedupe/priorityQueue/longHistory 是
+// 拨了没反应的假开关——C 端无任何检查,陈列会误导运营以为能收紧。存量配置里的键保留不动,
+// featureLocked 缺键放行,等功能真做了再加回来）。
 export const FEATURE_LABELS: Record<string, string> = {
   export: "导出 Word/PDF",
   riskReview: "废标风险审查",
   dedupe: "标书查重",
   rewrite: "逐章重写/一键改写",
-  fullDedupe: "全维度指纹查重",
   pptTemplate: "企业 PPT 模板",
-  priorityQueue: "优先算力队列",
-  longHistory: "历史项目长期保存",
 }
 
 function toCreditCosts(configs: Record<string, unknown>): CreditCosts {
