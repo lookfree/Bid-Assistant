@@ -210,3 +210,19 @@ describe("spec319 model-config: saveErrorMessage", () => {
     expect(saveErrorMessage("weird_code")).toBe("保存失败，请重试")
   })
 })
+
+describe("saveErrorMessage：带具体原因（QA：只见「保存失败，请重试」不知错在哪）", () => {
+  it("链路测活失败 → 点名条目与原因", () => {
+    expect(saveErrorMessage("chain_member_test_failed", "Authentication Fails 401", "m_ds")).toBe(
+      "编排链中的模型「m_ds」连通性测试未通过：Authentication Fails 401",
+    )
+  })
+  it("参数不合法 → 透出服务端校验原文", () => {
+    expect(saveErrorMessage("invalid_params", "model m1: model 不可为空")).toBe("参数不合法：model m1: model 不可为空")
+  })
+  it("无 detail 时保持旧文案（不显示 undefined）", () => {
+    expect(saveErrorMessage("invalid_params")).toBe("参数超出范围")
+    expect(saveErrorMessage(undefined)).toBe("保存失败，请重试")
+    expect(saveErrorMessage("chain_member_test_failed")).toBe("编排链中的模型连通性测试未通过：请检查 API Key 与地址")
+  })
+})

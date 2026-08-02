@@ -64,7 +64,7 @@ export function ModelsClient() {
     } catch (e) {
       setCfg(prevCfg)
       setSavedCfg(prevSaved)
-      toast.error(e instanceof AdminApiError ? saveErrorMessage(e.code) : "保存失败，请重试")
+      toast.error(e instanceof AdminApiError ? saveErrorMessage(e.code, e.detail, e.entryId) : "保存失败，请重试")
     }
   }
 
@@ -77,7 +77,7 @@ export function ModelsClient() {
       setSavedCfg(payload)
       toast.success(successMessage)
     } catch (e) {
-      toast.error(e instanceof AdminApiError ? saveErrorMessage(e.code) : "保存失败，请重试")
+      toast.error(e instanceof AdminApiError ? saveErrorMessage(e.code, e.detail, e.entryId) : "保存失败，请重试")
     } finally {
       setSaving(false)
     }
@@ -109,6 +109,13 @@ export function ModelsClient() {
     })
   }
 
+  /** PUT 载荷剔除未落库草稿（QA:新增卡未填完时,保存别的卡/启停/取消统统 400「model 不可为空」——
+   *  整份 PUT 把空草稿一并送去校验）。keepIds:本次动作要落库的新条目（如首次保存参数的那张卡）。 */
+  function persistableModels(models: ModelEntry[], keepIds: string[] = []): ModelEntry[] {
+    if (!savedCfg) return models
+    return models.filter((m) => keepIds.includes(m.id) || savedCfg.models.some((sm) => sm.id === m.id))
+  }
+
   function handleToggleEnable(id: string, v: boolean) {
     if (!cfg || !savedCfg) return
     // 停用一个仍在运行编排中的模型：客户端先拦（准确文案），不要靠后端 400 回滚——那会误报
@@ -117,20 +124,28 @@ export function ModelsClient() {
       toast.error("该模型在运行编排中使用，请先从降级链移除再停用")
       return
     }
-    const models = cfg.models.map((m) => (m.id === id ? { ...m, enabled: v } : m))
+    const localModels = cfg.models.map((m) => (m.id === id ? { ...m, enabled: v } : m))
+    const models = persistableModels(localModels, [id])
     void persistInstant(
       { models, chain: persistedChainFor(savedCfg.chain, models) },
-      { models, chain: cfg.chain },
+      { models: localModels, chain: cfg.chain },
       v ? "模型已启用" : "模型已停用",
     )
   }
 
   function handleDelete(id: string) {
     if (!cfg || !savedCfg) return
-    const models = cfg.models.filter((m) => m.id !== id)
+    const localModels = cfg.models.filter((m) => m.id !== id)
+    // 未落库草稿（新增后从未保存,取消按钮走的就是这条）：纯本地丢弃,不发 PUT——
+    // 发了不仅多余,还会因其它空草稿被校验拒掉（QA:「添加新模型后点击取消时报错」）。
+    if (!savedCfg.models.some((m) => m.id === id)) {
+      setCfg({ ...cfg, models: localModels, chain: cfg.chain.filter((cid) => cid !== id) })
+      return
+    }
+    const models = persistableModels(localModels)
     void persistInstant(
       { models, chain: persistedChainFor(savedCfg.chain, models, id) },
-      { models, chain: cfg.chain.filter((cid) => cid !== id) },
+      { models: localModels, chain: cfg.chain.filter((cid) => cid !== id) },
       "已删除模型",
     )
   }
@@ -151,11 +166,13 @@ export function ModelsClient() {
 
   function handleSaveModel(next: ModelEntry) {
     if (!cfg || !savedCfg) return
-    const models = cfg.models.map((m) => (m.id === next.id ? next : m))
-    // 存参数是即时动作，同样只提交 models，链用已保存链（不裹挟未确认的链编辑）。
+    const localModels = cfg.models.map((m) => (m.id === next.id ? next : m))
+    // 存参数是即时动作，同样只提交 models，链用已保存链（不裹挟未确认的链编辑）；
+    // 本卡（keepIds）要落库,其它未落库空草稿留在本地不进 PUT。
+    const models = persistableModels(localModels, [next.id])
     void persistExplicit(
       { models, chain: persistedChainFor(savedCfg.chain, models) },
-      { models, chain: cfg.chain },
+      { models: localModels, chain: cfg.chain },
       "模型参数已保存",
     )
   }
@@ -187,8 +204,9 @@ export function ModelsClient() {
       toast.error(saveErrorMessage("chain_requires_tested_models"))
       return
     }
-    // 唯一持久化链变更的入口：整份提交 cfg（含 pending 链）。
-    void persistExplicit(cfg, cfg, "运行编排已保存并生效")
+    // 唯一持久化链变更的入口：整份提交（含 pending 链）;链成员必须随载荷落库,其余空草稿剔除。
+    const models = persistableModels(cfg.models, cfg.chain)
+    void persistExplicit({ models, chain: cfg.chain }, cfg, "运行编排已保存并生效")
   }
 
   if (loading || !cfg) {

@@ -158,15 +158,18 @@ export function chainSummary(cfg: ModelConfig): string {
 }
 
 // PUT 400 的 error code → 可读提示；未知 code 给通用失败文案。
-export function saveErrorMessage(error?: string): string {
+export function saveErrorMessage(error?: string, detail?: string, entryId?: string): string {
   switch (error) {
     case "chain_requires_tested_models":
       return "降级链里有未测试通过的模型，请先测试"
+    case "chain_member_test_failed":
+      // 保存时服务端会对链路成员真实测活（防无效 key 上链）——失败点名条目与原因
+      return `编排链中的模型${entryId ? `「${entryId}」` : ""}连通性测试未通过：${detail ?? "请检查 API Key 与地址"}`
     case "invalid_params":
-      return "参数超出范围"
+      return detail ? `参数不合法：${detail}` : "参数超出范围"
     case "unknown_provider":
-      return "未知服务商"
+      return detail ? `未知服务商：${detail}` : "未知服务商"
     default:
-      return "保存失败，请重试"
+      return detail ? `保存失败：${detail}` : "保存失败，请重试"
   }
 }

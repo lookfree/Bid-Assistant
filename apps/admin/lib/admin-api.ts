@@ -8,9 +8,10 @@ const baseUrl = process.env.NEXT_PUBLIC_ADMIN_API_BASE_URL ?? "/admin-api"
 // code：best-effort 解析出的错误体 { error } 字段（如 models 路由的 chain_requires_tested_models），
 // 供需要按错误码区分提示的调用方（如模型管理保存）使用；无法解析时为 undefined。
 export class AdminApiError extends Error {
-  constructor(public status: number, public code?: string) {
+  constructor(public status: number, public code?: string, public detail?: string, public entryId?: string) {
     // message 优先用服务端给的原因：退款等接口把可读中文原因放在 body.error，
     // 只显示「admin api 422」等于把唯一有用的信息丢掉，运营根本不知道该怎么办（生产实测）。
+    // detail/entryId（2026-08-02）：服务端校验/测活失败的具体原因与条目 id,展示层拼具体文案。
     super(code || `admin api ${status}`)
   }
 }
@@ -23,8 +24,8 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   if (token) headers.set("Authorization", `Bearer ${token}`)
   const res = await fetch(`${baseUrl}${path}`, { ...init, headers })
   if (!res.ok) {
-    const body = (await res.json().catch(() => undefined)) as { error?: string } | undefined
-    throw new AdminApiError(res.status, body?.error)
+    const body = (await res.json().catch(() => undefined)) as { error?: string; detail?: string; id?: string } | undefined
+    throw new AdminApiError(res.status, body?.error, body?.detail, body?.id)
   }
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T)
 }

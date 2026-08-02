@@ -382,7 +382,10 @@ function RolesTab() {
       toast.success("角色权限已保存", { description: "各角色的菜单与按钮将按新矩阵生效（约 1 分钟内）。" })
       setDirty(false)
     } catch (e) {
-      toast.error(e instanceof AdminApiError && e.status === 403 ? "无权限：需要 admin.manage" : "保存失败，请重试")
+      toast.error(
+        e instanceof AdminApiError
+          ? e.status === 403 ? "无权限：需要 admin.manage" : (e.detail ? `保存失败：${e.detail}` : "保存失败，请重试")
+          : "保存失败，请重试")
     } finally {
       setSaving(false)
     }

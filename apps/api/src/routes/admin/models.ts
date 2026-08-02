@@ -37,8 +37,9 @@ modelsRouter.put("/", requirePermission("config.write"), async (c) => {
     await retestChain(merged, testModel)
     await saveModelConfig(merged)
   } catch (e) {
-    if (e instanceof UnknownProviderError) return c.json({ error: "unknown_provider" }, 400)
-    if (e instanceof InvalidParamsError) return c.json({ error: "invalid_params" }, 400)
+    // 失败必须带具体原因（QA:只见「保存失败,请重试」,运营不知道错在哪个条目哪个字段）
+    if (e instanceof UnknownProviderError) return c.json({ error: "unknown_provider", detail: e.message }, 400)
+    if (e instanceof InvalidParamsError) return c.json({ error: "invalid_params", detail: e.message }, 400)
     if (e instanceof ChainRequiresTestedError) return c.json({ error: "chain_requires_tested_models" }, 400)
     if (e instanceof ChainMemberTestFailedError)
       return c.json({ error: "chain_member_test_failed", id: e.id, detail: e.detail }, 400)
