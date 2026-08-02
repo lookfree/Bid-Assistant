@@ -34,3 +34,21 @@ describe("审计 diffRows：字段级前后对照", () => {
     expect(diffRows(null, null)).toEqual([])
   })
 })
+
+describe("fmtVal（经 diffRows 观察）：套餐 features 中文化（QA：生 JSON 运营看不懂）", () => {
+  it("全布尔对象 → 中文键 + 开/关；变更行照常标 changed", () => {
+    const rows = diffRows(
+      { features: { dedupe: true, export: true } },
+      { features: { dedupe: false, export: true } },
+    )
+    const f = rows.find((r) => r.key === "features")!
+    expect(f.before).toBe("标书查重:开、导出 Word/PDF:开")
+    expect(f.after).toBe("标书查重:关、导出 Word/PDF:开")
+    expect(f.changed).toBe(true)
+  })
+  it("未知键回退原键名；非纯布尔对象仍走 JSON", () => {
+    const rows = diffRows({ features: { newThing: true } }, { limits: { max: 3 } })
+    expect(rows.find((r) => r.key === "features")!.before).toBe("newThing:开")
+    expect(rows.find((r) => r.key === "limits")!.after).toBe('{"max":3}')
+  })
+})

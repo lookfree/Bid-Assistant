@@ -63,9 +63,34 @@ export const actionLabel = (a: string) => ACTION_LABELS[a] ?? a
 export const fieldLabel = (k: string) => FIELD_LABELS[k] ?? k
 
 /** 单个快照值 → 展示字符串（null→—；布尔→是/否；对象→JSON；其余 String）。 */
+// 权益键中文（QA：审计对照里 features 直出 {"dedupe":false,...} 生 JSON，运营看不懂）。
+// 与 plans-client 的 FEATURE_LABELS 同口径；未知键回退原键名（历史配置里可能有已下架的键）。
+const FEATURE_CN: Record<string, string> = {
+  export: "导出 Word/PDF",
+  riskReview: "废标风险审查",
+  dedupe: "标书查重",
+  rewrite: "逐章重写/一键改写",
+  pptTemplate: "企业 PPT 模板",
+  fullDedupe: "全维度指纹查重",
+  priorityQueue: "优先算力队列",
+  longHistory: "历史项目长期保存",
+}
+
+/** 全布尔对象（如套餐 features）→ "标书查重:关、导出:开…"；其余对象仍 JSON。 */
+function fmtBoolMap(o: Record<string, unknown>): string | null {
+  const entries = Object.entries(o)
+  if (entries.length === 0 || !entries.every(([, v]) => typeof v === "boolean")) return null
+  return entries.map(([k, v]) => `${FEATURE_CN[k] ?? k}:${v ? "开" : "关"}`).join("、")
+}
+
 function fmtVal(v: unknown): string {
   if (v == null) return "—"
   if (typeof v === "boolean") return v ? "是" : "否"
+  if (typeof v === "object" && !Array.isArray(v)) {
+    const asBoolMap = fmtBoolMap(v as Record<string, unknown>)
+    if (asBoolMap) return asBoolMap
+    return JSON.stringify(v)
+  }
   if (typeof v === "object") return JSON.stringify(v)
   return String(v)
 }
