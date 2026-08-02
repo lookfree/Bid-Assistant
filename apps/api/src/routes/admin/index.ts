@@ -2,6 +2,7 @@ import { Hono } from "hono"
 import { z } from "zod"
 import { loginAdmin, logoutAdmin } from "../../services/admin-auth"
 import { requireAdmin, bearer } from "../../middleware/admin-auth"
+import { getRoleMatrix } from "../../services/admin-rbac"
 import { resolvePaymentDeps } from "../payment"
 import type { RefundProvider } from "../../services/refunds"
 import type { AdminUser } from "../../db/schema"
@@ -43,10 +44,13 @@ export function adminRoutes(deps: { resolveRefundProvider?: () => RefundProvider
     return c.body(null, 204)
   })
 
-  // 鉴权：当前 admin
-  r.get("/me", requireAdmin(), (c) => {
+  // 鉴权：当前 admin。permissions=该角色的生效权限集（可编辑矩阵）——前端菜单过滤与按钮禁用
+  // 的唯一依据,前端不复制矩阵（复制必漂移）。
+  r.get("/me", requireAdmin(), async (c) => {
     const a = c.var.admin
-    return c.json({ admin: { id: a.id, username: a.username, role: a.role, status: a.status } })
+    const matrix = await getRoleMatrix()
+    return c.json({ admin: { id: a.id, username: a.username, role: a.role, status: a.status,
+                             permissions: matrix[a.role] ?? [] } })
   })
 
   // spec310 功能页：统一先过 requireAdmin（读=登录；写=各路由内 requirePermission）。

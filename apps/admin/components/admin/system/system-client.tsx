@@ -356,7 +356,36 @@ function CreateAdminDialog({ onClose, onCreated }: { onClose: () => void; onCrea
 function RolesTab() {
   const [permissions, setPermissions] = useState<string[]>([])
   const [roles, setRoles] = useState<Record<string, string[]>>({})
+  const [editable, setEditable] = useState<string[]>([])   // 服务端声明的可编辑角色（superadmin 恒不可改）
+  const [dirty, setDirty] = useState(false)
+  const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
+
+  /** 勾/去勾一个权限点（仅可编辑角色;admin.manage 不可外配,由后端二次把关）。 */
+  const toggle = (role: string, perm: string, on: boolean) => {
+    setRoles((prev) => {
+      const cur = new Set(prev[role] ?? [])
+      if (on) cur.add(perm)
+      else cur.delete(perm)
+      return { ...prev, [role]: [...cur] }
+    })
+    setDirty(true)
+  }
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      const body: Record<string, string[]> = {}
+      for (const r of editable) body[r] = roles[r] ?? []
+      await adminApi.system.saveRbac(body)
+      toast.success("角色权限已保存", { description: "各角色的菜单与按钮将按新矩阵生效（约 1 分钟内）。" })
+      setDirty(false)
+    } catch (e) {
+      toast.error(e instanceof AdminApiError && e.status === 403 ? "无权限：需要 admin.manage" : "保存失败，请重试")
+    } finally {
+      setSaving(false)
+    }
+  }
 
   useEffect(() => {
     let alive = true
@@ -366,6 +395,7 @@ function RolesTab() {
         if (alive) {
           setPermissions(res.permissions)
           setRoles(res.roles)
+          setEditable(res.editableRoles ?? [])
         }
       } catch {
         if (alive) toast.error("加载角色权限失败")
@@ -387,7 +417,8 @@ function RolesTab() {
       <CardHeader>
         <CardTitle>角色权限矩阵 (RBAC)</CardTitle>
         <CardDescription>
-          只读展示各角色的真实权限。权限由后端把关，此矩阵没有可持久化的开关，勾选状态不可编辑。
+          勾选即授予：角色没有的权限，对应菜单不显示、操作按钮不可用。superadmin 恒全权不可编辑；
+          账号管理（admin.manage）仅 superadmin 持有，不可配置给其他角色。改动保存后约 1 分钟内全量生效。
         </CardDescription>
       </CardHeader>
       <CardContent className="overflow-x-auto">
@@ -417,10 +448,13 @@ function RolesTab() {
                 </TableCell>
                 {roleKeys.map((r) => {
                   const checked = roles[r]?.includes(perm) ?? false
+                  // superadmin 恒全权;admin.manage 不可外配——两类格子只读,其余可编辑
+                  const locked = !editable.includes(r) || perm === "admin.manage"
                   return (
                     <TableCell key={r} className="text-center">
                       <div className="flex justify-center">
-                        <Switch checked={checked} disabled />
+                        <Switch checked={checked} disabled={locked}
+                                onCheckedChange={(v) => toggle(r, perm, v)} />
                       </div>
                     </TableCell>
                   )
@@ -439,6 +473,11 @@ function RolesTab() {
             )}
           </TableBody>
         </Table>
+        <div className="mt-4 flex justify-end">
+          <Button onClick={() => void save()} disabled={!dirty || saving}>
+            {saving ? "保存中…" : "保存权限矩阵"}
+          </Button>
+        </div>
       </CardContent>
     </Card>
   )

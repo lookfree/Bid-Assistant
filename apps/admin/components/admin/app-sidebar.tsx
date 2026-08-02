@@ -17,6 +17,7 @@ import {
 } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { usePermissions, visibleNav } from "@/lib/admin-perms"
 import {
   Sidebar,
   SidebarContent,
@@ -30,21 +31,24 @@ import {
   SidebarRail,
 } from "@/components/ui/sidebar"
 
+// 菜单 → 权限点绑定（2026-08-02 可编辑 RBAC）：perm 缺省=登录即可见（概览）。
+// 角色没有对应权限点的菜单**直接不渲染**;权限集来自 /me（服务端矩阵）,前端不复制矩阵。
 const nav = [
   { title: "概览看板", url: "/", icon: LayoutDashboard },
-  { title: "用户与会员", url: "/users", icon: Users },
-  { title: "订单与对账", url: "/orders", icon: Receipt },
-  { title: "积分账本审计", url: "/ledger", icon: BookText },
-  { title: "套餐与积分口径", url: "/plans", icon: SlidersHorizontal },
-  { title: "模型管理", url: "/models", icon: BrainCircuit },
-  { title: "反馈工单", url: "/feedback", icon: MessageSquare },
-  { title: "发票管理", url: "/invoices", icon: FileText },
-  { title: "标书分类纠偏", url: "/bid-categories", icon: Tags },
-  { title: "系统与权限", url: "/system", icon: ShieldCheck },
+  { title: "用户与会员", url: "/users", icon: Users, perm: "user.read" },
+  { title: "订单与对账", url: "/orders", icon: Receipt, perm: "order.read" },
+  { title: "积分账本审计", url: "/ledger", icon: BookText, perm: "ledger.read" },
+  { title: "套餐与积分口径", url: "/plans", icon: SlidersHorizontal, perm: "plan.write" },
+  { title: "模型管理", url: "/models", icon: BrainCircuit, perm: "config.write" },
+  { title: "反馈工单", url: "/feedback", icon: MessageSquare, perm: "feedback.read" },
+  { title: "发票管理", url: "/invoices", icon: FileText, perm: "invoice.write" },
+  { title: "标书分类纠偏", url: "/bid-categories", icon: Tags, perm: "category.read" },
+  { title: "系统与权限", url: "/system", icon: ShieldCheck, perm: "admin.manage" },
 ]
 
 export function AppSidebar() {
   const pathname = usePathname()
+  const perms = usePermissions()
 
   return (
     <Sidebar collapsible="icon">
@@ -73,7 +77,7 @@ export function AppSidebar() {
         <SidebarGroup>
           <SidebarGroupLabel>运营模块</SidebarGroupLabel>
           <SidebarMenu>
-            {nav.map((item) => {
+            {visibleNav(nav, perms).map((item) => {
               const active =
                 item.url === "/"
                   ? pathname === "/"

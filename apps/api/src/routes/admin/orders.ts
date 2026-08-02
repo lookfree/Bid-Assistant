@@ -10,7 +10,7 @@ import type { AdminUser } from "../../db/schema"
 // 订单页（spec310）：列表/详情只读；退款审批单独收口为 /admin-api/refunds（refund.write + 审计 + spec306）。
 export const ordersRouter = new Hono<{ Variables: { admin: AdminUser } }>()
 
-ordersRouter.get("/", async (c) => {
+ordersRouter.get("/", requirePermission("order.read"), async (c) => {
   let pg
   try {
     pg = parsePagination(c.req.query())
@@ -26,7 +26,7 @@ ordersRouter.get("/", async (c) => {
   })
   return c.json(pagedBody(pg, result))
 })
-ordersRouter.get("/:id", async (c) => c.json(await getOrderDetail(c.req.param("id"))))
+ordersRouter.get("/:id", requirePermission("order.read"), async (c) => c.json(await getOrderDetail(c.req.param("id"))))
 
 const RefundBody = z.object({ orderId: z.string().uuid(), amount: z.number().int().positive(), reason: z.string().min(1), allowNegativeBalance: z.boolean().optional(), idempotencyKey: z.string().min(1).optional() })
 

@@ -29,7 +29,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T)
 }
 
-export type AdminMe = { id: string; username: string; role: string; status: string }
+export type AdminMe = { id: string; username: string; role: string; status: string; permissions?: string[] }
 
 export const adminApi = {
   login: (username: string, password: string) =>
@@ -99,7 +99,9 @@ export const adminApi = {
     updateAdmin: (id: string, patch: { role?: string; status?: string; password?: string }) =>
       req<ApiAdmin>(`/admins/${id}`, { method: "PUT", body: JSON.stringify(patch) }),
     auditLogs: (p: { page?: number; pageSize?: number } = {}) => req<Paged<ApiAuditLog>>(`/audit-logs${qs(p)}`),
-    rbac: () => req<{ permissions: string[]; roles: Record<string, string[]> }>("/rbac"),
+    rbac: () => req<{ permissions: string[]; roles: Record<string, string[]>; editableRoles: string[] }>("/rbac"),
+    saveRbac: (roles: Record<string, string[]>) =>
+      req<{ ok: boolean }>("/rbac", { method: "PUT", body: JSON.stringify(roles) }),
   },
   // 模型管理（spec319 + spec319.1）：GET/PUT 整份 {models,chain}（camelCase），POST /test 单独探测
   // 一个模型（自建端点加 base_url/api_key），POST /list-models 拉自建端点可用模型列表。

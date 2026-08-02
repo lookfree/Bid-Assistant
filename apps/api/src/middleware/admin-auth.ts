@@ -1,7 +1,8 @@
 import { createMiddleware } from "hono/factory"
 import type { Context } from "hono"
 import { resolveAdminFromToken } from "../services/admin-auth"
-import { hasPermission, type Permission } from "../services/rbac"
+import type { Permission } from "../services/rbac"
+import { roleHasPermission } from "../services/admin-rbac"
 import type { AdminUser, AdminRole } from "../db/schema"
 
 // RBAC 中间件（spec309）：解析 admin session → 注入 c.var.admin → 校验角色/权限。
@@ -36,7 +37,7 @@ export function requirePermission(perm: Permission) {
   return createMiddleware<AdminVars>(async (c, next) => {
     const admin = await authenticateAdmin(c)
     if (!admin) return c.json({ error: "unauthorized" }, 401)
-    if (!hasPermission(admin.role, perm)) return c.json({ error: "forbidden" }, 403)
+    if (!(await roleHasPermission(admin.role, perm))) return c.json({ error: "forbidden" }, 403)
     c.set("admin", admin)
     await next()
   })

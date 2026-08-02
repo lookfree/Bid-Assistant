@@ -7,7 +7,7 @@ import type { AdminUser } from "../../db/schema"
 // 对账差异工作台路由（spec310）：列表=登录；处置/修复=refund.write（对账属 finance，涉及补入账）。
 export const diffsRouter = new Hono<{ Variables: { admin: AdminUser } }>()
 
-diffsRouter.get("/", async (c) => {
+diffsRouter.get("/", requirePermission("order.read"), async (c) => {
   let pg
   try {
     pg = parsePagination(c.req.query())

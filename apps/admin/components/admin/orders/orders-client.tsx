@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
+import { useCan } from "@/lib/admin-perms"
 import { Textarea } from "@/components/ui/textarea"
 import { Separator } from "@/components/ui/separator"
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
@@ -385,6 +386,9 @@ function RefundDialog({
   order: OrderRow
   onConfirm: (amountCents: number, reason: string, idempotencyKey: string) => void
 }) {
+  const can = useCan()
+  // 按钮权限（2026-08-02 可编辑 RBAC）：没有 refund.write 的角色（如 support 只读订单）不渲染退款入口
+  if (!can("refund.write")) return null
   const [open, setOpen] = useState(false)
   const [amount, setAmount] = useState(String(order.amount))
   const [reason, setReason] = useState("")

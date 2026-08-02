@@ -4,16 +4,39 @@ import { requirePermission } from "../../middleware/admin-auth"
 import { parsePagination, pagedBody } from "../../lib/pagination"
 import { listAdmins, createAdminAccount, updateAdminAccount, listAuditLogs, AdminAccountError } from "../../services/admin/admin-accounts"
 import { findAdminByUsername } from "../../repos/admin-users"
-import { ROLE_PERMISSIONS, PERMISSIONS } from "../../services/rbac"
+import { PERMISSIONS } from "../../services/rbac"
+import { writeAudit } from "../../services/audit"
+import { getRoleMatrix, saveRoleMatrix, InvalidRbacError, EDITABLE_ROLES } from "../../services/admin-rbac"
 import type { AdminUser } from "../../db/schema"
 
 // 系统页（spec310）：运营账号管理=admin.manage（仅 superadmin）；审计日志查询=audit.read。
 export const systemRouter = new Hono<{ Variables: { admin: AdminUser } }>()
 
-// 角色权限矩阵（spec313）：系统的固定 RBAC，供后台权限页真实展示（非 mock）。
-systemRouter.get("/rbac", requirePermission("admin.manage"), (c) =>
-  c.json({ permissions: PERMISSIONS, roles: ROLE_PERMISSIONS }),
+// 角色权限矩阵：2026-08-02 起可编辑（存 billing_configs,superadmin 恒全权不可改）。
+// GET 返回生效矩阵;PUT 保存 finance/ops/support 三角色的权限集（admin.manage 才能改）。
+systemRouter.get("/rbac", requirePermission("admin.manage"), async (c) =>
+  c.json({ permissions: PERMISSIONS, roles: await getRoleMatrix(), editableRoles: EDITABLE_ROLES }),
 )
+
+systemRouter.put("/rbac", requirePermission("admin.manage"), async (c) => {
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+  if (body == null || typeof body !== "object") return c.json({ error: "invalid_input" }, 400)
+  const before = await getRoleMatrix()
+  try {
+    await saveRoleMatrix(body)
+  } catch (e) {
+    if (e instanceof InvalidRbacError) return c.json({ error: "invalid_rbac", detail: e.message }, 400)
+    throw e
+  }
+  await writeAudit({
+    operator: c.var.admin.username,
+    action: "config.write",
+    target: "config:admin_rbac",
+    before,
+    after: await getRoleMatrix(),
+  })
+  return c.json({ ok: true })
+})
 
 systemRouter.get("/admins", requirePermission("admin.manage"), async (c) => {
   let pg

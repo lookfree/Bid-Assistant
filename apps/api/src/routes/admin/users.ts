@@ -5,10 +5,10 @@ import { parsePagination, pagedBody } from "../../lib/pagination"
 import { listUsers, getUserDetail, banUser, unbanUser, adminGrantCredits, setUserNote } from "../../services/admin/admin-users"
 import type { AdminUser } from "../../db/schema"
 
-// 用户页（spec310）：读=登录；封禁/解封=user.write；调积分=credit.adjust。
+// 用户页（spec310;2026-08-02 读接线）：读=user.read（QA:财务不该看用户信息）；封禁/解封=user.write；调积分=credit.adjust。
 export const usersRouter = new Hono<{ Variables: { admin: AdminUser } }>()
 
-usersRouter.get("/", async (c) => {
+usersRouter.get("/", requirePermission("user.read"), async (c) => {
   let pg
   try {
     pg = parsePagination(c.req.query())
@@ -17,7 +17,7 @@ usersRouter.get("/", async (c) => {
   }
   return c.json(pagedBody(pg, await listUsers({ q: c.req.query("q") || undefined, page: pg.page, pageSize: pg.pageSize })))
 })
-usersRouter.get("/:id", async (c) => c.json(await getUserDetail(c.req.param("id"))))
+usersRouter.get("/:id", requirePermission("user.read"), async (c) => c.json(await getUserDetail(c.req.param("id"))))
 
 // 运营备注（后台专用）：微信/手机注册无昵称时标注"这是谁"，C 端看不到。上限 60 字，够写"公司+联系人"。
 const NoteBody = z.object({ note: z.string().max(60) })

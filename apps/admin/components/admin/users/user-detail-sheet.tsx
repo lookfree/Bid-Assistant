@@ -31,6 +31,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Button } from "@/components/ui/button"
+import { useCan } from "@/lib/admin-perms"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Separator } from "@/components/ui/separator"
@@ -60,6 +61,7 @@ function InfoItem({ label, value }: { label: string; value: React.ReactNode }) {
 }
 
 export function UserDetailSheet({ user, onOpenChange, onAdjustPoints, onToggleBan }: Props) {
+  const can = useCan()
   return (
     <Sheet open={!!user} onOpenChange={onOpenChange}>
       {user ? <DetailBody user={user} onAdjustPoints={onAdjustPoints} onToggleBan={onToggleBan} /> : null}
@@ -77,6 +79,7 @@ function DetailBody({
   onAdjustPoints: (userId: string, delta: number) => void
   onToggleBan: (userId: string) => void
 }) {
+  const can = useCan()
   const [flows, setFlows] = useState<ApiLedgerTx[]>([])
   const [sub, setSub] = useState<ApiUserDetail["subscription"] | undefined>(undefined)
   const [ledgerSum, setLedgerSum] = useState<number | null>(null) // 权威全量流水之和（服务端 /check 求和，非本页 100 行）
@@ -171,16 +174,21 @@ function DetailBody({
       </div>
 
       <Separator />
+      {/* 按钮权限（2026-08-02 可编辑 RBAC）：有菜单（user.read）没操作权限的角色,按钮直接不渲染——
+          点了必 403,渲染出来只是诱导报错。调积分=credit.adjust,封禁/解封=user.write。 */}
       <SheetFooter className="flex-row justify-end gap-2">
-        <AdjustPointsDialog user={user} onConfirm={(delta) => onAdjustPoints(user.id, delta)} />
-        {user.status === "active" ? (
-          <BanDialog userName={user.name} onConfirm={() => onToggleBan(user.id)} />
-        ) : (
-          <Button variant="outline" onClick={() => onToggleBan(user.id)}>
-            <ShieldCheck data-icon="inline-start" />
-            解封账号
-          </Button>
+        {can("credit.adjust") && (
+          <AdjustPointsDialog user={user} onConfirm={(delta) => onAdjustPoints(user.id, delta)} />
         )}
+        {can("user.write") &&
+          (user.status === "active" ? (
+            <BanDialog userName={user.name} onConfirm={() => onToggleBan(user.id)} />
+          ) : (
+            <Button variant="outline" onClick={() => onToggleBan(user.id)}>
+              <ShieldCheck data-icon="inline-start" />
+              解封账号
+            </Button>
+          ))}
       </SheetFooter>
     </SheetContent>
   )
