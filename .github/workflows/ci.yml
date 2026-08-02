@@ -46,7 +46,11 @@ jobs:
         run: cd apps/api && bun run drizzle-kit migrate
       - name: 类型检查
         run: bun --filter '*' typecheck
-      - name: 测试
+      - name: 测试（API，连真库）
         run: cd apps/api && bun test
+      # web/admin 的纯逻辑测试此前从未在 CI 跑过（评审实测：9 个 admin 测试文件形同虚设，
+      # 包括那条「新增审计动作忘配中文就红灯」的守卫）。不连库、秒级，没有不跑的理由。
+      - name: 测试（前端纯逻辑）
+        run: bun --filter @bid/web test && bun --filter @bid/admin test
       - name: 前端构建
         run: bun --filter @bid/web build && bun --filter @bid/admin build
