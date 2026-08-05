@@ -6,7 +6,8 @@ import { memberTiers, type TierId } from "@/lib/plans"
 import { fetchMembership, fetchOrders, startRecharge, renewMembership, fetchInvoices, createInvoice } from "@/lib/membership-api"
 import { api } from "@/lib/api"
 import type { MembershipOverview, OrderView, LaunchResponse, Payway, InvoiceView, CreateInvoicePayload } from "@/lib/membership-types"
-import { formatPeriodEnd, statusLabel, tierCardState, planPriceYuan, plansByTier } from "@/lib/membership-view"
+import { formatPeriodEnd, statusLabel, tierCardState, planPriceYuan, plansByTier, accountLabel, billingCycleLabel, periodRangeLabel } from "@/lib/membership-view"
+import { useAuth } from "@/components/auth/auth-provider"
 import { peekMembershipCache, primeMembershipCache } from "@/lib/use-membership"
 import { tiersCostText } from "@/lib/content-tiers"
 import { Check, X, Coins, Receipt, ArrowRight, Sparkles, Info, Infinity as InfinityIcon, TrendingUp } from "lucide-react"
@@ -30,6 +31,7 @@ const ORDER_TYPE: Record<OrderView["type"], string> = { recharge: "积分充值"
 type PendingPay = { kind: "recharge" | "renew"; id: string; label: string }
 
 export default function MembershipPage() {
+  const { user } = useAuth() // 当前登录账号（AuthProvider 启动时已从 /auth/me 还原，此处不另发请求）
   // 秒开：先用跨页共享缓存立即渲染余额/套餐（工具页大多已拉过）,load() 后台刷新校准;
   // 无缓存（直链进入）才走整页加载态。
   const [overview, setOverview] = useState<MembershipOverview | null>(() => peekMembershipCache())
@@ -116,11 +118,18 @@ export default function MembershipPage() {
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 lg:px-8 sm:py-10">
-      <div>
-        <h1 className="text-2xl font-semibold text-foreground">会员中心</h1>
-        <p className="mt-1.5 text-sm text-muted-foreground">
-          按篇幅、字数与功能分档消耗积分，积分用尽可升级会员或单独充值
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold text-foreground">会员中心</h1>
+          <p className="mt-1.5 text-sm text-muted-foreground">
+            按篇幅、字数与功能分档消耗积分，积分用尽可升级会员或单独充值
+          </p>
+        </div>
+        {/* 当前账号：多号切换/代客操作时，用户要能确认自己在给哪个号充值 */}
+        <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-right">
+          <p className="text-xs text-muted-foreground">当前账号</p>
+          <p className="mt-0.5 text-sm font-medium text-foreground">{accountLabel(user)}</p>
+        </div>
       </div>
 
       {/* 积分余额 + 订阅状态 banner */}
@@ -155,10 +164,20 @@ export default function MembershipPage() {
             </p>
           </div>
           {sub && sub.status !== "none" && sub.currentPeriodEnd && (
-            <div>
-              <p className="text-xs text-muted-foreground">到期时间</p>
-              <p className="mt-0.5 text-lg font-semibold text-foreground">{formatPeriodEnd(sub.currentPeriodEnd)}</p>
-            </div>
+            <>
+              <div>
+                <p className="text-xs text-muted-foreground">到期时间</p>
+                <p className="mt-0.5 text-lg font-semibold text-foreground">{formatPeriodEnd(sub.currentPeriodEnd)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">计费周期</p>
+                <p className="mt-0.5 text-lg font-semibold text-foreground">{billingCycleLabel(sub.billingCycle)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">本期区间</p>
+                <p className="mt-0.5 text-sm font-medium text-foreground">{periodRangeLabel(sub)}</p>
+              </div>
+            </>
           )}
           <p className="flex-1 text-sm text-muted-foreground">
             {credits < 100

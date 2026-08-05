@@ -56,3 +56,24 @@ export function plansByTier(ov: MembershipOverview | null): Map<TierId, PlanView
   for (const p of ov?.plans ?? []) m.set(p.tierId, p)
   return m
 }
+
+/** 当前登录账号的展示串：昵称优先，其次打码手机号，都没有才回落"已登录"。
+ *  会员中心此前完全不显示这是谁的账号——多号切换或代客操作时，用户无从确认自己在给谁充值。 */
+export function accountLabel(user: { nickname?: string | null; phone?: string | null } | null): string {
+  if (!user) return "—"
+  if (user.nickname && user.phone) return `${user.nickname}（${user.phone}）`
+  return user.nickname || user.phone || "已登录"
+}
+
+const CYCLE_CN: Record<string, string> = { month: "包月", quarter: "包季", year: "包年" }
+
+/** 计费周期中文。无订阅/未知周期回占位符（不猜）。 */
+export function billingCycleLabel(cycle: SubscriptionView["billingCycle"]): string {
+  return (cycle && CYCLE_CN[cycle]) || "—"
+}
+
+/** 本期区间展示：开通日 ~ 到期日。缺任一端回占位符——半截区间比不显示更容易看错。 */
+export function periodRangeLabel(sub: SubscriptionView | null): string {
+  if (!sub || !sub.currentPeriodStart || !sub.currentPeriodEnd) return "—"
+  return `${formatPeriodEnd(sub.currentPeriodStart)} ~ ${formatPeriodEnd(sub.currentPeriodEnd)}`
+}

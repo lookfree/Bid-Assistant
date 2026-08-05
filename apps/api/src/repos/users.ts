@@ -74,3 +74,13 @@ export async function addIdentity(
     getDb().insert(userIdentities).values({ userId, provider, identifier, verifiedAt }),
   )
 }
+
+/** 该用户绑定的手机号（未绑定回 null）。运营侧列表另有批量取法，这里是单用户点查。 */
+export async function getUserPhone(userId: string): Promise<string | null> {
+  const [row] = await getDb()
+    .select({ identifier: userIdentities.identifier })
+    .from(userIdentities)
+    .where(and(eq(userIdentities.userId, userId), eq(userIdentities.provider, "phone")))
+    .limit(1)
+  return row?.identifier ?? null
+}

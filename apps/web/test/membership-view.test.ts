@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test"
-import { creditCostValue, formatPeriodEnd, isMember, statusLabel, tierCardState, planPriceYuan, plansByTier } from "../lib/membership-view"
+import { creditCostValue, formatPeriodEnd, isMember, statusLabel, tierCardState, planPriceYuan, plansByTier, accountLabel, billingCycleLabel, periodRangeLabel } from "../lib/membership-view"
 import type { MembershipOverview, PlanView, SubscriptionView } from "../lib/membership-types"
 
 const plan = (tierId: PlanView["tierId"], m: number, y: number): PlanView => ({
@@ -72,5 +72,37 @@ describe("spec308 会员中心纯逻辑", () => {
     const m = plansByTier(ov)
     expect(m.get("personal")!.priceMonthYuan).toBe(39)
     expect(plansByTier(null).size).toBe(0)
+  })
+})
+
+// 会员中心原先只显示套餐/积分/到期日，看不出「这是谁的账号」「本期从哪天到哪天」「按什么周期计费」。
+describe("本账户信息", () => {
+  it("昵称与手机号同时有 → 两个都显示（认号靠手机号，认人靠昵称）", () => {
+    expect(accountLabel({ nickname: "老王", phone: "138****5678" })).toBe("老王（138****5678）")
+  })
+
+  it("只有其中之一就显示那一个", () => {
+    expect(accountLabel({ nickname: "老王" })).toBe("老王")
+    expect(accountLabel({ phone: "138****5678" })).toBe("138****5678")
+  })
+
+  it("都没有不显示空白，未登录给占位符", () => {
+    expect(accountLabel({})).toBe("已登录")
+    expect(accountLabel(null)).toBe("—")
+  })
+
+  it("计费周期中文；未知周期不猜", () => {
+    expect(billingCycleLabel("month")).toBe("包月")
+    expect(billingCycleLabel("quarter")).toBe("包季")
+    expect(billingCycleLabel("year")).toBe("包年")
+    expect(billingCycleLabel(null)).toBe("—")
+  })
+
+  it("本期区间要两端齐全才显示——半截区间比不显示更容易看错", () => {
+    const sub = (s: string | null, e: string | null) =>
+      ({ status: "active", planId: null, tierId: "personal", billingCycle: "month", currentPeriodStart: s, currentPeriodEnd: e }) as SubscriptionView
+    expect(periodRangeLabel(sub("2026-08-05T00:00:00Z", "2026-09-05T00:00:00Z"))).toBe("2026-08-05 ~ 2026-09-05")
+    expect(periodRangeLabel(sub(null, "2026-09-05T00:00:00Z"))).toBe("—")
+    expect(periodRangeLabel(null)).toBe("—")
   })
 })

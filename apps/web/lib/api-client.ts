@@ -50,7 +50,8 @@ export function createApiClient(opts: ApiClientOptions) {
         "/auth/sms/verify",
         { phone, code, agreedToTerms, referralCode }, // referralCode：首次注册带邀请码 → 后端绑定推荐关系（spec307）
       ),
-    me: () => request<{ id: string; nickname: string | null; status: string }>("/auth/me"),
+    // phone 是**打码值**（会员中心显示"当前账号"用），服务端不下发完整号码
+    me: () => request<{ id: string; nickname: string | null; status: string; phone: string | null }>("/auth/me"),
     logout: () => post<{ ok: true }>("/auth/logout", {}).then(() => undefined),
     wechatAuthUrl: (agreedToTerms: boolean) =>
       post<{ state: string; appId: string; scope: string; redirectUri: string }>("/auth/wechat/url", {

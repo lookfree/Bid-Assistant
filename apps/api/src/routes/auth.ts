@@ -2,7 +2,8 @@ import { Hono } from "hono"
 import { z } from "zod"
 import { authMiddleware } from "../middleware/auth"
 import { loginWithPhone, logout, TermsRequiredError, InvalidCodeError, AccountBannedError } from "../services/auth"
-import { findUserByIdentity } from "../repos/users"
+import { findUserByIdentity, getUserPhone } from "../repos/users"
+import { maskPhone } from "../lib/user-display"
 import { sha256Hex } from "../services/crypto"
 import { normalizePhone } from "../util/phone"
 import type { SmsCodeService } from "../services/sms-code"
@@ -77,9 +78,11 @@ export function authRoutes(deps: AuthRouteDeps) {
     }
   })
 
-  r.get("/me", authMiddleware, (c) => {
+  // 带回打码手机号：会员中心要显示「当前登录的是哪个账号」（多号切换、代客操作时尤其要紧）。
+  // 只回打码值——展示够用，回完整号码是白白多暴露一份。
+  r.get("/me", authMiddleware, async (c) => {
     const u = c.get("user")
-    return c.json({ id: u.id, nickname: u.nickname, status: u.status })
+    return c.json({ id: u.id, nickname: u.nickname, status: u.status, phone: maskPhone(await getUserPhone(u.id)) || null })
   })
 
   // 注销不挂 authMiddleware（评审二轮 F12）：封禁用户也必须能吊销自己的会话——盗号封禁场景下
