@@ -1,4 +1,4 @@
-import { eq, sql, desc } from "drizzle-orm"
+import { and, eq, ne, sql, desc } from "drizzle-orm"
 import { getDb } from "../db/client"
 import { creditTransactions } from "../db/schema"
 
@@ -18,6 +18,13 @@ export interface CreditTxView {
   createdAt: string // ISO
 }
 
+// 用户侧只看「余额真的动了」的流水：结算行记的是预扣与实际用量的差额，两者一致时就是 0
+// （230 实测 190 条结算里 181 条为 0）——余额没动，对用户是纯噪音，还会把分页撑得七零八落
+// （每页 10 条滤掉 9 条只剩 1 行）。**必须在 SQL 层滤**，否则 total 与页大小都对不上。
+// 运营侧的账本审计（/admin-api/ledger）不做这个过滤：那是审计，要看全量。
+const userVisible = (userId: string) =>
+  and(eq(creditTransactions.userId, userId), ne(creditTransactions.amount, 0))!
+
 export async function listCreditTransactions(
   userId: string,
   opts: { page: number; pageSize: number; offset: number },
@@ -35,11 +42,11 @@ export async function listCreditTransactions(
         createdAt: creditTransactions.createdAt,
       })
       .from(creditTransactions)
-      .where(eq(creditTransactions.userId, userId))
+      .where(userVisible(userId))
       .orderBy(desc(creditTransactions.createdAt))
       .limit(opts.pageSize)
       .offset(opts.offset),
-    db.select({ n: sql<number>`count(*)` }).from(creditTransactions).where(eq(creditTransactions.userId, userId)),
+    db.select({ n: sql<number>`count(*)` }).from(creditTransactions).where(userVisible(userId)),
   ])
   return {
     items: rows.map((r) => ({

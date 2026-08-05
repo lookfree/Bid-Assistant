@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test"
-import { creditCostValue, formatPeriodEnd, isMember, statusLabel, tierCardState, planPriceYuan, plansByTier, accountLabel, billingCycleLabel, periodRangeLabel, creditTxLabel, creditAmountText, orderTypeLabel, formatTxTime, visibleCreditTxs } from "../lib/membership-view"
+import { creditCostValue, formatPeriodEnd, isMember, statusLabel, tierCardState, planPriceYuan, plansByTier, accountLabel, billingCycleLabel, periodRangeLabel, creditTxLabel, creditAmountText, orderTypeLabel, formatTxTime } from "../lib/membership-view"
 import type { MembershipOverview, PlanView, SubscriptionView } from "../lib/membership-types"
 
 const plan = (tierId: PlanView["tierId"], m: number, y: number): PlanView => ({
@@ -143,15 +143,6 @@ describe("订单类型文案", () => {
 })
 
 describe("积分流水的可见性与时间", () => {
-  it("金额为 0 的结算行不展示——余额没动，对用户是纯噪音", () => {
-    const txs = [{ amount: -100 }, { amount: 0 }, { amount: 180 }]
-    expect(visibleCreditTxs(txs).map((t) => t.amount)).toEqual([-100, 180])
-  })
-
-  it("差额非零的结算必须留着——那是真退回用户的积分（230 实测有 +180/+220 这样的行）", () => {
-    expect(visibleCreditTxs([{ amount: 180 }])).toHaveLength(1)
-  })
-
   it("流水时间到分钟：一个下午跑三步不能显示成三条一样的日期", () => {
     const a = formatTxTime("2026-08-05T10:23:49Z")
     const b = formatTxTime("2026-08-05T11:47:02Z")

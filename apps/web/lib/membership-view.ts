@@ -124,10 +124,3 @@ export function formatTxTime(iso: string): string {
   const p = (n: number) => String(n).padStart(2, "0")
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
-
-/** 用户侧要展示的流水：滤掉**金额为 0** 的行。
- *  结算行写的是「预扣与实际用量的差额」，实际用量与预扣一致时差额就是 0（230 实测 190 条结算里
- *  181 条为 0）——余额没动，对用户是纯噪音；差额非零的结算是真退回的积分，必须留着。 */
-export function visibleCreditTxs<T extends { amount: number }>(txs: T[]): T[] {
-  return txs.filter((t) => t.amount !== 0)
-}

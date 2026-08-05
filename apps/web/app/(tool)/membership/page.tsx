@@ -6,7 +6,7 @@ import { memberTiers, type TierId } from "@/lib/plans"
 import { fetchMembership, fetchCreditTransactions, fetchOrders, startRecharge, renewMembership, fetchInvoices, createInvoice } from "@/lib/membership-api"
 import { api } from "@/lib/api"
 import type { MembershipOverview, OrderView, CreditTxView, LaunchResponse, Payway, InvoiceView, CreateInvoicePayload } from "@/lib/membership-types"
-import { formatPeriodEnd, statusLabel, tierCardState, planPriceYuan, plansByTier, accountLabel, billingCycleLabel, periodRangeLabel, creditTxLabel, creditAmountText, orderTypeLabel, formatTxTime, visibleCreditTxs } from "@/lib/membership-view"
+import { formatPeriodEnd, statusLabel, tierCardState, planPriceYuan, plansByTier, accountLabel, billingCycleLabel, periodRangeLabel, creditTxLabel, creditAmountText, orderTypeLabel, formatTxTime } from "@/lib/membership-view"
 import { useAuth } from "@/components/auth/auth-provider"
 import { peekMembershipCache, primeMembershipCache } from "@/lib/use-membership"
 import { tiersCostText } from "@/lib/content-tiers"
@@ -29,6 +29,8 @@ const ORDER_STATUS: Record<OrderView["status"], { label: string; tone: string }>
 
 type PendingPay = { kind: "recharge" | "renew"; id: string; label: string }
 
+const TX_PAGE_SIZE = 10 // 积分流水每页条数
+
 export default function MembershipPage() {
   const { user } = useAuth() // 当前登录账号（AuthProvider 启动时已从 /auth/me 还原，此处不另发请求）
   // 秒开：先用跨页共享缓存立即渲染余额/套餐（工具页大多已拉过）,load() 后台刷新校准;
@@ -38,6 +40,8 @@ export default function MembershipPage() {
   const [creditTxs, setCreditTxs] = useState<CreditTxView[]>([])
   // 拉取失败要与"确实没有流水"分开：这是钱的视图，把 500 显示成「暂无积分流水」等于向用户断言了假话
   const [creditTxFailed, setCreditTxFailed] = useState(false)
+  const [txPage, setTxPage] = useState(1)
+  const [txTotal, setTxTotal] = useState(0)
   const [invoices, setInvoices] = useState<InvoiceView[]>([])
   const [invoiceOpen, setInvoiceOpen] = useState(false)
   const [loading, setLoading] = useState(() => peekMembershipCache() === null)
@@ -47,8 +51,23 @@ export default function MembershipPage() {
   const [qr, setQr] = useState<LaunchResponse | null>(null)
   const [paying, setPaying] = useState(false)
 
-  // 滤掉金额为 0 的结算行（预扣与实际用量一致时差额就是 0，余额没动 → 对用户是噪音）
-  const shownTxs = visibleCreditTxs(creditTxs)
+  // 积分流水按页拉（0 值结算行已在服务端滤掉，所以每页拿到的就是满 10 条）。
+  // 与订单/发票分开：它有自己的页码，跟着主加载一起拉会在翻页时被整页刷新冲掉。
+  useEffect(() => {
+    let alive = true
+    fetchCreditTransactions(txPage, TX_PAGE_SIZE)
+      .then((r) => {
+        if (!alive) return
+        setCreditTxs(r.items)
+        setTxTotal(r.total)
+        setCreditTxFailed(false)
+      })
+      .catch(() => alive && setCreditTxFailed(true))
+    return () => {
+      alive = false
+    }
+  }, [txPage])
+  const txPages = Math.max(1, Math.ceil(txTotal / TX_PAGE_SIZE))
 
   const load = useCallback(async () => {
     // 已有可展示数据（缓存/上次加载）时后台静默刷新,不再整页转加载态（关扫码弹层后的刷新同理）
@@ -65,18 +84,9 @@ export default function MembershipPage() {
     }
     // 订单/发票是次要区块：并行加载、各自失败降级不阻塞会员主体。
     // 拉满页（上限 100）——开票资格由 orders×invoices 计算，分页截断会漏掉老订单的可开票判断。
-    // 积分流水同为次要区块：接口与前端封装早就有，只是一直没有页面在用——用户看得到余额，
-    // 却看不到积分花到哪去了（会员退款产生的「退款收回」负向流水尤其该让用户看见）。
-    const [od, iv, tx] = await Promise.allSettled([
-      fetchOrders(1, 100),
-      fetchInvoices(1, 100),
-      // 拉 50 条：下面会滤掉金额为 0 的结算行（占比很高），拉 20 条实际只剩十来条
-      fetchCreditTransactions(1, 50),
-    ])
+    const [od, iv] = await Promise.allSettled([fetchOrders(1, 100), fetchInvoices(1, 100)])
     setOrders(od.status === "fulfilled" ? od.value.items : [])
     setInvoices(iv.status === "fulfilled" ? iv.value.items : [])
-    setCreditTxs(tx.status === "fulfilled" ? tx.value.items : [])
-    setCreditTxFailed(tx.status !== "fulfilled")
   }, [])
 
   useEffect(() => {
@@ -415,17 +425,15 @@ export default function MembershipPage() {
         <div className="flex items-center gap-2 border-b border-border px-5 py-4">
           <Coins className="size-4 text-muted-foreground" />
           <h2 className="text-sm font-semibold text-foreground">积分流水</h2>
-          {shownTxs.length > 0 && (
-            <span className="text-xs text-muted-foreground">最近 {shownTxs.length} 条</span>
-          )}
+          {txTotal > 0 && <span className="text-xs text-muted-foreground">共 {txTotal} 条</span>}
         </div>
         {creditTxFailed ? (
           <p className="px-5 py-8 text-center text-sm text-muted-foreground">
             积分流水加载失败，请刷新页面重试（不影响余额与下单）
           </p>
-        ) : shownTxs.length > 0 ? (
+        ) : creditTxs.length > 0 ? (
           <ul className="divide-y divide-border">
-            {shownTxs.map((t) => (
+            {creditTxs.map((t) => (
               <li key={t.id} className="flex items-center justify-between gap-3 px-5 py-3">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium text-foreground">{creditTxLabel(t.type)}</p>
@@ -446,6 +454,29 @@ export default function MembershipPage() {
           </ul>
         ) : (
           <p className="px-5 py-8 text-center text-sm text-muted-foreground">暂无积分流水</p>
+        )}
+        {txPages > 1 && (
+          <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-2.5">
+            <span className="text-xs text-muted-foreground">
+              第 {txPage}/{txPages} 页
+            </span>
+            <button
+              type="button"
+              onClick={() => setTxPage((p) => Math.max(1, p - 1))}
+              disabled={txPage <= 1}
+              className="rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground enabled:hover:text-foreground disabled:opacity-40"
+            >
+              上一页
+            </button>
+            <button
+              type="button"
+              onClick={() => setTxPage((p) => Math.min(txPages, p + 1))}
+              disabled={txPage >= txPages}
+              className="rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground enabled:hover:text-foreground disabled:opacity-40"
+            >
+              下一页
+            </button>
+          </div>
         )}
       </section>
 
