@@ -33,7 +33,8 @@ export function wechatRoutes(deps: WechatRouteDeps) {
         userAgent: c.req.header("User-Agent"),
         ip: clientIp((n) => c.req.header(n)),
       })
-      return c.json({ token, isNew, user: { id: user.id, nickname: user.nickname } })
+      // 微信登录没有手机号：显式回 null，别让 phone 字段时有时无
+      return c.json({ token, isNew, user: { id: user.id, nickname: user.nickname, phone: null } })
     } catch (e) {
       if (e instanceof TermsRequiredError) return c.json({ error: "terms_required" }, 400)
       if (e instanceof InvalidStateError) return c.json({ error: "invalid_state" }, 400)

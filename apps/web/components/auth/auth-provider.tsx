@@ -6,7 +6,8 @@ import { tokenStore } from "@/lib/token-store"
 import { clearMembershipCache } from "@/lib/use-membership"
 import { clearLibraryCache } from "@/lib/use-library"
 
-type User = { id: string; nickname: string | null; status?: string }
+// phone 是**打码值**（/auth/me 与登录响应都只下发打码手机号），会员中心显示「当前账号」用。
+type User = { id: string; nickname: string | null; status?: string; phone?: string | null }
 type AuthCtx = {
   user: User | null
   loading: boolean

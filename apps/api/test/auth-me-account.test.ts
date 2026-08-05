@@ -46,3 +46,20 @@ describe("/auth/me 带回账号标识", () => {
     expect(body.phone).toContain("****")
   })
 })
+
+// 评审 LOW：登录响应此前不带手机号，手机号注册的用户（nickname 为空）在整页刷新之前，
+// 会员中心的「当前账号」只显示"已登录"——正好是这个功能要解决的场景。
+describe("登录响应带回账号标识", () => {
+  it("验证码登录即刻带回打码手机号，不必等刷新", async () => {
+    const p = uniquePhone()
+    const res = await app.request("http://x/auth/sms/verify", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ phone: p, code: "123456", agreedToTerms: true }),
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { user: { id: string; phone: string | null } }
+    madeUsers.push(body.user.id)
+    expect(body.user.phone).toBe(`${p.slice(0, 3)}****${p.slice(-4)}`)
+  })
+})

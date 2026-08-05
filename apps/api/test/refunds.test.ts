@@ -201,6 +201,61 @@ describe("spec306 退款编排（pending→done/failed，事务落账+扣回积�
     expect(sub!.currentPeriodStart!.getTime()).toBeLessThanOrEqual(sub!.currentPeriodEnd!.getTime()) // 不出现「开始晚于结束」
   })
 
+  it("会员单缺周期快照：必须在调通道**之前**拒绝——不能钱退出去了才发现回退不了", async () => {
+    // 评审 HIGH：原实现把这个检查放在落账事务里，而落账发生在通道退款成功之后 →
+    // 真钱已退、事务回滚、退款单留 pending、订单仍 paid、积分没扣回，商户白亏一笔且无成功记录。
+    const userId = await mkUser()
+    // 套餐也查不到周期（planId 为空）⇒ 无从解析，只能拒
+    const order = await mkPaidOrder(userId, 2000, { type: "renewal", planId: null, cycleSnapshot: null })
+    let called = 0
+    const spy: RefundProvider = { refund: async () => { called++; return { ok: true } } }
+    await expect(
+      createRefund({ orderId: order.id, amountCents: 2000, reason: "x", operator: "ops" }, { provider: spy }),
+    ).rejects.toThrow(/周期/)
+    expect(called).toBe(0) // 通道一次都没被调用 —— 钱没动
+    expect(await getDb().select().from(refunds).where(eq(refunds.orderId, order.id))).toHaveLength(0)
+  })
+
+  it("会员单缺周期快照但套餐还在：按套餐当前周期回退（与入账时同一口径）", async () => {
+    // renewOnPaid 缺快照时就是回退 plan.billing_cycle 发的权益，退的时候必须用同一个口径，否则不对称
+    const userId = await mkUser()
+    const order = await mkPaidOrder(userId, 2000, { type: "renewal", planId, cycleSnapshot: null })
+    const periodEnd = new Date(Date.now() + 31 * 24 * 3600 * 1000)
+    await getDb().insert(subscriptions).values({
+      userId, planId, status: "active", currentPeriodStart: new Date(), currentPeriodEnd: periodEnd,
+    })
+    const res = await createRefund(
+      { orderId: order.id, amountCents: 2000, reason: "x", operator: "ops" },
+      { provider: okProvider() },
+    )
+    expect(res.status).toBe("done")
+    const [sub] = await getDb().select().from(subscriptions).where(eq(subscriptions.userId, userId))
+    expect(sub!.currentPeriodEnd!.getTime()).toBeLessThan(periodEnd.getTime()) // 周期确实被回退了
+  })
+
+  it("连续续费两期后退掉一期：剩余期仍有效，本期区间不能塌成一个点", async () => {
+    // 评审 LOW：renewOnPaid 提前续费时 start = 上期末，回退一个周期后 start 正好 === newEnd，
+    // 会员中心的「本期区间」会渲染成 "2026-09-05 ~ 2026-09-05"。
+    const userId = await mkUser()
+    const order = await mkPaidOrder(userId, 2000, { type: "renewal", planId, cycleSnapshot: "month", creditsSnapshot: 0 })
+    // 必须落在"恰好相等"那一点上：renewOnPaid 提前续费时 start = 上期末，
+    // 且 end = 上期末 + 一个整月，故回退一个月后 newEnd 与 start 严格相等（差一天就测不到）。
+    const now = Date.now()
+    const firstEnd = new Date(Date.UTC(2027, 0, 5, 12))   // 第一期末（未来）
+    const secondEnd = new Date(Date.UTC(2027, 1, 5, 12))  // 第二期顺延一个整月
+    await getDb().insert(subscriptions).values({
+      userId, planId, status: "active", currentPeriodStart: firstEnd, currentPeriodEnd: secondEnd,
+    })
+
+    await createRefund({ orderId: order.id, amountCents: 2000, reason: "x", operator: "ops" }, { provider: okProvider() })
+
+    const [sub] = await getDb().select().from(subscriptions).where(eq(subscriptions.userId, userId))
+    expect(sub!.status).toBe("active")                                             // 第一期还在，权益不该断
+    expect(sub!.currentPeriodEnd!.getTime()).toBeGreaterThan(now)
+    expect(sub!.currentPeriodEnd!.getTime()).toBe(firstEnd.getTime())              // 恰好回到第一期末
+    expect(sub!.currentPeriodStart!.getTime()).toBeLessThan(sub!.currentPeriodEnd!.getTime()) // 区间不是一个点
+  })
+
   it("会员单部分退款仍拒绝：半个周期无法回退，报错要说清并给出路", async () => {
     const userId = await mkUser()
     const order = await mkPaidOrder(userId, 2000, { type: "renewal", planId, cycleSnapshot: "month", creditsSnapshot: 200 })

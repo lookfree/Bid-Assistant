@@ -69,7 +69,9 @@ export function authRoutes(deps: AuthRouteDeps) {
         deps.sessionTtlDays,
         () => deps.smsCode.verify(phone, body.data.code),
       )
-      return c.json({ token, isNew, user: { id: user.id, nickname: user.nickname } })
+      // 带回打码手机号：否则手机号注册的用户（nickname 为空）在刷新页面之前，
+      // 会员中心的「当前账号」只能显示"已登录"——正是这个功能要解决的场景。
+      return c.json({ token, isNew, user: { id: user.id, nickname: user.nickname, phone: maskPhone(phone) } })
     } catch (e) {
       if (e instanceof TermsRequiredError) return c.json({ error: "terms_required" }, 400)
       if (e instanceof InvalidCodeError) return c.json({ error: "invalid_code" }, 401)

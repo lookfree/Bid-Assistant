@@ -71,14 +71,15 @@ export function LedgerClient() {
   const [loading, setLoading] = useState(true)
   const [check, setCheck] = useState<{ cached: number; actual: number; consistent: boolean } | null>(null)
 
-  // 加载真实用户列表，作为用户选择器，默认选中第一个真实用户。
+  // 加载真实用户列表作为选择器候选。**不自动选人**：默认停在「全部用户」，
+  // 否则运营每次进来都落在"名单里的第一个人"身上，全部用户视图等于不存在，
+  // 挂载时那次全量查询也白跑一遍。
   useEffect(() => {
     async function loadUsers() {
       try {
         // 权限随本页（QA:财务有 ledger.read 无 user.read,借全量用户接口做选择器被 403,整页不可用）
         const res = await adminApi.ledger.userOptions()
         setUserOptions(res.items)
-        if (res.items.length > 0) setUserId(res.items[0].id)
       } catch {
         toast.error("加载用户失败")
       }
@@ -224,7 +225,7 @@ export function LedgerClient() {
               size="sm"
               className="sm:ml-auto"
               onClick={() => {
-                if (userOptions.length > 0) setUserId(userOptions[0].id)
+                setUserId("") // 重置回「全部用户」，与本页默认视图一致
                 setType("all")
                 setPage(1)
               }}

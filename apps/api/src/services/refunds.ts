@@ -1,7 +1,7 @@
 import { z } from "zod"
 import { and, eq, inArray, sql } from "drizzle-orm"
 import { getDb } from "../db/client"
-import { paymentOrders, refunds, creditTransactions, subscriptions } from "../db/schema"
+import { paymentOrders, refunds, creditTransactions, subscriptions, plans } from "../db/schema"
 import { getBalance } from "./credits"
 import type { PaymentProvider } from "./payment/provider"
 import { writeAudit } from "./audit"
@@ -89,11 +89,16 @@ async function validateAndCreatePending(
     // 会员单只放开**全额退**：退成功时同事务回退一个订阅周期 + 按比例收回该周期积分
     // （见 settleRefundDone → rollbackSubscriptionCycle），不会出现「钱退了、会员还在」。
     // 部分退款仍然拦住——半个周期没法回退，按比例缩短会员有效期不是任何一方认可的口径。
-    if (order.type === "renewal" && input.amountCents !== order.amountCents) {
-      throw new Error(
-        `会员订单只支持全额退款（该订单 ${yuan(order.amountCents)}）：退款会同时收回这一个会员周期，` +
-        "半个周期无法回退。若需按比例退，请先在收钱吧后台处理，再联系技术同事调整会员有效期。",
-      )
+    if (order.type === "renewal") {
+      if (input.amountCents !== order.amountCents) {
+        throw new Error(
+          `会员订单只支持全额退款（该订单 ${yuan(order.amountCents)}）：退款会同时收回这一个会员周期，` +
+          "半个周期无法回退。若需按比例退，请先在收钱吧后台处理，再联系技术同事调整会员有效期。",
+        )
+      }
+      // 周期在这里就解析一次：解析不了必须**现在**拒绝。放到落账阶段再抛就晚了——
+      // 那时通道已经把真钱退出去，事务回滚只会让账面看起来什么都没发生（评审 HIGH）。
+      await resolveRenewalCycle(tx, order)
     }
     const rows = await tx
       .select({ amountCents: refunds.amountCents, status: refunds.status })
@@ -115,6 +120,21 @@ async function validateAndCreatePending(
   })
 }
 
+/** 该会员单顺延了哪个周期：优先订单快照，缺失时回退套餐当前值——必须与 renewOnPaid 入账时
+ *  同一口径，否则「按套餐值发的权益、按快照退」会不对称。两者都拿不到就抛错。
+ *
+ *  **必须在调通道之前先解析一次**（见 validateAndCreatePending）：这个函数原本只在落账事务里调用，
+ *  而落账发生在通道退款成功之后——解析失败会让真钱已退、事务回滚、退款单留 pending、订单仍 paid、
+ *  积分未扣回，商户白亏一笔且没有任何成功记录（评审 HIGH）。 */
+async function resolveRenewalCycle(db: DbOrTx, order: Order): Promise<string> {
+  if (order.cycleSnapshot) return order.cycleSnapshot
+  if (order.planId) {
+    const [plan] = await db.select().from(plans).where(eq(plans.id, order.planId))
+    if (plan?.billingCycle) return plan.billingCycle
+  }
+  throw new Error("该会员订单查不到计费周期（订单无快照、套餐也不存在），无法回退会员有效期，请联系技术处理")
+}
+
 /** 会员单退满后回退订阅周期：把 current_period_end 往回推一个周期，抵消这一单的顺延。
  *
  *  为什么减一个周期就够：每单只顺延一个周期（renewal.ts 的 addCycle），周期是叠加的，
@@ -125,15 +145,21 @@ async function validateAndCreatePending(
  *  一个已知的不覆盖场景：若该单同时把套餐换成了更高档（planId 变更），这里只回退时间、
  *  不回退档位——旧 planId 没有留存快照，无从恢复。目前不存在降级/升级换档的入口，先记在这里。 */
 async function rollbackSubscriptionCycle(tx: Tx, order: Order): Promise<void> {
-  const cycle = order.cycleSnapshot
-  if (!cycle) {
-    // 缺周期快照就不敢猜着改会员有效期（宁可整笔退款失败，也不能把会员改错）
-    throw new Error("该会员订单缺少计费周期快照，无法自动回退会员有效期，请联系技术处理")
-  }
+  const cycle = await resolveRenewalCycle(tx, order)
   const [sub] = await tx.select().from(subscriptions).where(eq(subscriptions.userId, order.userId)).for("update")
   if (!sub?.currentPeriodEnd) return // 无订阅行/无周期：没有可回退的顺延
   const newEnd = subCycle(sub.currentPeriodEnd, cycle)
-  const start = sub.currentPeriodStart && sub.currentPeriodStart > newEnd ? newEnd : sub.currentPeriodStart
+  // period_start 也要跟着走，否则会员中心的「本期区间」会渲染成一个点：
+  // 连续续费两期时 start 正好等于被退掉那期的起点（renewOnPaid 提前续费时 start = 上期末），
+  // 回退后 start === newEnd。仍在有效期内 ⇒ 现在的「本期」是前一期，起点前移一个周期；
+  // 已到期则不再前移（区间退化成一个点无所谓，状态已是已过期，信息不靠区间承载），
+  // 也避免给一个从来没有过前一期的新订阅编造出一段历史。
+  const stillValid = newEnd.getTime() > Date.now()
+  const start = stillValid
+    ? subCycle(newEnd, cycle)
+    : sub.currentPeriodStart && sub.currentPeriodStart > newEnd
+      ? newEnd
+      : sub.currentPeriodStart
   await tx
     .update(subscriptions)
     .set({
