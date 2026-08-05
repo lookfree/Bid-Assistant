@@ -54,6 +54,27 @@ describe("spec310 概览聚合", () => {
     expect(after.todayRevenueCents - before.todayRevenueCents).toBe(3000)
   })
 
+  it("全额退款不重复扣：订单已翻 refunded 就不在已支付合计里，退款额不能再减一次", async () => {
+    // 230 实测（2026-08-05）：两笔全额退款共 1100 分，对应订单都已是 refunded、本就不在合计内，
+    // 却又被减了一遍 → 今日营收显示 ¥28.11，实际 ¥39.11。注释写的规则是对的，SQL 没照做。
+    const u = await makeUserWithNickname((id) => madeUsers.push(id))
+    const before = await computeOverview()
+    const [order] = await getDb()
+      .insert(paymentOrders)
+      .values({ userId: u, type: "recharge", amountCents: 4000, status: "paid", clientSn: `t-${randomUUID()}`, idempotencyKey: `ov-${randomUUID()}` })
+      .returning()
+    const mid = await computeOverview()
+    expect(mid.todayRevenueCents - before.todayRevenueCents).toBe(4000)
+
+    // 退满 → 订单翻 refunded（与 refunds.ts 的落账一致）：净额应回到 0，而不是 -4000
+    await getDb().insert(refunds).values({ orderId: order!.id, amountCents: 4000, status: "done", operator: "ops" })
+    await getDb().update(paymentOrders).set({ status: "refunded" }).where(eq(paymentOrders.id, order!.id))
+
+    const after = await computeOverview()
+    expect(after.todayRevenueCents - before.todayRevenueCents).toBe(0)
+    expect(after.totalRevenueCents - before.totalRevenueCents).toBe(0)
+  })
+
   it("趋势时序：不因 to_char 时区绑参撞 GROUP BY 报错，且当日营收/积分入桶", async () => {
     // 回归：dayExpr 若用绑定参数 ${TZ}，SELECT/GROUP BY 各得一个占位符 → Postgres 500。此处 5000 分/200 分
     const u = await makeUserWithNickname((id) => madeUsers.push(id))

@@ -38,7 +38,7 @@ export async function fixUnknownPaid(id: string, opts: { operator: string }) {
   const [diff] = await db.select().from(reconcileDiffs).where(eq(reconcileDiffs.id, id))
   if (!diff) throw new Error("差异不存在")
   if (diff.resolved !== "open") throw new Error("差异已处置")
-  if (diff.diffType !== "unknown_paid") throw new Error("仅 unknown_paid 差异可走此修复")
+  if (diff.diffType !== "unknown_paid") throw new Error("该差异不是「通道已收款、本地未入账」类型，不能走这条补单修复")
   if (!diff.orderId) throw new Error("差异未关联订单")
   const [order] = await db.select().from(paymentOrders).where(eq(paymentOrders.id, diff.orderId))
   if (!order) throw new Error("订单不存在")

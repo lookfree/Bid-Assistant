@@ -34,12 +34,22 @@ function addMonthsUtc(base: Date, months: number): Date {
   )
 }
 
+const CYCLE_MONTHS: Record<string, number> = { month: 1, quarter: 3, year: 12 }
+
 /** billing_cycle → 周期顺延。未知周期抛错（plans 有 CHECK 约束，走到这里是数据事故）。 */
 function addCycle(base: Date, cycle: string): Date {
-  if (cycle === "month") return addMonthsUtc(base, 1)
-  if (cycle === "quarter") return addMonthsUtc(base, 3)
-  if (cycle === "year") return addMonthsUtc(base, 12)
-  throw new Error(`未知计费周期 ${cycle}`)
+  const m = CYCLE_MONTHS[cycle]
+  if (!m) throw new Error(`未知计费周期 ${cycle}`)
+  return addMonthsUtc(base, m)
+}
+
+/** 周期回退（退款时抵消一次顺延）。
+ *  与 addCycle 不是严格互逆：月末夹紧不可逆（1/31 顺延到 2/28，回退得 1/28），
+ *  最多差几天且只出现在月末订阅上。退款本就把该周期整个抹掉、通常直接到期，这点差异无实际影响。 */
+export function subCycle(base: Date, cycle: string): Date {
+  const m = CYCLE_MONTHS[cycle]
+  if (!m) throw new Error(`未知计费周期 ${cycle}`)
+  return addMonthsUtc(base, -m)
 }
 
 /**

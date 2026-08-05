@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bu
 import { randomUUID } from "node:crypto"
 import { and, eq, inArray, lt } from "drizzle-orm"
 import { getDb, closeDb } from "../src/db/client"
-import { users, plans, paymentOrders, refunds, creditTransactions, reconcileDiffs } from "../src/db/schema"
+import { users, plans, paymentOrders, refunds, creditTransactions, reconcileDiffs, subscriptions } from "../src/db/schema"
 import { createRefund, refundRequestNo, type RefundProvider } from "../src/services/refunds"
 import { scanStuckRefunds } from "../src/services/reconcile"
 import { getBalance, grant, hold, settle } from "../src/services/credits"
@@ -106,7 +106,7 @@ describe("spec306 退款编排（pending→done/failed，事务落账+扣回积�
     // pending 占额度：重试被累计护栏挡住（必须先人工核对通道，防双退）
     await expect(
       createRefund({ orderId: order.id, amountCents: 500, reason: "重试", operator: "ops" }, { provider: okProvider() }),
-    ).rejects.toThrow(/超过订单额/)
+    ).rejects.toThrow(/退款金额超出订单金额/)
     // 卡死退款被扫描落 refund_stuck 差异（回拨 createdAt 模拟超时）
     await getDb().update(refunds).set({ createdAt: new Date(Date.now() - 2 * 3600_000) }).where(eq(refunds.id, res.refundId))
     const found = await scanStuckRefunds(new Date(), { alertHook: () => {} })
@@ -161,24 +161,57 @@ describe("spec306 退款编排（pending→done/failed，事务落账+扣回积�
   it("护栏：非 paid 单拒绝；超额拒绝；累计（含在途 pending）超额拒绝", async () => {
     const userId = await mkUser()
     const created = await mkPaidOrder(userId, 500, { status: "created" })
-    await expect(createRefund({ orderId: created.id, amountCents: 100, reason: "x", operator: "ops" }, { provider: okProvider() })).rejects.toThrow(/非 paid/)
+    await expect(createRefund({ orderId: created.id, amountCents: 100, reason: "x", operator: "ops" }, { provider: okProvider() })).rejects.toThrow(/该订单当前是「待支付」/)
 
     const order = await mkPaidOrder(userId, 500)
-    await expect(createRefund({ orderId: order.id, amountCents: 501, reason: "x", operator: "ops" }, { provider: okProvider() })).rejects.toThrow(/超过订单额/)
+    await expect(createRefund({ orderId: order.id, amountCents: 501, reason: "x", operator: "ops" }, { provider: okProvider() })).rejects.toThrow(/退款金额超出订单金额/)
 
     // 先退 300（done，订单留 paid），再退 300 → 累计 600 > 500 被护栏拒绝
     await createRefund({ orderId: order.id, amountCents: 300, reason: "第一笔", operator: "ops" }, { provider: okProvider() })
     await expect(
       createRefund({ orderId: order.id, amountCents: 300, reason: "第二笔", operator: "ops" }, { provider: okProvider() }),
-    ).rejects.toThrow(/超过订单额/)
+    ).rejects.toThrow(/退款金额超出订单金额/)
   })
 
-  it("C9 决策：renewal 单拒绝自动退款（须同时处置订阅周期，转人工）", async () => {
+  it("会员单全额退：退钱 + 回退一个订阅周期 + 扣回该周期积分，三件事同一事务", async () => {
+    // 2026-08-05 放开（原 C9 是整类转人工）：只退钱不回退周期 = 钱退了会员还在，故三件事必须一起发生。
     const userId = await mkUser()
     const order = await mkPaidOrder(userId, 2000, { type: "renewal", planId, cycleSnapshot: "month", creditsSnapshot: 200 })
-    await expect(
-      createRefund({ orderId: order.id, amountCents: 2000, reason: "x", operator: "ops" }, { provider: okProvider() }),
-    ).rejects.toThrow(/renewal|人工/)
+    await grant(userId, 200, { type: "grant", ref: order.id, idempotencyKey: `rf-g-${order.id}` })
+    // 续费结算的效果：会员有效期顺延一个月
+    const periodStart = new Date()
+    const periodEnd = new Date(periodStart.getTime() + 31 * 24 * 3600 * 1000)
+    await getDb().insert(subscriptions).values({
+      userId, planId, status: "active", currentPeriodStart: periodStart, currentPeriodEnd: periodEnd,
+    })
+
+    const res = await createRefund(
+      { orderId: order.id, amountCents: 2000, reason: "用户申请", operator: "ops" },
+      { provider: okProvider() },
+    )
+    expect(res.status).toBe("done")
+
+    const [o] = await getDb().select().from(paymentOrders).where(eq(paymentOrders.id, order.id))
+    expect(o!.status).toBe("refunded")
+    expect(await getBalance(userId)).toBe(0) // 该周期积分被收回
+
+    const [sub] = await getDb().select().from(subscriptions).where(eq(subscriptions.userId, userId))
+    expect(sub!.currentPeriodEnd!.getTime()).toBeLessThan(Date.now()) // 顺延被抵消 → 已到期
+    expect(sub!.status).toBe("expired")
+    expect(sub!.currentPeriodStart!.getTime()).toBeLessThanOrEqual(sub!.currentPeriodEnd!.getTime()) // 不出现「开始晚于结束」
+  })
+
+  it("会员单部分退款仍拒绝：半个周期无法回退，报错要说清并给出路", async () => {
+    const userId = await mkUser()
+    const order = await mkPaidOrder(userId, 2000, { type: "renewal", planId, cycleSnapshot: "month", creditsSnapshot: 200 })
+    const err = await createRefund(
+      { orderId: order.id, amountCents: 500, reason: "x", operator: "ops" },
+      { provider: okProvider() },
+    ).then(() => null, (e: Error) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect(err!.message).toContain("全额退款")
+    expect(err!.message).toContain("¥20.00")      // 金额说元，不甩「分」
+    expect(err!.message).not.toContain("renewal") // 不甩英文枚举名
     expect((await getDb().select().from(refunds).where(eq(refunds.orderId, order.id)))).toHaveLength(0) // 不建退款单
   })
 

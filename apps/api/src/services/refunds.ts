@@ -1,17 +1,20 @@
 import { z } from "zod"
 import { and, eq, inArray, sql } from "drizzle-orm"
 import { getDb } from "../db/client"
-import { paymentOrders, refunds, creditTransactions } from "../db/schema"
+import { paymentOrders, refunds, creditTransactions, subscriptions } from "../db/schema"
 import { getBalance } from "./credits"
 import type { PaymentProvider } from "./payment/provider"
 import { writeAudit } from "./audit"
 import type { Tx } from "./credits"
+import { orderStatusCn, yuan } from "../lib/order-labels"
+import { subCycle } from "./renewal"
 
 // 退款编排（架构 §6.2(D)，spec306）：唯一入口收口到 spec310 POST /admin-api/refunds（过 admin RBAC+审计），
 // 本模块只产出 service，不建路由——避免出现绕过 RBAC/审计的并行退款入口。
 // 铁律：
 // - 只退 paid 单；累计退款额（pending+done）≤ 订单额（并发双退在护栏处挡住）；
-// - renewal 单拒绝自动退款转人工（退钱必须同时处置已顺延的订阅周期，决策 review-followups C9）；
+// - 会员单只允许全额退，退成功时同事务回退一个订阅周期 + 收回该周期积分（否则「钱退了、会员还在」）；
+//   部分退款仍拒绝——半个周期无法回退（原 C9 决策是整类转人工，2026-08-05 按运营需要放开全额退）；
 // - 通道调用**抛错 ≠ 失败**：网络超时时通道可能已实际退款，标 failed 会让重试换新 refundSn 双退真钱
 //   ——歧义结果留 pending（占用累计额度挡住重试），由 scanStuckRefunds 落差异转人工核对；
 // - 扣回积分写负向 refund_clawback 流水（不借 release——那是 hold 退还净 0 语义），幂等键 refund_clawback:<refundId>；
@@ -70,7 +73,7 @@ async function sumGrantedCredits(db: DbOrTx, orderId: string): Promise<number> {
 const clawbackTarget = (granted: number, refundedCents: number, orderAmountCents: number): number =>
   Math.round((granted * refundedCents) / orderAmountCents)
 
-/** ① 事务：行锁下校验（paid/非 renewal/累计额）+ 建 pending。校验不过抛错，不触发通道调用。 */
+/** ① 事务：行锁下校验（paid/会员单须全额/累计额）+ 建 pending。校验不过抛错，不触发通道调用。 */
 async function validateAndCreatePending(
   input: RefundInput,
 ): Promise<{ order: Order; refundId: string; doneBefore: number; replayedStatus?: "pending" | "done" | "failed" }> {
@@ -82,10 +85,15 @@ async function validateAndCreatePending(
       const [dup] = await tx.select().from(refunds).where(eq(refunds.idempotencyKey, input.idempotencyKey))
       if (dup) return { order, refundId: dup.id, doneBefore: 0, replayedStatus: dup.status as "pending" | "done" | "failed" }
     }
-    if (order.status !== "paid") throw new Error(`订单状态非 paid：${order.status}`)
-    if (order.type === "renewal") {
-      // C9 决策：renewal 结算已顺延周期/复活状态，只退钱不回退周期=退钱留会员 → 转人工处置
-      throw new Error("renewal 单不支持自动退款（须同时处置订阅周期），请转人工")
+    if (order.status !== "paid") throw new Error(`该订单当前是「${orderStatusCn(order.status)}」，只有已支付的订单可以退款`)
+    // 会员单只放开**全额退**：退成功时同事务回退一个订阅周期 + 按比例收回该周期积分
+    // （见 settleRefundDone → rollbackSubscriptionCycle），不会出现「钱退了、会员还在」。
+    // 部分退款仍然拦住——半个周期没法回退，按比例缩短会员有效期不是任何一方认可的口径。
+    if (order.type === "renewal" && input.amountCents !== order.amountCents) {
+      throw new Error(
+        `会员订单只支持全额退款（该订单 ${yuan(order.amountCents)}）：退款会同时收回这一个会员周期，` +
+        "半个周期无法回退。若需按比例退，请先在收钱吧后台处理，再联系技术同事调整会员有效期。",
+      )
     }
     const rows = await tx
       .select({ amountCents: refunds.amountCents, status: refunds.status })
@@ -93,7 +101,10 @@ async function validateAndCreatePending(
       .where(and(eq(refunds.orderId, order.id), inArray(refunds.status, ["pending", "done"]))) // pending 计入：挡并发双退与歧义未决
     const already = rows.reduce((s, r) => s + r.amountCents, 0)
     if (input.amountCents + already > order.amountCents) {
-      throw new Error(`累计退款额超过订单额：已退/在途 ${already} + 本次 ${input.amountCents} > ${order.amountCents}`)
+      throw new Error(
+        `退款金额超出订单金额：该订单 ${yuan(order.amountCents)}，已退或在途 ${yuan(already)}，` +
+        `本次又要退 ${yuan(input.amountCents)}，合计超出。`,
+      )
     }
     const [r] = await tx
       .insert(refunds)
@@ -104,13 +115,44 @@ async function validateAndCreatePending(
   })
 }
 
+/** 会员单退满后回退订阅周期：把 current_period_end 往回推一个周期，抵消这一单的顺延。
+ *
+ *  为什么减一个周期就够：每单只顺延一个周期（renewal.ts 的 addCycle），周期是叠加的，
+ *  所以无论退的是第几单，减一个周期后的到期时间都对。
+ *  回退后若已到期，订阅置 expired（entitlements 按 status + period_end 判权益，两者都要对）。
+ *  period_start 只在被新的 end 反超时才跟着回退，避免出现「开始晚于结束」的展示。
+ *
+ *  一个已知的不覆盖场景：若该单同时把套餐换成了更高档（planId 变更），这里只回退时间、
+ *  不回退档位——旧 planId 没有留存快照，无从恢复。目前不存在降级/升级换档的入口，先记在这里。 */
+async function rollbackSubscriptionCycle(tx: Tx, order: Order): Promise<void> {
+  const cycle = order.cycleSnapshot
+  if (!cycle) {
+    // 缺周期快照就不敢猜着改会员有效期（宁可整笔退款失败，也不能把会员改错）
+    throw new Error("该会员订单缺少计费周期快照，无法自动回退会员有效期，请联系技术处理")
+  }
+  const [sub] = await tx.select().from(subscriptions).where(eq(subscriptions.userId, order.userId)).for("update")
+  if (!sub?.currentPeriodEnd) return // 无订阅行/无周期：没有可回退的顺延
+  const newEnd = subCycle(sub.currentPeriodEnd, cycle)
+  const start = sub.currentPeriodStart && sub.currentPeriodStart > newEnd ? newEnd : sub.currentPeriodStart
+  await tx
+    .update(subscriptions)
+    .set({
+      currentPeriodEnd: newEnd,
+      currentPeriodStart: start,
+      status: newEnd.getTime() <= Date.now() ? "expired" : sub.status,
+    })
+    .where(eq(subscriptions.id, sub.id))
+}
+
 /** ③ 成功落账（事务）：退款单 done + 累计退满才翻订单 refunded（部分退款订单留 paid，剩余额度可继续退）
- *  + 按累计比例扣回积分。返回是否插入了扣回行（决定要不要刷新余额缓存）。 */
+ *  + 会员单回退订阅周期 + 按累计比例扣回积分。返回是否插入了扣回行（决定要不要刷新余额缓存）。 */
 async function settleRefundDone(tx: Tx, order: Order, refundId: string, input: RefundInput, doneBefore: number): Promise<boolean> {
   await tx.update(refunds).set({ status: "done" }).where(and(eq(refunds.id, refundId), eq(refunds.status, "pending")))
   const doneTotal = doneBefore + input.amountCents
   if (doneTotal >= order.amountCents) {
     await tx.update(paymentOrders).set({ status: "refunded" }).where(and(eq(paymentOrders.id, order.id), eq(paymentOrders.status, "paid")))
+    // 会员单退满 ⇒ 同事务抵消这一次顺延，否则就是「钱退了、会员还在」
+    if (order.type === "renewal") await rollbackSubscriptionCycle(tx, order)
   }
 
   const grantedCredits = await sumGrantedCredits(tx, order.id)
