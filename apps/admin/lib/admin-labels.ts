@@ -181,3 +181,13 @@ export function diffRows(before: unknown, after: unknown): { key: string; label:
     return { key: k, label: fieldLabel(k), before: bv, after: av, changed: bv !== av }
   })
 }
+
+const BILLING_CYCLE_CN: Record<string, string> = { month: "包月", quarter: "包季", year: "包年" }
+
+/** 订单的「套餐 · 周期」展示串。非会员订单（无套餐）回空串——不显示比显示「—」干净。
+ *  未知周期只显示套餐名，不猜（库里 cycle_snapshot 由下单时快照，理论上只有三种）。 */
+export function orderPlanLabel(o: { planName?: string | null; cycleSnapshot?: string | null }): string {
+  if (!o.planName) return ""
+  const cycle = o.cycleSnapshot ? BILLING_CYCLE_CN[o.cycleSnapshot] : undefined
+  return cycle ? `${o.planName} · ${cycle}` : o.planName
+}

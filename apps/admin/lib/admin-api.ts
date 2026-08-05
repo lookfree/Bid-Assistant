@@ -169,7 +169,9 @@ export const adminApi = {
 export type Paged<T> = { items: T[]; total: number; page: number; pageSize: number; hasMore: boolean }
 export type ApiUser = { id: string; status: string; nickname: string | null; adminNote: string | null; createdAt: string; phone: string | null; tier: string | null; balance: number }
 export type ApiUserDetail = ApiUser & { subscription: { planId: string; status: string; currentPeriodEnd?: string } | null; balance: number }
-export type ApiOrder = { id: string; userId: string; type: string; amountCents: number; status: string; provider: string | null; payway: string | null; providerTradeNo: string | null; createdAt: string }
+// planName/cycleSnapshot/creditsSnapshot：会员订单要看得出「开通的哪个套餐、买了多久、发多少积分」
+// （库里只有 plan_id 这个 UUID，服务端 join plans 后下发）。
+export type ApiOrder = { id: string; userId: string; type: string; amountCents: number; status: string; provider: string | null; payway: string | null; providerTradeNo: string | null; createdAt: string; planName: string | null; cycleSnapshot: string | null; creditsSnapshot: number | null }
 export type ApiLedgerTx = { id: string; userId: string; userName?: string; type: string; amount: number; ref: string | null; createdAt: string; expireAt: string | null }
 export type ApiOverview = {
   totalUsers: number

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test"
-import { permLabel, actionLabel, diffRows, targetLabel } from "../lib/admin-labels"
+import { permLabel, actionLabel, diffRows, targetLabel, orderPlanLabel } from "../lib/admin-labels"
 
 describe("运营后台展示映射：中文标签兜底", () => {
   it("权限项/操作命中中文，未命中回退原键", () => {
@@ -121,5 +121,23 @@ describe("统一中文化收口（QA：操作列 user.note、对象列 config:ag
   it("user.note 的快照字段 adminNote 有中文标签", () => {
     const rows = diffRows({ adminNote: "老客户" }, { adminNote: "老客户·续约中" })
     expect(rows[0]!.label).toBe("运营备注")
+  })
+})
+
+// 订单页此前只有类型/金额/状态/时间，会员订单看不出开通的是哪个套餐、买了多久。
+describe("orderPlanLabel", () => {
+  it("会员订单显示「套餐 · 周期」", () => {
+    expect(orderPlanLabel({ planName: "专业版", cycleSnapshot: "month" })).toBe("专业版 · 包月")
+    expect(orderPlanLabel({ planName: "个人版", cycleSnapshot: "year" })).toBe("个人版 · 包年")
+  })
+
+  it("没有套餐（充值单）回空串——不显示比显示占位符干净", () => {
+    expect(orderPlanLabel({ planName: null, cycleSnapshot: null })).toBe("")
+    expect(orderPlanLabel({})).toBe("")
+  })
+
+  it("周期未知只显示套餐名，不猜", () => {
+    expect(orderPlanLabel({ planName: "专业版", cycleSnapshot: "weird" })).toBe("专业版")
+    expect(orderPlanLabel({ planName: "专业版" })).toBe("专业版")
   })
 })

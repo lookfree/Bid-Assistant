@@ -54,6 +54,7 @@ import {
   type OrderStatus,
 } from "@/lib/mock-data"
 import { adminApi, type ApiOrder } from "@/lib/admin-api"
+import { orderPlanLabel } from "@/lib/admin-labels"
 
 const PAGE_SIZE = 8
 
@@ -61,12 +62,10 @@ const PAGE_SIZE = 8
 // unknown(结果待核对，需人工对账)单列，不再被折叠进 pending 而隐藏。
 const ORDER_STATUSES: OrderStatus[] = ["paid", "pending", "refunded", "failed", "unknown"]
 
-// 真实 payment_orders.type ∈ recharge/purchase/renewal（DB check 约束）。
-function apiTypeToOrderType(t: string): OrderType {
-  if (t === "recharge") return "recharge"
-  if (t === "renewal") return "renew"
-  return "single" // purchase 及其他 → 单次
-}
+// 前端类型取值已与 DB 一致（见 mock-data.ts 的 OrderType），不再需要翻译层；
+// 只把库外的意外取值兜到 purchase，避免整行渲染成空白。
+const ORDER_TYPES: OrderType[] = ["recharge", "purchase", "renewal"]
+const asOrderType = (t: string): OrderType => (ORDER_TYPES.includes(t as OrderType) ? (t as OrderType) : "purchase")
 
 // 列表接口未返回对账状态，默认 matched（真实对账另有差异工作台）。
 function apiOrderToRow(o: ApiOrder): OrderRow {
@@ -74,7 +73,8 @@ function apiOrderToRow(o: ApiOrder): OrderRow {
     id: o.id,
     userId: o.userId,
     company: "-",
-    type: apiTypeToOrderType(o.type),
+    type: asOrderType(o.type),
+    planLabel: orderPlanLabel(o),
     amount: o.amountCents / 100,
     status: ORDER_STATUSES.includes(o.status as OrderStatus) ? (o.status as OrderStatus) : "pending",
     alipayTradeNo: o.providerTradeNo ?? "-",
@@ -195,7 +195,7 @@ export function OrdersClient() {
           </div>
           <Select
             value={type}
-            items={{ all: "全部类型", recharge: "积分充值", single: "单笔购买", renew: "自动续费" }}
+            items={{ all: "全部类型", ...orderTypeLabel }}
             onValueChange={(v) => reset(setType)(v ?? "all")}
           >
             <SelectTrigger className="w-full sm:w-36">
@@ -203,9 +203,9 @@ export function OrdersClient() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">全部类型</SelectItem>
-              <SelectItem value="recharge">积分充值</SelectItem>
-              <SelectItem value="single">单笔购买</SelectItem>
-              <SelectItem value="renew">自动续费</SelectItem>
+              <SelectItem value="recharge">{orderTypeLabel.recharge}</SelectItem>
+              <SelectItem value="purchase">{orderTypeLabel.purchase}</SelectItem>
+              <SelectItem value="renewal">{orderTypeLabel.renewal}</SelectItem>
             </SelectContent>
           </Select>
           <Select
@@ -234,6 +234,7 @@ export function OrdersClient() {
               <TableRow>
                 <TableHead>订单号</TableHead>
                 <TableHead>类型</TableHead>
+                <TableHead>套餐 / 周期</TableHead>
                 <TableHead className="text-right">金额</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>对账</TableHead>
@@ -251,6 +252,9 @@ export function OrdersClient() {
                   <TableCell className="font-mono text-xs">{o.id}</TableCell>
                   <TableCell className="text-sm">
                     {orderTypeLabel[o.type]}
+                  </TableCell>
+                  <TableCell className="text-sm text-muted-foreground">
+                    {o.planLabel || "—"}
                   </TableCell>
                   <TableCell className="text-right font-medium tabular-nums">
                     ¥{o.amount.toLocaleString()}
@@ -272,7 +276,7 @@ export function OrdersClient() {
               {paged.length === 0 && (
                 <TableRow>
                   <TableCell
-                    colSpan={7}
+                    colSpan={8}
                     className="h-24 text-center text-muted-foreground"
                   >
                     {loading ? "加载中…" : "没有匹配的订单"}
@@ -346,6 +350,7 @@ function OrderDetailDialog({
         </DialogHeader>
         <div className="flex flex-col">
           <Info label="订单类型" value={orderTypeLabel[order.type]} />
+          {order.planLabel && <Info label="套餐 / 周期" value={order.planLabel} />}
           <Info label="金额" value={`¥${order.amount.toLocaleString()}`} />
           <Info label="支付状态" value={<OrderStatusBadge status={order.status} />} />
           <Info label="对账状态" value={<ReconcileBadge status={order.reconcile} />} />

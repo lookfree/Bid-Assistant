@@ -246,14 +246,17 @@ export function balanceFromLedger(userId: string): number {
 }
 
 // ---------------- 订单与对账 ----------------
-export type OrderType = "recharge" | "single" | "renew"
+// 与 payment_orders.type 的 DB CHECK 约束一致。此前沿用 v0 原型的 recharge|single|renew：
+// renew ≠ renewal 让「按类型筛选」永远筛不出会员订单，single 库里压根不存在。
+export type OrderType = "recharge" | "purchase" | "renewal"
 export type OrderStatus = "paid" | "pending" | "refunded" | "failed" | "unknown"
 export type ReconcileStatus = "matched" | "diff"
 
+// 本产品不做自动续费/代扣（架构 §6.2 是到期提醒 + 手动续费），所以 renewal 不叫「自动续费」。
 export const orderTypeLabel: Record<OrderType, string> = {
   recharge: "积分充值",
-  single: "单笔购买",
-  renew: "自动续费",
+  purchase: "单笔购买",
+  renewal: "会员开通/续费",
 }
 export const orderStatusLabel: Record<OrderStatus, string> = {
   paid: "已支付",
@@ -268,6 +271,8 @@ export interface OrderRow {
   userId: string
   company: string
   type: OrderType
+  /** 会员订单的「套餐 · 周期」展示串（如「专业版 · 包月」）；非会员订单为空串 */
+  planLabel: string
   amount: number
   status: OrderStatus
   alipayTradeNo: string
@@ -276,16 +281,16 @@ export interface OrderRow {
 }
 
 export const orders: OrderRow[] = [
-  { id: "ORD-20260620-0044", userId: "U101840", company: "中铁建工集团有限公司", type: "recharge", amount: 2999, status: "paid", alipayTradeNo: "2026062022001440021547", reconcile: "matched", createdAt: "2026-06-20 09:12" },
-  { id: "ORD-20260619-0031", userId: "U100412", company: "华为技术有限公司", type: "recharge", amount: 799, status: "paid", alipayTradeNo: "2026061922001440019823", reconcile: "matched", createdAt: "2026-06-19 16:40" },
-  { id: "ORD-20260618-0012", userId: "U100237", company: "中建三局集团有限公司", type: "recharge", amount: 1999, status: "paid", alipayTradeNo: "2026061822001440016602", reconcile: "diff", createdAt: "2026-06-18 10:24" },
-  { id: "ORD-20260625-0067", userId: "U102688", company: "万科企业股份有限公司", type: "renew", amount: 599, status: "paid", alipayTradeNo: "2026062522001440028841", reconcile: "matched", createdAt: "2026-06-25 06:00" },
-  { id: "ORD-20260625-0071", userId: "U101205", company: "上海建工集团股份有限公司", type: "single", amount: 199, status: "pending", alipayTradeNo: "-", reconcile: "diff", createdAt: "2026-06-25 11:32" },
-  { id: "ORD-20260624-0058", userId: "U102910", company: "海康威视数字技术股份有限公司", type: "renew", amount: 990, status: "paid", alipayTradeNo: "2026062422001440025513", reconcile: "matched", createdAt: "2026-06-24 06:00" },
-  { id: "ORD-20260623-0049", userId: "U100876", company: "中国电建集团华东勘测设计研究院", type: "single", amount: 49, status: "refunded", alipayTradeNo: "2026062322001440023390", reconcile: "matched", createdAt: "2026-06-23 14:18" },
-  { id: "ORD-20260622-0040", userId: "U103399", company: "中国中铁股份有限公司", type: "recharge", amount: 4999, status: "paid", alipayTradeNo: "2026062222001440021008", reconcile: "matched", createdAt: "2026-06-22 08:45" },
-  { id: "ORD-20260621-0033", userId: "U102119", company: "京东科技信息技术有限公司", type: "single", amount: 99, status: "failed", alipayTradeNo: "-", reconcile: "matched", createdAt: "2026-06-21 20:11" },
-  { id: "ORD-20260620-0029", userId: "U102910", company: "海康威视数字技术股份有限公司", type: "recharge", amount: 299, status: "paid", alipayTradeNo: "2026062022001440017745", reconcile: "diff", createdAt: "2026-06-20 13:50" },
+  { id: "ORD-20260620-0044", userId: "U101840", company: "中铁建工集团有限公司", type: "recharge", amount: 2999, status: "paid", alipayTradeNo: "2026062022001440021547", reconcile: "matched", planLabel: "", createdAt: "2026-06-20 09:12" },
+  { id: "ORD-20260619-0031", userId: "U100412", company: "华为技术有限公司", type: "recharge", amount: 799, status: "paid", alipayTradeNo: "2026061922001440019823", reconcile: "matched", planLabel: "", createdAt: "2026-06-19 16:40" },
+  { id: "ORD-20260618-0012", userId: "U100237", company: "中建三局集团有限公司", type: "recharge", amount: 1999, status: "paid", alipayTradeNo: "2026061822001440016602", reconcile: "diff", planLabel: "", createdAt: "2026-06-18 10:24" },
+  { id: "ORD-20260625-0067", userId: "U102688", company: "万科企业股份有限公司", type: "renewal", amount: 599, status: "paid", alipayTradeNo: "2026062522001440028841", reconcile: "matched", planLabel: "专业版 · 包月", createdAt: "2026-06-25 06:00" },
+  { id: "ORD-20260625-0071", userId: "U101205", company: "上海建工集团股份有限公司", type: "purchase", amount: 199, status: "pending", alipayTradeNo: "-", reconcile: "diff", planLabel: "", createdAt: "2026-06-25 11:32" },
+  { id: "ORD-20260624-0058", userId: "U102910", company: "海康威视数字技术股份有限公司", type: "renewal", amount: 990, status: "paid", alipayTradeNo: "2026062422001440025513", reconcile: "matched", planLabel: "专业版 · 包月", createdAt: "2026-06-24 06:00" },
+  { id: "ORD-20260623-0049", userId: "U100876", company: "中国电建集团华东勘测设计研究院", type: "purchase", amount: 49, status: "refunded", alipayTradeNo: "2026062322001440023390", reconcile: "matched", planLabel: "", createdAt: "2026-06-23 14:18" },
+  { id: "ORD-20260622-0040", userId: "U103399", company: "中国中铁股份有限公司", type: "recharge", amount: 4999, status: "paid", alipayTradeNo: "2026062222001440021008", reconcile: "matched", planLabel: "", createdAt: "2026-06-22 08:45" },
+  { id: "ORD-20260621-0033", userId: "U102119", company: "京东科技信息技术有限公司", type: "purchase", amount: 99, status: "failed", alipayTradeNo: "-", reconcile: "matched", planLabel: "", createdAt: "2026-06-21 20:11" },
+  { id: "ORD-20260620-0029", userId: "U102910", company: "海康威视数字技术股份有限公司", type: "recharge", amount: 299, status: "paid", alipayTradeNo: "2026062022001440017745", reconcile: "diff", planLabel: "", createdAt: "2026-06-20 13:50" },
 ]
 
 // ---------------- 套餐 & 积分口径配置 ----------------

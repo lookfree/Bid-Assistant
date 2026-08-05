@@ -5,7 +5,7 @@ import { Hono } from "hono"
 import { adminRoutes } from "../src/routes/admin"
 import { listOrders, getOrderDetail } from "../src/services/admin/admin-orders"
 import { getDb, closeDb } from "../src/db/client"
-import { users, adminUsers, paymentOrders, refunds, adminAuditLogs } from "../src/db/schema"
+import { users, adminUsers, paymentOrders, refunds, adminAuditLogs, plans } from "../src/db/schema"
 import { makeUserWithNickname, makeAdminSession, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB（跑法：./test-on-mbp.sh test/admin-orders.test.ts）
@@ -15,6 +15,7 @@ const app = new Hono()
 app.route("/admin-api", adminRoutes({ resolveRefundProvider: () => ({ refund: async () => ({ ok: true }) }) }))
 const madeUsers: string[] = []
 const madeAdmins: string[] = []
+const madePlans: string[] = []
 const regU = (id: string) => madeUsers.push(id)
 const regA = (id: string) => madeAdmins.push(id)
 
@@ -28,8 +29,40 @@ async function paidOrder(userId: string, amountCents = 1000) {
 
 afterAll(async () => {
   for (const id of madeUsers) await getDb().delete(users).where(eq(users.id, id))
+  for (const id of madePlans) await getDb().delete(plans).where(eq(plans.id, id))
   for (const id of madeAdmins) await getDb().delete(adminUsers).where(eq(adminUsers.id, id))
   await closeDb()
+})
+
+// 订单页此前只有「类型/金额/状态/时间」，会员订单看不出开通的是哪个套餐、买了多久——
+// plan_id 是 UUID、cycle_snapshot 压根没往前端送，运营只能去库里查。
+describe("spec310 订单列表带套餐与周期", () => {
+  it("会员订单回套餐名与计费周期（plan_id 是 UUID，运营看不懂）", async () => {
+    const u = await makeUserWithNickname(regU)
+    const [plan] = await getDb().insert(plans).values({ name: "专业版", billingCycle: "month" }).returning()
+    madePlans.push(plan!.id)
+    const [o] = await getDb()
+      .insert(paymentOrders)
+      .values({
+        userId: u, type: "renewal", amountCents: 3900, status: "paid",
+        planId: plan!.id, cycleSnapshot: "month", creditsSnapshot: 1200,
+        clientSn: `t-${randomUUID()}`, idempotencyKey: `ord-${randomUUID()}`,
+      })
+      .returning()
+
+    const res = await listOrders({ userId: u, page: 1, pageSize: 20 })
+    const row = res.items.find((r) => r.id === o!.id)!
+    expect(row.planName).toBe("专业版")
+    expect(row.cycleSnapshot).toBe("month")
+    expect(row.creditsSnapshot).toBe(1200)
+  })
+
+  it("充值订单没有套餐 → planName 为 null，不编造", async () => {
+    const u = await makeUserWithNickname(regU)
+    const o = await paidOrder(u, 100)
+    const res = await listOrders({ userId: u, page: 1, pageSize: 20 })
+    expect(res.items.find((r) => r.id === o.id)!.planName).toBeNull()
+  })
 })
 
 describe("spec310 订单页", () => {
