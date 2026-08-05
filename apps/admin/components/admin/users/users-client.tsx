@@ -42,7 +42,9 @@ const PAGE_SIZE = 8
 // plans.code(free/personal/professional) → 前端档位（pro）。
 const TIER_MAP: Record<string, MemberTier> = { free: "free", personal: "personal", professional: "pro" }
 
-// 真实用户 → 列表行。列表接口没有的字段（公司/自动续费/项目数/订阅明细）合理默认，详情页再拉全。
+// 真实用户 → 列表行。列表接口没有的字段（公司/项目数/订阅明细）合理默认，详情页再拉全。
+// 原有的「自动续费」列已删：本产品不做代扣（架构 §6.2 是到期提醒 + 手动续费），
+// 该列对所有真实用户恒为 false、永远显示「未开启」，只会让人以为存在这个功能。
 function apiUserToRow(u: ApiUser): UserRow {
   const tier: MemberTier = (u.tier ? TIER_MAP[u.tier] : undefined) ?? "free"
   return {
@@ -54,7 +56,6 @@ function apiUserToRow(u: ApiUser): UserRow {
     registeredAt: u.createdAt?.slice(0, 10) ?? "-",
     tier,
     points: u.balance ?? 0,
-    autoRenew: false,
     status: (u.status as AccountStatus) ?? "active",
     projects: 0,
     subscription: { plan: tier, period: "月付", startAt: "-", nextRenewAt: "-", amount: 0 },
@@ -189,7 +190,6 @@ export function UsersClient() {
                 <TableHead>注册时间</TableHead>
                 <TableHead>会员档位</TableHead>
                 <TableHead className="text-right">积分余额</TableHead>
-                <TableHead>自动续费</TableHead>
                 <TableHead>账号状态</TableHead>
                 <TableHead className="text-right">操作</TableHead>
               </TableRow>
@@ -224,13 +224,6 @@ export function UsersClient() {
                   <TableCell className="text-right font-medium tabular-nums">
                     {u.points.toLocaleString()}
                   </TableCell>
-                  <TableCell className="text-sm">
-                    {u.autoRenew ? (
-                      <span className="text-emerald-600">已开启</span>
-                    ) : (
-                      <span className="text-muted-foreground">未开启</span>
-                    )}
-                  </TableCell>
                   <TableCell>
                     <AccountStatusBadge status={u.status} />
                   </TableCell>
@@ -251,7 +244,7 @@ export function UsersClient() {
               {paged.length === 0 && (
                 <TableRow>
                   <TableCell
-                    colSpan={7}
+                    colSpan={6}
                     className="h-24 text-center text-muted-foreground"
                   >
                     {loading ? "加载中…" : "没有匹配的用户"}

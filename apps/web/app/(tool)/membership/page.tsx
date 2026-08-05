@@ -3,10 +3,10 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import Link from "next/link"
 import { memberTiers, type TierId } from "@/lib/plans"
-import { fetchMembership, fetchOrders, startRecharge, renewMembership, fetchInvoices, createInvoice } from "@/lib/membership-api"
+import { fetchMembership, fetchCreditTransactions, fetchOrders, startRecharge, renewMembership, fetchInvoices, createInvoice } from "@/lib/membership-api"
 import { api } from "@/lib/api"
-import type { MembershipOverview, OrderView, LaunchResponse, Payway, InvoiceView, CreateInvoicePayload } from "@/lib/membership-types"
-import { formatPeriodEnd, statusLabel, tierCardState, planPriceYuan, plansByTier, accountLabel, billingCycleLabel, periodRangeLabel } from "@/lib/membership-view"
+import type { MembershipOverview, OrderView, CreditTxView, LaunchResponse, Payway, InvoiceView, CreateInvoicePayload } from "@/lib/membership-types"
+import { formatPeriodEnd, statusLabel, tierCardState, planPriceYuan, plansByTier, accountLabel, billingCycleLabel, periodRangeLabel, creditTxLabel, creditAmountText, orderTypeLabel } from "@/lib/membership-view"
 import { useAuth } from "@/components/auth/auth-provider"
 import { peekMembershipCache, primeMembershipCache } from "@/lib/use-membership"
 import { tiersCostText } from "@/lib/content-tiers"
@@ -26,7 +26,6 @@ const ORDER_STATUS: Record<OrderView["status"], { label: string; tone: string }>
   failed: { label: "已失败", tone: "bg-destructive/10 text-destructive" },
   refunded: { label: "已退款", tone: "bg-muted text-muted-foreground" },
 }
-const ORDER_TYPE: Record<OrderView["type"], string> = { recharge: "积分充值", renewal: "会员续费", purchase: "购买" }
 
 type PendingPay = { kind: "recharge" | "renew"; id: string; label: string }
 
@@ -36,6 +35,7 @@ export default function MembershipPage() {
   // 无缓存（直链进入）才走整页加载态。
   const [overview, setOverview] = useState<MembershipOverview | null>(() => peekMembershipCache())
   const [orders, setOrders] = useState<OrderView[]>([])
+  const [creditTxs, setCreditTxs] = useState<CreditTxView[]>([])
   const [invoices, setInvoices] = useState<InvoiceView[]>([])
   const [invoiceOpen, setInvoiceOpen] = useState(false)
   const [loading, setLoading] = useState(() => peekMembershipCache() === null)
@@ -60,9 +60,16 @@ export default function MembershipPage() {
     }
     // 订单/发票是次要区块：并行加载、各自失败降级不阻塞会员主体。
     // 拉满页（上限 100）——开票资格由 orders×invoices 计算，分页截断会漏掉老订单的可开票判断。
-    const [od, iv] = await Promise.allSettled([fetchOrders(1, 100), fetchInvoices(1, 100)])
+    // 积分流水同为次要区块：接口与前端封装早就有，只是一直没有页面在用——用户看得到余额，
+    // 却看不到积分花到哪去了（会员退款产生的「退款收回」负向流水尤其该让用户看见）。
+    const [od, iv, tx] = await Promise.allSettled([
+      fetchOrders(1, 100),
+      fetchInvoices(1, 100),
+      fetchCreditTransactions(1, 20),
+    ])
     setOrders(od.status === "fulfilled" ? od.value.items : [])
     setInvoices(iv.status === "fulfilled" ? iv.value.items : [])
+    setCreditTxs(tx.status === "fulfilled" ? tx.value.items : [])
   }, [])
 
   useEffect(() => {
@@ -396,6 +403,39 @@ export default function MembershipPage() {
         </ul>
       </section>
 
+      {/* 积分流水：余额是结果，这里是过程——每一笔加减的来由 */}
+      <section className="mt-8 rounded-2xl border border-border bg-card">
+        <div className="flex items-center gap-2 border-b border-border px-5 py-4">
+          <Coins className="size-4 text-muted-foreground" />
+          <h2 className="text-sm font-semibold text-foreground">积分流水</h2>
+          <span className="text-xs text-muted-foreground">最近 20 条</span>
+        </div>
+        {creditTxs.length > 0 ? (
+          <ul className="divide-y divide-border">
+            {creditTxs.map((t) => (
+              <li key={t.id} className="flex items-center justify-between gap-3 px-5 py-3">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-foreground">{creditTxLabel(t.type)}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {formatPeriodEnd(t.createdAt)}
+                    {t.expireAt ? ` · ${formatPeriodEnd(t.expireAt)} 到期` : ""}
+                  </p>
+                </div>
+                <span
+                  className={`shrink-0 text-sm font-semibold tabular-nums ${
+                    t.amount > 0 ? "text-emerald-600" : "text-foreground"
+                  }`}
+                >
+                  {creditAmountText(t.amount)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="px-5 py-8 text-center text-sm text-muted-foreground">暂无积分流水</p>
+        )}
+      </section>
+
       {/* 订单记录 + 帮助 */}
       <div className="mt-8 grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
         <section className="rounded-2xl border border-border bg-card">
@@ -410,7 +450,7 @@ export default function MembershipPage() {
                 return (
                   <li key={o.id} className="flex items-center justify-between gap-3 px-5 py-3.5">
                     <div className="min-w-0">
-                      <p className="truncate text-sm font-medium text-foreground">{ORDER_TYPE[o.type]}</p>
+                      <p className="truncate text-sm font-medium text-foreground">{orderTypeLabel(o.type)}</p>
                       <p className="text-xs text-muted-foreground">
                         订单号 {o.id.slice(0, 12)} · {formatPeriodEnd(o.createdAt)}
                       </p>
@@ -604,7 +644,7 @@ function InvoiceModal(props: { orders: OrderView[]; onClose: () => void; onCreat
             <select className={field} value={orderId} onChange={(e) => setOrderId(e.target.value)}>
               {orders.map((o) => (
                 <option key={o.id} value={o.id}>
-                  {ORDER_TYPE[o.type]} · ¥{o.amountYuan} · {formatPeriodEnd(o.createdAt)}
+                  {orderTypeLabel(o.type)} · ¥{o.amountYuan} · {formatPeriodEnd(o.createdAt)}
                 </option>
               ))}
             </select>

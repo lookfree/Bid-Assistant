@@ -7,7 +7,11 @@ import { creditTransactions } from "../db/schema"
 
 export interface CreditTxView {
   id: string
-  type: "grant" | "purchase" | "hold" | "settle" | "release" | "expire" | "referral_reward" | "refund_clawback"
+  // 逐项对齐 credit_tx_type_check（admin_adjust 此前漏了：运营后台可人工调整积分，
+  // 漏在类型里会让读代码的人以为这种流水不会出现在用户侧）。
+  type:
+    | "grant" | "purchase" | "hold" | "settle" | "release"
+    | "expire" | "referral_reward" | "refund_clawback" | "admin_adjust"
   amount: number // 带符号 ±
   ref: string | null
   expireAt: string | null // ISO

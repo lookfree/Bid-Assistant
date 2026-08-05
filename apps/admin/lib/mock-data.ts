@@ -20,7 +20,6 @@ export interface UserRow {
   registeredAt: string
   tier: MemberTier
   points: number
-  autoRenew: boolean
   status: AccountStatus
   projects: number
   subscription: {
@@ -41,7 +40,6 @@ export const users: UserRow[] = [
     registeredAt: "2025-03-12 09:24",
     tier: "pro",
     points: 19420,
-    autoRenew: true,
     status: "active",
     projects: 36,
     subscription: { plan: "pro", period: "年付", startAt: "2025-06-01", nextRenewAt: "2026-06-01", amount: 5988 },
@@ -54,7 +52,6 @@ export const users: UserRow[] = [
     registeredAt: "2025-04-02 14:11",
     tier: "pro",
     points: 9260,
-    autoRenew: true,
     status: "active",
     projects: 21,
     subscription: { plan: "pro", period: "月付", startAt: "2026-06-08", nextRenewAt: "2026-07-08", amount: 599 },
@@ -67,7 +64,6 @@ export const users: UserRow[] = [
     registeredAt: "2025-01-20 10:48",
     tier: "personal",
     points: 1240,
-    autoRenew: false,
     status: "active",
     projects: 8,
     subscription: { plan: "personal", period: "月付", startAt: "2026-06-15", nextRenewAt: "2026-07-15", amount: 99 },
@@ -80,7 +76,6 @@ export const users: UserRow[] = [
     registeredAt: "2025-05-18 16:33",
     tier: "personal",
     points: 320,
-    autoRenew: true,
     status: "active",
     projects: 5,
     subscription: { plan: "personal", period: "年付", startAt: "2026-02-01", nextRenewAt: "2027-02-01", amount: 990 },
@@ -93,7 +88,6 @@ export const users: UserRow[] = [
     registeredAt: "2025-06-01 08:05",
     tier: "free",
     points: 60,
-    autoRenew: false,
     status: "active",
     projects: 2,
     subscription: { plan: "free", period: "月付", startAt: "2025-06-01", nextRenewAt: "-", amount: 0 },
@@ -106,7 +100,6 @@ export const users: UserRow[] = [
     registeredAt: "2024-11-09 13:52",
     tier: "pro",
     points: 24680,
-    autoRenew: true,
     status: "active",
     projects: 52,
     subscription: { plan: "pro", period: "年付", startAt: "2025-11-09", nextRenewAt: "2026-11-09", amount: 5988 },
@@ -119,7 +112,6 @@ export const users: UserRow[] = [
     registeredAt: "2025-02-26 11:20",
     tier: "personal",
     points: 0,
-    autoRenew: false,
     status: "banned",
     projects: 14,
     subscription: { plan: "personal", period: "月付", startAt: "2026-05-15", nextRenewAt: "2026-06-15", amount: 99 },
@@ -132,7 +124,6 @@ export const users: UserRow[] = [
     registeredAt: "2025-05-30 19:41",
     tier: "free",
     points: 180,
-    autoRenew: false,
     status: "active",
     projects: 3,
     subscription: { plan: "free", period: "月付", startAt: "2025-05-30", nextRenewAt: "-", amount: 0 },
@@ -145,7 +136,6 @@ export const users: UserRow[] = [
     registeredAt: "2025-04-15 15:08",
     tier: "pro",
     points: 7320,
-    autoRenew: false,
     status: "active",
     projects: 19,
     subscription: { plan: "pro", period: "月付", startAt: "2026-06-10", nextRenewAt: "2026-07-10", amount: 599 },
@@ -158,7 +148,6 @@ export const users: UserRow[] = [
     registeredAt: "2025-03-28 09:59",
     tier: "personal",
     points: 2480,
-    autoRenew: true,
     status: "active",
     projects: 11,
     subscription: { plan: "personal", period: "年付", startAt: "2026-03-28", nextRenewAt: "2027-03-28", amount: 990 },
@@ -171,7 +160,6 @@ export const users: UserRow[] = [
     registeredAt: "2025-06-12 10:30",
     tier: "free",
     points: 100,
-    autoRenew: false,
     status: "active",
     projects: 1,
     subscription: { plan: "free", period: "月付", startAt: "2025-06-12", nextRenewAt: "-", amount: 0 },
@@ -184,7 +172,6 @@ export const users: UserRow[] = [
     registeredAt: "2025-01-08 17:22",
     tier: "pro",
     points: 13900,
-    autoRenew: true,
     status: "active",
     projects: 41,
     subscription: { plan: "pro", period: "年付", startAt: "2026-01-08", nextRenewAt: "2027-01-08", amount: 5988 },

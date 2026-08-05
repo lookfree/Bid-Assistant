@@ -77,3 +77,40 @@ export function periodRangeLabel(sub: SubscriptionView | null): string {
   if (!sub || !sub.currentPeriodStart || !sub.currentPeriodEnd) return "—"
   return `${formatPeriodEnd(sub.currentPeriodStart)} ~ ${formatPeriodEnd(sub.currentPeriodEnd)}`
 }
+
+// 积分流水的用户侧文案。运营后台那套（admin-labels）是给内部看的，这里要说用户听得懂的话：
+// 「预扣/结算/退还」是内部记账动作，用户只关心"这笔为什么加、为什么减"。
+const CREDIT_TX_CN: Record<string, string> = {
+  grant: "赠送到账",
+  purchase: "充值到账",
+  hold: "生成预扣",
+  settle: "生成结算",
+  release: "失败退还",
+  expire: "到期作废",
+  referral_reward: "邀请奖励",
+  refund_clawback: "退款收回",
+  admin_adjust: "人工调整",
+}
+
+/** 流水类型中文。库外取值原样回显——真出现了要能报得出原文，而不是显示"未知"。 */
+export function creditTxLabel(type: string): string {
+  return CREDIT_TX_CN[type] ?? type
+}
+
+/** 变动额展示：正数带 +，负数自带 -。0 不该出现（流水都是有向的），出现了也如实显示。 */
+export function creditAmountText(amount: number): string {
+  return amount > 0 ? `+${amount}` : String(amount)
+}
+
+// 订单类型文案。取值与 payment_orders.type 的 DB 约束一致（recharge/purchase/renewal）。
+// 不叫「会员续费」：首次开通也走这条，叫续费不准；更不叫「自动续费」——本产品不做代扣
+// （架构 §6.2 是到期提醒 + 手动续费）。与运营后台 orderTypeLabel 保持同一说法。
+const ORDER_TYPE_CN: Record<string, string> = {
+  recharge: "积分充值",
+  purchase: "单笔购买",
+  renewal: "会员开通/续费",
+}
+
+export function orderTypeLabel(type: string): string {
+  return ORDER_TYPE_CN[type] ?? type
+}

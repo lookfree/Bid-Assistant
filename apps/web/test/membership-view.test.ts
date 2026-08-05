@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test"
-import { creditCostValue, formatPeriodEnd, isMember, statusLabel, tierCardState, planPriceYuan, plansByTier, accountLabel, billingCycleLabel, periodRangeLabel } from "../lib/membership-view"
+import { creditCostValue, formatPeriodEnd, isMember, statusLabel, tierCardState, planPriceYuan, plansByTier, accountLabel, billingCycleLabel, periodRangeLabel, creditTxLabel, creditAmountText, orderTypeLabel } from "../lib/membership-view"
 import type { MembershipOverview, PlanView, SubscriptionView } from "../lib/membership-types"
 
 const plan = (tierId: PlanView["tierId"], m: number, y: number): PlanView => ({
@@ -104,5 +104,40 @@ describe("本账户信息", () => {
     expect(periodRangeLabel(sub("2026-08-05T00:00:00Z", "2026-09-05T00:00:00Z"))).toBe("2026-08-05 ~ 2026-09-05")
     expect(periodRangeLabel(sub(null, "2026-09-05T00:00:00Z"))).toBe("—")
     expect(periodRangeLabel(null)).toBe("—")
+  })
+})
+
+// 会员中心只显示余额与订单，从不显示积分花到哪去了——接口 /api/credits/transactions 与前端封装
+// 早就有，全站却没有一个页面在用。会员退款产生的 refund_clawback 负向流水用户更该看得见。
+describe("积分流水文案", () => {
+  it("说用户听得懂的话，而不是内部记账动作名", () => {
+    expect(creditTxLabel("purchase")).toBe("充值到账")
+    expect(creditTxLabel("hold")).toBe("生成预扣")
+    expect(creditTxLabel("release")).toBe("失败退还")
+    expect(creditTxLabel("refund_clawback")).toBe("退款收回")
+  })
+
+  it("库外取值原样回显，不吞成「未知」", () => {
+    expect(creditTxLabel("brand_new_type")).toBe("brand_new_type")
+  })
+
+  it("变动额带符号——不带正号的话，加和减在列表里看不出区别", () => {
+    expect(creditAmountText(1200)).toBe("+1200")
+    expect(creditAmountText(-20)).toBe("-20")
+  })
+})
+
+// C 端会员中心的订单记录此前自带一份标签表，写的是「会员续费」「购买」——与运营后台不一致，
+// 且首次开通也走 renewal 这条，叫「续费」不准。
+describe("订单类型文案", () => {
+  it("与运营后台同一说法，且不叫「自动续费」（本产品不做代扣）", () => {
+    expect(orderTypeLabel("renewal")).toBe("会员开通/续费")
+    expect(orderTypeLabel("renewal")).not.toContain("自动")
+    expect(orderTypeLabel("recharge")).toBe("积分充值")
+    expect(orderTypeLabel("purchase")).toBe("单笔购买")
+  })
+
+  it("库外取值原样回显", () => {
+    expect(orderTypeLabel("weird")).toBe("weird")
   })
 })
