@@ -7,6 +7,20 @@ import { searchDocSections, splitByQuery, type DocSectionGroup } from "@/lib/doc
 /** 多文件读标（spec320）每份文件占用的章节区间（read 结果 docFiles，camelCase）。 */
 export type DocFileRange = { name: string; secFrom: number; secTo: number }
 
+/** 按搜索词把文字切片渲染，命中处标黄。查询为空时原样输出（splitByQuery 保证）。
+ *  current 传 true 时加深——一屏几十处一样的黄底，看不出跳到了哪一处。 */
+function highlight(text: string, query: string, current = false) {
+  return splitByQuery(text, query).map((part, i) =>
+    part.hit ? (
+      <mark key={i} className={`rounded px-0.5 text-foreground ${current ? "bg-amber-300" : "bg-amber-100"}`}>
+        {part.text}
+      </mark>
+    ) : (
+      <span key={i}>{part.text}</span>
+    ),
+  )
+}
+
 /** 组 id（sec-N）尾部的章节号；无数字（如 sec-intro）返回 NaN。 */
 function secNum(id: string): number {
   return Number(/(\d+)$/.exec(id)?.[1] ?? NaN)
@@ -61,21 +75,28 @@ export function TenderDocPanel({
 
   // 搜索命中：跨全部文件搜（不受当前页签限制），跳到别的文件时自动切页签，与右栏定位同一手法。
   const matches = useMemo(() => searchDocSections(sections, query), [sections, query])
-  const current = matches[Math.min(matchIdx, matches.length - 1)]
-  useEffect(() => setMatchIdx(0), [query])
+  // 序号就地夹紧：改查询/原文流式增补都会让命中数变化，只靠效果里 setMatchIdx(0) 复位，
+  // 中间那一帧会用越界的旧序号——计数器显示「8/2 条」，还会朝错误的命中滚一次。
+  const safeIdx = matches.length ? Math.min(matchIdx, matches.length - 1) : 0
+  const current = matches[safeIdx]
+
+  // 命中落在别的文件 → 切到该文件页签。**只依赖命中本身**：把 activeFile 也列进依赖的话，
+  // 用户手动点页签会重跑本效果，而 current 还指着旧文件的命中，于是被立刻弹回去，
+  // 搜索期间根本切不了文件（与既有 activeClauses 效果只依赖 [activeClauses] 同理）。
+  useEffect(() => {
+    if (!current || !showTabs || activeFile < 0) return
+    const n = secNum(current.secId)
+    if (Number.isNaN(n)) return
+    const f = files![activeFile]!
+    if (n >= f.secFrom && n <= f.secTo) return
+    const idx = files!.findIndex((fr) => n >= fr.secFrom && n <= fr.secTo)
+    if (idx >= 0) setActiveFile(idx)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current?.clauseId])
+
+  // 滚动到当前命中：依赖含 activeFile——切页签后段落刚挂载，此时 ref 才拿得到
   useEffect(() => {
     if (!current) return
-    if (showTabs && activeFile >= 0) {
-      const n = secNum(current.secId)
-      const f = files![activeFile]!
-      if (!Number.isNaN(n) && (n < f.secFrom || n > f.secTo)) {
-        const idx = files!.findIndex((fr) => n >= fr.secFrom && n <= fr.secTo)
-        if (idx >= 0) {
-          setActiveFile(idx)
-          return // 切页签会重渲染，等下一轮效果再滚
-        }
-      }
-    }
     localRefs.current[current.clauseId]?.scrollIntoView({ behavior: "smooth", block: "center" })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current?.clauseId, activeFile])
@@ -118,13 +139,17 @@ export function TenderDocPanel({
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <input
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value)
+              setMatchIdx(0) // 同步复位：靠效果复位会先用旧序号渲染一帧并滚错地方
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault()
                 step(e.shiftKey ? -1 : 1)
               } else if (e.key === "Escape") {
                 setQuery("")
+                setMatchIdx(0)
               }
             }}
             placeholder="在原文中搜索（回车下一处，Shift+回车上一处）"
@@ -133,7 +158,10 @@ export function TenderDocPanel({
           {query && (
             <button
               type="button"
-              onClick={() => setQuery("")}
+              onClick={() => {
+                setQuery("")
+                setMatchIdx(0)
+              }}
               aria-label="清空搜索"
               className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
             >
@@ -144,7 +172,7 @@ export function TenderDocPanel({
         {query.trim() && (
           <div className="flex shrink-0 items-center gap-1">
             <span className="tabular-nums text-xs text-muted-foreground">
-              {matches.length ? `${matchIdx + 1}/${matches.length} 条` : "无匹配"}
+              {matches.length ? `${safeIdx + 1}/${matches.length} 条` : "无匹配"}
             </span>
             <button
               type="button"
@@ -217,10 +245,12 @@ export function TenderDocPanel({
           >
             {/* 按解析出的层级渲染：一级（第N章/节/篇/部分）大一号，二级（「一、」式）小一号。
                 拿不到真实标题时 title 会是「第N部分」占位——那时层级一律按 1，不装作有结构。 */}
+            {/* 标题同样过高亮：搜章节名时命中的就是标题，落点段落里并没有那个词，
+                不标出来的话用户看到「1/1 条」、页面滚了，却一个高亮都找不到，分不清搜没搜到。 */}
             {sec.level >= 2 ? (
-              <h4 className="mb-1.5 mt-1 text-sm font-semibold text-foreground">{sec.title}</h4>
+              <h4 className="mb-1.5 mt-1 text-sm font-semibold text-foreground">{highlight(sec.title, query)}</h4>
             ) : (
-              <h3 className="mb-2 mt-1 text-base font-bold text-foreground">{sec.title}</h3>
+              <h3 className="mb-2 mt-1 text-base font-bold text-foreground">{highlight(sec.title, query)}</h3>
             )}
             {sec.paragraphs.map((clause) => {
               const hit = activeClauses.includes(clause.id)
@@ -241,21 +271,7 @@ export function TenderDocPanel({
                   }`}
                 >
                   {hit && <MapPin className="mr-1 inline size-3.5 -translate-y-px text-primary" />}
-                  {/* 搜索命中逐处标黄；当前那一处再加深，否则一屏几十处黄底分不出跳到了哪 */}
-                  {splitByQuery(clause.text, query).map((part, i) =>
-                    part.hit ? (
-                      <mark
-                        key={i}
-                        className={`rounded px-0.5 ${
-                          isCurrentMatch ? "bg-amber-300 text-foreground" : "bg-amber-100 text-foreground"
-                        }`}
-                      >
-                        {part.text}
-                      </mark>
-                    ) : (
-                      <span key={i}>{part.text}</span>
-                    ),
-                  )}
+                  {highlight(clause.text, query, isCurrentMatch)}
                 </p>
               )
             })}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test"
-import { creditCostValue, formatPeriodEnd, isMember, statusLabel, tierCardState, planPriceYuan, plansByTier, accountLabel, billingCycleLabel, periodRangeLabel, creditTxLabel, creditAmountText, orderTypeLabel } from "../lib/membership-view"
+import { creditCostValue, formatPeriodEnd, isMember, statusLabel, tierCardState, planPriceYuan, plansByTier, accountLabel, billingCycleLabel, periodRangeLabel, creditTxLabel, creditAmountText, orderTypeLabel, formatTxTime, visibleCreditTxs } from "../lib/membership-view"
 import type { MembershipOverview, PlanView, SubscriptionView } from "../lib/membership-types"
 
 const plan = (tierId: PlanView["tierId"], m: number, y: number): PlanView => ({
@@ -112,7 +112,7 @@ describe("本账户信息", () => {
 describe("积分流水文案", () => {
   it("说用户听得懂的话，而不是内部记账动作名", () => {
     expect(creditTxLabel("purchase")).toBe("充值到账")
-    expect(creditTxLabel("hold")).toBe("生成预扣")
+    expect(creditTxLabel("hold")).toBe("使用预扣")
     expect(creditTxLabel("release")).toBe("失败退还")
     expect(creditTxLabel("refund_clawback")).toBe("退款收回")
   })
@@ -139,5 +139,32 @@ describe("订单类型文案", () => {
 
   it("库外取值原样回显", () => {
     expect(orderTypeLabel("weird")).toBe("weird")
+  })
+})
+
+describe("积分流水的可见性与时间", () => {
+  it("金额为 0 的结算行不展示——余额没动，对用户是纯噪音", () => {
+    const txs = [{ amount: -100 }, { amount: 0 }, { amount: 180 }]
+    expect(visibleCreditTxs(txs).map((t) => t.amount)).toEqual([-100, 180])
+  })
+
+  it("差额非零的结算必须留着——那是真退回用户的积分（230 实测有 +180/+220 这样的行）", () => {
+    expect(visibleCreditTxs([{ amount: 180 }])).toHaveLength(1)
+  })
+
+  it("流水时间到分钟：一个下午跑三步不能显示成三条一样的日期", () => {
+    const a = formatTxTime("2026-08-05T10:23:49Z")
+    const b = formatTxTime("2026-08-05T11:47:02Z")
+    expect(a).not.toBe(b)
+    expect(a).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)
+  })
+
+  it("非法时间给占位符，不显示 Invalid Date", () => {
+    expect(formatTxTime("nonsense")).toBe("—")
+  })
+
+  it("预扣/结算不叫「生成」——读标、查重、审核表也走这两种流水", () => {
+    expect(creditTxLabel("hold")).not.toContain("生成")
+    expect(creditTxLabel("settle")).not.toContain("生成")
   })
 })

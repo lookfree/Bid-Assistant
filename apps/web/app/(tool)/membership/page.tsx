@@ -6,7 +6,7 @@ import { memberTiers, type TierId } from "@/lib/plans"
 import { fetchMembership, fetchCreditTransactions, fetchOrders, startRecharge, renewMembership, fetchInvoices, createInvoice } from "@/lib/membership-api"
 import { api } from "@/lib/api"
 import type { MembershipOverview, OrderView, CreditTxView, LaunchResponse, Payway, InvoiceView, CreateInvoicePayload } from "@/lib/membership-types"
-import { formatPeriodEnd, statusLabel, tierCardState, planPriceYuan, plansByTier, accountLabel, billingCycleLabel, periodRangeLabel, creditTxLabel, creditAmountText, orderTypeLabel } from "@/lib/membership-view"
+import { formatPeriodEnd, statusLabel, tierCardState, planPriceYuan, plansByTier, accountLabel, billingCycleLabel, periodRangeLabel, creditTxLabel, creditAmountText, orderTypeLabel, formatTxTime, visibleCreditTxs } from "@/lib/membership-view"
 import { useAuth } from "@/components/auth/auth-provider"
 import { peekMembershipCache, primeMembershipCache } from "@/lib/use-membership"
 import { tiersCostText } from "@/lib/content-tiers"
@@ -36,6 +36,8 @@ export default function MembershipPage() {
   const [overview, setOverview] = useState<MembershipOverview | null>(() => peekMembershipCache())
   const [orders, setOrders] = useState<OrderView[]>([])
   const [creditTxs, setCreditTxs] = useState<CreditTxView[]>([])
+  // 拉取失败要与"确实没有流水"分开：这是钱的视图，把 500 显示成「暂无积分流水」等于向用户断言了假话
+  const [creditTxFailed, setCreditTxFailed] = useState(false)
   const [invoices, setInvoices] = useState<InvoiceView[]>([])
   const [invoiceOpen, setInvoiceOpen] = useState(false)
   const [loading, setLoading] = useState(() => peekMembershipCache() === null)
@@ -44,6 +46,9 @@ export default function MembershipPage() {
   const [pending, setPending] = useState<PendingPay | null>(null)
   const [qr, setQr] = useState<LaunchResponse | null>(null)
   const [paying, setPaying] = useState(false)
+
+  // 滤掉金额为 0 的结算行（预扣与实际用量一致时差额就是 0，余额没动 → 对用户是噪音）
+  const shownTxs = visibleCreditTxs(creditTxs)
 
   const load = useCallback(async () => {
     // 已有可展示数据（缓存/上次加载）时后台静默刷新,不再整页转加载态（关扫码弹层后的刷新同理）
@@ -65,11 +70,13 @@ export default function MembershipPage() {
     const [od, iv, tx] = await Promise.allSettled([
       fetchOrders(1, 100),
       fetchInvoices(1, 100),
-      fetchCreditTransactions(1, 20),
+      // 拉 50 条：下面会滤掉金额为 0 的结算行（占比很高），拉 20 条实际只剩十来条
+      fetchCreditTransactions(1, 50),
     ])
     setOrders(od.status === "fulfilled" ? od.value.items : [])
     setInvoices(iv.status === "fulfilled" ? iv.value.items : [])
     setCreditTxs(tx.status === "fulfilled" ? tx.value.items : [])
+    setCreditTxFailed(tx.status !== "fulfilled")
   }, [])
 
   useEffect(() => {
@@ -408,16 +415,22 @@ export default function MembershipPage() {
         <div className="flex items-center gap-2 border-b border-border px-5 py-4">
           <Coins className="size-4 text-muted-foreground" />
           <h2 className="text-sm font-semibold text-foreground">积分流水</h2>
-          <span className="text-xs text-muted-foreground">最近 20 条</span>
+          {shownTxs.length > 0 && (
+            <span className="text-xs text-muted-foreground">最近 {shownTxs.length} 条</span>
+          )}
         </div>
-        {creditTxs.length > 0 ? (
+        {creditTxFailed ? (
+          <p className="px-5 py-8 text-center text-sm text-muted-foreground">
+            积分流水加载失败，请刷新页面重试（不影响余额与下单）
+          </p>
+        ) : shownTxs.length > 0 ? (
           <ul className="divide-y divide-border">
-            {creditTxs.map((t) => (
+            {shownTxs.map((t) => (
               <li key={t.id} className="flex items-center justify-between gap-3 px-5 py-3">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium text-foreground">{creditTxLabel(t.type)}</p>
                   <p className="text-xs text-muted-foreground">
-                    {formatPeriodEnd(t.createdAt)}
+                    {formatTxTime(t.createdAt)}
                     {t.expireAt ? ` · ${formatPeriodEnd(t.expireAt)} 到期` : ""}
                   </p>
                 </div>

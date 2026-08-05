@@ -83,8 +83,9 @@ export function periodRangeLabel(sub: SubscriptionView | null): string {
 const CREDIT_TX_CN: Record<string, string> = {
   grant: "赠送到账",
   purchase: "充值到账",
-  hold: "生成预扣",
-  settle: "生成结算",
+  // 预扣/结算对读标、查重、审核表等每一步都会写，不只标书生成——别叫「生成预扣」
+  hold: "使用预扣",
+  settle: "用量结算",
   release: "失败退还",
   expire: "到期作废",
   referral_reward: "邀请奖励",
@@ -113,4 +114,20 @@ const ORDER_TYPE_CN: Record<string, string> = {
 
 export function orderTypeLabel(type: string): string {
   return ORDER_TYPE_CN[type] ?? type
+}
+
+/** 流水时间：到分钟。formatPeriodEnd 只到日，是给订阅到期日写的；
+ *  一个下午跑三步会显示三条一模一样的日期，既看不出先后也对不上是哪一次运行。 */
+export function formatTxTime(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return "—"
+  const p = (n: number) => String(n).padStart(2, "0")
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+/** 用户侧要展示的流水：滤掉**金额为 0** 的行。
+ *  结算行写的是「预扣与实际用量的差额」，实际用量与预扣一致时差额就是 0（230 实测 190 条结算里
+ *  181 条为 0）——余额没动，对用户是纯噪音；差额非零的结算是真退回的积分，必须留着。 */
+export function visibleCreditTxs<T extends { amount: number }>(txs: T[]): T[] {
+  return txs.filter((t) => t.amount !== 0)
 }
