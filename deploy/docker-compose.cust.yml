@@ -1,0 +1,68 @@
+name: bid
+# 应用机 230（客户验证环境）。构建上下文 .. = 仓库根(~/bid/app)。数据层在 231(见 .env.deploy.local)。
+services:
+  api:
+    build: { context: .., dockerfile: apps/api/Dockerfile }
+    image: bid-api:${TAG}
+    restart: unless-stopped
+    env_file: [.env.deploy.local]
+    environment:
+      AGENT_BASE_URL: "http://agent-api:8090"
+    expose: ["8080"]
+    depends_on: [agent-api]
+
+  agent-api:
+    build: { context: .., dockerfile: services/agent/Dockerfile }
+    image: bid-agent:${TAG}
+    restart: unless-stopped
+    env_file: [.env.deploy.local]
+    expose: ["8090"]
+
+  agent-worker:
+    image: bid-agent:${TAG}
+    restart: unless-stopped
+    env_file: [.env.deploy.local]
+    command: ["uv", "run", "python", "-m", "agent.main_worker"]
+    depends_on: [agent-api]
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+      args: { NEXT_PUBLIC_API_BASE_URL: "${PUBLIC_API_BASE_URL}" }
+    image: bid-web:${TAG}
+    restart: unless-stopped
+    expose: ["3000"]
+
+  admin:
+    build:
+      context: ..
+      dockerfile: apps/admin/Dockerfile
+      args: { NEXT_PUBLIC_API_BASE_URL: "${PUBLIC_API_BASE_URL}" }
+    image: bid-admin:${TAG}
+    restart: unless-stopped
+    expose: ["3001"]
+
+  # 自建 BGE-M3 嵌入服务（agent 经 docker 网络访问 http://bge-embed:8000）
+  bge-embed:
+    build: { context: ../services/bge-embed }
+    image: bid-bge-embed:${TAG}
+    restart: unless-stopped
+    environment:
+      EMBED_MODEL: "/models/ms/models/BAAI--bge-m3/snapshots/master"
+      HF_ENDPOINT: "https://hf-mirror.com"
+      HF_HOME: "/models"
+    volumes:
+      - bge_models:/models
+    expose: ["8000"]
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on: [api, web, admin]
+    ports: ["80:80", "8081:8081"]
+    volumes:
+      - ./nginx-ip:/etc/nginx/conf.d:ro
+
+volumes:
+  bge_models:

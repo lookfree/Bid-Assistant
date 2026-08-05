@@ -39,6 +39,11 @@ export function createApp(deps: AppDeps) {
     await next()
     const ct = c.res.headers.get("content-type")
     if (ct === "application/json") c.res.headers.set("content-type", "application/json; charset=utf-8")
+    // 禁止缓存（2026-08-05 安全测试报告项「敏感接口未禁止缓存」）：接口回的都是鉴权后的
+    // 用户/运营数据，不该被浏览器或中间代理留存。Pragma 是给只认 HTTP/1.0 的老代理的。
+    // 在 API 层而非 nginx：随代码走、有测试兜底，也不受服务器上手改配置的漂移影响。
+    c.res.headers.set("cache-control", "no-store, no-cache, must-revalidate")
+    c.res.headers.set("pragma", "no-cache")
   })
   // 跨域：白名单数组交给 hono/cors 匹配——命中回显该 Origin，未命中不发 ACAO（不回显任意来源）。env 由 index.ts 注入。
   const allow = deps.webOrigins?.length ? deps.webOrigins : ["http://localhost:3000", "http://localhost:3001"]
