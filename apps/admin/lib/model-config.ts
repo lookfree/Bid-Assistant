@@ -82,6 +82,40 @@ export function isCustomEntry(m: Pick<ModelEntry, "provider" | "baseUrl">): bool
   return m.provider === "custom"
 }
 
+// 「拉取可用模型」的请求参数，内置服务商与自建端点共用一个构造函数。
+// 语义（用户口径）：**填了什么地址就用什么地址，没填才回退默认**。此前内置分支只传 provider、
+// 把用户填的 baseUrl 丢了，于是覆盖了地址的内置条目仍去注册表默认地址拉列表（拿 env key → 401）。
+export function listModelsPayload(m: ModelEntry): {
+  baseUrl?: string
+  apiKey?: string
+  id?: string
+  provider?: string
+} {
+  return {
+    ...(m.baseUrl ? { baseUrl: m.baseUrl } : {}),
+    ...(m.apiKey ? { apiKey: m.apiKey } : {}),
+    ...(m.id ? { id: m.id } : {}),
+    // 自建条目的 provider 是自由标签「custom」，服务端注册表里查不到，传了也只是噪声。
+    ...(isCustomEntry(m) ? {} : { provider: m.provider }),
+  }
+}
+
+// Base URL 入框归一：去首尾空白/换行；全空白 = 没填 = 用默认。
+export function normalizeBaseUrl(raw: string): string | undefined {
+  return raw.trim() || undefined
+}
+
+// Base URL 合法性：只做「一眼可判」的两类拦截，正常值一律放行（真实可用性由「测试连通」判定）。
+// 拦截多次粘贴叠加出的串（光标停在原值后面连粘几次的典型事故）——这种脏值能通过 zod 的 .url()
+// 存进库，要到真正调模型时才炸，报错还指向一个用户没填过的地址，极难自查。
+export function baseUrlError(v: string | undefined): string | null {
+  if (!v) return null
+  if (!/^https?:\/\//.test(v)) return "地址须以 http:// 或 https:// 开头"
+  if (/\s/.test(v)) return "地址中间不能有空格或换行，看起来是粘贴叠加了"
+  if (v.split("://").length > 2) return "地址里出现了两个 ://，看起来是粘贴叠加了，请清空后重新粘贴"
+  return null
+}
+
 // 展示名：自建条目（带 baseUrl）用 `model @ host`；否则回退注册表 `label model`
 // （host 解析失败时也回退这个格式）。chainSummary / model-card 共用。
 export function modelDisplayName(m: ModelEntry): string {

@@ -15,6 +15,9 @@ import {
   isCustomEntry,
   providerDefaultBaseUrl,
   providerDefaultMaxTokens,
+  listModelsPayload,
+  normalizeBaseUrl,
+  baseUrlError,
   type ModelEntry,
   type ModelConfig,
 } from "../lib/model-config"
@@ -224,5 +227,49 @@ describe("saveErrorMessage：带具体原因（QA：只见「保存失败，请�
     expect(saveErrorMessage("invalid_params")).toBe("参数超出范围")
     expect(saveErrorMessage(undefined)).toBe("保存失败，请重试")
     expect(saveErrorMessage("chain_member_test_failed")).toBe("编排链中的模型连通性测试未通过：请检查 API Key 与地址")
+  })
+})
+
+describe("listModelsPayload", () => {
+  it("内置服务商填了 baseUrl 时必须带上（否则拉取会打到注册表默认地址）", () => {
+    const p = listModelsPayload(entry({ provider: "deepseek", baseUrl: "http://1.2.3.4:42342/v1" }))
+    expect(p.baseUrl).toBe("http://1.2.3.4:42342/v1")
+    expect(p.provider).toBe("deepseek")
+  })
+
+  it("内置服务商没填 baseUrl 时不带，让服务端回退注册表默认", () => {
+    const p = listModelsPayload(entry({ provider: "deepseek", baseUrl: undefined }))
+    expect(p.baseUrl).toBeUndefined()
+    expect(p.provider).toBe("deepseek")
+  })
+
+  it("自建条目带 baseUrl，不带无意义的 provider=custom", () => {
+    const p = listModelsPayload(entry({ provider: "custom", baseUrl: "http://1.2.3.4:42342/v1", apiKey: "k" }))
+    expect(p).toEqual({ baseUrl: "http://1.2.3.4:42342/v1", apiKey: "k", id: "m_1" })
+  })
+})
+
+describe("normalizeBaseUrl / baseUrlError", () => {
+  it("去掉首尾空白与换行", () => {
+    expect(normalizeBaseUrl("  http://1.2.3.4:42342/v1\n")).toBe("http://1.2.3.4:42342/v1")
+  })
+
+  it("空串归一为 undefined（= 没填 = 用默认）", () => {
+    expect(normalizeBaseUrl("   ")).toBeUndefined()
+  })
+
+  it("多次粘贴叠加出的串被判定为非法", () => {
+    expect(baseUrlError("http://1.2.3.4:42342/v1 http://1.2.3.4:42342/v1")).toBeTruthy()
+    expect(baseUrlError("http://1.2.3.4:42342/v1http://1.2.3.4:42342/v1")).toBeTruthy()
+  })
+
+  it("缺协议被判定为非法", () => {
+    expect(baseUrlError("120.220.95.189:42342/v1")).toBeTruthy()
+  })
+
+  it("正常地址与留空都不报错", () => {
+    expect(baseUrlError("http://120.220.95.189:42342/v1")).toBeNull()
+    expect(baseUrlError("http://120.220.95.189:42342/v1/")).toBeNull()
+    expect(baseUrlError(undefined)).toBeNull()
   })
 })

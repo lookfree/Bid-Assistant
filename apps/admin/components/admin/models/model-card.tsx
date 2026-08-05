@@ -38,6 +38,9 @@ import {
   isCustomEntry,
   providerDefaultBaseUrl,
   providerDefaultMaxTokens,
+  listModelsPayload,
+  normalizeBaseUrl,
+  baseUrlError,
   type ModelEntry,
 } from "@/lib/model-config"
 
@@ -533,6 +536,31 @@ function FetchedModelsPicker({
   )
 }
 
+// Base URL 输入（自建与内置共用）：入框即 trim（去掉粘贴带进来的首尾空白/换行），
+// 并把一眼可判的脏值就地提示出来——否则脏值能存进库，要到真正调模型时才炸。
+function BaseUrlInput({
+  draft,
+  setDraft,
+  placeholder,
+}: {
+  draft: ModelEntry
+  setDraft: (updater: (d: ModelEntry) => ModelEntry) => void
+  placeholder: string
+}) {
+  const err = baseUrlError(draft.baseUrl)
+  return (
+    <div className="flex flex-col gap-1">
+      <LabeledInput
+        label="Base URL"
+        placeholder={placeholder}
+        value={draft.baseUrl ?? ""}
+        onChange={(v) => setDraft((d) => resetTestOnEdit({ ...d, baseUrl: normalizeBaseUrl(v) }))}
+      />
+      {err ? <div className="text-xs text-destructive">{err}</div> : null}
+    </div>
+  )
+}
+
 // 自建端点专属字段（仅编辑态 + 自建模式渲染）：base_url + api_key 输入、拉取可用模型下拉。
 // 下拉选中项与卡片头手填的 model 输入写同一个 draft.model 字段——二者并存，谁后写生效。
 function CustomEndpointFields({
@@ -545,7 +573,7 @@ function CustomEndpointFields({
   // 已保存条目 apiKey 打码不回显：本地无明文时带 id，让服务端从库回填 key（apiKeyHint 存在即证明库里有 key）。
   const hasUsableKey = !!draft.apiKey || !!draft.apiKeyHint
   const { models, fetching, error, run } = useModelListFetch(
-    () => adminApi.models.listModels({ baseUrl: draft.baseUrl, apiKey: draft.apiKey, id: draft.id }),
+    () => adminApi.models.listModels(listModelsPayload(draft)),
     "拉取失败，请检查 URL / Key",
   )
 
@@ -557,12 +585,7 @@ function CustomEndpointFields({
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-dashed border-border p-3">
       <div className="grid gap-2 sm:grid-cols-2">
-        <LabeledInput
-          label="Base URL"
-          placeholder="http://host:port/v1"
-          value={draft.baseUrl ?? ""}
-          onChange={(v) => setDraft((d) => resetTestOnEdit({ ...d, baseUrl: v || undefined }))}
-        />
+        <BaseUrlInput draft={draft} setDraft={setDraft} placeholder="http://host:port/v1" />
         <LabeledInput
           label="API Key"
           type="password"
@@ -595,8 +618,8 @@ function CustomEndpointFields({
 
 // 内置服务商（deepseek/qwen/glm）可选覆盖 base_url/api_key（Task 1）：留空分别回退注册表默认地址
 // （providerDefaultBaseUrl 做 placeholder）/ 服务端 env key。样式与 CustomEndpointFields 的
-// LabeledInput 一致；下方保留原有「拉取可用模型」——provider 覆盖了 baseUrl 后拉取入口不变
-// （只带 provider，由 agent 侧解析实际生效的 base_url/key，前端无需关心）。
+// LabeledInput 一致；下方保留原有「拉取可用模型」——填了 baseUrl 就按填的拉，没填才由 agent 侧
+// 解析注册表默认地址（listModelsPayload 统一构造，内置分支不再丢 baseUrl）。
 function BuiltinEndpointFields({
   draft,
   setDraft,
@@ -607,11 +630,10 @@ function BuiltinEndpointFields({
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-dashed border-border p-3">
       <div className="grid gap-2 sm:grid-cols-2">
-        <LabeledInput
-          label="Base URL"
+        <BaseUrlInput
+          draft={draft}
+          setDraft={setDraft}
           placeholder={providerDefaultBaseUrl(draft.provider) || "留空用默认地址"}
-          value={draft.baseUrl ?? ""}
-          onChange={(v) => setDraft((d) => resetTestOnEdit({ ...d, baseUrl: v || undefined }))}
         />
         <LabeledInput
           label="API Key"
@@ -626,9 +648,10 @@ function BuiltinEndpointFields({
   )
 }
 
-// 内置服务商（deepseek/qwen/glm）拉取可用模型：agent 侧按注册表解析 base_url，key 优先用后台配置——
-// 带上 id（回填库里已存 key）与当前输入的 apiKey，后端拿不到才回退服务端 env。否则纯 HTTP 后台里
-// 已在库中配好 key 的内置模型会因空 key 拉取报「服务端未配置该服务商的 API Key」。
+// 内置服务商（deepseek/qwen/glm）拉取可用模型：请求参数由 listModelsPayload 统一构造——
+// 填了 baseUrl 就用填的，没填才由 agent 侧查注册表；key 同理，带上 id（回填库里已存 key）与当前
+// 输入的 apiKey，后端拿不到才回退服务端 env。否则纯 HTTP 后台里已在库中配好 key 的内置模型
+// 会因空 key 拉取报「服务端未配置该服务商的 API Key」。
 function BuiltinModelFetch({
   draft,
   setDraft,
@@ -637,7 +660,7 @@ function BuiltinModelFetch({
   setDraft: (updater: (d: ModelEntry) => ModelEntry) => void
 }) {
   const { models, fetching, error, run } = useModelListFetch(
-    () => adminApi.models.listModels({ provider: draft.provider, apiKey: draft.apiKey, id: draft.id }),
+    () => adminApi.models.listModels(listModelsPayload(draft)),
     "该服务商暂不支持自动拉取，请手填模型名",
   )
 
