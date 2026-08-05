@@ -46,10 +46,11 @@ interface LedgerRow {
   createdAt: string
 }
 
-function apiLedgerToRow(l: ApiLedgerTx, userName: string): LedgerRow {
+// userName 由后端逐行下发（全部用户视图里每行的人不同，不能再套“当前选中的那个人”）。
+function apiLedgerToRow(l: ApiLedgerTx): LedgerRow {
   return {
     id: l.id,
-    userName,
+    userName: l.userName || l.userId,
     type: l.type,
     amount: l.amount,
     batch: "-",
@@ -58,8 +59,11 @@ function apiLedgerToRow(l: ApiLedgerTx, userName: string): LedgerRow {
   }
 }
 
+const ALL_USERS = "__all__"
+
 export function LedgerClient() {
   const [userOptions, setUserOptions] = useState<{ id: string; name: string }[]>([])
+  // 空 = 全部用户。Select 不能用空串当选项值，故用一个哨兵值代表「全部用户」。
   const [userId, setUserId] = useState("")
   const [type, setType] = useState("all")
   const [page, setPage] = useState(1)
@@ -84,16 +88,19 @@ export function LedgerClient() {
 
   const currentUserName = userOptions.find((u) => u.id === userId)?.name ?? userId
 
-  // 按用户 + 类型加载流水（真实接口按用户维度查询，不支持“全部用户”）。
+  // 加载流水：userId 为空 = 全部用户视图（运营先看全局、再点进具体的人）。
   useEffect(() => {
-    if (!userId) return
     let alive = true
     async function loadLedger() {
       setLoading(true)
       try {
-        const res = await adminApi.ledger.list({ userId, type: type === "all" ? undefined : type, pageSize: 100 })
+        const res = await adminApi.ledger.list({
+          userId: userId || undefined,
+          type: type === "all" ? undefined : type,
+          pageSize: 100,
+        })
         if (!alive) return
-        setRows(res.items.map((l) => apiLedgerToRow(l, currentUserName)))
+        setRows(res.items.map(apiLedgerToRow))
       } catch {
         if (alive) toast.error("加载流水失败")
       } finally {
@@ -104,7 +111,7 @@ export function LedgerClient() {
     return () => {
       alive = false
     }
-  }, [userId, type, currentUserName])
+  }, [userId, type])
 
   // 余额核对：缓存余额 vs 流水之和实算。
   useEffect(() => {
@@ -172,17 +179,18 @@ export function LedgerClient() {
           </CardTitle>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
             <Select
-              value={userId}
-              items={Object.fromEntries(userOptions.map((u) => [u.id, u.name]))}
+              value={userId || ALL_USERS}
+              items={{ [ALL_USERS]: "全部用户", ...Object.fromEntries(userOptions.map((u) => [u.id, u.name])) }}
               onValueChange={(v) => {
-                if (v) setUserId(v)
+                setUserId(v === ALL_USERS ? "" : (v ?? ""))
                 setPage(1)
               }}
             >
               <SelectTrigger className="w-full sm:w-48">
-                <SelectValue placeholder="选择用户" />
+                <SelectValue placeholder="全部用户" />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value={ALL_USERS}>全部用户</SelectItem>
                 {userOptions.map((u) => (
                   <SelectItem key={u.id} value={u.id}>
                     {u.name}（{u.id}）

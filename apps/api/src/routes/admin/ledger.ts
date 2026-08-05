@@ -5,6 +5,7 @@ import { listLedger, checkBalance } from "../../services/admin/ledger"
 import { listUsers } from "../../services/admin/admin-users"
 import { getUserById } from "../../repos/users"
 import { isUuid } from "../../lib/uuid"
+import { userDisplayName } from "../../lib/user-display"
 
 // 账本页（spec310;2026-08-02 读接线）：只读,ledger.read（finance/ops/support 默认都有,行为不变、开关变真）。
 export const ledgerRouter = new Hono()
@@ -14,16 +15,15 @@ export const ledgerRouter = new Hono()
 // 权限随本页(ledger.read),用户明细/管理仍归 user.read。
 ledgerRouter.get("/user-options", requirePermission("ledger.read"), async (c) => {
   const res = await listUsers({ page: 1, pageSize: 200 })
-  const mask = (p?: string | null) => (p && p.length >= 7 ? `${p.slice(0, 3)}****${p.slice(-4)}` : (p ?? ""))
   const items = res.items.map((u: { id: string; nickname?: string | null; phone?: string | null }) => ({
     id: u.id,
-    name: u.nickname || mask(u.phone) || u.id,
+    name: userDisplayName(u),
   }))
   return c.json({ items })
 })
 ledgerRouter.get("/", requirePermission("ledger.read"), async (c) => {
-  const userId = c.req.query("userId")
-  if (!userId) return c.json({ error: "userId 必填" }, 400)
+  // userId 可省 = 全部用户视图（每行带用户名，见 listLedger）
+  const userId = c.req.query("userId") || undefined
   let pg
   try {
     pg = parsePagination(c.req.query())

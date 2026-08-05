@@ -85,7 +85,8 @@ export const adminApi = {
       }),
   },
   ledger: {
-    list: (p: { userId: string; type?: string; page?: number; pageSize?: number }) =>
+    // userId 省略 = 全部用户（每行带 userName，见 services/admin/ledger.ts）
+    list: (p: { userId?: string; type?: string; page?: number; pageSize?: number }) =>
       req<Paged<ApiLedgerTx>>(`/ledger${qs(p)}`),
     check: (userId: string) => req<{ userId: string; cached: number; actual: number; consistent: boolean }>(`/ledger/${userId}/check`),
     // 账本页用户选择器（权限随本页 ledger.read;昵称/打码手机号,不含完整用户信息）
@@ -169,7 +170,7 @@ export type Paged<T> = { items: T[]; total: number; page: number; pageSize: numb
 export type ApiUser = { id: string; status: string; nickname: string | null; adminNote: string | null; createdAt: string; phone: string | null; tier: string | null; balance: number }
 export type ApiUserDetail = ApiUser & { subscription: { planId: string; status: string; currentPeriodEnd?: string } | null; balance: number }
 export type ApiOrder = { id: string; userId: string; type: string; amountCents: number; status: string; provider: string | null; payway: string | null; providerTradeNo: string | null; createdAt: string }
-export type ApiLedgerTx = { id: string; userId: string; type: string; amount: number; ref: string | null; createdAt: string; expireAt: string | null }
+export type ApiLedgerTx = { id: string; userId: string; userName?: string; type: string; amount: number; ref: string | null; createdAt: string; expireAt: string | null }
 export type ApiOverview = {
   totalUsers: number
   payingUsers: number
