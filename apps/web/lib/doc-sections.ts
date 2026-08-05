@@ -79,3 +79,53 @@ export function clauseLocationIn(
   }
   return parts.join("；")
 }
+
+/** 原文搜索的一处命中：条款 id + 所属分组 id（分组 id 用来切多文件页签）。 */
+export type DocMatch = { clauseId: string; secId: string }
+
+/** 正则元字符转义。用户搜的是条号（如 "3.6.2"）和带括号的中文（如 "（含税）"）——
+ *  不转义的话 "." 会变成通配符匹配到 "3x6y2"，"*" 之类还会直接抛异常把整个搜索框搞崩。 */
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+/** 在原文里按关键词找命中条款，按文档顺序返回。
+ *  标题也参与匹配：用户常常直接搜章节名，命中标题时定位到该章第一条。
+ *  空/纯空白查询返回空——否则刚敲第一个字就全文命中，滚动条乱跳。 */
+export function searchDocSections(sections: DocSectionGroup[], query: string): DocMatch[] {
+  const q = query.trim()
+  if (!q) return []
+  const re = new RegExp(escapeRe(q), "i")
+  const out: DocMatch[] = []
+  for (const sec of sections) {
+    const titleHit = re.test(sec.title)
+    let sectionAdded = false
+    for (const p of sec.paragraphs) {
+      if (re.test(p.text)) {
+        out.push({ clauseId: p.id, secId: sec.id })
+        sectionAdded = true
+      }
+    }
+    // 只命中标题（正文没有该词）时，给该章第一条作为落点
+    if (titleHit && !sectionAdded && sec.paragraphs.length > 0) {
+      out.push({ clauseId: sec.paragraphs[0]!.id, secId: sec.id })
+    }
+  }
+  return out
+}
+
+/** 把一段文字按关键词切成交替片段，供高亮渲染。命中片保留原文大小写。 */
+export function splitByQuery(text: string, query: string): { text: string; hit: boolean }[] {
+  const q = query.trim()
+  if (!q) return [{ text, hit: false }]
+  const parts: { text: string; hit: boolean }[] = []
+  const re = new RegExp(escapeRe(q), "gi")
+  let last = 0
+  for (const m of text.matchAll(re)) {
+    if (m.index > last) parts.push({ text: text.slice(last, m.index), hit: false })
+    parts.push({ text: m[0], hit: true })
+    last = m.index + m[0].length
+  }
+  if (last < text.length) parts.push({ text: text.slice(last), hit: false })
+  return parts.length ? parts : [{ text, hit: false }]
+}

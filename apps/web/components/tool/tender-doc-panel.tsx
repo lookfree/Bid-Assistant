@@ -1,8 +1,8 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
-import { FileText, MapPin } from "lucide-react"
-import type { DocSectionGroup } from "@/lib/doc-sections"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { ChevronDown, ChevronUp, FileText, MapPin, Search, X } from "lucide-react"
+import { searchDocSections, splitByQuery, type DocSectionGroup } from "@/lib/doc-sections"
 
 /** 多文件读标（spec320）每份文件占用的章节区间（read 结果 docFiles，camelCase）。 */
 export type DocFileRange = { name: string; secFrom: number; secTo: number }
@@ -45,6 +45,10 @@ export function TenderDocPanel({
   files?: DocFileRange[]
 }) {
   const [activeFile, setActiveFile] = useState(-1) // -1 = 全部
+  // 原文搜索：右栏大纲条目自带的条款定位并不总是准，用户要能自己在原文里找
+  // （生产反馈：大纲标题定位不准，要能直接从原文查询搜索定位）。
+  const [query, setQuery] = useState("")
+  const [matchIdx, setMatchIdx] = useState(0)
   const showTabs = (files?.length ?? 0) > 1
   const visible = showTabs && activeFile >= 0 ? sections.filter((s) => inFile(s, files![activeFile]!)) : sections
   // 标题跟着选中的文件走。fileName 是**项目名**（取上传时第一个文件名，也带 .docx），单独挂在页签栏
@@ -54,6 +58,32 @@ export function TenderDocPanel({
   // 本地条款 ref 表：页签过滤会卸载隐藏文件的段落，页面侧同步 scrollIntoView 会扑空——
   // 由下面的效果在（可能的）切页签渲染完成后兜底滚动。
   const localRefs = useRef<Record<string, HTMLParagraphElement | null>>({})
+
+  // 搜索命中：跨全部文件搜（不受当前页签限制），跳到别的文件时自动切页签，与右栏定位同一手法。
+  const matches = useMemo(() => searchDocSections(sections, query), [sections, query])
+  const current = matches[Math.min(matchIdx, matches.length - 1)]
+  useEffect(() => setMatchIdx(0), [query])
+  useEffect(() => {
+    if (!current) return
+    if (showTabs && activeFile >= 0) {
+      const n = secNum(current.secId)
+      const f = files![activeFile]!
+      if (!Number.isNaN(n) && (n < f.secFrom || n > f.secTo)) {
+        const idx = files!.findIndex((fr) => n >= fr.secFrom && n <= fr.secTo)
+        if (idx >= 0) {
+          setActiveFile(idx)
+          return // 切页签会重渲染，等下一轮效果再滚
+        }
+      }
+    }
+    localRefs.current[current.clauseId]?.scrollIntoView({ behavior: "smooth", block: "center" })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current?.clauseId, activeFile])
+
+  const step = (d: number) => {
+    if (matches.length === 0) return
+    setMatchIdx((i) => (i + d + matches.length) % matches.length)
+  }
 
   // 定位目标在其它文件 → 自动切到所属文件页签（不打断用户已选的「全部」视图）
   useEffect(() => {
@@ -83,6 +113,60 @@ export function TenderDocPanel({
           {showTabs ? (activeFile >= 0 ? `原文 · 第 ${activeFile + 1}/${files!.length} 份` : `原文 · ${files!.length} 份文件`) : "原文"}
         </span>
       </header>
+      <div className="flex items-center gap-2 border-b border-border px-4 py-2">
+        <div className="relative flex-1">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault()
+                step(e.shiftKey ? -1 : 1)
+              } else if (e.key === "Escape") {
+                setQuery("")
+              }
+            }}
+            placeholder="在原文中搜索（回车下一处，Shift+回车上一处）"
+            className="w-full rounded-lg border border-border bg-card py-1.5 pl-8 pr-7 text-xs text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
+          />
+          {query && (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              aria-label="清空搜索"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              <X className="size-3.5" />
+            </button>
+          )}
+        </div>
+        {query.trim() && (
+          <div className="flex shrink-0 items-center gap-1">
+            <span className="tabular-nums text-xs text-muted-foreground">
+              {matches.length ? `${matchIdx + 1}/${matches.length} 条` : "无匹配"}
+            </span>
+            <button
+              type="button"
+              onClick={() => step(-1)}
+              disabled={matches.length === 0}
+              aria-label="上一处"
+              className="rounded border border-border p-0.5 text-muted-foreground enabled:hover:text-foreground disabled:opacity-40"
+            >
+              <ChevronUp className="size-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => step(1)}
+              disabled={matches.length === 0}
+              aria-label="下一处"
+              className="rounded border border-border p-0.5 text-muted-foreground enabled:hover:text-foreground disabled:opacity-40"
+            >
+              <ChevronDown className="size-3.5" />
+            </button>
+          </div>
+        )}
+      </div>
       {showTabs && (
         <div className="flex gap-1.5 overflow-x-auto border-b border-border px-4 py-2">
           <button
@@ -140,6 +224,7 @@ export function TenderDocPanel({
             )}
             {sec.paragraphs.map((clause) => {
               const hit = activeClauses.includes(clause.id)
+              const isCurrentMatch = current?.clauseId === clause.id
               return (
                 <p
                   key={clause.id}
@@ -150,11 +235,27 @@ export function TenderDocPanel({
                   className={`scroll-mt-16 mb-3 text-sm leading-relaxed transition-colors ${
                     hit
                       ? "-ml-3 border-l-2 border-primary bg-primary/10 pl-2.5 font-medium text-foreground"
-                      : "text-foreground/90"
+                      : isCurrentMatch
+                        ? "-ml-3 border-l-2 border-amber-500 pl-2.5 text-foreground"
+                        : "text-foreground/90"
                   }`}
                 >
                   {hit && <MapPin className="mr-1 inline size-3.5 -translate-y-px text-primary" />}
-                  {clause.text}
+                  {/* 搜索命中逐处标黄；当前那一处再加深，否则一屏几十处黄底分不出跳到了哪 */}
+                  {splitByQuery(clause.text, query).map((part, i) =>
+                    part.hit ? (
+                      <mark
+                        key={i}
+                        className={`rounded px-0.5 ${
+                          isCurrentMatch ? "bg-amber-300 text-foreground" : "bg-amber-100 text-foreground"
+                        }`}
+                      >
+                        {part.text}
+                      </mark>
+                    ) : (
+                      <span key={i}>{part.text}</span>
+                    ),
+                  )}
                 </p>
               )
             })}

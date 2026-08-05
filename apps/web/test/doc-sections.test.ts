@@ -1,5 +1,6 @@
 import { describe, expect, it, test } from "bun:test"
-import { clauseLocationIn, groupDocSections } from "../lib/doc-sections"
+import { clauseLocationIn, groupDocSections, searchDocSections, splitByQuery } from "../lib/doc-sections"
+import type { DocSectionGroup } from "../lib/doc-sections"
 
 describe("groupDocSections", () => {
   test("按 id 前缀 sec-N 分组并保持组内顺序", () => {
@@ -93,5 +94,80 @@ describe("groupDocSections：真实章节标题", () => {
   it("只有部分节有标题时，其余节仍回落占位，不会串到别的节上", () => {
     const out = groupDocSections(sents, [{ sec: "sec-2", title: "二、商务条款", level: 2 }])
     expect(out.map((g) => g.title)).toEqual(["第1部分", "二、商务条款"])
+  })
+})
+
+// 原文搜索（提纲页左栏）：大纲条目自带的条款定位不准时，用户要能自己在原文里搜。
+describe("searchDocSections", () => {
+  const secs: DocSectionGroup[] = [
+    {
+      id: "sec-1", title: "第一章 投标须知", level: 1,
+      paragraphs: [
+        { id: "sec-1-c1", text: "3.6.2 投标人不得递交备选投标方案。" },
+        { id: "sec-1-c2", text: "投标保证金为人民币两万元整。" },
+      ],
+    },
+    {
+      id: "sec-2", title: "第二章 投标保证金", level: 1,
+      paragraphs: [{ id: "sec-2-c1", text: "保证金退还方式见附件。" }],
+    },
+  ]
+
+  it("按关键词命中条款，按文档顺序返回", () => {
+    expect(searchDocSections(secs, "保证金").map((m) => m.clauseId)).toEqual(["sec-1-c2", "sec-2-c1"])
+  })
+
+  it("命中章节标题时定位到该章第一条——用户搜的是章名，总得跳到那一章去", () => {
+    expect(searchDocSections(secs, "投标须知").map((m) => m.clauseId)).toEqual(["sec-1-c1"])
+  })
+
+  it("条号里的点不能被当成正则通配：搜 3.6.2 不该匹配 3x6y2", () => {
+    const withDecoy: DocSectionGroup[] = [
+      { id: "sec-9", title: "x", level: 1, paragraphs: [{ id: "sec-9-c1", text: "编号 3x6y2 的条目" }] },
+      ...secs,
+    ]
+    expect(searchDocSections(withDecoy, "3.6.2").map((m) => m.clauseId)).toEqual(["sec-1-c1"])
+  })
+
+  it("其它正则元字符同样按字面量处理，不报错也不误匹配", () => {
+    const s: DocSectionGroup[] = [
+      { id: "sec-1", title: "t", level: 1, paragraphs: [{ id: "sec-1-c1", text: "费用（含税）合计" }] },
+    ]
+    expect(searchDocSections(s, "（含税）").map((m) => m.clauseId)).toEqual(["sec-1-c1"])
+    expect(searchDocSections(s, "*").length).toBe(0)
+  })
+
+  it("英文大小写不敏感", () => {
+    const s: DocSectionGroup[] = [
+      { id: "sec-1", title: "t", level: 1, paragraphs: [{ id: "sec-1-c1", text: "须具备 ISO27001 认证" }] },
+    ]
+    expect(searchDocSections(s, "iso27001").length).toBe(1)
+  })
+
+  it("空串/纯空白不搜索——否则一输入就全文命中，滚动条乱跳", () => {
+    expect(searchDocSections(secs, "")).toEqual([])
+    expect(searchDocSections(secs, "   ")).toEqual([])
+  })
+
+  it("命中的分组 id 一并带回，供切文件页签用", () => {
+    expect(searchDocSections(secs, "保证金")[0]!.secId).toBe("sec-1")
+  })
+})
+
+describe("splitByQuery", () => {
+  it("切成交替的片段，命中片保留原文大小写", () => {
+    expect(splitByQuery("须具备 ISO27001 认证", "iso27001")).toEqual([
+      { text: "须具备 ", hit: false },
+      { text: "ISO27001", hit: true },
+      { text: " 认证", hit: false },
+    ])
+  })
+
+  it("一段里多次命中都要标出来", () => {
+    expect(splitByQuery("保证金与保证金退还", "保证金").filter((p) => p.hit).length).toBe(2)
+  })
+
+  it("空查询原样返回整段，不做切分", () => {
+    expect(splitByQuery("原文", "")).toEqual([{ text: "原文", hit: false }])
   })
 })
