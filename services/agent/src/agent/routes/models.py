@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from agent.config import settings
 from agent.models.gateway import ModelGateway, model_override_to_settings
+from agent.models.errors import friendly_model_error
 from agent.models.providers import PROVIDERS, KEY_FIELD
 
 # spec319/spec319.1：模型连通性测试探针 + 自建端点可用模型列举——
@@ -64,9 +65,10 @@ async def test_model(body: TestBody):
         max_output = _known_max_output(body.model)
         return JSONResponse({"ok": True, "latency_ms": latency, "tokens": tokens, "max_output": max_output})
     except asyncio.TimeoutError:
-        return JSONResponse({"ok": False, "error": "调用超时（15s）"})
+        return JSONResponse({"ok": False, "error": "调用超时（15 秒未响应）：请确认 Base URL 可达、模型服务已启动"})
     except Exception as e:  # noqa: BLE001 回可读错误，不 500
-        return JSONResponse({"ok": False, "error": str(e)[:200]})
+        # 翻成中文再回：原样透传上游报文，运营看不出是模型名错了还是密钥错了（friendly_model_error 保留原文）
+        return JSONResponse({"ok": False, "error": friendly_model_error(e)})
 
 
 # 已知模型的最大输出 token(供应商文档,best-effort;按模型名子串匹配,长键在前先命中)。
@@ -116,4 +118,4 @@ async def list_models(body: ListModelsBody):
         ids = [item["id"] for item in data.get("data", []) if isinstance(item, dict) and item.get("id")]
         return JSONResponse({"ok": True, "models": ids[:100]})
     except Exception as e:  # noqa: BLE001 永不 500
-        return JSONResponse({"ok": False, "error": str(e)[:200]})
+        return JSONResponse({"ok": False, "error": friendly_model_error(e)})
