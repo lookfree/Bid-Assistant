@@ -114,6 +114,15 @@ export async function headObject(key: string): Promise<{ size: number; etag?: st
   }
 }
 
+// 读对象开头的一段字节（Range 请求）：上传确认时校验文件头，不为了几十字节的魔数把整个文件拉下来。
+// 对象比请求范围短时 S3/MinIO 返回实际存在的部分，故返回值长度可能小于 bytes。
+export async function getObjectHead(key: string, bytes: number): Promise<Uint8Array> {
+  const r = await getS3().send(
+    new GetObjectCommand({ Bucket: bucket(), Key: key, Range: `bytes=0-${bytes - 1}` }),
+  )
+  return await r.Body!.transformToByteArray()
+}
+
 // 删除对象（超限回收、清理用）。
 export async function deleteObject(key: string): Promise<void> {
   await getS3().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }))

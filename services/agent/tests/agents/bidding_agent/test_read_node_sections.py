@@ -1,5 +1,6 @@
 import asyncio
 from agent.runtime.registry import RunContext
+from agent.parsing.service import DocumentUnavailable
 from agent.parsing.types import ParsedDoc
 from agent.agents.bidding_agent.nodes import read as read_mod
 
@@ -26,8 +27,10 @@ def test_read_node_emits_doc_sections(monkeypatch, submit_gateway):
 
 
 def test_read_node_degrades_when_parse_fails(monkeypatch, submit_gateway):
+    """瞬时错误（存储抖动）仍走降级：让模型调 parse_document 再试。
+    文件本身的问题不走这条路——见 test_read_node_bad_files.py。"""
     def boom(key):
-        raise RuntimeError("存储抖动")
+        raise DocumentUnavailable("存储抖动")
     monkeypatch.setattr(read_mod, "read_and_parse", boom)
     ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t",
                      gateway=submit_gateway({"submit_read_result": _READ_ARGS}))

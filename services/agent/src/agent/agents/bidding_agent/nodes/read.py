@@ -5,7 +5,8 @@ import json
 import logging
 from agent.config import settings
 from agent.framework.create_agent import run_submit_agent
-from agent.parsing.service import read_and_parse
+from agent.parsing.service import read_and_parse, DocumentUnavailable
+from agent.parsing.types import UnsupportedDocument
 from agent.parsing.merge import merge_parsed
 from agent.parsing.tool import parse_document_tool
 from agent.agents.bidding_agent.schemas import ReadResult, ReadCategory
@@ -256,11 +257,46 @@ def _parse_fail_reason(e: Exception) -> str:
         parts.append(str(cur).lower())
         cur = cur.__cause__ or cur.__context__
     msg = " ".join(parts)
+    # 解析层已给出面向用户的具体说明（加密封装/内容与扩展名不符）时原样透出——它比下面的
+    # 通用分类更准，也带了「该怎么办」。只认第一层，避免把底层库的英文报文当成给用户的话。
+    if isinstance(e, UnsupportedDocument) and ("封装" in str(e) or "扩展名" in str(e)):
+        return str(e)
     if any(k in msg for k in ("encrypt", "decrypt", "password", "加密", "已被口令")):
         return "文件已加密/设了打开密码，请去除密码保护后重新上传"
     if any(k in msg for k in ("unsupported", "不支持")):
         return "文件格式不支持（仅支持 doc/docx/pdf/xls/xlsx）"
     return "文件无法解析（可能已损坏、为扫描件或空文件）"
+
+
+def _is_transient(e: BaseException) -> bool:
+    """是否值得二次机会。存储侧取不到字节（DocumentUnavailable）是瞬时的，让模型调
+    parse_document 再试一次有意义；文件本身的问题（加密封装/损坏/格式不支持）再试一百次也一样。
+    沿 __cause__/__context__ 链下钻——真因常被包一层（本仓韧性铁律）。"""
+    seen: set[int] = set()
+    cur: BaseException | None = e
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, DocumentUnavailable):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+def _fail_if_all_permanent(failed: list[dict]) -> None:
+    """一份都没解析出来、且全都是文件本身的问题 ⇒ 当场失败并说清是哪份文件、什么原因。
+
+    此前这里会静默走「让模型自己调 parse_document」的兜底路径：模型连调工具全失败，最后抛
+    「模型未通过 submit_read_result 提交结构化结果」——四轮 token 白烧，报错还把排查方向指向模型
+    （2026-08-05 生产事故）。兜底只对瞬时错误有意义，故仅在全部为永久错误时提前失败。"""
+    if not failed or any(f.get("transient") for f in failed):
+        return
+    detail = "；".join(f"《{f['name']}》{f['reason']}" for f in failed)
+    raise RuntimeError(f"招标文件无法解析，读标终止：{detail}")
+
+
+def _public_failed(failed: list[dict]) -> list[dict]:
+    """回传前端的失败清单：只留 name/reason，不外泄内部的瞬时/永久分类字段。"""
+    return [{"name": f["name"], "reason": f["reason"]} for f in failed]
 
 
 async def _parse_multi_files(files: list[dict]) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
@@ -273,7 +309,8 @@ async def _parse_multi_files(files: list[dict]) -> tuple[list[dict], list[dict],
             return (f.get("name", f["key"]), parsed), None
         except Exception as e:  # noqa: BLE001 单文件解析失败降级跳过，不崩整个读标,但要记原因
             logger.warning("read_and_parse 失败 key=%s", f.get("key"), exc_info=True)
-            return None, {"name": f.get("name", f.get("key", "")), "reason": _parse_fail_reason(e)}
+            return None, {"name": f.get("name", f.get("key", "")), "reason": _parse_fail_reason(e),
+                          "transient": _is_transient(e)}
     results = await asyncio.gather(*[_one(f) for f in files])
     docs = [ok for ok, _ in results if ok is not None]
     failed = [bad for _, bad in results if bad is not None]
@@ -304,13 +341,15 @@ def make_read_node(ctx):
         headings: list[dict] = []   # 章节标题（左栏按层级渲染用；解析失败降级为空，页面回落旧的「第N部分」）
         if files:
             clauses, file_ranges, failed_files, headings = await _parse_multi_files(files)
+            if not clauses:      # 全是文件本身的问题就当场失败，别让模型去兜一个兜不住的底
+                _fail_if_all_permanent(failed_files)
             # 全部预解析失败的兜底：列出各文件 key，模型才有 key 可调 parse_document 重试
             keys = "、".join(f"{f.get('name', '')}(key={f.get('key', '')})" for f in files)
             user = (_multi_file_prompt(clauses, file_ranges) if clauses
                     else f"多文件招标预解析失败，请逐个调用 parse_document 读标，文件：{keys}")
             extra["doc_files"] = file_ranges
             if failed_files:  # bug YFZQ-4：读取失败的文件显式回传前端告知,不静默丢
-                extra["failed_files"] = failed_files
+                extra["failed_files"] = _public_failed(failed_files)
         else:
             # boto3/解析皆同步 → 丢线程池。注意：工具兜底走的是同一个 read_and_parse——
             # 只对瞬时错误（存储/网络抖动）算二次机会；文件本身损坏则两路都失败，读标退化为无原文可引。
@@ -318,8 +357,13 @@ def make_read_node(ctx):
                 parsed = await asyncio.to_thread(read_and_parse, state["file_key"])
                 clauses = parsed.clauses
                 headings = parsed.headings
-            except Exception:  # noqa: BLE001 降级：让模型自己调 parse_document 重试
+            except Exception as e:  # noqa: BLE001 瞬时错误降级让模型调 parse_document 重试
                 clauses = []
+                # 文件本身的问题（加密封装/损坏/格式不支持）当场失败——此前这里把异常整个吞掉，
+                # 连原因都不留，最后以「模型未提交结构化结果」收场。
+                _fail_if_all_permanent([{"name": state["file_key"].rsplit("/", 1)[-1],
+                                         "reason": _parse_fail_reason(e),
+                                         "transient": _is_transient(e)}])
             if clauses:
                 user = ("招标文件已解析为条款分句（id 为稳定锚点，clause_ids 直接引用，无需再调 parse_document）：\n"
                         f"{json.dumps(clauses, ensure_ascii=False)}\n\n请读标。")

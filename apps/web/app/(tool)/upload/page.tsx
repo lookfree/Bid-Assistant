@@ -3,7 +3,7 @@
 import { useState, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { api } from "@/lib/api"
-import { uploadHint, UPLOAD_MAX_MB, ACCEPT_TENDER } from "@/lib/files"
+import { uploadHint, uploadErrorMessage, UPLOAD_MAX_MB, ACCEPT_TENDER } from "@/lib/files"
 import { ApiError } from "@/lib/api-client"
 import { createProject } from "@/lib/project"
 import { FlowNav } from "@/components/tool/flow-nav"
@@ -98,15 +98,12 @@ function putWithProgress(url: string, file: File, onProgress: (pct: number) => v
   })
 }
 
-/** 上传失败的用户可读原因（网络 / 格式 / 超限分开），决定文件行提示文案。 */
+/** 上传失败的用户可读原因，决定文件行提示文案。
+ *  错误码 → 文案一律走 uploadErrorMessage（全系统上传文案的唯一出口）：本页曾自带一份码表，
+ *  新增的错误码（加密封装/内容不符）落不进去，只会显示"上传服务异常，请点击重试"，
+ *  用户会对着同一份读不了的文件反复重传。这里只保留本页特有的重试话术作兜底。 */
 function uploadErrorText(e: unknown): string {
-  if (e instanceof ApiError) {
-    if (e.code === "file_too_large") return `文件过大：单文件最大 ${UPLOAD_MAX_MB}MB`
-    if (e.code === "unsupported_file_type") return `文件格式不支持（${uploadHint(ACCEPT_TENDER)}）`
-    return "上传服务异常，请点击重试"
-  }
-  if (e instanceof Error && e.message === "network") return "网络异常，请检查网络后点击重试"
-  return "上传失败，请点击重试"
+  return uploadErrorMessage(e, e instanceof ApiError ? "上传服务异常，请点击重试" : "上传失败，请点击重试")
 }
 
 export default function UploadPage() {

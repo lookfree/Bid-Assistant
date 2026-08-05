@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto"
 import { and, eq } from "drizzle-orm"
 import { getDb } from "../db/client"
 import { projectFiles, type ProjectFile } from "../db/schema"
-import { bucket, presignPut, presignGet, headObject, deleteObject } from "../storage/s3"
+import { bucket, presignPut, presignGet, headObject, deleteObject, getObjectHead } from "../storage/s3"
 import { getEnv } from "../config/env"
+import { checkFileMagic, MAGIC_SAMPLE_BYTES } from "./file-magic"
 
 /** 超过大小上限（预签名时按声明值、确认时按真实对象大小复验）。 */
 export class FileTooLargeError extends Error {
@@ -45,6 +46,17 @@ export class UnsupportedFileTypeError extends Error {
   }
 }
 
+/** 扩展名对、内容不对：被文档加密软件封装成密文，或内容根本不是该格式。
+ *  只带错误码——面向用户的中文文案统一在 web 的 uploadErrorMessage 里，避免同一句话两处各存一份。 */
+export class FileContentRejectedError extends Error {
+  constructor(public readonly code: "encrypted_wrapper" | "content_mismatch") {
+    super(code)
+    this.name = "FileContentRejectedError"
+  }
+}
+
+const extOf = (filename: string) => filename.split(".").pop()?.toLowerCase() ?? ""
+
 // 文件名清洗：仅留字母数字下划线点连字符与中文，截断到 120，避免 key 注入/超长。
 function sanitize(name: string): string {
   return name.replace(/[^\w.\-一-龥]/g, "_").slice(0, 120)
@@ -59,8 +71,7 @@ export async function presignUpload(input: {
 }): Promise<{ fileId: string; key: string; uploadUrl: string }> {
   const env = getEnv()
   if (input.size > fileMaxBytes()) throw new FileTooLargeError()
-  const ext = input.filename.split(".").pop()?.toLowerCase() ?? ""
-  if (!SUPPORTED_EXTS.has(ext)) throw new UnsupportedFileTypeError()
+  if (!SUPPORTED_EXTS.has(extOf(input.filename))) throw new UnsupportedFileTypeError()
   const key = `uploads/${input.userId}/${randomUUID()}/${sanitize(input.filename)}`
   const [row] = await getDb()
     .insert(projectFiles)
@@ -78,6 +89,18 @@ export async function presignUpload(input: {
   return { fileId: row!.id, key, uploadUrl }
 }
 
+/** 按文件头校验内容与扩展名相符，不符则删对象 + 拒绝——加密封装/损坏的文件绝不进入后续流程。
+ *  这是主防线：此前这类文件一路走到读标才失败，还会被报成模型问题（见 file-magic.ts 注释）。 */
+async function rejectIfContentMismatch(key: string, filename: string, size: number): Promise<void> {
+  // 空对象无范围可读（MinIO 对 0 字节对象的 Range 请求返回 416），直接交给校验判为不符。
+  const sample =
+    size > 0 ? await getObjectHead(key, Math.min(MAGIC_SAMPLE_BYTES, size)) : new Uint8Array(0)
+  const verdict = checkFileMagic(sample, extOf(filename))
+  if (verdict.ok) return
+  await deleteObject(key).catch(() => {})
+  throw new FileContentRejectedError(verdict.code)
+}
+
 // 取属于本人的文件行（仅本人可见，§9）；不存在抛 not_found。
 async function ownFile(fileId: string, userId: string): Promise<ProjectFile> {
   const [row] = await getDb()
@@ -90,7 +113,7 @@ async function ownFile(fileId: string, userId: string): Promise<ProjectFile> {
 }
 
 // 确认上传：HEAD 校验对象真存在，并按真实大小复验上限（预签名 PUT 无长度约束，客户端可少报 size
-// 后上传超大对象），超限则删对象+拒绝；否则落 uploaded + size/etag。
+// 后上传超大对象），超限则删对象+拒绝；再按文件头校验内容与扩展名相符；否则落 uploaded + size/etag。
 export async function confirmUpload(fileId: string, userId: string): Promise<ProjectFile> {
   const file = await ownFile(fileId, userId)
   const head = await headObject(file.key)
@@ -99,6 +122,7 @@ export async function confirmUpload(fileId: string, userId: string): Promise<Pro
     await deleteObject(file.key).catch(() => {})
     throw new FileTooLargeError()
   }
+  await rejectIfContentMismatch(file.key, file.filename, head.size)
   const [updated] = await getDb()
     .update(projectFiles)
     .set({ status: "uploaded", size: head.size, etag: head.etag })

@@ -28,3 +28,31 @@ describe("uploadErrorMessage", () => {
     expect(uploadErrorMessage(e)).toBe(`文件过大：单文件最大 ${UPLOAD_MAX_MB}MB`)
   })
 })
+
+// 加密封装/内容不符（2026-08-05 生产事故：DLP 密文一路走到读标才失败）：
+// 文案必须说清"是什么问题 + 该怎么办"，只说"上传失败"用户会反复重传同一份密文。
+describe("uploadErrorMessage 内容校验", () => {
+  it("加密封装：点名是加密软件，并给出解密/外发的下一步", () => {
+    const m = uploadErrorMessage(new ApiError(400, "encrypted_wrapper"))
+    expect(m).toContain("加密")
+    expect(m).toMatch(/解密|外发/)
+  })
+
+  it("内容与扩展名不符：说清是内容不符，不能落到「上传失败，请重试」", () => {
+    const m = uploadErrorMessage(new ApiError(400, "content_mismatch"))
+    expect(m).toContain("扩展名")
+    expect(m).not.toBe("上传失败，请重试")
+  })
+})
+
+// 直传阶段的网络失败也归这个出口（upload 页的 XHR 以 message="network" 抛出，不是 ApiError）——
+// 该页原先自带一份码表，新错误码落不进去；文案统一后这条也必须还在。
+describe("uploadErrorMessage 网络失败", () => {
+  it("XHR 网络错误给出网络提示，而不是笼统的上传失败", () => {
+    expect(uploadErrorMessage(new Error("network"))).toContain("网络")
+  })
+
+  it("认不出的异常回落调用方给的兜底文案", () => {
+    expect(uploadErrorMessage(new Error("boom"), "上传失败，请点击重试")).toBe("上传失败，请点击重试")
+  })
+})

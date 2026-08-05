@@ -158,10 +158,45 @@ _DISPATCH = {"docx": parse_docx, "pdf": parse_pdf, "xlsx": parse_xlsx,
              "doc": _parse_doc, "xls": _parse_xls}
 
 
+# 已知的文档透明加密（DLP）软件封装头：文件被整体加密成密文，扩展名不变、内容已不是原格式。
+# 2026-08-05 生产实测：一份 7.6MB 的 .pdf 头是 %TSD-Header-###%、无 %%EOF，pypdf 只报
+# 「流意外结束」，读标据此以为是瞬时问题而降级到工具兜底，最后把文件问题报成了模型问题。
+_ENCRYPTED_WRAPPERS: tuple[bytes, ...] = (b"%TSD-Header-###%",)
+
+# 扩展名 → 必须出现在头部的魔数。只列魔数无歧义的格式：doc/xls 故意不列——.doc 里装 RTF、
+# 装 docx 都是历史常见写法，LibreOffice 照样能转，在这里强判会误伤本来能用的文件。
+_REQUIRED_MAGIC: dict[str, bytes] = {
+    "pdf": b"%PDF-",
+    "docx": b"PK\x03\x04",
+    "xlsx": b"PK\x03\x04",
+}
+
+# 取样长度：PDF 规范容忍文件头前有少量前导字节（pypdf 也容忍），故在头部一段范围内找而非要求偏移 0。
+_MAGIC_SAMPLE_BYTES = 1024
+
+
+def _check_magic(data: bytes, ext: str) -> None:
+    """内容与扩展名不符就直接抛出可读原因。上传入口（App API）已按同一套规则拦过一道，
+    这里是纵深防御：覆盖上传校验上线前已存的老文件，以及其它入口进来的文件。"""
+    head = data[:_MAGIC_SAMPLE_BYTES]
+    for sig in _ENCRYPTED_WRAPPERS:
+        if head.startswith(sig):
+            raise UnsupportedDocument(
+                "文件已被文档加密软件封装成密文（扩展名未变，内容已不是原格式）。"
+                "请在加密软件中对该文件走解密/外发流程，导出明文后重新上传。"
+                "注意：在装有加密客户端的电脑上能正常打开，不代表文件本身是明文")
+    magic = _REQUIRED_MAGIC.get(ext)
+    if magic and magic not in head:
+        raise UnsupportedDocument(
+            f"文件内容与扩展名 .{ext} 不符（未找到该格式的文件头），"
+            f"可能被加密软件封装、下载/上传未完成，或扩展名被改过")
+
+
 def parse_bytes(data: bytes, filename: str) -> ParsedDoc:
-    """按文件扩展名分发到对应解析器；不支持的类型抛 UnsupportedDocument。"""
+    """按文件扩展名分发到对应解析器；不支持的类型、内容与扩展名不符都抛 UnsupportedDocument。"""
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     fn = _DISPATCH.get(ext)
     if not fn:
         raise UnsupportedDocument(f"不支持的文档类型: .{ext}")
+    _check_magic(data, ext)
     return fn(data)

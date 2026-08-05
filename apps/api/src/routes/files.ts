@@ -9,6 +9,7 @@ import {
   FileNotFoundError,
   ObjectMissingError,
   UnsupportedFileTypeError,
+  FileContentRejectedError,
 } from "../services/files"
 import type { User } from "../db/schema"
 
@@ -43,6 +44,8 @@ export function fileRoutes() {
       if (e instanceof FileNotFoundError) return c.json({ error: "not_found" }, 404)
       if (e instanceof ObjectMissingError) return c.json({ error: "object_missing" }, 409)
       if (e instanceof FileTooLargeError) return c.json({ error: "file_too_large" }, 400)
+      // 内容与扩展名不符/被加密软件封装：前端按 code 出文案（uploadErrorMessage）。
+      if (e instanceof FileContentRejectedError) return c.json({ error: e.code }, 400)
       throw e
     }
   })

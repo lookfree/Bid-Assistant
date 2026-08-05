@@ -7,11 +7,15 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 @pytest.fixture(autouse=True)
 def _no_real_object_storage(monkeypatch):
     """read 节点的确定性解析（spec315a）默认打桩为失败 → 走降级路径，不打真实 MinIO；
-    需要条款分句的测试在用例内自行覆盖 read_and_parse。"""
+    需要条款分句的测试在用例内自行覆盖 read_and_parse。
+
+    抛 DocumentUnavailable（存储侧取不到字节 = 瞬时）而非裸 Exception：读标现在按错误性质分流，
+    文件本身的问题会当场失败。这里表达的是「测试环境没有对象存储」，正属于瞬时那一类。"""
     from agent.agents.bidding_agent.nodes import read as read_mod
+    from agent.parsing.service import DocumentUnavailable
 
     def _unavailable(key):
-        raise RuntimeError("测试环境无对象存储")
+        raise DocumentUnavailable("测试环境无对象存储")
     monkeypatch.setattr(read_mod, "read_and_parse", _unavailable)
 
 

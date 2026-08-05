@@ -14,6 +14,7 @@ from agent.framework.model_stream import forced_stream_submit
 from agent.framework.resilient import resilient_tool_node
 from agent.framework.structured import make_submit_tool
 from agent.models.usage import record_ctx_usage
+from agent.telemetry.tool_recorder import ToolCallRecorder
 
 # 单条 submit 事件里存的提交内容上限（字符）：足够看清结构/定位坏字段，又不让单行 jsonb 失控膨胀。
 _SUBMIT_LOG_MAX = 40_000
@@ -123,7 +124,11 @@ async def run_submit_agent(ctx, prompt: str, user_msg: str,
     submit, get_result = make_submit_tool(tool_name, schema, desc)
     if extra_tools:
         sub = build_create_agent(prompt, [*extra_tools, submit], ctx)
-        await sub.ainvoke({"messages": [{"role": "user", "content": user_msg}]})
+        # 工具调用埋点：这条带工具的图路径此前没挂回调，agent_tool_call 全无记录——
+        # 而它恰恰是出问题才会走到的兜底路径（预解析失败让模型自己调 parse_document），
+        # 排查时最需要「调了哪个工具、参数是什么、报了什么错」，只能靠 token 表反推（2026-08-05）。
+        await sub.ainvoke({"messages": [{"role": "user", "content": user_msg}]},
+                          config={"callbacks": [ToolCallRecorder(ctx, desc)]})
     else:
         await _forced_submit(ctx, prompt, user_msg, submit, tool_name, label=desc, attempts=attempts)
     result = get_result()
