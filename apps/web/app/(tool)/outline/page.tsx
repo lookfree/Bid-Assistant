@@ -77,6 +77,10 @@ const tabs: { id: TabId; name: string; icon: React.ElementType }[] = [
 let idCounter = 0
 const genId = () => `gen-${Date.now()}-${idCounter++}`
 
+/** 自动保存防抖：改标题走弹窗（确认才落一次），但连点上移/下移、拖拽排序会在一秒内
+ *  产生十几次结构变化。等编辑停下来再发一次，用户几乎察觉不到延迟。 */
+const AUTOSAVE_DELAY_MS = 1200
+
 export default function OutlinePage() {
   const router = useRouter()
   // 计费步绝不自动触发：该步未跑时停在显式生成入口，用户点击才跑
@@ -129,19 +133,26 @@ export default function OutlinePage() {
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle")
   const [saveError, setSaveError] = useState<string>("")
 
+  /** 存失败的那份内容：自动保存据此避免对同一份内容无限重试（失败→dirty 仍为真→再存→…）。
+   *  用户继续编辑后内容变了，就会自动再试一次。 */
+  const failedRef = useRef<string>("")
+
   /** 落盘一次。返回是否成功——调用方（确认跳转）要据此决定还能不能离开本页。 */
   async function persistOutline(): Promise<boolean> {
     if (!projectId) return false
     setSaveState("saving")
     const parts = buildOutlinePayload(techChapters, businessChapters, bizFirst)
+    const payload = JSON.stringify(parts)
     try {
       await patchStep(projectId, "outline", { chapters: parts })
-      savedRef.current = JSON.stringify(parts)
+      savedRef.current = payload
+      failedRef.current = ""
       setSaveState("saved")
       setTimeout(() => setSaveState((s) => (s === "saved" ? "idle" : s)), 2500)
       return true
     } catch (e) {
       // 404 = 该步无真实 done 结果（step_not_done），精确提示而非笼统"保存失败"
+      failedRef.current = payload
       setSaveError(patchErrorMessage(e))
       setSaveState("error")
       return false
@@ -158,6 +169,19 @@ export default function OutlinePage() {
   const dirty =
     !!real && JSON.stringify(buildOutlinePayload(techChapters, businessChapters, bizFirst)) !== savedRef.current
   const [leaveAsk, setLeaveAsk] = useState(false)
+
+  // 编辑后自动保存（与正文编辑器同一约定）。此前改动只活在前端 state，唯一落盘入口是手动
+  // 「保存提纲」，而右下角唯一显眼的按钮「确认大纲，生成投标正文」是纯跳转——用户改完直接点它，
+  // 改动当场消失且毫无提示（2026-08-07 用户反馈，实测线上库里那些新增子项一条都不在）。
+  // 防抖是必要的：连点上移/下移、拖拽排序会在一秒内产生十几次结构变化，每次都发 PATCH 是浪费。
+  useEffect(() => {
+    if (!projectId || !dirty || saveState === "saving") return
+    // 刚存失败的就是这一份 → 不原地重试（否则 1.2 秒一次打到天荒地老）；用户再改一笔就会重试
+    if (JSON.stringify(buildOutlinePayload(techChapters, businessChapters, bizFirst)) === failedRef.current) return
+    const timer = setTimeout(() => void persistOutline(), AUTOSAVE_DELAY_MS)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- persistOutline 每次渲染都是新函数，进依赖会让防抖永远重置
+  }, [projectId, dirty, saveState, techChapters, businessChapters, bizFirst])
 
   // 组显示顺序（全文视图/编号/保存共用）
   const groupSeq: { label: string; kind: "tech" | "business"; chapters: Chapter[] }[] = [
@@ -308,9 +332,12 @@ export default function OutlinePage() {
           {/* 保存提纲：仅该步有真实 done 结果时可用（否则 PATCH 必 404 step_not_done） */}
           {projectId && real && (
             <div className="flex items-center gap-2">
-              {saveState === "error" && <span className="text-xs font-medium text-destructive">{saveError || "保存失败，请重试"}</span>}
-              {/* 未保存要在点按钮之前就看得见——否则用户以为改完就算数了 */}
-              {dirty && saveState !== "saving" && <span className="text-xs font-medium text-primary">有未保存的修改</span>}
+              {saveState === "error" ? (
+                /* 自动保存失败必须说出来：用户以为存好了就走人，正文照旧按旧提纲生成 */
+                <span className="text-xs font-medium text-destructive">{saveError || "自动保存失败，请点保存重试"}</span>
+              ) : (
+                <span className="text-xs text-muted-foreground">编辑后自动保存</span>
+              )}
               <button
                 onClick={() => void saveOutline()}
                 disabled={saveState === "saving"}
@@ -563,13 +590,14 @@ export default function OutlinePage() {
         </button>
       )}
 
-      {/* 提纲有未保存的修改却去生成正文：正文按**库里**的提纲写，直接放行等于用户改的标题、
-          加的子项全部作废，而且事后回到提纲页也看不到了（2026-08-07 用户反馈的正是这一幕）。 */}
+      {/* 编辑后自动保存，走到这个弹窗只有两种情况：保存正在途中，或者保存失败了。
+          正文按**库里**的提纲写，此时放行等于用户改的标题、加的子项全部作废，事后回提纲页
+          也看不到了（2026-08-07 用户反馈的正是这一幕），所以宁可拦住。 */}
       {leaveAsk && (
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-foreground/40 backdrop-blur-sm" onClick={() => setLeaveAsk(false)} aria-hidden />
           <div role="dialog" aria-modal="true" className="relative w-full max-w-md rounded-2xl border border-border bg-card p-5 shadow-xl">
-            <h3 className="text-base font-semibold text-foreground">提纲有未保存的修改</h3>
+            <h3 className="text-base font-semibold text-foreground">提纲还没保存好</h3>
             <p className="mt-2 text-sm text-muted-foreground">
               正文按已保存的提纲生成。现在直接生成，这次改的标题和新增的子项不会生效，也不会保留。
             </p>
