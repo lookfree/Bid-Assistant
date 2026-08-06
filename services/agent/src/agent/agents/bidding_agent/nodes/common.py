@@ -102,3 +102,26 @@ def slim_read(read: dict) -> dict:
             for c in read.get("categories", [])]
     return {"project_meta": read.get("project_meta", {}), "categories": cats,
             "scoring": read.get("scoring", []), "risk_summary": read.get("risk_summary", [])}
+
+
+# 正文里内联的图片：`<img src="data:image/jpeg;base64,……">`，单张就有二十万字符。
+# 审查每章只喂前 4000 字符，图片一出现，后面的正文一个字都进不了模型——用户把营业执照
+# 以图片形式放进正文，审查却报「缺少该材料」（2026-08-06 用户反馈，230 实测坐实）。
+# 喂模型/扫描之前一律换成短占位符：既不吃截断预算，也让模型知道这里确实有一张图。
+# **只用于构造模型输入**；存库与导出仍保留真图。
+_IMG_RE = re.compile(r"<img\b[^>]*>", re.I | re.S)
+_ALT_RE = re.compile(r'\balt\s*=\s*["\']([^"\']*)["\']', re.I)
+_GENERIC_ALT = {"", "插图", "图片", "image", "img"}
+
+
+def strip_inline_images(html: str | None) -> str:
+    """把 <img …> 换成 ［图片：alt］。alt 是默认值（插图）时只留「［图片］」——重复没有信息量。"""
+    if not html:
+        return ""
+
+    def _sub(m: re.Match) -> str:
+        alt = (_ALT_RE.search(m.group(0)) or [None, ""])[1] if _ALT_RE.search(m.group(0)) else ""
+        alt = (alt or "").strip()
+        return f"［图片：{alt}］" if alt and alt.lower() not in _GENERIC_ALT else "［图片］"
+
+    return _IMG_RE.sub(_sub, html)

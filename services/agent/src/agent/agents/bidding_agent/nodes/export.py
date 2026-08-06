@@ -6,7 +6,7 @@ from agent.agents.bidding_agent.render.docx import render_docx
 from agent.agents.bidding_agent.render.pdf import docx_to_pdf, pdf_page_count
 from agent.agents.bidding_agent.render.pptx import render_pptx
 from agent.agents.bidding_agent.schemas import DeckSpec
-from agent.agents.bidding_agent.nodes.common import upload_artifact, fetch_master_bytes
+from agent.agents.bidding_agent.nodes.common import upload_artifact, fetch_master_bytes, strip_inline_images
 from agent.framework.content_safety import scan_text
 from agent.parsing import storage_read
 
@@ -39,7 +39,8 @@ async def _scan_and_flag(ctx, state: dict) -> None:
     绝不拦截、绝不改动生成内容。整体 try/except：词库缺失/recorder 或落库异常/任何意外状态，
     一律 logger.warning 后放行，绝不让扫描挡住导出交付（生产铁律）。无命中不写事件。"""
     try:
-        chapters_text = "\n".join((state.get("chapters") or {}).values())
+        # 内联图片的 base64 对扫描毫无意义，只会让待扫文本膨胀几十倍
+        chapters_text = "\n".join(strip_inline_images(h) for h in (state.get("chapters") or {}).values())
         deck = state.get("deck")
         text = chapters_text + (json.dumps(deck, ensure_ascii=False) if deck else "")
         hits = scan_text(text)

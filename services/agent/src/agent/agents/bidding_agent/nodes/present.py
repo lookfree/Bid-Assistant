@@ -5,6 +5,7 @@ import re
 from agent.framework.create_agent import run_submit_agent
 from agent.agents.bidding_agent.nodes.common import (
     slim_read, upload_artifact, fetch_master_bytes, filter_read_by_package, parse_bid_chapters, publish_phase,
+    strip_inline_images,
 )
 from agent.agents.bidding_agent.schemas import DeckDraft, DeckSpec, Slide, SlideNotes
 from agent.agents.bidding_agent.prompts.present import PRESENT_SKELETON_PROMPT, PRESENT_NOTES_PROMPT
@@ -12,8 +13,9 @@ from agent.agents.bidding_agent.render.pptx import render_pptx
 
 
 def _plain(html: str) -> str:
-    """章节 HTML → 纯文本摘要输入：述标要点/口播稿不需要标签，token 减半。"""
-    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html)).strip()
+    """章节 HTML → 纯文本摘要输入：述标要点/口播稿不需要标签，token 减半。
+    先剥内联图片——base64 单张二十万字符，不剥的话述标输入被一张图撑爆。"""
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", strip_inline_images(html))).strip()
 
 
 def _slide_notes_context(s) -> dict:

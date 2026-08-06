@@ -13,6 +13,7 @@ import json
 import logging
 
 from agent.framework.create_agent import run_submit_agent
+from agent.agents.bidding_agent.nodes.common import strip_inline_images
 from agent.runtime.progress import publish_phase
 from agent.agents.bidding_agent.prompts.classify import CLASSIFY_SYSTEM_PROMPT
 from agent.agents.bidding_agent.schemas import BidCategory
@@ -62,7 +63,8 @@ def _chapters_summary(chapters: dict[str, str]) -> tuple[str, set[str]]:
 
     rows = []
     for cid, html in list(chapters.items())[:_MAX_CHAPTERS]:
-        text = re.sub(r"<[^>]+>", " ", html or "")
+        # 先换掉内联图片：base64 会把「每章开头若干字」整段占满，分类只能看到一串乱码
+        text = re.sub(r"<[^>]+>", " ", strip_inline_images(html))
         text = re.sub(r"\s+", " ", text).strip()
         if text:
             rows.append({"章id": cid, "开头": text[:_CHAPTER_HEAD]})
