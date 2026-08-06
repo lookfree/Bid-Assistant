@@ -18,6 +18,20 @@ DC='docker compose -f docker-compose.cust.yml --env-file .env.deploy.local'
 wants() { [ -z "$ONLY" ] || [[ ",${ONLY#--only }," == *",$1,"* ]]; }
 abort() { echo "ABORT: $1"; exit 1; }
 
+# 构建输出必须落文件再截取：成功时只要末几行，失败时要的是**报错原文**。
+# 直接 `build | tail -2` 在失败时留下的恰好是 buildx 结尾的 "View build details:" URL，
+# 真正的错误早被截掉——2026-08-07 的 web 构建失败就是这样查不出原因，重跑一遍才拿到。
+run_build() {
+  local what="$1" log="/tmp/build-$1.log"; shift
+  if "$@" > "$log" 2>&1; then tail -2 "$log"; else tail -40 "$log"; abort "$what 构建失败"; fi
+}
+
+# mbp 是笔记本，发版期间没有键鼠活动、web/admin 的 amd64 交叉构建在 QEMU 下要十几分钟——
+# 2026-08-07 就是构建到一半机器休眠、Tailscale 掉线，构建被杀。更糟的是若休眠发生在
+# 「迁移已跑完、流量还没切」之间，线上会停在新库结构 + 旧代码。caffeinate 跟随本进程存活，
+# 脚本一结束即释放。注意：合盖时 macOS 仍可能休眠，caffeinate 不是绝对保证，发版请开着盖子。
+command -v caffeinate >/dev/null && caffeinate -dimsu -w $$ &
+
 echo "=== start $(date) 目标 $WANT ==="
 
 cd "$SRC" || abort "源码目录不存在 $SRC"
@@ -57,8 +71,8 @@ ssh -o BatchMode=yes "$R230" 'docker run --rm --network bid_default \
 # 数据层的限额要生效，由人另行择时执行（见 deploy/data/README 的说明），不能是发版的副作用。
 if wants ocr; then
   echo "=== mbp 构建 ocr (amd64) 并投送 231 ==="
-  docker buildx build ${BUILDER:+--builder $BUILDER} --platform linux/amd64 \
-    -f services/ocr/Dockerfile -t bid-ocr:latest --load services/ocr 2>&1 | tail -2 || abort "ocr 构建失败"
+  run_build ocr docker buildx build ${BUILDER:+--builder $BUILDER} --platform linux/amd64 \
+    -f services/ocr/Dockerfile -t bid-ocr:latest --load services/ocr
   docker image inspect bid-ocr:latest --format "ocr arch={{.Architecture}}"
   rm -f /tmp/bid-ocr.tar.gz
   docker save bid-ocr:latest | gzip > /tmp/bid-ocr.tar.gz || abort "ocr 导出失败"
@@ -79,8 +93,8 @@ if wants web || wants admin; then
   echo "=== mbp 交叉构建 web + admin (amd64) 并投送 ==="
   for app in web admin; do
     wants "$app" || continue
-    docker buildx build ${BUILDER:+--builder $BUILDER} --platform linux/amd64 \
-      -f "apps/$app/Dockerfile" -t "bid-$app:latest" --load . 2>&1 | tail -2 || abort "$app 构建失败"
+    run_build "$app" docker buildx build ${BUILDER:+--builder $BUILDER} --platform linux/amd64 \
+      -f "apps/$app/Dockerfile" -t "bid-$app:latest" --load .
     docker image inspect "bid-$app:latest" --format "$app arch={{.Architecture}}"
     rm -f "/tmp/bid-$app.tar.gz"
     docker save "bid-$app:latest" | gzip > "/tmp/bid-$app.tar.gz" || abort "$app 导出失败"
