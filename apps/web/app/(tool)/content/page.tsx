@@ -48,7 +48,7 @@ import { ExportMenu, type BidType } from "./export-menu"
 import { ReportDialog } from "./report-dialog"
 import { useHealthCheck } from "./use-health-check"
 import { useChapterEdits } from "./use-chapter-edits"
-import { libraryItemHtml } from "./use-editor-insert"
+import { libraryItemHtml, loadAttachmentImages } from "./use-editor-insert"
 import { RichEditor } from "./rich-editor"
 import type { Editor as TiptapEditor } from "@tiptap/react"
 import { GenerationConfigDialog } from "./generation-config"
@@ -230,9 +230,12 @@ export default function ContentPage() {
   function openLibrary() {
     setLibraryOpen(true)
   }
-  function insertFromLibrary(item: LibraryItem) {
-    insertAtCaret(libraryItemHtml(item))
+  async function insertFromLibrary(item: LibraryItem) {
+    // 先关弹层：公网带宽实测 21-75KB/s，取一张证照可能要几秒，弹层杵着不动会被当成"点了没反应"
     setLibraryOpen(false)
+    // 图片附件取回来内嵌，而不是只写一行「附件：图片1.png」——那会让用户以为证照已放进标书，
+    // 实际正文里只有个文件名，审查自然报缺件（2026-08-06 用户反馈）
+    insertAtCaret(libraryItemHtml(item, await loadAttachmentImages(item)))
   }
 
   /* 点击「一键废标体检」按钮：真实项目首次体检先显式确认计费；已有结果开合摘要弹层 */

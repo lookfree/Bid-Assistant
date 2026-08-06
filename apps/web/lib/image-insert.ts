@@ -25,3 +25,12 @@ export async function imageFileToDataUrl(file: File): Promise<string> {
     bitmap.close()
   }
 }
+
+/** 远程图片 URL → 压缩 data URL。资料库附件走预签名下载地址取回后内嵌，
+ *  与本地选图同一条压缩路径（内嵌自包含、不受预签名过期影响，导出时渲染器直接解码落图）。 */
+export async function imageUrlToDataUrl(url: string): Promise<string> {
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`fetch image ${res.status}`)
+  const blob = await res.blob()
+  return imageFileToDataUrl(new File([blob], "attachment", { type: blob.type || "image/jpeg" }))
+}
