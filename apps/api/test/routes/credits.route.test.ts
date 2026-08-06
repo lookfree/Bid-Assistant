@@ -20,7 +20,7 @@ let baseline = 0
 const SEEDED = 25
 
 beforeAll(async () => {
-  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   token = a.token
   userId = a.user.id
   baseline = (await getDb().select().from(creditTransactions).where(eq(creditTransactions.userId, userId))).length

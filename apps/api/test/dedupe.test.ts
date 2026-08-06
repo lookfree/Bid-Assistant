@@ -90,12 +90,12 @@ async function makeFile(userId: string, filename: string, status: "pending" | "u
 beforeAll(async () => {
   await seedConfigs()
   await setConfig("credit_cost.dedupe", 100) // 钉死口径，与环境解耦
-  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   tokenA = a.token
   userA = a.user.id
   await grant(userA, 200, { idempotencyKey: `g-dedupe-${userA}` })
   balanceA = await getBalance(userA) // 基线含注册赠送：生产里注册用户的账本从来不是空的
-  const b = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const b = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   tokenB = b.token
   userB = b.user.id
   // 「余额不足」是**花光了**，不是「从来没有过」——注册即赠，谁都不会是零起点。

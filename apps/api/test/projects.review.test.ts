@@ -55,7 +55,7 @@ const TENDER_KEY = `uploads/rv/${crypto.randomUUID()}/tender.docx`
 
 beforeAll(async () => {
   await seedConfigs()
-  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   token = r.token
   userId = r.user.id
   await getDb().insert(projectFiles).values([

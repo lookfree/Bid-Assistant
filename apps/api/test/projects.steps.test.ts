@@ -104,7 +104,7 @@ const app = new Hono()
 app.route("/api/projects", projectRoutes(mockDeps))
 
 beforeAll(async () => {
-  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   token = r.token
   userId = r.user.id
   // POST /api/projects 建项目校验 fileKey 属主（spec320）：先落一行本人已上传的 project_files
@@ -513,7 +513,7 @@ describe("present 步：企业 PPT 母版解析（enterpriseTemplateItemId → r
   })
 
   it("他人的资料库条目（越权引用）→ 静默忽略，不带 enterprise_template_key，不 400 挡掉整个 present 步", async () => {
-    const other = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+    const other = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
     const [otherFile] = await getDb()
       .insert(projectFiles)
       .values({
@@ -585,7 +585,7 @@ describe("GET /:id/steps/:step/events 进度事件流", () => {
   })
 
   it("非本人项目 → 404（越权不可订阅）", async () => {
-    const other = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+    const other = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
     const res = await app.request(`/api/projects/${pid}/steps/content/events`, {
       headers: { Authorization: `Bearer ${other.token}`, "content-type": "application/json" },
     })

@@ -35,7 +35,7 @@ const app = new Hono()
 app.route("/api/library", libraryRoutes(mockDeps))
 
 beforeAll(async () => {
-  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   token = r.token
   userId = r.user.id
 })
@@ -180,7 +180,7 @@ describe("POST /api/library/reindex（spec316 手动重建）", () => {
   let otherToken = ""
 
   beforeAll(async () => {
-    const o = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+    const o = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
     otherToken = o.token
     otherUserId = o.user.id
     // 直插两条属于本用户的条目 + 一条属于另一用户的条目

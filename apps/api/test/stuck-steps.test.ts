@@ -47,7 +47,7 @@ const auth = () => ({ Authorization: `Bearer ${token}`, "content-type": "applica
 
 beforeAll(async () => {
   await seedConfigs()
-  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   token = r.token
   userId = r.user.id
   await grant(userId, 500, { idempotencyKey: `stuck-grant-${userId}` })

@@ -39,8 +39,8 @@ describe("sms-code 防刷", () => {
     const phone = newPhone()
     expect((await svc.request({ phone })).ok).toBe(true)
     expect(sender.last?.code).toMatch(/^\d{6}$/)
-    expect(await svc.verify(phone, sender.last!.code)).toBe(true)
-    expect(await svc.verify(phone, sender.last!.code)).toBe(false) // 已消费
+    expect(await svc.verify(phone, sender.last!.code)).toBe("ok")
+    expect(await svc.verify(phone, sender.last!.code)).toBe("expired") // 已消费
   })
 
   it("各层默认关闭：立即重发仍 OK（无冷却）", async () => {
@@ -90,8 +90,61 @@ describe("sms-code 防刷", () => {
     const phone = newPhone()
     await svc.request({ phone })
     const correct = sender.last!.code
-    expect(await svc.verify(phone, "000000")).toBe(false) // 第 1 次
-    expect(await svc.verify(phone, "000000")).toBe(false) // 第 2 次
-    expect(await svc.verify(phone, correct)).toBe(false) // 第 3 次 > 2 -> 作废
+    expect(await svc.verify(phone, "000000")).toBe("mismatch") // 第 1 次：码还在，只是输错
+    expect(await svc.verify(phone, "000000")).toBe("mismatch") // 第 2 次
+    expect(await svc.verify(phone, correct)).toBe("too_many") // 第 3 次 > 2 -> 作废
+  })
+})
+
+// 2026-08-06 用户反馈：「验证码还在 5 分钟有效期内，显示过期」。
+// 原因是 verify 把三种情况压成同一个 false，前端一句「验证码错误或已过期」全包——
+// 用户输错一位，看到的却是"已过期"，于是认定系统在骗人。过期就说过期，没过期要说真实原因。
+describe("验证失败的三种原因必须分得开", () => {
+  const phone = () => `+8613${Math.floor(Math.random() * 1e9).toString().padStart(9, "0")}`
+
+  it("码正确 → ok", async () => {
+    const s = new CapturingSender()
+    const svc = makeSmsCodeService(redis, s, mk())
+    const p = phone()
+    await svc.request({ phone: p })
+    expect(await svc.verify(p, s.last!.code)).toBe("ok")
+  })
+
+  it("没发过码 / 码已过期 → expired（唯一该说「已过期」的情形）", async () => {
+    const svc = makeSmsCodeService(redis, new CapturingSender(), mk())
+    expect(await svc.verify(phone(), "123456")).toBe("expired")
+  })
+
+  it("码还在有效期内、只是输错 → mismatch，不能报成过期", async () => {
+    const s = new CapturingSender()
+    const svc = makeSmsCodeService(redis, s, mk())
+    const p = phone()
+    await svc.request({ phone: p })
+    const wrong = s.last!.code === "000000" ? "111111" : "000000"
+    expect(await svc.verify(p, wrong)).toBe("mismatch")
+    // 输错不作废：用户还能再试（尝试上限关闭时）
+    expect(await svc.verify(p, s.last!.code)).toBe("ok")
+  })
+
+  it("错太多次 → too_many，并作废该码", async () => {
+    const s = new CapturingSender()
+    const svc = makeSmsCodeService(redis, s, mk({ attemptLimitEnabled: true, maxAttempts: 2 }))
+    const p = phone()
+    await svc.request({ phone: p })
+    expect(await svc.verify(p, "000000")).toBe("mismatch")
+    expect(await svc.verify(p, "000000")).toBe("mismatch")
+    expect(await svc.verify(p, "000000")).toBe("too_many")
+    // 作废之后，连正确的码也不再认——但要报"已过期"而不是"输错"
+    expect(await svc.verify(p, s.last!.code)).toBe("expired")
+  })
+
+  it("验证成功后码即作废（防重放）", async () => {
+    const s = new CapturingSender()
+    const svc = makeSmsCodeService(redis, s, mk())
+    const p = phone()
+    await svc.request({ phone: p })
+    const code = s.last!.code
+    expect(await svc.verify(p, code)).toBe("ok")
+    expect(await svc.verify(p, code)).toBe("expired")
   })
 })

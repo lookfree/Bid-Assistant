@@ -18,7 +18,7 @@ const DELAYED = { inviterReward: 50, inviteeReward: 50, unlockOn: "invitee_first
 const madeUsers: string[] = []
 const madePhones: string[] = []
 const reg = (id: string) => madeUsers.push(id)
-const fakeSms: SmsCodeService = { async request() { return { ok: true } }, async verify(_p, code) { return code === "123456" } }
+const fakeSms: SmsCodeService = { async request() { return { ok: true } }, async verify(_p, code) { return code === "123456" ? "ok" : "mismatch" } }
 
 beforeEach(async () => {
   await seedConfigs()
@@ -40,7 +40,7 @@ describe("spec307 R1-R6 接线", () => {
     const code = await getMyCode(inviter)
     const phone = uniquePhone()
     madePhones.push(phone)
-    const { isNew, user } = await loginWithPhone(phone, { agreedToTerms: true, referralCode: code, deviceHash: "dev-r1", ip: "1.2.3.4" }, 30, async () => true)
+    const { isNew, user } = await loginWithPhone(phone, { agreedToTerms: true, referralCode: code, deviceHash: "dev-r1", ip: "1.2.3.4" }, 30, async () => "ok" as const)
     expect(isNew).toBe(true)
     const [rel] = await getDb().select().from(referrals).where(eq(referrals.inviteeId, user.id))
     expect(rel!.inviterId).toBe(inviter)
@@ -51,7 +51,7 @@ describe("spec307 R1-R6 接线", () => {
   it("R1 坏邀请码不阻断注册（自荐/无效码吞错）", async () => {
     const phone = uniquePhone()
     madePhones.push(phone)
-    const { isNew } = await loginWithPhone(phone, { agreedToTerms: true, referralCode: "ZZZZZZ", ip: "1.1.1.1" }, 30, async () => true)
+    const { isNew } = await loginWithPhone(phone, { agreedToTerms: true, referralCode: "ZZZZZZ", ip: "1.1.1.1" }, 30, async () => "ok" as const)
     expect(isNew).toBe(true) // 注册成功，无关系
     const u = await findUserByIdentity("phone", phone)
     expect((await getDb().select().from(referrals).where(eq(referrals.inviteeId, u!.id))).length).toBe(0)

@@ -48,7 +48,7 @@ const post = (id: string) =>
 const DECK = { title: "述标", duration: 15, template: "blue", slides: [{ id: "s1", title: "页", kind: "content", bullets: ["改后的要点"] }] }
 
 beforeAll(async () => {
-  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   token = r.token
   userId = r.user.id
 
@@ -139,7 +139,7 @@ describe("POST /api/projects/:id/present/pptx —— 导出前免费重渲", () 
   })
 
   it("不是自己的项目一律 404", async () => {
-    const other = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+    const other = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
     const res = await app.request(`/api/projects/${normalId}/present/pptx`, {
       method: "POST", headers: { Authorization: `Bearer ${other.token}` },
     })

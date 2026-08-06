@@ -20,7 +20,7 @@ let userId = ""
 
 beforeAll(async () => {
   await seedConfigs()
-  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   token = a.token
   userId = a.user.id
 })

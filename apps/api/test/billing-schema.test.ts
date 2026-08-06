@@ -21,7 +21,7 @@ let userId = ""
 let planId = ""
 
 beforeAll(async () => {
-  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   userId = r.user.id
   const [p] = await getDb()
     .insert(plans)
@@ -155,7 +155,7 @@ describe("spec301 计费数据模型", () => {
   })
 
   it("referrals：一个被邀请人只属一个邀请关系（invitee 唯一）", async () => {
-    const r2 = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+    const r2 = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
     try {
       await getDb().insert(referrals).values({ inviterId: userId, inviteeId: r2.user.id, code: "C1", status: "bound" })
       await expectConflict(() =>

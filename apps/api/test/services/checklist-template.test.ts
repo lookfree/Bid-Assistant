@@ -33,7 +33,7 @@ async function newProject(withReadDone: boolean): Promise<string> {
 }
 
 beforeAll(async () => {
-  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   userId = a.user.id
 })
 

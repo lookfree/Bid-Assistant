@@ -18,7 +18,7 @@ let userId = ""
 
 beforeAll(async () => {
   await seedConfigs()
-  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   token = a.token
   userId = a.user.id
   await makeTestPlan((id) => madePlans.push(id), { name: "免费版", code: "free", priceCents: 0 })

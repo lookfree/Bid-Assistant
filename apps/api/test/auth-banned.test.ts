@@ -20,7 +20,7 @@ setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程真库（跑法：./test-local.sh
 //  4) 解封即恢复（会话不吊销——封禁语义可逆，不误伤令牌）。
 const smsAlwaysOk: SmsCodeService = {
   request: async () => ({ ok: true as const }),
-  verify: async () => true,
+  verify: async () => "ok" as const,
 }
 const app = new Hono()
 app.route("/auth", authRoutes({ smsCode: smsAlwaysOk, sessionTtlDays: 30, captchaEnabled: false, verifyCaptcha: async () => true }))
@@ -34,7 +34,7 @@ const me = (tk: string) => app.request("http://x/auth/me", { headers: { Authoriz
 
 beforeAll(async () => {
   phone = uniquePhone()
-  const a = await loginWithPhone(phone, { agreedToTerms: true }, 30, async () => true)
+  const a = await loginWithPhone(phone, { agreedToTerms: true }, 30, async () => "ok" as const)
   token = a.token
   userId = a.user.id
   madeUsers.push(userId)
@@ -63,7 +63,7 @@ describe("封禁账号全线拒止（评审:封禁账号仍可正常使用投标
     let codeConsumed = false
     const attempt = loginWithPhone(phone, { agreedToTerms: true }, 30, async () => {
       codeConsumed = true
-      return true
+      return "ok" as const
     })
     await expect(attempt).rejects.toBeInstanceOf(AccountBannedError)
     expect(codeConsumed).toBe(false) // 拒于消费码之前——用户的一次性码不被烧

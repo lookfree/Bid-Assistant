@@ -14,7 +14,7 @@ let token = ""
 let userId = ""
 
 beforeAll(async () => {
-  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   token = r.token
   userId = r.user.id
 })

@@ -68,9 +68,11 @@ export class TermsRequiredError extends Error {
   }
 }
 
-/** 验证码错误/已失效。 */
+/** 验证码没通过。**带上真实原因**：过期就说过期，输错就说输错——
+ *  合成一句「验证码错误或已过期」的话，输错一位的用户会被告知"已过期"，
+ *  而码明明还在有效期内，用户只会认定系统在骗人（2026-08-06 反馈）。 */
 export class InvalidCodeError extends Error {
-  constructor() {
+  constructor(public readonly reason: "expired" | "mismatch" | "too_many" = "mismatch") {
     super("invalid_code")
     this.name = "InvalidCodeError"
   }
@@ -95,12 +97,13 @@ export async function loginWithPhone(
   phone: string,
   meta: { userAgent?: string; ip?: string; agreedToTerms?: boolean; referralCode?: string; deviceHash?: string },
   ttlDays: number,
-  consumeCode: () => Promise<boolean>,
+  consumeCode: () => Promise<"ok" | "expired" | "mismatch" | "too_many">,
 ): Promise<{ token: string; user: User; isNew: boolean }> {
   let user = await findUserByIdentity("phone", phone)
   if (user?.status === "banned") throw new AccountBannedError() // 消费码前判定（同 terms），一次性码不被烧
   if (!user && !meta.agreedToTerms) throw new TermsRequiredError() // 消费码前判定，码不被烧
-  if (!(await consumeCode())) throw new InvalidCodeError()
+  const codeResult = await consumeCode()
+  if (codeResult !== "ok") throw new InvalidCodeError(codeResult)
   let isNew = false
   if (!user) {
     const created = await createOrGetOnConflict({

@@ -18,7 +18,7 @@ const fakeSms: SmsCodeService = {
     return { ok: true }
   },
   async verify(_p, code) {
-    return code === FIXED
+    return (code === FIXED) ? "ok" as const : "mismatch" as const
   },
 }
 

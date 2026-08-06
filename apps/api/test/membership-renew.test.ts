@@ -29,7 +29,7 @@ app.route("/api/payment", paymentRoutes(deps))
 
 beforeAll(async () => {
   await seedConfigs()
-  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   token = a.token
   userId = a.user.id
   const inserted = await getDb()

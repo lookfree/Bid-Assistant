@@ -10,7 +10,7 @@ setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB
 let userId = ""
 
 beforeAll(async () => {
-  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   userId = r.user.id
 })
 

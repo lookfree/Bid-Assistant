@@ -25,11 +25,11 @@ const regUser = (id: string) => madeUsers.push(id)
 const regAdmin = (id: string) => madeAdmins.push(id)
 
 beforeAll(async () => {
-  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   tokenA = a.token
   userA = a.user.id
   regUser(userA)
-  const b = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const b = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   tokenB = b.token
   userB = b.user.id
   regUser(userB)
@@ -81,7 +81,7 @@ describe("POST/GET /api/feedback（C 端反馈）", () => {
   })
 
   it("④ 日限：本人当日已有 ≥20 条时再提交 → 429", async () => {
-    const c = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+    const c = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
     regUser(c.user.id)
     await getDb()
       .insert(feedback)

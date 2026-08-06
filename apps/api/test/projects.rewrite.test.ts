@@ -71,11 +71,11 @@ beforeAll(async () => {
   // 本文件用绝对余额断言（100→75、B=0）：注册赠送必须钉 0，否则新用户带 200 分全盘打偏（同 checklist.export 惯例）
   prevSignupGrant = await getConfig("signup_grant_credits")
   await setConfig("signup_grant_credits", 0)
-  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   tokenA = a.token
   userA = a.user.id
   await grant(userA, 100, { idempotencyKey: `g-rewrite-${userA}` })
-  const b = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const b = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   tokenB = b.token
   userB = b.user.id // 不授信 → 余额 0
 

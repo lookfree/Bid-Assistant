@@ -26,10 +26,10 @@ app.route("/api/payment", paymentRoutes({ provider, baseUrl: "https://app.test",
 
 beforeAll(async () => {
   await seedConfigs() // recharge_packs 等占位配置
-  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   token = a.token
   userId = a.user.id
-  const b = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const b = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   otherToken = b.token
   otherUserId = b.user.id
 })

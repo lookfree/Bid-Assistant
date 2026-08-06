@@ -25,7 +25,7 @@ const app = new Hono()
 app.route("/api/projects", projectRoutes(mockDeps))
 
 beforeAll(async () => {
-  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   token = r.token
   userId = r.user.id
   const [p] = await getDb()

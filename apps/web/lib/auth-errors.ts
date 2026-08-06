@@ -7,7 +7,11 @@ const AUTH_ERROR_MESSAGES: Record<string, string> = {
   captcha_required: "请先完成人机验证",
   terms_required: "请先同意《用户协议》和《隐私政策》后再登录",
   invalid_input: "手机号或验证码格式有误",
-  invalid_code: "验证码错误或已过期",
+  // 三种情况必须分开说。合成一句「验证码错误或已过期」的话，输错一位的用户会被告知"已过期"，
+  // 而码明明还在有效期内——用户只会认定系统在骗人（2026-08-06 反馈）。
+  invalid_code: "验证码不正确，请核对后重新输入",
+  code_expired: "验证码已失效，请重新获取",
+  code_too_many_attempts: "验证码输错次数过多，已失效，请重新获取",
   account_banned: "该账号已被封禁，如有疑问请联系客服",
 }
 

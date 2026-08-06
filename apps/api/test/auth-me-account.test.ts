@@ -12,7 +12,7 @@ setDefaultTimeout(TEST_TIMEOUT_MS)
 
 // 会员中心此前不显示"这是谁的账号"——/auth/me 只回 id/nickname/status，连手机号都没有，
 // 用户在会员中心看不出自己登录的是哪个号（多号切换、代客操作时尤其要紧）。
-const smsAlwaysOk: SmsCodeService = { request: async () => ({ ok: true as const }), verify: async () => true }
+const smsAlwaysOk: SmsCodeService = { request: async () => ({ ok: true as const }), verify: async () => "ok" as const }
 const app = new Hono()
 app.route("/auth", authRoutes({ smsCode: smsAlwaysOk, sessionTtlDays: 30, captchaEnabled: false, verifyCaptcha: async () => true }))
 
@@ -22,7 +22,7 @@ let token = ""
 
 beforeAll(async () => {
   phone = uniquePhone()
-  const a = await loginWithPhone(phone, { agreedToTerms: true }, 30, async () => true)
+  const a = await loginWithPhone(phone, { agreedToTerms: true }, 30, async () => "ok" as const)
   token = a.token
   madeUsers.push(a.user.id)
 })

@@ -23,10 +23,10 @@ let userB = ""
 
 beforeAll(async () => {
   await seedConfigs()
-  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   tokenA = a.token
   userA = a.user.id
-  const b = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const b = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   tokenB = b.token
   userB = b.user.id
 })

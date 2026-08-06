@@ -53,11 +53,11 @@ const app = new Hono()
 app.route("/api/read", readRoutes(mockDeps))
 
 beforeAll(async () => {
-  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   token = r.token
   userId = r.user.id
   // 第二个用户：验证 runs 属主隔离
-  const o = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const o = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   otherToken = o.token
   otherUserId = o.user.id
 })

@@ -16,7 +16,7 @@ let userId = ""
 let projectId = ""
 
 beforeAll(async () => {
-  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   userId = r.user.id
   const [p] = await getDb().insert(bidProjects)
     .values({ userId, threadId: `proj-${crypto.randomUUID()}` }).returning()
@@ -59,7 +59,7 @@ describe("导出脏标记", () => {
     const { Hono } = await import("hono")
     const app = new Hono()
     app.route("/api/projects", projectRoutes({}))
-    const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+    const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
     const [p2] = await getDb().insert(bidProjects)
       .values({ userId: r.user.id, threadId: `proj-${crypto.randomUUID()}` }).returning()
     const { projectSteps } = await import("../src/db/schema")
@@ -109,7 +109,7 @@ describe("导出脏标记", () => {
     const { projectSteps } = await import("../src/db/schema")
     const app = new Hono()
     app.route("/api/projects", projectRoutes({}))
-    const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+    const r = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
     const [p3] = await getDb().insert(bidProjects)
       .values({ userId: r.user.id, threadId: `proj-${crypto.randomUUID()}` }).returning()
     const body = { "c1": "<p>原文</p>" }

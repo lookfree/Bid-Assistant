@@ -11,7 +11,7 @@ setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB（跑法：./test-on-mbp.sh t
 
 const made: string[] = []
 const reg = (id: string) => made.push(id)
-const login = (phone: string) => loginWithPhone(phone, { agreedToTerms: true }, 30, async () => true)
+const login = (phone: string) => loginWithPhone(phone, { agreedToTerms: true }, 30, async () => "ok" as const)
 
 beforeEach(async () => {
   await seedConfigs()

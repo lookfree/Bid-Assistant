@@ -20,9 +20,16 @@ export type SmsRequestResult =
   | { ok: true }
   | { ok: false; reason: "cooldown" | "rate_limited"; retryAfter?: number }
 
+/** 验证结果。**必须分得开**：三种失败压成一个 false，前端只能给一句「验证码错误或已过期」，
+ *  于是输错一位的用户被告知"已过期"——码明明还在 5 分钟有效期内（2026-08-06 用户反馈）。
+ *  expired  没发过码 / 已超时 / 已用过 / 因错太多被作废 —— 唯一该说「已过期」的情形
+ *  mismatch 码还在，只是输错了
+ *  too_many 错太多次，本次已作废 */
+export type SmsVerifyResult = "ok" | "expired" | "mismatch" | "too_many"
+
 export type SmsCodeService = {
   request(input: SmsRequestInput): Promise<SmsRequestResult>
-  verify(phone: string, code: string): Promise<boolean>
+  verify(phone: string, code: string): Promise<SmsVerifyResult>
 }
 
 export function makeSmsCodeService(redis: Redis, sender: SmsSender, limits: SmsLimits): SmsCodeService {
@@ -92,20 +99,20 @@ export function makeSmsCodeService(redis: Redis, sender: SmsSender, limits: SmsL
     async verify(phone, code) {
       const codeKey = `sms:code:${phone}`
       const stored = await redis.get(codeKey)
-      if (!stored) return false
+      if (!stored) return "expired"   // 没发过 / 超时 / 已用过 / 已被作废
       // ④ 尝试上限（可关）：超次作废
       if (limits.attemptLimitEnabled) {
         const attempts = await bump(`sms:att:${phone}`, limits.codeTtl)
         if (attempts > limits.maxAttempts) {
           await redis.del(codeKey, `sms:att:${phone}`)
-          return false
+          return "too_many"
         }
       }
       if (stored === code) {
         await redis.del(codeKey, `sms:att:${phone}`)
-        return true
+        return "ok"
       }
-      return false
+      return "mismatch"               // 码还在，只是输错——绝不能报成"已过期"
     },
   }
 }

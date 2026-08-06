@@ -22,10 +22,10 @@ type Item = { id: string; name: string; status: string; currentStep: string; ste
 type Body = { items: Item[]; page: number; pageSize: number; total: number; hasMore: boolean }
 
 beforeAll(async () => {
-  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   tokenA = a.token
   userA = a.user.id
-  const b = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => true)
+  const b = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   tokenB = b.token
   userB = b.user.id
 

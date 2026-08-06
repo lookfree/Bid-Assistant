@@ -74,7 +74,11 @@ export function authRoutes(deps: AuthRouteDeps) {
       return c.json({ token, isNew, user: { id: user.id, nickname: user.nickname, phone: maskPhone(phone) } })
     } catch (e) {
       if (e instanceof TermsRequiredError) return c.json({ error: "terms_required" }, 400)
-      if (e instanceof InvalidCodeError) return c.json({ error: "invalid_code" }, 401)
+      // 三种原因分开回：前端据此给三句不同的话，不再一律说"已过期"
+      if (e instanceof InvalidCodeError) {
+        const code = { expired: "code_expired", too_many: "code_too_many_attempts", mismatch: "invalid_code" }[e.reason]
+        return c.json({ error: code }, 401)
+      }
       if (e instanceof AccountBannedError) return c.json({ error: "account_banned" }, 403)
       throw e
     }
