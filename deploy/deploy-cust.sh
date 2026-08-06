@@ -15,9 +15,9 @@ SRC="${BID_SRC:-/Users/Administrator/bid}"
 R230="${BID_R230:-angeek@192.168.106.230}"
 R231="${BID_R231:-angeek@192.168.106.231}"   # 数据机：PG/Redis/MinIO/OCR
 DC='docker compose -f docker-compose.cust.yml --env-file .env.deploy.local'
-# 不带超时的 ssh 在链路闪断后会**无限期挂着**：2026-08-07 那次发版进程活着、日志停在第 3 行，
-# 卡在查在途任务的那条 ssh 上 40 分钟，人不看进程根本发现不了。宁可快速失败——
-# 脚本任何一步失败都 abort，且失败点全在切流量之前，重跑无害。
+# 不带超时的 ssh 在断链后会**无限期挂着**：2026-08-07 那次发版启动 5 秒后 mbp 就合盖休眠，
+# 进程还活着、日志停在第 3 行，卡在查在途任务的那条 ssh 上 40 分钟，不看进程根本发现不了。
+# 宁可快速失败——脚本任何一步失败都 abort，且失败点全在切流量之前，重跑无害。
 SSHOPT='-o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4'
 wants() { [ -z "$ONLY" ] || [[ ",${ONLY#--only }," == *",$1,"* ]]; }
 abort() { echo "ABORT: $1"; exit 1; }
@@ -33,8 +33,11 @@ run_build() {
 # mbp 是笔记本，发版期间没有键鼠活动、web/admin 的 amd64 交叉构建在 QEMU 下要十几分钟。
 # 若休眠发生在「迁移已跑完、流量还没切」之间，线上会停在新库结构 + 旧代码，故先堵住这条。
 # caffeinate 跟随本进程存活，脚本一结束即释放。
-# 但它挡不住链路本身闪断——2026-08-07 实测 caffeinate 生效（pmset 显示 sleep prevented）
-# 期间 ssh 仍多次中途断开，那是网络问题，靠上面的 SSHOPT 快速失败来兜。
+#
+# **但 caffeinate 挡不住合盖休眠**：2026-08-07 两次发版都死在这上面，pmset -g log 里是
+# `Entering Sleep state due to 'Clamshell Sleep' ... Using Batt`——合盖且用电池时，
+# caffeinate 的 assertion 不生效，之后每 15 分钟只有 42 秒的 DarkWake。
+# 发版前请确认 mbp **接电源 + 开盖**（或临时 `sudo pmset -a disablesleep 1`）。
 command -v caffeinate >/dev/null && caffeinate -dimsu -w $$ &
 
 echo "=== start $(date) 目标 $WANT ==="
