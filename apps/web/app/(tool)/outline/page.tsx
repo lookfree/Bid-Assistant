@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
-import Link from "next/link"
+import { useRouter } from "next/navigation"
 import {
   FileText,
   Briefcase,
@@ -33,7 +33,7 @@ import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import { patchErrorMessage, patchStep } from "@/lib/project"
 import { clauseLocationIn, groupDocSections, type DocSentence } from "@/lib/doc-sections"
-import { applyNumbering, chapterNo, deriveNumberMode, flattenItems, moveChapter, renumberItemsByPosition, serializeItems, type NumberMode } from "@/lib/outline-edit"
+import { applyNumbering, buildOutlinePayload, chapterNo, deriveNumberMode, flattenItems, moveChapter, renumberItemsByPosition, type NumberMode } from "@/lib/outline-edit"
 import { ChapterItems } from "./chapter-items"
 import { OutlineItemDialog } from "./item-dialog"
 
@@ -78,6 +78,7 @@ let idCounter = 0
 const genId = () => `gen-${Date.now()}-${idCounter++}`
 
 export default function OutlinePage() {
+  const router = useRouter()
   // 计费步绝不自动触发：该步未跑时停在显式生成入口，用户点击才跑
   const { projectId, info, data: real, dataLoading, running, phase, error, errorAction, start } = useStep<RealOutline>("outline")
   const { overview } = useMembership()
@@ -110,44 +111,53 @@ export default function OutlinePage() {
   // 组顺序（用户需求：部分标书要求商务标在前）：chapters 数组顺序是唯一真相——保存/导出/
   // 正文页都按它走；这里从已存结果的首章分组还原，切换后点「保存提纲」持久化。
   const [bizFirst, setBizFirst] = useState(false)
+  // 已落盘内容的快照：用来判断「有没有未保存的改动」。用 ref 而非 state——它只参与判断，
+  // 不该触发重渲染（每次编辑都重渲染整棵提纲树，代价明显）。
+  const savedRef = useRef<string>("")
   useEffect(() => {
     if (!real) return
-    setTechChapters(toOutline(real.chapters.filter((c) => c.group === "tech")))
-    setBusinessChapters(toOutline(real.chapters.filter((c) => c.group === "business")))
-    setBizFirst(real.chapters[0]?.group === "business")
+    const t = toOutline(real.chapters.filter((c) => c.group === "tech"))
+    const b = toOutline(real.chapters.filter((c) => c.group === "business"))
+    const bf = real.chapters[0]?.group === "business"
+    setTechChapters(t)
+    setBusinessChapters(b)
+    setBizFirst(bf)
+    savedRef.current = JSON.stringify(buildOutlinePayload(t, b, bf))
   }, [real])
 
   // 提纲编辑保存：把当前树序列化回 Outline 形状整份回写（仅该步有真实 done 结果时按钮才出现）
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle")
   const [saveError, setSaveError] = useState<string>("")
-  async function saveOutline() {
-    if (!projectId || saveState === "saving") return
+
+  /** 落盘一次。返回是否成功——调用方（确认跳转）要据此决定还能不能离开本页。 */
+  async function persistOutline(): Promise<boolean> {
+    if (!projectId) return false
     setSaveState("saving")
-    const serialize = (list: Chapter[], group: "tech" | "business") =>
-      list.map((ch) => ({
-        id: ch.id,
-        no: ch.no,
-        title: ch.title,
-        group,
-        sourced: ch.sourced,
-        structureRef: ch.structureRef ?? null,
-        desc: ch.desc ?? "",
-        items: serializeItems(ch.items),
-      }))
+    const parts = buildOutlinePayload(techChapters, businessChapters, bizFirst)
     try {
-      // 数组顺序即成书顺序（导出/正文页跟随）：按当前组顺序拼接
-      const parts = bizFirst
-        ? [...serialize(businessChapters, "business"), ...serialize(techChapters, "tech")]
-        : [...serialize(techChapters, "tech"), ...serialize(businessChapters, "business")]
       await patchStep(projectId, "outline", { chapters: parts })
+      savedRef.current = JSON.stringify(parts)
       setSaveState("saved")
       setTimeout(() => setSaveState((s) => (s === "saved" ? "idle" : s)), 2500)
+      return true
     } catch (e) {
       // 404 = 该步无真实 done 结果（step_not_done），精确提示而非笼统"保存失败"
       setSaveError(patchErrorMessage(e))
       setSaveState("error")
+      return false
     }
   }
+
+  async function saveOutline() {
+    if (saveState === "saving") return
+    await persistOutline()
+  }
+
+  /** 当前树与已落盘内容是否不一致（= 有未保存的修改）。
+   *  与保存共用 buildOutlinePayload，口径不会漂移。 */
+  const dirty =
+    !!real && JSON.stringify(buildOutlinePayload(techChapters, businessChapters, bizFirst)) !== savedRef.current
+  const [leaveAsk, setLeaveAsk] = useState(false)
 
   // 组显示顺序（全文视图/编号/保存共用）
   const groupSeq: { label: string; kind: "tech" | "business"; chapters: Chapter[] }[] = [
@@ -299,6 +309,8 @@ export default function OutlinePage() {
           {projectId && real && (
             <div className="flex items-center gap-2">
               {saveState === "error" && <span className="text-xs font-medium text-destructive">{saveError || "保存失败，请重试"}</span>}
+              {/* 未保存要在点按钮之前就看得见——否则用户以为改完就算数了 */}
+              {dirty && saveState !== "saving" && <span className="text-xs font-medium text-primary">有未保存的修改</span>}
               <button
                 onClick={() => void saveOutline()}
                 disabled={saveState === "saving"}
@@ -541,14 +553,50 @@ export default function OutlinePage() {
           审查专用项目页面上明写着「不含提纲/正文生成」，右下角却还挂着「确认大纲，生成投标正文」，
           自相矛盾（用户反馈：逻辑混乱）；提纲尚未生成的普通项目同理，没什么「大纲」可确认。 */}
       {real && !stepNotApplicable(info, "outline") && (
-        <Link
-          href="/content"
+        <button
+          onClick={() => (dirty ? setLeaveAsk(true) : router.push("/content"))}
           className="fixed bottom-6 right-6 z-40 inline-flex items-center gap-2 rounded-full gradient-brand px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-primary/30 transition-opacity hover:opacity-90"
         >
           <CheckCircle2 className="size-4" />
           确认大纲，生成投标正文
           <ArrowRight className="size-4" />
-        </Link>
+        </button>
+      )}
+
+      {/* 提纲有未保存的修改却去生成正文：正文按**库里**的提纲写，直接放行等于用户改的标题、
+          加的子项全部作废，而且事后回到提纲页也看不到了（2026-08-07 用户反馈的正是这一幕）。 */}
+      {leaveAsk && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-foreground/40 backdrop-blur-sm" onClick={() => setLeaveAsk(false)} aria-hidden />
+          <div role="dialog" aria-modal="true" className="relative w-full max-w-md rounded-2xl border border-border bg-card p-5 shadow-xl">
+            <h3 className="text-base font-semibold text-foreground">提纲有未保存的修改</h3>
+            <p className="mt-2 text-sm text-muted-foreground">
+              正文按已保存的提纲生成。现在直接生成，这次改的标题和新增的子项不会生效，也不会保留。
+            </p>
+            {saveState === "error" && (
+              <p className="mt-2 text-sm font-medium text-destructive">{saveError || "保存失败，请重试"}</p>
+            )}
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                onClick={() => setLeaveAsk(false)}
+                className="rounded-xl border border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground"
+              >
+                返回继续编辑
+              </button>
+              <button
+                disabled={saveState === "saving"}
+                onClick={async () => {
+                  // 存不下就别跳：跳了改动就真没了，这正是要修的那个 bug
+                  if (await persistOutline()) router.push("/content")
+                }}
+                className="inline-flex items-center gap-1.5 rounded-xl gradient-brand px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-70"
+              >
+                {saveState === "saving" ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+                保存并生成正文
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {chapterDialog && (

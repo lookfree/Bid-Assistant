@@ -151,6 +151,40 @@ export function serializeItems(
   }))
 }
 
+export type OutlineChapterInput = {
+  id: string
+  no: string
+  title: string
+  sourced?: boolean
+  structureRef?: string | null
+  desc?: string
+  items: Parameters<typeof serializeItems>[0]
+}
+
+/** 章节树 → 后端 Outline 契约。保存回写与「有没有未保存改动」的判断**共用这一份**：
+ *  两处口径一旦漂移，就会出现「显示已保存、其实没存」或者反复空存。
+ *  数组顺序即成书顺序（导出/正文页跟随），故组顺序在这里落定。 */
+export function buildOutlinePayload(
+  tech: OutlineChapterInput[],
+  business: OutlineChapterInput[],
+  bizFirst: boolean,
+): unknown[] {
+  const one = (list: OutlineChapterInput[], group: "tech" | "business") =>
+    list.map((ch) => ({
+      id: ch.id,
+      no: ch.no,
+      title: ch.title,
+      group,
+      sourced: ch.sourced,
+      structureRef: ch.structureRef ?? null,
+      desc: ch.desc ?? "",
+      items: serializeItems(ch.items),
+    }))
+  return bizFirst
+    ? [...one(business, "business"), ...one(tech, "tech")]
+    : [...one(tech, "tech"), ...one(business, "business")]
+}
+
 /** 同层拖拽重排（评审需求:子项在本章内、小节在本节内拖动）：把 dragId 移到 dropId 之前；
  *  dropId 为 null 移到末尾；任一 id 不在本层原样返回（跨层拖拽由调用方先行拦截,这里兜底）。 */
 export function reorderWithin<T extends { id: string }>(list: T[], dragId: string, dropId: string | null): T[] {
