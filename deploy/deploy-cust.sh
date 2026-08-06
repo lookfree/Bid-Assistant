@@ -15,6 +15,10 @@ SRC="${BID_SRC:-/Users/Administrator/bid}"
 R230="${BID_R230:-angeek@192.168.106.230}"
 R231="${BID_R231:-angeek@192.168.106.231}"   # 数据机：PG/Redis/MinIO/OCR
 DC='docker compose -f docker-compose.cust.yml --env-file .env.deploy.local'
+# 不带超时的 ssh 在链路闪断后会**无限期挂着**：2026-08-07 那次发版进程活着、日志停在第 3 行，
+# 卡在查在途任务的那条 ssh 上 40 分钟，人不看进程根本发现不了。宁可快速失败——
+# 脚本任何一步失败都 abort，且失败点全在切流量之前，重跑无害。
+SSHOPT='-o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4'
 wants() { [ -z "$ONLY" ] || [[ ",${ONLY#--only }," == *",$1,"* ]]; }
 abort() { echo "ABORT: $1"; exit 1; }
 
@@ -26,10 +30,11 @@ run_build() {
   if "$@" > "$log" 2>&1; then tail -2 "$log"; else tail -40 "$log"; abort "$what 构建失败"; fi
 }
 
-# mbp 是笔记本，发版期间没有键鼠活动、web/admin 的 amd64 交叉构建在 QEMU 下要十几分钟——
-# 2026-08-07 就是构建到一半机器休眠、Tailscale 掉线，构建被杀。更糟的是若休眠发生在
-# 「迁移已跑完、流量还没切」之间，线上会停在新库结构 + 旧代码。caffeinate 跟随本进程存活，
-# 脚本一结束即释放。注意：合盖时 macOS 仍可能休眠，caffeinate 不是绝对保证，发版请开着盖子。
+# mbp 是笔记本，发版期间没有键鼠活动、web/admin 的 amd64 交叉构建在 QEMU 下要十几分钟。
+# 若休眠发生在「迁移已跑完、流量还没切」之间，线上会停在新库结构 + 旧代码，故先堵住这条。
+# caffeinate 跟随本进程存活，脚本一结束即释放。
+# 但它挡不住链路本身闪断——2026-08-07 实测 caffeinate 生效（pmset 显示 sleep prevented）
+# 期间 ssh 仍多次中途断开，那是网络问题，靠上面的 SSHOPT 快速失败来兜。
 command -v caffeinate >/dev/null && caffeinate -dimsu -w $$ &
 
 echo "=== start $(date) 目标 $WANT ==="
@@ -40,7 +45,7 @@ git fetch origin main --quiet && git merge --ff-only origin/main || abort "同�
 
 # 在途任务复查：部署会重启容器、打断用户正在跑的长任务（读标/正文动辄几十分钟）。
 inflight() {
-  ssh -o BatchMode=yes "$R230" 'docker exec bid-agent-api-1 uv run --no-sync python -c "
+  ssh $SSHOPT "$R230" 'docker exec bid-agent-api-1 uv run --no-sync python -c "
 import os,psycopg
 with psycopg.connect(os.environ[\"DATABASE_URL\"]) as c:
     print(\"INFLIGHT:\"+str(c.execute(\"select project_id,step from project_steps where status=(chr(114)||chr(117)||chr(110)||chr(110)||chr(105)||chr(110)||chr(103))\").fetchall()))
@@ -49,13 +54,13 @@ with psycopg.connect(os.environ[\"DATABASE_URL\"]) as c:
 R1=$(inflight); echo "在途(开始前): [$R1]"
 [ "$R1" = "[]" ] || abort "有在途任务或查不清，未动线上"
 
-ssh -o BatchMode=yes "$R230" 'bash ~/bid/ops/tag-prev.sh 2>&1 | tail -5'   # 回滚点
+ssh $SSHOPT "$R230" 'bash ~/bid/ops/tag-prev.sh 2>&1 | tail -5'   # 回滚点
 
 echo "=== 同步源码到 230（含 deploy/ 下的 nginx 配置与 compose）==="
-git archive --format=tar HEAD | ssh -o BatchMode=yes "$R230" 'tar xf - -C ~/bid/app' || abort "源码同步失败"
+git archive --format=tar HEAD | ssh $SSHOPT "$R230" 'tar xf - -C ~/bid/app' || abort "源码同步失败"
 
 echo "=== nginx 配置语法校验（接 compose 网络才解析得到上游）==="
-ssh -o BatchMode=yes "$R230" 'docker run --rm --network bid_default \
+ssh $SSHOPT "$R230" 'docker run --rm --network bid_default \
   -v /home/angeek/bid/app/deploy/nginx-ip:/etc/nginx/conf.d:ro --entrypoint sh \
   $(docker inspect bid-nginx-1 --format "{{.Config.Image}}") -c "nginx -t 2>&1" | tail -3' \
   || abort "nginx 配置校验失败，未动线上"
@@ -76,17 +81,17 @@ if wants ocr; then
   docker image inspect bid-ocr:latest --format "ocr arch={{.Architecture}}"
   rm -f /tmp/bid-ocr.tar.gz
   docker save bid-ocr:latest | gzip > /tmp/bid-ocr.tar.gz || abort "ocr 导出失败"
-  rsync -a --partial --inplace /tmp/bid-ocr.tar.gz "$R231:/tmp/bid-ocr.tar.gz" || abort "ocr 投送失败"
-  ssh -o BatchMode=yes "$R231" "gunzip -c /tmp/bid-ocr.tar.gz | docker load && rm -f /tmp/bid-ocr.tar.gz" \
+  rsync -e "ssh $SSHOPT" -a --partial --inplace /tmp/bid-ocr.tar.gz "$R231:/tmp/bid-ocr.tar.gz" || abort "ocr 投送失败"
+  ssh $SSHOPT "$R231" "gunzip -c /tmp/bid-ocr.tar.gz | docker load && rm -f /tmp/bid-ocr.tar.gz" \
     || abort "ocr 加载失败"
   echo "=== 231 起 OCR（只此一个服务）==="
-  scp -q deploy/data/docker-compose.data.yml "$R231":~/bid/data/docker-compose.yml || abort "231 compose 同步失败"
-  ssh -o BatchMode=yes "$R231" 'cd ~/bid/data && TAG=latest docker compose --env-file .env.data up -d ocr 2>&1 | tail -4' \
+  scp $SSHOPT -q deploy/data/docker-compose.data.yml "$R231":~/bid/data/docker-compose.yml || abort "231 compose 同步失败"
+  ssh $SSHOPT "$R231" 'cd ~/bid/data && TAG=latest docker compose --env-file .env.data up -d ocr 2>&1 | tail -4' \
     || abort "231 OCR 启动失败"
 fi
 
 echo "=== 230 原生构建 api + agent ==="
-ssh -o BatchMode=yes "$R230" "set -o pipefail; cd ~/bid/app/deploy && export TAG=latest
+ssh $SSHOPT "$R230" "set -o pipefail; cd ~/bid/app/deploy && export TAG=latest
 $DC build api agent-api 2>&1 | tail -3" || abort "api/agent 构建失败"
 
 if wants web || wants admin; then
@@ -100,8 +105,8 @@ if wants web || wants admin; then
     docker save "bid-$app:latest" | gzip > "/tmp/bid-$app.tar.gz" || abort "$app 导出失败"
     # rsync 而非 docker save | ssh docker load：那条管道在 SSH 断链后会假死（进程在、字节不动、
     # 无法续传），2026-08-05 卡了近一小时。rsync 断了能续、有速率、卡住看得出来。
-    rsync -a --partial --inplace "/tmp/bid-$app.tar.gz" "$R230:/tmp/bid-$app.tar.gz" || abort "$app 投送失败"
-    ssh -o BatchMode=yes "$R230" "gunzip -c /tmp/bid-$app.tar.gz | docker load && rm -f /tmp/bid-$app.tar.gz" \
+    rsync -e "ssh $SSHOPT" -a --partial --inplace "/tmp/bid-$app.tar.gz" "$R230:/tmp/bid-$app.tar.gz" || abort "$app 投送失败"
+    ssh $SSHOPT "$R230" "gunzip -c /tmp/bid-$app.tar.gz | docker load && rm -f /tmp/bid-$app.tar.gz" \
       || abort "$app 加载失败"
   done
 fi
@@ -110,14 +115,14 @@ fi
 # WORKDIR=/app/apps/api 故 bun run db:migrate 能解析到本地 .bin）。
 # 必须在切流量**之前**：新代码依赖新表结构，先切后迁会有一段时间报错。
 echo "=== 应用数据库迁移 ==="
-ssh -o BatchMode=yes "$R230" "cd ~/bid/app/deploy && export TAG=latest
+ssh $SSHOPT "$R230" "cd ~/bid/app/deploy && export TAG=latest
 $DC run --rm api bun run db:migrate 2>&1 | tail -6" || abort "迁移失败，未切流量"
 
 R2=$(inflight); echo "在途(切流量前): [$R2]"
 [ "$R2" = "[]" ] || abort "构建期间出现在途任务，未重启"
 
 echo "=== 切流量 ==="
-ssh -o BatchMode=yes "$R230" "set -o pipefail; cd ~/bid/app/deploy && export TAG=latest
+ssh $SSHOPT "$R230" "set -o pipefail; cd ~/bid/app/deploy && export TAG=latest
 $DC up -d api agent-api agent-worker web admin || exit 1
 sleep 8
 docker exec bid-nginx-1 nginx -s reload || $DC restart nginx
@@ -126,9 +131,9 @@ docker ps --format '{{.Names}} {{.Status}}' | head -8"
 
 echo "=== 冒烟校验 ==="
 # OCR 健康：不静默吞掉——它挂了插图就没有识别文字，审查又会看不出材料在不在
-ssh -o BatchMode=yes "$R231" 'curl -s -o /dev/null -w "231 OCR 健康 %{http_code}\n" http://192.168.106.231:8100/health' \
+ssh $SSHOPT "$R231" 'curl -s -o /dev/null -w "231 OCR 健康 %{http_code}\n" http://192.168.106.231:8100/health' \
   || echo "WARN: OCR 健康检查失败（插图仍可用，只是没有识别文字）"
-ssh -o BatchMode=yes "$R230" '
+ssh $SSHOPT "$R230" '
 curl -s -o /dev/null -w "C端首页 %{http_code}\n" http://127.0.0.1/
 curl -s -o /dev/null -w "后台首页 %{http_code}\n" http://127.0.0.1:8081/
 curl -s -o /dev/null -w "api鉴权(应401) %{http_code}\n" http://127.0.0.1/api/projects
