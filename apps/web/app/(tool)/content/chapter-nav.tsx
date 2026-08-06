@@ -129,7 +129,7 @@ function ChapterRow({
       </span>
       <span className="min-w-0 flex-1">
         <span className="block text-[11px] font-medium text-primary">{ch.no}</span>
-        <span className="block truncate text-[13px] font-medium text-foreground">{ch.title}</span>
+        <span className="block truncate text-[13px] font-medium text-foreground" title={ch.title}>{ch.title}</span>
         <span className="mt-0.5 flex flex-wrap items-center gap-1">
           {!isMissing && <span className="text-[10px] text-muted-foreground">约 {fmtChars(chars)} 字</span>}
           {!ch.sourced && (

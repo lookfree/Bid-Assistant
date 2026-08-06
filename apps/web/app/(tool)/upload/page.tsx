@@ -364,7 +364,7 @@ export default function UploadPage() {
                     </span>
                     <div className="min-w-0 flex-1">
                       <p className="flex items-center gap-1.5 text-sm font-medium text-foreground">
-                        <span className="truncate">{f.name}</span>
+                        <span className="truncate" title={f.name}>{f.name}</span>
                         {primary?.id === f.id && (
                           <span className="shrink-0 rounded-md bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary">
                             主文件

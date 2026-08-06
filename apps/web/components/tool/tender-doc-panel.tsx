@@ -129,7 +129,7 @@ export function TenderDocPanel({
     <section className="flex flex-col rounded-2xl border border-border bg-card lg:h-[calc(100vh-11rem)] lg:min-h-[600px]">
       <header className="flex items-center gap-2 border-b border-border px-5 py-3.5">
         <FileText className="size-4 shrink-0 text-primary" />
-        <span className="truncate text-sm font-semibold text-foreground">{headerName}</span>
+        <span className="truncate text-sm font-semibold text-foreground" title={headerName}>{headerName}</span>
         <span className="ml-auto shrink-0 rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
           {showTabs ? (activeFile >= 0 ? `原文 · 第 ${activeFile + 1}/${files!.length} 份` : `原文 · ${files!.length} 份文件`) : "原文"}
         </span>

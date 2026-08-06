@@ -342,7 +342,7 @@ function BidUploader({
           {bids.map((f, i) => (
             <div key={f.fileId} className="flex items-center gap-3 rounded-xl border border-border bg-background px-3 py-2.5">
               <FileText className="size-4 shrink-0 text-primary" />
-              <span className="min-w-0 flex-1 truncate text-sm text-foreground">{f.name}</span>
+              <span className="min-w-0 flex-1 truncate text-sm text-foreground" title={f.name}>{f.name}</span>
               <button onClick={() => onRemove(i)} className="text-muted-foreground hover:text-destructive">
                 <X className="size-4" />
               </button>

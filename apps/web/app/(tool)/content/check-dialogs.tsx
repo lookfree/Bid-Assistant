@@ -17,7 +17,7 @@ function SummaryItem({ item }: { item: CheckItem }) {
     <div className={`rounded-xl border ${tc.border} p-2.5`}>
       <div className="flex items-center gap-1.5">
         <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tc.badge}`}>{item.level}</span>
-        <span className="truncate text-[12px] font-medium text-foreground">{item.title}</span>
+        <span className="truncate text-[12px] font-medium text-foreground" title={item.title}>{item.title}</span>
       </div>
       <p className="mt-1 text-[11px] text-muted-foreground">{item.chapter}</p>
       <p className="mt-1 text-[11px] leading-relaxed text-foreground">{item.advice}</p>

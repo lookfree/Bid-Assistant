@@ -592,7 +592,7 @@ export default function PresentPage() {
                       <span className="flex size-5 shrink-0 items-center justify-center rounded bg-muted text-[10px] font-bold text-muted-foreground">
                         {i + 1}
                       </span>
-                      <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">{s.title}</span>
+                      <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground" title={s.title}>{s.title}</span>
                       {slides.length > 1 && (
                         <span
                           role="button"

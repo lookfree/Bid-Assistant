@@ -357,7 +357,7 @@ function ProjectCard({ project: p, onDelete }: { project: ProjectListItem; onDel
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <p className="truncate text-sm font-medium text-foreground">{p.name}</p>
+            <p className="truncate text-sm font-medium text-foreground" title={p.name}>{p.name}</p>
             <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${stage.tone}`}>
               {p.kind === "review" ? "线下标书" : p.status === "done" ? statusLabel.done : stage.label}
             </span>

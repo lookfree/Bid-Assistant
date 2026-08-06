@@ -99,7 +99,7 @@ export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
                   }}
                   className="flex w-full items-center justify-between rounded-xl border border-border px-3 py-2.5 text-left transition-colors hover:border-primary/40"
                 >
-                  <span className="min-w-0 truncate text-sm text-foreground">{p.name}</span>
+                  <span className="min-w-0 truncate text-sm text-foreground" title={p.name}>{p.name}</span>
                   <span className="ml-2 shrink-0 text-[11px] text-muted-foreground">
                     {p.doneSteps?.includes(doneStep) ? doneLabel : p.currentStep === "done" ? "已完成" : readyLabel}
                   </span>

@@ -159,7 +159,11 @@ export function ChapterItems({
           className={`flex min-w-0 flex-1 items-center gap-2 text-left ${indexed ? "cursor-pointer" : "cursor-default"}`}
         >
           {child ? <CornerDownRight className="size-3.5 shrink-0 text-primary/60" /> : <ListTree className="size-3.5 shrink-0 text-primary/60" />}
-          <span className="min-w-0 flex-1 truncate text-foreground">{item.label}</span>
+          {/* 提纲标题常常很长（"7.2.1投标人须为在中华人民共和国境内依法注册…"），截断后光看前半句
+              分不清是哪一条；与右侧定位徽标一样挂原生 title，悬停给全称。 */}
+          <span className="min-w-0 flex-1 truncate text-foreground" title={item.label}>
+            {item.label}
+          </span>
         </button>
         {indexed ? (
           /* 定位徽标限宽 45% + 内部截断（生产实测:条款多时绝不挤掉标题）;完整定位见 title */

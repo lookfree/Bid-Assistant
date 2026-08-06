@@ -497,7 +497,7 @@ export default function ContentPage() {
           <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
             <span className="mr-1 shrink-0 text-xs font-medium text-primary">{active.no}</span>
             {/* min-w-0：flex 子项默认不肯收缩，长标题会把工具栏挤断行（全屏按钮曾被单独挤成一行） */}
-            <span className="mr-auto min-w-0 truncate text-sm font-semibold text-foreground">{active.title}</span>
+            <span className="mr-auto min-w-0 truncate text-sm font-semibold text-foreground" title={active.title}>{active.title}</span>
             {/* 编辑工具栏（含全屏切换：目录/正文/AI 助手三栏一起铺满，Esc 退出） */}
             <EditorToolbar
               editor={editor}

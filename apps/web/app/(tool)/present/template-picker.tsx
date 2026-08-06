@@ -232,7 +232,7 @@ function EnterpriseSection(props: EnterpriseSectionProps) {
               <span className={`h-10 w-14 shrink-0 rounded-md ${tpl.style.coverBg}`} />
               <span className="min-w-0 flex-1">
                 <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-                  <span className="truncate">{tpl.name}</span>
+                  <span className="truncate" title={tpl.name}>{tpl.name}</span>
                   {selected && <Check className="size-3.5 shrink-0 text-primary" />}
                   {!isMember && <Lock className="size-3 shrink-0 text-primary" />}
                 </span>
@@ -297,7 +297,7 @@ function HistorySection({
             >
               <span className="min-w-0 flex-1">
                 <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-                  <span className="truncate">{it.title}</span>
+                  <span className="truncate" title={it.title}>{it.title}</span>
                   {!isMember && <Lock className="size-3 shrink-0 text-primary" />}
                 </span>
                 {it.meta && <span className="mt-0.5 block text-[11px] text-muted-foreground">{it.meta}</span>}
