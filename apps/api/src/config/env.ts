@@ -109,3 +109,9 @@ let cached: Env | undefined
 export function getEnv(): Env {
   return (cached ??= parseEnv())
 }
+
+/** 仅供测试：bun 把所有测试文件跑在同一进程，先跑的文件会把这个单例缓存住，
+ *  后面的文件再改 process.env 就不生效了（表现成"单跑绿、合跑红"）。要改环境就得能让它重读。 */
+export function resetEnvCacheForTest(): void {
+  cached = undefined
+}

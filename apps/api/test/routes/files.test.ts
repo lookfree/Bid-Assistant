@@ -33,6 +33,38 @@ describe("/files", () => {
     expect(res.status).toBe(401)
   })
 
+  // —— /files/ocr ——
+  // 这个端点的合同是「**失败一律降级成空串**」：识别是增强，不是插图的前置条件。
+  // 退化方向很隐蔽——把降级改成抛错，用户看到的是"插图失败"，而不是"没识别出文字"。
+  describe("/files/ocr", () => {
+    it("未鉴权 -> 401", async () => {
+      const res = await app.request("/files/ocr", { method: "POST", body: "{}" })
+      expect(res.status).toBe(401)
+    })
+
+    it("没给图片 -> 400", async () => {
+      const res = await app.request("/files/ocr", { method: "POST", headers: auth(), body: "{}" })
+      expect(res.status).toBe(400)
+    })
+
+    it("图片过大 -> 413（不把十几 MB 再转发给 OCR 容器）", async () => {
+      const huge = JSON.stringify({ image: "d".repeat(12 * 1024 * 1024 + 1) })
+      const res = await app.request("/files/ocr", { method: "POST", headers: auth(), body: huge })
+      expect(res.status).toBe(413)
+    })
+
+    it("OCR 不可用 -> 200 且 text 为空（插图不受影响）", async () => {
+      // 不去动 process.env：getEnv 是缓存单例，在这里删变量会影响同进程里的其他测试文件
+      // （实测把 test/services/ocr.test.ts 整个搞挂）。
+      // 这串 base64 解不出图片，所以三种环境下结论一致：没配 OCR -> 直接降级；
+      // 配了（真服务或桩）-> 上游报错 -> 同样降级。断言因此是稳的。
+      const body = JSON.stringify({ image: "data:image/png;base64,AAAAAAAAAAAA" })
+      const res = await app.request("/files/ocr", { method: "POST", headers: auth(), body })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ text: "" })
+    })
+  })
+
   it("presign(.docx 白名单放行) -> PUT -> complete -> download-url 全链路", async () => {
     // 内容字节现在**会**被校验：confirmUpload 按文件头判定内容与扩展名相符
     // （加密封装/改错扩展名的文件在此拦下，见 services/file-magic.ts），所以 .docx 的
