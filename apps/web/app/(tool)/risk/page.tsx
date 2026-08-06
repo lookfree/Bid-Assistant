@@ -233,8 +233,9 @@ function RejectReview() {
 
         {/* 风险项 */}
         <section className="flex flex-col gap-3">
-          {riskItems.map((item) => (
-            <div key={item.title} className={`rounded-2xl border bg-card p-5 ${toneClasses[item.tone].border}`}>
+          {riskItems.map((item, i) => (
+            // key 带上下标：同名风险项会撞 key（用户实测出现过三条同名卡片），React 会认成同一个
+            <div key={`${item.title}-${i}`} className={`rounded-2xl border bg-card p-5 ${toneClasses[item.tone].border}`}>
               <div className="flex items-start gap-3">
                 <AlertTriangle className={`mt-0.5 size-5 shrink-0 ${toneClasses[item.tone].icon}`} />
                 <div className="flex-1">
@@ -245,13 +246,17 @@ function RejectReview() {
                     <span className="text-xs text-muted-foreground">{item.chapter}</span>
                   </div>
                   <h3 className="mt-2 text-sm font-semibold text-foreground">{item.title}</h3>
-                  <div className="mt-3 flex items-start gap-2 rounded-xl bg-secondary/60 p-3">
-                    <Lightbulb className="mt-0.5 size-4 shrink-0 text-primary" />
-<p className="text-xs leading-relaxed text-muted-foreground">
-                      <span className="font-medium text-foreground">整改建议：</span>
-                      {item.advice}
-                    </p>
-                  </div>
+                  {/* 建议为空就整块不画：画一个只有「整改建议：」的空框，比不画更像出了故障
+                      （用户实测截图：三张卡片的建议全是空白）。新结果已在 schema 层要求必填。 */}
+                  {item.advice?.trim() && (
+                    <div className="mt-3 flex items-start gap-2 rounded-xl bg-secondary/60 p-3">
+                      <Lightbulb className="mt-0.5 size-4 shrink-0 text-primary" />
+                      <p className="text-xs leading-relaxed text-muted-foreground">
+                        <span className="font-medium text-foreground">整改建议：</span>
+                        {item.advice}
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

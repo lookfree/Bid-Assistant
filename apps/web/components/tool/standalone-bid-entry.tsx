@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { FolderOpen, Loader2, UploadCloud } from "lucide-react"
+import { FolderOpen, Loader2, UploadCloud, X } from "lucide-react"
 import { listProjects, setCurrentProjectId, createReviewProject, type ProjectListItem } from "@/lib/project"
 import { uploadFile, uploadErrorMessage, uploadHint, ACCEPT_BID, ACCEPT_TENDER } from "@/lib/files"
 
@@ -171,15 +171,28 @@ function UploadBidCard({
     }
   }
 
-  const fileBtn = (label: string, picked: string | null, onClick: () => void, hint: string) => (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex w-full items-center justify-between rounded-xl border border-dashed border-border px-3 py-2.5 text-left text-sm transition-colors hover:border-primary/40"
-    >
-      <span className={picked ? "truncate text-foreground" : "text-muted-foreground"}>{picked ?? `${label}${hint}`}</span>
-      <UploadCloud className="ml-2 size-4 shrink-0 text-muted-foreground" />
-    </button>
+  // 选完必须能撤销：此前选错文件（如把招标文件选进投标文件槽）就再也改不掉，只能刷新整页
+  // ——整个面板没有任何清除入口（2026-08-06 用户反馈）。
+  const fileBtn = (label: string, picked: string | null, onClick: () => void, hint: string, onClear?: () => void) => (
+    <div className="flex w-full items-center gap-1.5 rounded-xl border border-dashed border-border px-3 py-2.5 transition-colors hover:border-primary/40">
+      <button type="button" onClick={onClick} className="min-w-0 flex-1 text-left text-sm">
+        <span className={picked ? "block truncate text-foreground" : "text-muted-foreground"}>
+          {picked ?? `${label}${hint}`}
+        </span>
+      </button>
+      {picked && onClear ? (
+        <button
+          type="button"
+          onClick={onClear}
+          aria-label={`清除已选的${label}`}
+          className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-destructive"
+        >
+          <X className="size-4" />
+        </button>
+      ) : (
+        <UploadCloud className="ml-1 size-4 shrink-0 text-muted-foreground" />
+      )}
+    </div>
   )
 
   return (
@@ -195,8 +208,10 @@ function UploadBidCard({
           bidFiles.length ? `已选 ${bidFiles.length} 个文件：${bidFiles.map((f) => f.name).join("、")}` : null,
           () => bidRef.current?.click(),
           "（必选，可多选）",
+          () => setBidFiles([]),
         )}
-        {!bidOnly && fileBtn("选择招标文件", tenderFile?.name ?? null, () => tenderRef.current?.click(), tenderHint ?? "（可选）")}
+        {!bidOnly &&
+          fileBtn("选择招标文件", tenderFile?.name ?? null, () => tenderRef.current?.click(), tenderHint ?? "（可选）", () => setTenderFile(null))}
         <input ref={bidRef} type="file" accept={ACCEPT_BID} multiple className="hidden" onChange={(e) => { setBidFiles(Array.from(e.target.files ?? [])); e.target.value = "" /* 允许重选同名文件 */ }} />
         <input ref={tenderRef} type="file" accept={ACCEPT_TENDER} className="hidden" onChange={(e) => { setTenderFile(e.target.files?.[0] ?? null); e.target.value = "" }} />
       </div>

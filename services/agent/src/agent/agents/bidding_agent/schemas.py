@@ -181,14 +181,26 @@ class Outline(BaseModel):
 class RiskFinding(BaseModel):
     level: Literal["高风险", "中风险"]              # 前端按此渲染，收紧取值
     tone: Literal["destructive", "warning"]
-    title: str
+    # 标题与整改建议都**必填非空**：2026-08-06 用户截图里三张高风险卡片的标题断在
+    # 「响应文件构成缺漏——缺少」，整改建议一片空白——这样的卡片对用户毫无价值。
+    # 此前 advice 是可选带默认值（顾虑"漏填让整单被拒"多一种失败模式），代价是空建议直接发给
+    # 付费用户。_forced_submit 会把校验错误喂回模型重试 3 轮，正是为这种漏填准备的。
+    title: str = Field(..., min_length=2, description="风险点标题：一句话说清缺什么/哪里不符，必须写完整")
     chapter_title: str = Field(default="", description="对应的标书章节标题，用于把问题落到具体章节")
     tender_ref: str = Field(default="", description='对应的招标条款，写成"对应：第X章 xxx（★不可偏离）"')
-    # 整改建议是这条发现的全部价值：只说"有问题"而不说怎么改，用户拿到的等于一句空话。
-    # 留默认值不改必填（漏填升级成整单被拒会凭空多一种失败模式），靠描述让模型看见这条要求。
-    advice: str = Field(default="", description="整改建议：具体怎么改、补什么材料、放到哪一章，一句话讲清")
+    advice: str = Field(..., min_length=2,
+                        description="整改建议**必填**：具体怎么改、补什么材料、放到哪一章，一句话讲清；不得留空")
     target_tab: Literal["tech", "business"]
-    target_id: str                                # 章节 id（点击定位）
+    # 必须用**投标文件的章节 id**（如 t3/b4，见提纲 chapters[].id）。此前无描述，模型自造
+    # s1/s2… 这类编号，前端匹配不上就静默回落第一章——用户点哪条都跳到第一章（2026-08-06 反馈）。
+    target_id: str = Field(..., description="点击定位用的章节 id：必须取自提纲 chapters[].id（形如 t3、b4），不可自行编号")
+
+    @model_validator(mode="after")
+    def _strip_blank(self):
+        """全空白等同于没填：min_length 挡不住 "   "。"""
+        if not self.title.strip() or not self.advice.strip():
+            raise ValueError("风险项的标题与整改建议都不能为空白")
+        return self
 
 
 class RiskReport(BaseModel):
@@ -207,7 +219,17 @@ class RiskReport(BaseModel):
 
     @model_validator(mode="after")
     def _derive_counts(self):
-        """计数一律从 items/passed_items 推导，不信模型口头报数（两处口径必然漂移）。"""
+        """去重后再计数。计数一律从 items/passed_items 推导，不信模型口头报数（两处口径必然漂移）。
+        去重：用户截图里同一条发现重复出现三张一模一样的卡片——重复是噪音，且会把风险数虚报高。"""
+        seen: set[tuple[str, str]] = set()
+        uniq = []
+        for i in self.items:
+            key = (i.title.strip(), i.advice.strip())
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(i)
+        self.items = uniq
         self.high = sum(1 for i in self.items if i.level == "高风险")
         self.mid = sum(1 for i in self.items if i.level == "中风险")
         self.passed = len(self.passed_items)

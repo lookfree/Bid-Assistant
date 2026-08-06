@@ -45,3 +45,52 @@ def test_findings_and_passed_items_are_required_in_the_tool_schema():
 
     with pytest.raises(ValidationError):     # 省略 items 必须被拒，而不是默认成空数组静默通过
         RiskReport(score=90, passed_items=[])
+
+
+# 2026-08-06 用户实测截图：三张「高风险」卡片长这样——
+#   标题「响应文件构成缺漏——缺少」（断在半句），整改建议一片空白，而且三条一模一样。
+# 整改建议是这条发现的**全部价值**：只说"有问题"不说怎么改，用户拿到的是一句空话。
+# 此前 advice 是可选带默认值（怕漏填让整单被拒），实测结果是空建议直接发给了付费用户。
+# _forced_submit 会把校验错误喂回模型重试 3 轮，正是为这种情况准备的。
+def _item(**over):
+    base = {"level": "高风险", "tone": "destructive", "title": "缺少 ISO27001",
+            "advice": "补证书并附商务标第四章", "target_tab": "business", "target_id": "b4"}
+    return {**base, **over}
+
+
+def test_empty_advice_is_rejected():
+    import pytest
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        RiskReport(score=80, items=[_item(advice="")], passed_items=[])
+    with pytest.raises(ValidationError):
+        RiskReport(score=80, items=[_item(advice="   ")], passed_items=[])
+
+
+def test_empty_title_is_rejected():
+    import pytest
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        RiskReport(score=80, items=[_item(title="")], passed_items=[])
+
+
+def test_identical_items_collapse():
+    """同一条发现重复三遍是噪音（用户截图里就是三张一样的卡）。去重不丢信息。"""
+    r = RiskReport(score=80, items=[_item(), _item(), _item()], passed_items=[])
+    assert len(r.items) == 1
+    assert r.high == 1                      # 计数跟着去重后的结果走
+
+
+def test_different_items_are_kept():
+    r = RiskReport(score=80, items=[_item(), _item(title="缺少授权书")], passed_items=[])
+    assert len(r.items) == 2
+
+
+def test_advice_is_required_in_the_tool_schema():
+    """工具 schema 里必须标成 required——弱模型只读 schema，不读提示词散文。"""
+    tool, _ = make_submit_tool("submit_risk", RiskReport, "提交审查结果")
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+    params = convert_to_openai_tool(tool)["function"]["parameters"]
+    item = params["properties"]["items"]["items"]   # RiskFinding 被内联在数组项里
+    assert "advice" in item["required"]
+    assert item["properties"]["advice"].get("description")
