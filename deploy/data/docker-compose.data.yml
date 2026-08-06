@@ -1,0 +1,106 @@
+name: bid-data
+# 数据机 231（12C/32G）：PostgreSQL+pgvector / Redis / MinIO / OCR（客户验证环境，全容器自建）
+#
+# 资源限额：此前一个都没设，任何容器都能吃光 12 核 32G。数据层对延迟敏感，
+# 而 OCR 是 CPU 尖峰负载——两者同机必须各自限住，否则一次识别就能把数据库拖慢，
+# 且症状会表现成"整站变慢"，极难归因（本仓栽过同类跟头：CPU 打满单核被当成"模型变慢"）。
+# 端口绑到本机 LAN IP，供应用机 230 经内网访问；数据用命名卷落在 / 盘（/var/lib/docker）。
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    # shared_buffers 2G + 连接与排序开销：给 8G 上限，留足 page cache 余量
+    deploy: { resources: { limits: { cpus: "6", memory: 8G } } }
+    env_file: [.env.data]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # 独立 initdb 目录，避免与系统 locale 冲突
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=200"
+      - "-c"
+      - "shared_buffers=2GB"
+    volumes:
+      - /data/postgres:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "192.168.106.231:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    deploy: { resources: { limits: { cpus: "2", memory: 2G } } }
+    env_file: [.env.data]
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
+    volumes:
+      - /data/redis:/data
+    ports:
+      - "192.168.106.231:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    deploy: { resources: { limits: { cpus: "2", memory: 2G } } }
+    env_file: [.env.data]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    command: ["server", "/data", "--console-address", ":9001"]
+    volumes:
+      - /data/minio:/data
+    ports:
+      - "192.168.106.231:9000:9000"
+      - "192.168.106.231:9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # 一次性：建 bucket（幂等），成功即退出
+  minio-init:
+    image: minio/mc:latest
+    env_file: [.env.data]
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} &&
+      mc mb -p local/$${MINIO_BUCKET} || true &&
+      echo bucket-ready
+      "
+    restart: "no"
+# 数据绑定挂载到 /data/{postgres,redis,minio}（231 的 / 大盘），不用命名卷——路径显式、备份直观。
+
+  # 本地 OCR（正文插图内容识别）。放数据机是因为 230 已扛着全部应用 + bge-embed(实测 7.2G)，
+  # 而 231 几乎闲着（实测已用 0G / 可用 29G，12 核空转）。数据层与它各自限额，互不挤占。
+  # 客户不允许业务数据出内网（发出去的是营业执照、法人身份证这类），故本地识别而非云 OCR。
+  ocr:
+    build: { context: ../../services/ocr }
+    image: bid-ocr:${TAG:-latest}
+    restart: unless-stopped
+    environment:
+      OCR_THREADS: "2"          # 与下面的 cpus 限额对齐；ONNXRuntime 默认吃满所有核
+    ports:
+      - "192.168.106.231:8100:8000"   # 同 PG/Redis，绑 LAN 口供 230 内网访问
+    deploy: { resources: { limits: { cpus: "3", memory: 3G } } }
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 20               # 首次启动要载模型，给足重试

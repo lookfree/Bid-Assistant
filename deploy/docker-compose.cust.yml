@@ -1,10 +1,14 @@
 name: bid
-# 应用机 230（客户验证环境）。构建上下文 .. = 仓库根(~/bid/app)。数据层在 231(见 .env.deploy.local)。
+# 应用机 230（16C/32G，客户验证环境）。构建上下文 .. = 仓库根(~/bid/app)。数据层在 231。
+#
+# 资源限额：此前一个都没设——任何容器都能吃光 16 核 32G，实测 bge-embed 一个就占 7.24 GiB。
+# agent 是长任务进程，被别的容器抢走 CPU 时症状表现成"模型变慢"，极难归因（本仓栽过一次）。
 services:
   api:
     build: { context: .., dockerfile: apps/api/Dockerfile }
     image: bid-api:${TAG}
     restart: unless-stopped
+    deploy: { resources: { limits: { cpus: "4", memory: 4G } } }   # Bun 单进程 + 连接池
     env_file: [.env.deploy.local]
     environment:
       AGENT_BASE_URL: "http://agent-api:8090"
@@ -15,12 +19,14 @@ services:
     build: { context: .., dockerfile: services/agent/Dockerfile }
     image: bid-agent:${TAG}
     restart: unless-stopped
+    deploy: { resources: { limits: { cpus: "2", memory: 2G } } }   # 只做接单与中转，重活在 worker
     env_file: [.env.deploy.local]
     expose: ["8090"]
 
   agent-worker:
     image: bid-agent:${TAG}
     restart: unless-stopped
+    deploy: { resources: { limits: { cpus: "8", memory: 8G } } }   # 跑工作流：并行读标 6 路 + 正文，CPU/内存大头
     env_file: [.env.deploy.local]
     command: ["uv", "run", "python", "-m", "agent.main_worker"]
     depends_on: [agent-api]
@@ -32,6 +38,7 @@ services:
       args: { NEXT_PUBLIC_API_BASE_URL: "${PUBLIC_API_BASE_URL}" }
     image: bid-web:${TAG}
     restart: unless-stopped
+    deploy: { resources: { limits: { cpus: "2", memory: 2G } } }   # Next 服务端渲染
     expose: ["3000"]
 
   admin:
@@ -41,6 +48,7 @@ services:
       args: { NEXT_PUBLIC_API_BASE_URL: "${PUBLIC_API_BASE_URL}" }
     image: bid-admin:${TAG}
     restart: unless-stopped
+    deploy: { resources: { limits: { cpus: "2", memory: 2G } } }   # 同 web，访问量更低
     expose: ["3001"]
 
   # 自建 BGE-M3 嵌入服务（agent 经 docker 网络访问 http://bge-embed:8000）
@@ -48,6 +56,7 @@ services:
     build: { context: ../services/bge-embed }
     image: bid-bge-embed:${TAG}
     restart: unless-stopped
+    deploy: { resources: { limits: { cpus: "4", memory: 8G } } }   # 实测常驻 7.2G（模型权重），给 8G 留余量
     environment:
       EMBED_MODEL: "/models/ms/models/BAAI--bge-m3/snapshots/master"
       HF_ENDPOINT: "https://hf-mirror.com"

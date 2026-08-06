@@ -73,6 +73,8 @@ const schema = z.object({
 
   // —— Agent Service（内部 REST，App 编排读标/后续全流程调它）——
   AGENT_BASE_URL: z.string().url().default("http://localhost:8090"),
+  // 本地 OCR 服务（正文插图识别）。留空 = 未部署，插图照常、只是不带识别文字（静默降级）。
+  OCR_BASE_URL: z.string().url().optional(),
 
   // —— 收钱吧支付（凭据缺失时支付路由不挂载/签到 Cron 不注册；全走 env 不入库不进 git）——
   SQB_GATEWAY: z.string().url().default("https://vsi-api.shouqianba.com"),

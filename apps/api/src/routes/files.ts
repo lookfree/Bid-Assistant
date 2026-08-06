@@ -11,6 +11,7 @@ import {
   UnsupportedFileTypeError,
   FileContentRejectedError,
 } from "../services/files"
+import { ocrImage, OcrUnconfiguredError } from "../services/ocr"
 import type { User } from "../db/schema"
 
 const presignSchema = z.object({
@@ -47,6 +48,20 @@ export function fileRoutes() {
       // 内容与扩展名不符/被加密软件封装：前端按 code 出文案（uploadErrorMessage）。
       if (e instanceof FileContentRejectedError) return c.json({ error: e.code }, 400)
       throw e
+    }
+  })
+
+  // 正文插图的文字识别：前端压缩后的图片 → 识别文字 → 前端写进 <img alt>。
+  // OCR 未部署或识别失败一律回 { text: "" }，插图流程不受影响——识别是增强，不是前置条件。
+  r.post("/ocr", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { image?: string }
+    if (!body.image || body.image.length < 16) return c.json({ error: "invalid_input" }, 400)
+    try {
+      return c.json({ text: await ocrImage(body.image) })
+    } catch (e) {
+      if (e instanceof OcrUnconfiguredError) return c.json({ text: "" })
+      console.warn("[ocr] 识别失败（不影响插图）:", e)
+      return c.json({ text: "" })
     }
   })
 

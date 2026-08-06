@@ -34,3 +34,30 @@ export async function imageUrlToDataUrl(url: string): Promise<string> {
   const blob = await res.blob()
   return imageFileToDataUrl(new File([blob], "attachment", { type: blob.type || "image/jpeg" }))
 }
+
+/** alt 的最大长度：它会被原样喂给审查模型（见 agent 侧 strip_inline_images），
+ *  太长会把章节的截断预算又吃回去——一行提示足够，不是全文。 */
+const ALT_MAX = 200
+
+/** 拼 <img alt>：文件名 + OCR 识别文字。
+ *  审查靠这行字判断"这份材料在不在"——只有文件名（图片1.png）时它判断不了。 */
+export function imageAlt(name: string, ocrText: string): string {
+  const n = name.trim()
+  const t = ocrText.replace(/\s+/g, " ").trim()
+  const alt = n && t ? `${n}｜${t}` : n || t || "插图"
+  return alt.slice(0, ALT_MAX)
+}
+
+/** 调后端识别图片文字。任何失败都回空串——识别是增强，绝不该挡住插图本身。 */
+export async function ocrDataUrl(dataUrl: string): Promise<string> {
+  try {
+    const { api } = await import("./api")
+    const r = await api.request<{ text: string }>("/files/ocr", {
+      method: "POST",
+      body: JSON.stringify({ image: dataUrl }),
+    })
+    return r.text ?? ""
+  } catch {
+    return ""
+  }
+}

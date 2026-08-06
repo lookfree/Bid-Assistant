@@ -13,6 +13,7 @@ WANT="${1:?用法: deploy-cust.sh <短 commit> [--only api,agent]}"
 ONLY="${2:-}"
 SRC="${BID_SRC:-/Users/Administrator/bid}"
 R230="${BID_R230:-angeek@192.168.106.230}"
+R231="${BID_R231:-angeek@192.168.106.231}"   # 数据机：PG/Redis/MinIO/OCR
 DC='docker compose -f docker-compose.cust.yml --env-file .env.deploy.local'
 wants() { [ -z "$ONLY" ] || [[ ",${ONLY#--only }," == *",$1,"* ]]; }
 abort() { echo "ABORT: $1"; exit 1; }
@@ -44,6 +45,23 @@ ssh -o BatchMode=yes "$R230" 'docker run --rm --network bid_default \
   -v /home/angeek/bid/app/deploy/nginx-ip:/etc/nginx/conf.d:ro --entrypoint sh \
   $(docker inspect bid-nginx-1 --format "{{.Config.Image}}") -c "nginx -t 2>&1" | tail -3' \
   || abort "nginx 配置校验失败，未动线上"
+
+# 数据机（231）：OCR 服务。镜像在 mbp 交叉构建 amd64 后投送——231 拉基础镜像走 Docker Hub
+# 镜像源，实测 30MB 的层要十几分钟（40KB/s），与 web/admin 同样的理由走同一条投送路。
+if wants ocr; then
+  echo "=== mbp 构建 ocr (amd64) 并投送 231 ==="
+  docker buildx build ${BUILDER:+--builder $BUILDER} --platform linux/amd64 \
+    -f services/ocr/Dockerfile -t bid-ocr:latest --load services/ocr 2>&1 | tail -2 || abort "ocr 构建失败"
+  docker image inspect bid-ocr:latest --format "ocr arch={{.Architecture}}"
+  rm -f /tmp/bid-ocr.tar.gz
+  docker save bid-ocr:latest | gzip > /tmp/bid-ocr.tar.gz || abort "ocr 导出失败"
+  rsync -a --partial --inplace /tmp/bid-ocr.tar.gz "$R231:/tmp/bid-ocr.tar.gz" || abort "ocr 投送失败"
+  ssh -o BatchMode=yes "$R231" "gunzip -c /tmp/bid-ocr.tar.gz | docker load && rm -f /tmp/bid-ocr.tar.gz" \
+    || abort "ocr 加载失败"
+  echo "=== 231 起 OCR + 应用资源限额 ==="
+  scp -q deploy/data/docker-compose.data.yml "$R231":~/bid/data/docker-compose.yml || abort "231 compose 同步失败"
+  ssh -o BatchMode=yes "$R231" 'cd ~/bid/data && export TAG=latest && docker compose up -d ocr postgres redis minio 2>&1 | tail -4'
+fi
 
 echo "=== 230 原生构建 api + agent ==="
 ssh -o BatchMode=yes "$R230" "set -o pipefail; cd ~/bid/app/deploy && export TAG=latest
@@ -85,6 +103,7 @@ sleep 3
 docker ps --format '{{.Names}} {{.Status}}' | head -8"
 
 echo "=== 冒烟校验 ==="
+ssh -o BatchMode=yes "$R231" 'curl -s -o /dev/null -w "231 OCR 健康 %{http_code}\n" http://192.168.106.231:8100/health' || true
 ssh -o BatchMode=yes "$R230" '
 curl -s -o /dev/null -w "C端首页 %{http_code}\n" http://127.0.0.1/
 curl -s -o /dev/null -w "后台首页 %{http_code}\n" http://127.0.0.1:8081/

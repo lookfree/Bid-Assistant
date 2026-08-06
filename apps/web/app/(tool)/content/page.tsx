@@ -235,7 +235,8 @@ export default function ContentPage() {
     setLibraryOpen(false)
     // 图片附件取回来内嵌，而不是只写一行「附件：图片1.png」——那会让用户以为证照已放进标书，
     // 实际正文里只有个文件名，审查自然报缺件（2026-08-06 用户反馈）
-    insertAtCaret(libraryItemHtml(item, await loadAttachmentImages(item)))
+    const { images, alts } = await loadAttachmentImages(item)
+    insertAtCaret(libraryItemHtml(item, images, alts))
   }
 
   /* 点击「一键废标体检」按钮：真实项目首次体检先显式确认计费；已有结果开合摘要弹层 */

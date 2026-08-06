@@ -3,7 +3,7 @@
 import { useRef, useState, type Dispatch, type SetStateAction } from "react"
 import type { Editor as TiptapEditor } from "@tiptap/react"
 import { patchErrorMessage, patchStep } from "@/lib/project"
-import { imageFileToDataUrl } from "@/lib/image-insert"
+import { imageFileToDataUrl, imageAlt, ocrDataUrl } from "@/lib/image-insert"
 import type { Chapter } from "./chapter-nav"
 
 type Group = "tech" | "business"
@@ -146,7 +146,11 @@ export function useChapterEdits(opts: {
     if (!file || !file.type.startsWith("image/")) return
     try {
       const dataUrl = await imageFileToDataUrl(file)
-      insertAtCaret(`<img src="${dataUrl}" alt="插图" class="my-3 rounded-lg border border-border max-w-full" />`)
+      // 识别图里的文字写进 alt：审查侧只看得到 alt（图片本身被换成占位符），
+      // 只写「插图」的话，用户把营业执照放进正文、审查照样报「缺少该材料」。
+      // 识别失败回空串，退化成只有文件名——不挡插图。
+      const alt = imageAlt(file.name, await ocrDataUrl(dataUrl))
+      insertAtCaret(`<img src="${dataUrl}" alt="${alt.replace(/"/g, "&quot;")}" class="my-3 rounded-lg border border-border max-w-full" />`)
     } catch {
       window.alert("图片读取失败，请换一张（支持 JPG/PNG 等常见格式）")
     }

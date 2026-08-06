@@ -2,7 +2,7 @@
 
 import { type LibraryItem } from "@/lib/library"
 import { fileDownloadUrl } from "@/lib/files"
-import { imageUrlToDataUrl } from "@/lib/image-insert"
+import { imageUrlToDataUrl, imageAlt, ocrDataUrl } from "@/lib/image-insert"
 
 /** 资料库存的是纯文本，拼进 HTML 前必须转义：「响应时间 < 2 小时」「A&B 公司」这类内容
  *  直接拼会被浏览器当标签/实体解析，轻则显示错乱，重则从 '<' 起后半句整段被吞（静默丢内容）。 */
@@ -28,13 +28,13 @@ export function isImageAttachment(a: { name: string }): boolean {
  *  拿得到就把图片**真的内嵌进正文**；此前只写一行「附件：图片1.png」，用户以为证照已经放进标书，
  *  实际正文里只有个文件名——审查自然报缺件（2026-08-06 用户反馈）。
  *  取图失败（不在 map 里）退回按文件名列出，不让整条插不进去。 */
-export function libraryItemHtml(item: LibraryItem, images?: Map<string, string>): string {
+export function libraryItemHtml(item: LibraryItem, images?: Map<string, string>, alts?: Map<string, string>): string {
   const atts = item.attachments ?? []
   const embedded = atts.filter((a) => isImageAttachment(a) && images?.get(a.fileId))
   const embeddedIds = new Set(embedded.map((a) => a.fileId))
   // alt 用附件名：喂给审查模型时 <img> 会被换成「［图片：营业执照.png］」，模型据此判断材料在不在
   const imgHtml = embedded
-    .map((a) => `<p><img src="${images!.get(a.fileId)!}" alt="${escAttr(a.name)}" class="my-3 rounded-lg border border-border max-w-full" /></p>`)
+    .map((a) => `<p><img src="${images!.get(a.fileId)!}" alt="${escAttr(alts?.get(a.fileId) || a.name)}" class="my-3 rounded-lg border border-border max-w-full" /></p>`)
     .join("")
 
   if (item.body) {
@@ -56,17 +56,23 @@ export function libraryItemHtml(item: LibraryItem, images?: Map<string, string>)
 
 /** 取回条目里图片附件的 data URL（供 libraryItemHtml 内嵌）。
  *  单张失败只跳过那一张——一张证照下不下来，不该让整条资料插不进去，退回按文件名列出即可。 */
-export async function loadAttachmentImages(item: LibraryItem): Promise<Map<string, string>> {
+export async function loadAttachmentImages(
+  item: LibraryItem,
+): Promise<{ images: Map<string, string>; alts: Map<string, string> }> {
   const imgs = (item.attachments ?? []).filter(isImageAttachment)
   const out = new Map<string, string>()
+  const alts = new Map<string, string>()
   await Promise.all(
     imgs.map(async (a) => {
       try {
-        out.set(a.fileId, await imageUrlToDataUrl(await fileDownloadUrl(a.fileId)))
+        const dataUrl = await imageUrlToDataUrl(await fileDownloadUrl(a.fileId))
+        // 识别文字随 data URL 一起带回，下面拼进 alt（键用 fileId，值是 [dataUrl, alt]）
+        out.set(a.fileId, dataUrl)
+        alts.set(a.fileId, imageAlt(a.name, await ocrDataUrl(dataUrl)))
       } catch {
         /* 取不到就不内嵌，落回文件名 */
       }
     }),
   )
-  return out
+  return { images: out, alts }
 }
