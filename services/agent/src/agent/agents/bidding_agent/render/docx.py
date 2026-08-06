@@ -81,6 +81,28 @@ def _emit_el(doc: Document, el) -> None:
         doc.add_paragraph(text)
 
 
+# Word 表格的实用列上限：模型笔误写出 colspan="999" 时用来夹紧，不让一个笔误撑出上千列。
+_MAX_COLS = 64
+
+
+def _span(raw, limit: int) -> int:
+    """HTML 的 colspan/rowspan 取值 → 合法跨度。
+
+    模型偶尔写出非数字（2026-08-06 生产实测 `rowspan="wer"`）或离谱的大数。直接 int() 会让
+    整个导出以一句 Python 异常收场——用户看到的是 `invalid literal for int() with base 10`，
+    连点九次导出、每次 0.2 秒就崩，既不知道问题在哪也无从自救。
+    解析不了/非正数 → 1（不合并；宁可表格少一次合并，也不能整本标书导不出来）；
+    超出上限 → 夹到上限（那正是「合并到底」的本意，比丢掉合并更接近模型想表达的东西）。
+    """
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return 1
+    if n < 1:
+        return 1
+    return min(n, limit)
+
+
 def _emit_table(doc: Document, el) -> None:
     """HTML 表 → docx 表,支持 colspan/rowspan（spec329 合并单元格,审查修正）：
     先按占位矩阵展开网格定位（合并格占多个格位）,再用 python-docx cell.merge 合并——
@@ -96,8 +118,9 @@ def _emit_table(doc: Document, el) -> None:
         for cell in r.find_all(["td", "th"]):
             while ci < len(grid[ri]) and grid[ri][ci] is not None:
                 ci += 1  # 跳过上方 rowspan 占掉的格位
-            cs = max(1, int(cell.get("colspan") or 1))
-            rs = max(1, int(cell.get("rowspan") or 1))
+            # 跨度上限：列取实用上限，行取「本行往下还剩几行」——rowspan 再大也不可能超过表格本身
+            cs = _span(cell.get("colspan"), _MAX_COLS)
+            rs = _span(cell.get("rowspan"), max(1, len(rows) - ri))
             for dr in range(rs):
                 while len(grid) <= ri + dr:
                     grid.append([])

@@ -322,3 +322,27 @@ def test_render_docx_strips_leaked_outline_ids_and_breaks_pages():
     # 分页：两章之间恰好一个分页符（首章前不加）
     breaks = sum(1 for p in doc.paragraphs for r in p.runs if "w:br" in r._element.xml and 'type="page"' in r._element.xml)
     assert breaks >= 1
+
+
+def test_render_docx_survives_garbage_span():
+    """2026-08-06 生产事故复现：模型写出 rowspan="wer"，导出整步以 ValueError 失败，
+    用户连点九次每次 0.2 秒就崩。非数字跨度按不合并处理，整本标书照样导得出来。"""
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]}
+    chapters = {"t1": '<table><tr>'
+                      '<td colspan="1" rowspan="wer"><p>附：</p></td>'
+                      '<td colspan="abc" rowspan="1"><p>说明</p></td>'
+                      '</tr><tr><td>甲</td><td>乙</td></tr></table>'}
+    data = render_docx(outline, chapters)          # 不抛 = 事故不再复现
+    doc = Document(io.BytesIO(data))
+    assert doc.tables[0].rows[0].cells[0].text == "附："
+    assert doc.tables[0].rows[0].cells[1].text == "说明"
+
+
+def test_render_docx_caps_absurd_rowspan():
+    """rowspan 远超表格行数时夹到剩余行数，不撑出上千行的空表。"""
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]}
+    chapters = {"t1": '<table><tr><td rowspan="999">合并到底</td><td>x</td></tr>'
+                      '<tr><td>y</td></tr></table>'}
+    data = render_docx(outline, chapters)
+    doc = Document(io.BytesIO(data))
+    assert len(doc.tables[0].rows) == 2            # 只有两行 tr，就该是两行
