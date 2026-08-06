@@ -230,13 +230,22 @@ export default function ContentPage() {
   function openLibrary() {
     setLibraryOpen(true)
   }
+  const [libraryBusy, setLibraryBusy] = useState(false)
   async function insertFromLibrary(item: LibraryItem) {
-    // 先关弹层：公网带宽实测 21-75KB/s，取一张证照可能要几秒，弹层杵着不动会被当成"点了没反应"
-    setLibraryOpen(false)
-    // 图片附件取回来内嵌，而不是只写一行「附件：图片1.png」——那会让用户以为证照已放进标书，
-    // 实际正文里只有个文件名，审查自然报缺件（2026-08-06 用户反馈）
-    const { images, alts } = await loadAttachmentImages(item)
-    insertAtCaret(libraryItemHtml(item, images, alts))
+    // 弹层**保持打开并转圈**，等取图+识别完成再关。
+    // 不能提前关：公网带宽实测 21-75KB/s，取一张证照要几秒，这几秒里用户可以切到别的章——
+    // 而 insertAtCaret 闭包捕获的是发起时那一章，内容会插进错的章节，空章分支还会用旧快照
+    // 覆盖掉这期间对其它章的编辑。开着弹层既挡住了切章，也顺带解决了"点了没反应"。
+    setLibraryBusy(true)
+    try {
+      // 图片附件取回来内嵌，而不是只写一行「附件：图片1.png」——那会让用户以为证照已放进标书，
+      // 实际正文里只有个文件名，审查自然报缺件（2026-08-06 用户反馈）
+      const { images, alts } = await loadAttachmentImages(item)
+      insertAtCaret(libraryItemHtml(item, images, alts))
+    } finally {
+      setLibraryBusy(false)
+      setLibraryOpen(false)
+    }
   }
 
   /* 点击「一键废标体检」按钮：真实项目首次体检先显式确认计费；已有结果开合摘要弹层 */
@@ -781,6 +790,7 @@ export default function ContentPage() {
           error={libError}
           onClose={() => setLibraryOpen(false)}
           onPick={insertFromLibrary}
+          busy={libraryBusy}
         />
       )}
     </div>

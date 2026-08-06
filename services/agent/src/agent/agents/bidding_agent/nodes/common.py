@@ -125,3 +125,45 @@ def strip_inline_images(html: str | None) -> str:
         return f"［图片：{alt}］" if alt and alt.lower() not in _GENERIC_ALT else "［图片］"
 
     return _IMG_RE.sub(_sub, html)
+
+
+# 单章 AI 改写：原章 HTML 整个喂给模型、再用模型输出**整章替换**。内联图片是 base64
+# （实测单张 20 万字符），模型既读不懂也不可能原样吐回——一次改写，用户放进正文的营业执照
+# 就没了。这不是"识别不到"，是数据丢失。故喂之前换成短标记、拿回输出后再换回原标签。
+_MARKER_RE = re.compile(r"［图片(\d+)[^］]*］")
+
+
+def protect_images(html: str | None) -> tuple[str, dict[int, str]]:
+    """<img …> → ［图片N：alt］，并返回 N → 原始标签。标记带 alt，模型才知道这里是什么、不该删。"""
+    keep: dict[int, str] = {}
+    if not html:
+        return "", keep
+
+    def _sub(m: re.Match) -> str:
+        n = len(keep) + 1
+        keep[n] = m.group(0)
+        alt = (_ALT_RE.search(m.group(0)) or [None, ""])[1] if _ALT_RE.search(m.group(0)) else ""
+        alt = (alt or "").strip()
+        return f"［图片{n}：{alt}］" if alt else f"［图片{n}］"
+
+    return _IMG_RE.sub(_sub, html), keep
+
+
+def restore_images(html: str, keep: dict[int, str]) -> str:
+    """把标记换回原始 <img>。模型漏写的标记，其图片补到末尾——
+    位置不完美用户还能挪，凭空消失则是把人家的证照弄丢了。"""
+    if not keep:
+        return html
+    used: set[int] = set()
+
+    def _sub(m: re.Match) -> str:
+        n = int(m.group(1))
+        tag = keep.get(n)
+        if tag is None:
+            return m.group(0)   # 模型自己编的编号，原样留着，别吞用户文字
+        used.add(n)
+        return tag
+
+    out = _MARKER_RE.sub(_sub, html)
+    missing = [keep[n] for n in sorted(keep) if n not in used]
+    return out + "".join(missing)

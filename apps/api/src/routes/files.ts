@@ -56,6 +56,9 @@ export function fileRoutes() {
   r.post("/ocr", async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as { image?: string }
     if (!body.image || body.image.length < 16) return c.json({ error: "invalid_input" }, 400)
+    // 上限在这一层也要有：OCR 容器里那道 8MB 卡是最后一道，走到那里时 App 已经把整串
+    // base64 收进内存又序列化了一遍。前端产出的是 ≤1200px 的 JPEG，12MB 绰绰有余。
+    if (body.image.length > 12 * 1024 * 1024) return c.json({ error: "image_too_large" }, 413)
     try {
       return c.json({ text: await ocrImage(body.image) })
     } catch (e) {

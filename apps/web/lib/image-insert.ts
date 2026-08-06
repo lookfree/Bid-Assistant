@@ -39,6 +39,12 @@ export async function imageUrlToDataUrl(url: string): Promise<string> {
  *  太长会把章节的截断预算又吃回去——一行提示足够，不是全文。 */
 const ALT_MAX = 200
 
+/** HTML 属性值转义。只转 " 是不够的：识别文字里出现 `>`（"投标报价 > 100万" 这种很常见）
+ *  会让 agent 侧的 `<img[^>]*>` 提前收尾，alt 取不全、标签残片还会当正文喂给模型。 */
+export function escAttrValue(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+}
+
 /** 拼 <img alt>：文件名 + OCR 识别文字。
  *  审查靠这行字判断"这份材料在不在"——只有文件名（图片1.png）时它判断不了。 */
 export function imageAlt(name: string, ocrText: string): string {

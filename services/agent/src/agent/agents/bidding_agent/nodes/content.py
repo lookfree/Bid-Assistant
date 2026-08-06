@@ -11,7 +11,9 @@ from langchain_core.messages import HumanMessage
 from agent.models.usage import UsageCallback
 from agent.telemetry.tool_recorder import ToolCallRecorder
 from agent.framework.create_agent import build_create_agent
-from agent.agents.bidding_agent.nodes.common import slim_read, package_scope, filter_read_by_package
+from agent.agents.bidding_agent.nodes.common import (
+    slim_read, package_scope, filter_read_by_package, protect_images, restore_images,
+)
 from agent.agents.bidding_agent.prompts.categories import category_scope
 from agent.agents.bidding_agent.prompts.content import (
     CONTENT_PLANNER_PROMPT, CHAPTER_WRITER_PROMPT, REWRITE_PROMPT, DEVIATION_TABLE_GUIDE, TEMPLATE_GUIDE)
@@ -491,6 +493,8 @@ async def _rewrite_reference_block(ctx, state: dict, old: str, instruction: str)
     run_input = state.get("run_input") or {}
     if not await _rag_on(ctx, run_input):
         return ""
+    # old 传进来时图片已换成短标记（见 rewrite_chapter），否则这里截前 N 字会截到 base64 中段，
+    # 检索词变成一串乱码
     query = f"{old[:_REWRITE_QUERY_CHARS]} {instruction}"
     return await rag_retrieve.build_reference_block(
         ctx.user_id, [query], _default_top_k(run_input), tender_thread_id=ctx.thread_id)
@@ -505,10 +509,14 @@ def _rewrite_msg(old: str, instruction: str, ref: str) -> str:
 async def rewrite_chapter(ctx, chapter_id: str, instruction: str, state: dict) -> str:
     """单章改写（/content 右栏 AI 对话）：原章 HTML + 用户指令 → 新 HTML。走轻量 create_agent，不重规划全本。
     state 传工作流状态**值 dict**（如 `(await graph.aget_state(cfg)).values`），不是 StateSnapshot 本身。"""
-    old = state.get("chapters", {}).get(chapter_id, "")
+    raw_old = state.get("chapters", {}).get(chapter_id, "")
+    # 图片先换成短标记：内联 base64 单张就有二十万字符，直接喂过去模型不可能原样吐回，
+    # 而本函数用模型输出**整章替换**——等于一次改写就把用户放进正文的证照弄丢。
+    old, kept_images = protect_images(raw_old)
     ref = await _rewrite_reference_block(ctx, state, old, instruction)
     sub = build_create_agent(REWRITE_PROMPT, [], ctx)
     msg = _rewrite_msg(old, instruction, ref)
     out = await sub.ainvoke({"messages": [HumanMessage(content=msg)]})
     # 先剥对话包装（开场白/```围栏）再剥文档壳：提示词禁不住模型客套，确定性清洗兜底
-    return strip_document_shell(strip_chat_wrapper(out["messages"][-1].content))
+    new = strip_document_shell(strip_chat_wrapper(out["messages"][-1].content))
+    return restore_images(new, kept_images)

@@ -73,8 +73,11 @@ const schema = z.object({
 
   // —— Agent Service（内部 REST，App 编排读标/后续全流程调它）——
   AGENT_BASE_URL: z.string().url().default("http://localhost:8090"),
-  // 本地 OCR 服务（正文插图识别）。留空 = 未部署，插图照常、只是不带识别文字（静默降级）。
-  OCR_BASE_URL: z.string().url().optional(),
+  // 本地 OCR 服务（正文插图识别）。未配置 = 未部署：插图照常，只是不带识别文字（静默降级）。
+  // preprocess 把空串当未配置——env 文件里写 `OCR_BASE_URL=` 是表达"没有"的自然写法，
+  // 直接用 .url().optional() 会让它校验失败、API 整个起不来，与上面这句承诺正好相反。
+  OCR_BASE_URL: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+                             z.string().url().optional()),
 
   // —— 收钱吧支付（凭据缺失时支付路由不挂载/签到 Cron 不注册；全走 env 不入库不进 git）——
   SQB_GATEWAY: z.string().url().default("https://vsi-api.shouqianba.com"),

@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { ArrowRight, Library, Paperclip, Search, X } from "lucide-react"
+import { ArrowRight, Library, Paperclip, Search, X, Loader2 } from "lucide-react"
 import { libraryCategories, type LibraryCategoryId, type LibraryItem } from "@/lib/library"
 import type { LibraryEntry } from "@/lib/library-api"
 import { useEscapeClose } from "@/hooks/use-escape-close"
@@ -18,6 +18,7 @@ export function LibraryPicker({
   error,
   onClose,
   onPick,
+  busy = false,
 }: {
   title?: string
   defaultCat?: LibraryCategoryId
@@ -26,6 +27,9 @@ export function LibraryPicker({
   error: string | null
   onClose: () => void
   onPick: (item: LibraryItem) => void
+  /** 插入进行中（取附件图 + OCR 要数秒）：盖一层遮罩挡住切章与重复点击，
+   *  否则用户在等待期间切到别的章，内容会插进错的地方。 */
+  busy?: boolean
 }) {
   const [cat, setCat] = useState<LibraryCategoryId>(defaultCat)
   const [q, setQ] = useState("")
@@ -42,8 +46,15 @@ export function LibraryPicker({
 
   return (
     <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-foreground/40 backdrop-blur-sm" onClick={onClose} aria-hidden />
+      {/* 插入中不给关：关了用户就能切章，而插入内容会落到发起时那一章 */}
+      <div className="absolute inset-0 bg-foreground/40 backdrop-blur-sm" onClick={busy ? undefined : onClose} aria-hidden />
       <div role="dialog" aria-modal="true" className="relative z-10 flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl">
+        {busy && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center gap-2 bg-card/80 text-sm text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" />
+            正在插入（附件图片需下载并识别）…
+          </div>
+        )}
         <div className="flex items-center justify-between border-b border-border px-5 py-4">
           <div className="flex items-center gap-2">
             <Library className="size-5 text-primary" />

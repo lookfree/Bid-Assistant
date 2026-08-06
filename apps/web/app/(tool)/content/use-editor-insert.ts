@@ -69,8 +69,11 @@ export async function loadAttachmentImages(
         // 识别文字随 data URL 一起带回，下面拼进 alt（键用 fileId，值是 [dataUrl, alt]）
         out.set(a.fileId, dataUrl)
         alts.set(a.fileId, imageAlt(a.name, await ocrDataUrl(dataUrl)))
-      } catch {
-        /* 取不到就不内嵌，落回文件名 */
+      } catch (e) {
+        // 取不到就不内嵌、落回文件名。但必须留痕：这是浏览器直接 fetch MinIO 预签名地址的
+        // 唯一一处，若 231 收紧了 MINIO_API_CORS_ALLOW_ORIGIN，整个内嵌功能会静默退回旧行为，
+        // 表现和"没修"一模一样，没有日志就无从判断。
+        console.warn("[library] 附件图片取回失败，退回按文件名列出:", a.name, e)
       }
     }),
   )

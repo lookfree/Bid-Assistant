@@ -46,8 +46,15 @@ ssh -o BatchMode=yes "$R230" 'docker run --rm --network bid_default \
   $(docker inspect bid-nginx-1 --format "{{.Config.Image}}") -c "nginx -t 2>&1" | tail -3' \
   || abort "nginx 配置校验失败，未动线上"
 
-# 数据机（231）：OCR 服务。镜像在 mbp 交叉构建 amd64 后投送——231 拉基础镜像走 Docker Hub
+# 数据机（231）的 OCR 服务。镜像在 mbp 交叉构建 amd64 后投送——231 拉基础镜像走 Docker Hub
 # 镜像源，实测 30MB 的层要十几分钟（40KB/s），与 web/admin 同样的理由走同一条投送路。
+#
+# **只起 ocr，绝不碰 postgres/redis/minio**：
+#  - 它们是客户的活数据层，重启一次全站停；
+#  - compose 里给它们加的资源限额会改变容器 spec，`up -d` 会**重建**它们；
+#  - 且 ${POSTGRES_PASSWORD} 这类插值不来自 env_file，来自项目目录的 .env——231 上只有
+#    .env.data，不显式 --env-file 的话会插成空串，等于用空密码重建库、关掉 Redis 鉴权。
+# 数据层的限额要生效，由人另行择时执行（见 deploy/data/README 的说明），不能是发版的副作用。
 if wants ocr; then
   echo "=== mbp 构建 ocr (amd64) 并投送 231 ==="
   docker buildx build ${BUILDER:+--builder $BUILDER} --platform linux/amd64 \
@@ -58,9 +65,10 @@ if wants ocr; then
   rsync -a --partial --inplace /tmp/bid-ocr.tar.gz "$R231:/tmp/bid-ocr.tar.gz" || abort "ocr 投送失败"
   ssh -o BatchMode=yes "$R231" "gunzip -c /tmp/bid-ocr.tar.gz | docker load && rm -f /tmp/bid-ocr.tar.gz" \
     || abort "ocr 加载失败"
-  echo "=== 231 起 OCR + 应用资源限额 ==="
+  echo "=== 231 起 OCR（只此一个服务）==="
   scp -q deploy/data/docker-compose.data.yml "$R231":~/bid/data/docker-compose.yml || abort "231 compose 同步失败"
-  ssh -o BatchMode=yes "$R231" 'cd ~/bid/data && export TAG=latest && docker compose up -d ocr postgres redis minio 2>&1 | tail -4'
+  ssh -o BatchMode=yes "$R231" 'cd ~/bid/data && TAG=latest docker compose --env-file .env.data up -d ocr 2>&1 | tail -4' \
+    || abort "231 OCR 启动失败"
 fi
 
 echo "=== 230 原生构建 api + agent ==="
@@ -103,7 +111,9 @@ sleep 3
 docker ps --format '{{.Names}} {{.Status}}' | head -8"
 
 echo "=== 冒烟校验 ==="
-ssh -o BatchMode=yes "$R231" 'curl -s -o /dev/null -w "231 OCR 健康 %{http_code}\n" http://192.168.106.231:8100/health' || true
+# OCR 健康：不静默吞掉——它挂了插图就没有识别文字，审查又会看不出材料在不在
+ssh -o BatchMode=yes "$R231" 'curl -s -o /dev/null -w "231 OCR 健康 %{http_code}\n" http://192.168.106.231:8100/health' \
+  || echo "WARN: OCR 健康检查失败（插图仍可用，只是没有识别文字）"
 ssh -o BatchMode=yes "$R230" '
 curl -s -o /dev/null -w "C端首页 %{http_code}\n" http://127.0.0.1/
 curl -s -o /dev/null -w "后台首页 %{http_code}\n" http://127.0.0.1:8081/

@@ -34,12 +34,14 @@ describe("/files", () => {
   })
 
   it("presign(.docx 白名单放行) -> PUT -> complete -> download-url 全链路", async () => {
-    const body = "tender-bytes"
-    // 文件名须过 SUPPORTED_EXTS 白名单（pdf/docx/xlsx）；内容字节 MinIO 不校验，用文本即可
+    // 内容字节现在**会**被校验：confirmUpload 按文件头判定内容与扩展名相符
+    // （加密封装/改错扩展名的文件在此拦下，见 services/file-magic.ts），所以 .docx 的
+    // 测试用体必须带 OOXML 的 ZIP 头，不能再用纯文本。
+    const body = new Uint8Array([0x50, 0x4b, 0x03, 0x04, ...new TextEncoder().encode("tender-bytes")])
     const pre = await app.request("/files/presign-upload", {
       method: "POST",
       headers: auth(),
-      body: JSON.stringify({ filename: "t.docx", contentType: "text/plain", size: body.length }),
+      body: JSON.stringify({ filename: "t.docx", contentType: "text/plain", size: body.byteLength }),
     })
     expect(pre.status).toBe(200)
     const { fileId, uploadUrl } = (await pre.json()) as { fileId: string; uploadUrl: string }
@@ -51,7 +53,7 @@ describe("/files", () => {
 
     const dl = await app.request(`/files/${fileId}/download-url`, { headers: auth() })
     const { url } = (await dl.json()) as { url: string }
-    expect(await (await fetch(url)).text()).toBe(body)
+    expect(new Uint8Array(await (await fetch(url)).arrayBuffer())).toEqual(body)
   })
 
   it("扩展名白名单：.doc/.xls 老格式 → 200 现已支持（spec320 agent 侧 LibreOffice 转换）", async () => {
