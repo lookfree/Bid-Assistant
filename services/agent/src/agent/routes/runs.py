@@ -52,7 +52,7 @@ async def get_run(run_id: str):
     with get_pool().connection() as conn:
         row = conn.execute(
             """select status, agent_type, input_tokens, output_tokens, cached_tokens, total_tokens,
-                      duration_s, result
+                      duration_s, result, error, error_type
                from agent.agent_request where run_id=%s""", (run_id,)).fetchone()
     if not row:
         return JSONResponse({"error": "not_found"}, status_code=404)
@@ -63,6 +63,12 @@ async def get_run(run_id: str):
         "run_id": run_id, "status": row[0], "agent_type": row[1],
         "tokens": {"input": row[2], "output": row[3], "cached": row[4], "total": row[5]},
         "duration_s": float(row[6]) if row[6] is not None else None, "result": result,
+        # 失败原因随状态一起给出。此前只回 status，App 拿不到原因，前端只能显示「生成失败，请重试」——
+        # 而像「扫描件解析不出文字」这种**重试一万次也不会变**的失败，用户就真的一直重试
+        # （2026-08-07 实测：同一份盖章扫描件 1 分钟内触发 21 次审查）。
+        # error_type 一并给出：只有我们自己写的 RuntimeError 文案适合直接展示给用户，
+        # 其它异常（ValueError 之类）是代码 bug，原文对用户没有意义、还可能泄露内部细节。
+        "error": row[8], "error_type": row[9],
     }
 
 

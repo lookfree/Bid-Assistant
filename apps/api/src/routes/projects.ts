@@ -965,7 +965,10 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       event: "step.done",
       data: JSON.stringify({
         step, cost, status: failed ? "failed" : "done",
-        ...(shapeBad ? { error: SHAPE_MISMATCH_ERROR } : {}),
+        // 失败原因带给用户：agent 早就写清楚了（「上传的标书未能解析出任何正文（扫描件…）」），
+        // 以前止步于此，前端只能说「生成失败，请重试」——于是用户对着一份永远解析不出文字的
+        // 盖章扫描件重试了 21 次（2026-08-07 实测）。只放行我们自己写的文案，见 userFacingRunError。
+        ...(shapeBad ? { error: SHAPE_MISMATCH_ERROR } : failed ? { error: client.userFacingRunError(run) ?? undefined } : {}),
         result: await resultForUser(step, run.result ?? null, project.userId),
       }),
     })

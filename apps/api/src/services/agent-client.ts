@@ -316,11 +316,26 @@ export async function generateChecklist(
  *  其余非 2xx / 超时 = agent 不可达（抛错，调用方按「活」处理绝不误杀）——
  *  代理返回的 JSON 错误页若被当正常体解析成 {status:undefined}，会把活 run 判死退款。
  *  10s 超时：单个黑洞连接不能拖死整轮对账扫描。 */
-export async function getRun(runId: string): Promise<{ status: string | null; result?: unknown }> {
+export async function getRun(
+  runId: string,
+): Promise<{ status: string | null; result?: unknown; error?: string | null; errorType?: string | null }> {
   const r = await fetch(`${getEnv().AGENT_BASE_URL}/runs/${runId}`, { signal: AbortSignal.timeout(10_000) })
   if (r.status === 404) return { status: null }
   if (!r.ok) throw new Error(`agent getRun ${r.status}`)
-  return (await r.json()) as { status: string; result?: unknown }
+  const raw = (await r.json()) as { status: string; result?: unknown; error?: string; error_type?: string }
+  return { status: raw.status, result: raw.result, error: raw.error ?? null, errorType: raw.error_type ?? null }
+}
+
+/** agent 的失败原因里，哪些适合原样给用户看。
+ *
+ *  只放行 RuntimeError：节点里 `raise RuntimeError("上传的标书未能解析出任何正文…")` 这类是我们
+ *  自己为用户写的话，可行动、无内部细节。其它异常（ValueError/TypeError…）是代码 bug，
+ *  原文（如 `invalid literal for int() with base 10: 'wer'`）对用户毫无意义，还可能带出内部结构。 */
+export function userFacingRunError(e: { error?: string | null; errorType?: string | null }): string | null {
+  const msg = (e.error ?? "").trim()
+  if (!msg || e.errorType !== "RuntimeError") return null
+  if (msg.includes("Traceback")) return null // 兜底：别把栈喂给用户
+  return msg.slice(0, 200)
 }
 
 export type AgentClient = {

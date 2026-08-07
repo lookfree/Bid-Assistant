@@ -14,6 +14,7 @@ import {
   STEP_ORDER,
   openStepEvents,
   StreamIncompleteError,
+  StepFailedError,
   type ChapterProgress,
   type StepPhase,
   type ProjectInfo,
@@ -284,6 +285,12 @@ export function useStep<T>(step: StepName) {
         const code = e instanceof ApiError ? e.code : null
         setErrorStatus(status)
         setErrorCode(code ?? null)
+        // 服务端给了可展示的失败原因就原样用它。「扫描件解析不出文字」这类失败重试多少次都一样，
+        // 说「生成失败，请重试」等于让用户白点（2026-08-07 实测：一份盖章扫描件被重试 21 次）。
+        if (e instanceof StepFailedError && e.detail) {
+          setError(e.detail)
+          return null
+        }
         // 模型未配置（运营后台未编排主/降级模型）：C 端用户无法自助解决，明确提示联系管理员；
         // content_tiers_not_configured（标书生成计费阶梯未配置/非法）：同样是部署顺序问题，非系统故障；
         // package_required（多包招标未选包）：硬门禁——必须回读标页选包后才能生成大纲

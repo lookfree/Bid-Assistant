@@ -19,6 +19,22 @@ export class StreamIncompleteError extends Error {
   }
 }
 
+/** 该步确实失败了，且服务端给出了**可以直接展示给用户**的原因。
+ *
+ *  detail 只在服务端认定该原因适合外露时才有（见 api 侧 userFacingRunError：只放行我们自己写的
+ *  RuntimeError 文案，代码 bug 的原始异常不外露）。有 detail 就该原样展示——像「扫描件解析不出
+ *  文字」这种重试多少次都不会变的失败，笼统说「请重试」等于让用户白点：2026-08-07 实测，一份
+ *  盖章扫描件在 1 分钟内被重试了 21 次。 */
+export class StepFailedError extends Error {
+  constructor(
+    public step: StepName,
+    public detail?: string,
+  ) {
+    super(detail || `step ${step} 失败`)
+    this.name = "StepFailedError"
+  }
+}
+
 /** 正文生成的逐章进度（agent 每写完一章推一条 chapter.progress SSE 事件，前端实时勾选）。 */
 export type ChapterProgress = { kind?: string; done: number; total: number; doneIds: string[]; title?: string }
 
@@ -377,9 +393,10 @@ export async function runStep<T>(
   if (!m) throw new StreamIncompleteError(step)
   const payload = JSON.parse(m[1]!) as { status: string; result: T; error?: string }
   if (payload.status !== "done") {
-    // step.done 带 agent 侧失败原因（原始串不适合直接展示）：落 console 供排查，用户侧走通用失败文案
+    // 服务端只在原因适合外露时才带 error（见 api 侧 userFacingRunError）；带了就原样展示，
+    // 没带才回落通用文案。console 仍留一份供排查。
     console.error(`step ${step} failed:`, payload.error ?? "(no detail)")
-    throw new Error(`step ${step} 失败`)
+    throw new StepFailedError(step, payload.error)
   }
   // 该项目步骤状态已变（新 done 行）：失效缓存，避免其他工具页挂载时读到跑之前的旧快照
   invalidateProjectCache(id)
