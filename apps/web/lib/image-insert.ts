@@ -45,13 +45,22 @@ export function escAttrValue(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
 }
 
-/** 拼 <img alt>：文件名 + OCR 识别文字。
- *  审查靠这行字判断"这份材料在不在"——只有文件名（图片1.png）时它判断不了。 */
-export function imageAlt(name: string, ocrText: string): string {
-  const n = name.trim()
-  const t = ocrText.replace(/\s+/g, " ").trim()
-  const alt = n && t ? `${n}｜${t}` : n || t || "插图"
-  return alt.slice(0, ALT_MAX)
+/** 拼 <img alt>：资料标题 + 文件名 + OCR 识别文字。
+ *  审查靠这行字判断"这份材料在不在"——只有文件名（图片1.png）时它判断不了。
+ *
+ *  标题放最前，有两个理由：一是它是用户自己起的（「营业执照」），最能说明这是什么，而文件名
+ *  常常是 flink-logo.png 这种毫无关系的名字（2026-08-07 线上实例）；二是 alt 有 200 字上限，
+ *  识别文字长了会被截掉，放前面才保证这条最有用的信息一定活下来。
+ *  识别不出文字时（logo、纯图章、低置信度）也照样有标题可给模型，不至于只剩文件名。 */
+export function imageAlt(name: string, ocrText: string, title = ""): string {
+  const parts = [title.trim(), name.trim(), ocrText.replace(/\s+/g, " ").trim()].filter(Boolean)
+  // 标题与文件名常常重复（「营业执照」+「营业执照.png」），重复一遍只是白占 alt 的额度
+  const seen = new Set<string>()
+  const uniq = parts.filter((p) => {
+    const k = p.toLowerCase().replace(/\.(png|jpe?g)$/i, "")
+    return seen.has(k) ? false : (seen.add(k), true)
+  })
+  return (uniq.join("｜") || "插图").slice(0, ALT_MAX)
 }
 
 /** 调后端识别图片文字。任何失败都回空串——识别是增强，绝不该挡住插图本身。 */

@@ -33,3 +33,31 @@ describe("imageAlt", () => {
     expect(imageAlt("a.png", "第一行\n  第二行")).toBe("a.png｜第一行 第二行")
   })
 })
+
+// 2026-08-07 线上实例：资料条目标题是「营业职照」，附件却叫 flink-logo.png，且是张 logo、
+// OCR 识别不出字。审查模型于是只看到「［图片：flink-logo.png］」——用户明明起了名字。
+describe("imageAlt 带资料标题", () => {
+  it("标题在最前：识别文字被 200 字上限截掉时，这条最有用的信息仍在", () => {
+    const alt = imageAlt("flink-logo.png", "字".repeat(500), "营业执照")
+    expect(alt.startsWith("营业执照")).toBe(true)
+    expect(alt.length).toBeLessThanOrEqual(200)
+  })
+
+  it("识别不出文字也要把标题给模型——这正是 logo/图章类图片的常态", () => {
+    expect(imageAlt("flink-logo.png", "", "营业职照")).toBe("营业职照｜flink-logo.png")
+  })
+
+  it("三者齐全时依次拼接", () => {
+    expect(imageAlt("lic.png", "统一社会信用代码 913100", "营业执照")).toBe(
+      "营业执照｜lic.png｜统一社会信用代码 913100",
+    )
+  })
+
+  it("标题与文件名实为同一个名字时不重复占额度", () => {
+    expect(imageAlt("营业执照.png", "", "营业执照")).toBe("营业执照")
+  })
+
+  it("不传标题时行为与从前一致（其它调用方不受影响）", () => {
+    expect(imageAlt("a.png", "x")).toBe("a.png｜x")
+  })
+})

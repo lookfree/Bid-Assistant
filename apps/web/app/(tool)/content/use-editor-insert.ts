@@ -68,7 +68,9 @@ export async function loadAttachmentImages(
         const dataUrl = await imageUrlToDataUrl(await fileDownloadUrl(a.fileId))
         // 识别文字随 data URL 一起带回，下面拼进 alt（键用 fileId，值是 [dataUrl, alt]）
         out.set(a.fileId, dataUrl)
-        alts.set(a.fileId, imageAlt(a.name, await ocrDataUrl(dataUrl)))
+        // 带上资料条目的标题：用户把这条资料命名为「营业执照」，而附件文件名可能是
+        // flink-logo.png（线上实例）——不带标题的话，审查模型只看得到一个无意义的文件名。
+        alts.set(a.fileId, imageAlt(a.name, await ocrDataUrl(dataUrl), item.title))
       } catch (e) {
         // 取不到就不内嵌、落回文件名。但必须留痕：这是浏览器直接 fetch MinIO 预签名地址的
         // 唯一一处，若 231 收紧了 MINIO_API_CORS_ALLOW_ORIGIN，整个内嵌功能会静默退回旧行为，
