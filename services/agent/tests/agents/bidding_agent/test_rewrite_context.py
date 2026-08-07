@@ -156,3 +156,24 @@ class TestStarSurvivesTheCap:
         """按整行取舍：截到半句「- ★ 硬件令牌：支持国」比不给还糟。"""
         out = _rewrite_context_block(self._state(), "t1")
         assert out.rstrip().endswith("支持国密SM3")
+
+
+class TestRefundGateComesFirst:
+    """「这是不是一句提问」的判定必须排在最前面。
+
+    它是**退款闸**：模型回 <!--NOT_AN_INSTRUCTION--> 时 App 判 422 并全额退款
+    （apps/api/src/routes/projects.ts）。2026-08-07 给改写补上下文后，用户的问题被排到了
+    一大段上下文之后——若判定规则又排在那些上下文规则之后，模型更容易把提问当成改写要求，
+    结果是把「对问题的回答」当正文交稿、还照常计入产物。这条守卫盯的就是顺序。
+    """
+
+    def test_gate_is_stated_before_the_context_rules(self):
+        from agent.agents.bidding_agent.prompts.content import REWRITE_PROMPT
+
+        assert REWRITE_PROMPT.index("NOT_AN_INSTRUCTION") < REWRITE_PROMPT.index("【本章定位】")
+
+    def test_gate_is_scoped_to_the_instruction_only(self):
+        """明写「只看改写指令这一段」——否则长上下文会稀释这个判断。"""
+        from agent.agents.bidding_agent.prompts.content import REWRITE_PROMPT
+
+        assert "只看「改写指令」这一段" in REWRITE_PROMPT
