@@ -101,3 +101,32 @@ def test_rewrite_chapter_unchanged_when_rag_disabled():
     asyncio.run(rewrite_chapter(ctx, "t3", "补充分级 SLA 响应时间表", state))
     expected = f"原章 HTML：\n{old}\n\n改写指令：补充分级 SLA 响应时间表"
     assert gateway.chat.captured[-1].content == expected
+
+
+def test_rewrite_chapter_sends_the_chapter_context(monkeypatch):
+    """改写真的把本章上下文发出去了。
+
+    只测 _rewrite_context_block 拼得对是不够的——2026-08-07 变异测试证明：把调用点的
+    参数删掉，那些单元测试仍然全绿。这里从实际发给模型的消息里验，堵住"拼好了但没人用"。
+    """
+    monkeypatch.setattr(content_mod, "rag_retrieve", _FakeRagRetrieve(enabled=False))
+    gateway = _CapturingGateway(_NEW_HTML)
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t",
+                     gateway=gateway, user_id="u1")
+    state = {
+        "chapters": {"t3": "<h3>3.3 SLA</h3><p>旧…</p>"},
+        "outline": {"chapters": [
+            {"id": "t2", "no": "第二章", "title": "技术方案"},
+            {"id": "t3", "no": "第三章", "title": "服务级别承诺", "desc": "写清分级响应时限",
+             "clause_ids": ["sec-5-c1"]},
+        ]},
+        "read": {"categories": [{"name": "商务要求", "items": [
+            {"title": "响应时限", "value": "1 小时内到场", "star": True, "clause_ids": ["sec-5-c1"]},
+        ]}]},
+    }
+    asyncio.run(rewrite_chapter(ctx, "t3", "补充分级 SLA 响应时间表", state))
+    msg = gateway.chat.captured[-1].content
+    assert "第三章 服务级别承诺" in msg          # 本章定位
+    assert "写清分级响应时限" in msg             # 提纲里的写作说明
+    assert "★" in msg and "响应时限" in msg      # 本章要响应的★条款
+    assert "技术方案" in msg                     # 相邻章（防重复）

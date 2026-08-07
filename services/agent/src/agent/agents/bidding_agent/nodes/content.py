@@ -552,10 +552,66 @@ async def _rewrite_reference_block(ctx, state: dict, old: str, instruction: str)
         ctx.user_id, [query], _default_top_k(run_input), tender_thread_id=ctx.thread_id)
 
 
-def _rewrite_msg(old: str, instruction: str, ref: str) -> str:
-    if ref:
-        return f"原章 HTML：\n{old}\n\n{ref}\n\n改写指令：{instruction}"
-    return f"原章 HTML：\n{old}\n\n改写指令：{instruction}"
+_REWRITE_CTX_CAP = 2000   # 上下文块上限：改写是免费功能，不能把成本堆上去
+_REWRITE_REQ_MAX = 12     # 最多列几条招标要求，★ 优先
+
+
+def _chapter_requirements(read: dict, clause_ids: set[str]) -> list[str]:
+    """本章对应的招标要求（按 clause_ids 从读标结论里捞），★ 条款排前面。"""
+    hits: list[tuple[bool, str]] = []
+    for cat in read.get("categories") or []:
+        for it in cat.get("items") or []:
+            if not (set(it.get("clause_ids") or []) & clause_ids):
+                continue
+            star = bool(it.get("star"))
+            title = (it.get("title") or "").strip()
+            value = (it.get("value") or "").strip()
+            text = f"{'★ ' if star else ''}{title}{'：' + value if value else ''}"
+            hits.append((star, text[:120]))
+    hits.sort(key=lambda x: not x[0])          # ★ 在前
+    return [t for _, t in hits[:_REWRITE_REQ_MAX]]
+
+
+def _rewrite_context_block(state: dict, chapter_id: str) -> str:
+    """单章改写的上下文。
+
+    改写此前只拿到「原章 HTML + 用户指令」——既不知道本章要响应哪些招标条款，也不知道
+    提纲给本章写了什么要求、相邻章节写的是什么。于是改出来的内容可能与招标要求脱节，
+    或者把隔壁章的内容又写一遍。正文首次生成时这些信息都是给足的，改写却全丢了。
+
+    只给**本章相关**的部分：全量招标结论有几万字，塞进来既贵又会淹没用户的指令。
+    """
+    outline = state.get("outline") or {}
+    chapters = outline.get("chapters") or []
+    idx = next((i for i, c in enumerate(chapters) if c.get("id") == chapter_id), -1)
+    if idx < 0:
+        return ""
+    ch = chapters[idx]
+    parts = [f"【本章定位】{ch.get('no') or ''} {ch.get('title') or ''}".strip()]
+    if (ch.get("desc") or "").strip():
+        parts.append(f"本章写作说明（用户填写，须遵循）：{ch['desc'].strip()}")
+    items = [(it.get("label") or "").strip() for it in (ch.get("items") or [])]
+    if any(items):
+        parts.append("本章应覆盖的小节：" + "、".join(i for i in items if i))
+    neighbours = [chapters[i].get("title") or "" for i in (idx - 1, idx + 1) if 0 <= i < len(chapters)]
+    if any(neighbours):
+        parts.append("相邻章节（内容不要与它们重复）：" + "、".join(n for n in neighbours if n))
+    # 本章 + 各子项的条款 id 合起来找招标依据
+    cids = set(ch.get("clause_ids") or [])
+    for it in ch.get("items") or []:
+        cids |= set(it.get("clause_ids") or [])
+        for sub in it.get("children") or []:
+            cids |= set(sub.get("clause_ids") or [])
+    reqs = _chapter_requirements(state.get("read") or {}, cids) if cids else []
+    if reqs:
+        parts.append("本章须响应的招标要求（★ 为不可偏离）：\n" + "\n".join(f"- {r}" for r in reqs))
+    return "\n".join(parts)[:_REWRITE_CTX_CAP]
+
+
+def _rewrite_msg(old: str, instruction: str, ref: str, chapter_ctx: str = "") -> str:
+    """上下文放在原章之前、指令放在最后：指令是用户当下最想要的，压轴最不容易被淹没。"""
+    blocks = [b for b in (chapter_ctx, f"原章 HTML：\n{old}", ref) if b]
+    return "\n\n".join(blocks) + f"\n\n改写指令：{instruction}"
 
 
 async def rewrite_chapter(ctx, chapter_id: str, instruction: str, state: dict) -> str:
@@ -567,7 +623,7 @@ async def rewrite_chapter(ctx, chapter_id: str, instruction: str, state: dict) -
     old, kept_images = protect_images(raw_old)
     ref = await _rewrite_reference_block(ctx, state, old, instruction)
     sub = build_create_agent(REWRITE_PROMPT, [], ctx)
-    msg = _rewrite_msg(old, instruction, ref)
+    msg = _rewrite_msg(old, instruction, ref, _rewrite_context_block(state, chapter_id))
     out = await sub.ainvoke({"messages": [HumanMessage(content=msg)]})
     # 先剥对话包装（开场白/```围栏）再剥文档壳：提示词禁不住模型客套，确定性清洗兜底
     new = strip_document_shell(strip_chat_wrapper(out["messages"][-1].content))
