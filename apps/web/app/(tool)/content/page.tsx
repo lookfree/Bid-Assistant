@@ -301,9 +301,31 @@ export default function ContentPage() {
     editorScrollRef.current?.scrollTo({ top: 0 })
     // 章内定位：只到章还不够——实测一份报告 63 条里 31 条都指向同一章（偏离表），
     // 逐条点过去全落在章节顶部，看起来就是"点哪条都跳同一个地方"。
-    // 换章后 TipTap 要重渲染，故放到下一帧；找不到锚点就维持顶部（老报告没有这个字段）。
-    if (anchor.trim()) requestAnimationFrame(() => scrollToAnchor(editorScrollRef.current, anchor))
+    // 真正的滚动交给下面的 effect：换章会让 RichEditor 换 key 重新挂载，而 TipTap
+    // （immediatelyRender:false）要跨两次渲染才把 ProseMirror 的 DOM 接上，
+    // 在点击回调里排一帧 rAF 常常早于 DOM 出现，然后静默什么也不做。
+    setPendingAnchor(anchor.trim() ? { id, anchor } : null)
   }
+
+  /** 待定位的锚点（换章后由 effect 重试执行）。 */
+  const [pendingAnchor, setPendingAnchor] = useState<{ id: string; anchor: string } | null>(null)
+  useEffect(() => {
+    if (!pendingAnchor || pendingAnchor.id !== active?.id) return
+    let stop = false
+    let left = 30 // 约 0.5 秒内反复尝试；大章节首次渲染慢，一帧不够
+    const tick = () => {
+      if (stop) return
+      if (scrollToAnchor(editorScrollRef.current, pendingAnchor.anchor) || --left <= 0) {
+        setPendingAnchor(null) // 定位到了，或者放弃（维持章节顶部，与老报告一致）
+        return
+      }
+      requestAnimationFrame(tick)
+    }
+    requestAnimationFrame(tick)
+    return () => {
+      stop = true
+    }
+  }, [pendingAnchor, active?.id])
 
   /* 在体检报告弹层内直接导出标书文件：已查看风险，软放行后导出 */
   function exportBidFromReport(format: "word" | "pdf") {

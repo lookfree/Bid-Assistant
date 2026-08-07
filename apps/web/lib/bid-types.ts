@@ -81,8 +81,9 @@ export type RiskFinding = {
   /** 定位目标：标书 tab 与章节 id */
   targetTab: Group
   targetId: string
-  /** 章内定位锚点：正文里原样摘抄的一小段;空串表示无法定位到具体位置 */
-  anchorText: string
+  /** 章内定位锚点：正文里原样摘抄的一小段;空串=无法定位到具体位置。
+   *  可选是**事实**而非疏漏:这个字段 2026-08-07 才加,库里既有的审查结果一律没有它。 */
+  anchorText?: string
 }
 
 /** review 步结果（agent RiskReport，camelCase）。整改建议对所有用户免费下发（2026-08-01 产品口径）。 */

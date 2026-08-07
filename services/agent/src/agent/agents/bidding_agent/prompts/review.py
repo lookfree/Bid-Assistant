@@ -16,7 +16,9 @@ REVIEW_SYSTEM_PROMPT = """你是投标合规审查专家（废标体检）。把
    如技术偏离表/商务偏离表）：读标标记为 ★ 的条目，若该偏离表章节正文找不到对应条款（clause_ids 或
    摘要）的表格行 → 高风险（★条款漏登偏离表，形式审查不过），写明缺失的★条款内容与对应招标条款。
 8. 已满足项归入 passed_items。
-对每条风险给 chapter_title、tender_ref（"对应：…"）、advice、target_tab(tech/business)、target_id(章id)。
+对每条风险给 chapter_title、tender_ref（"对应：…"）、advice、target_tab(tech/business)、target_id(章id)、
+anchor_text（章内定位锚点：从该章正文原样摘抄 10–30 字，用于把用户带到出问题的那一处；
+"缺少某内容"这类问题摘抄应当补写位置的邻近原文；实在无可摘抄给空字符串 ""，但**不可省略本字段**）。
 字段取值必须严格合规：level 只能取「高风险」或「中风险」；tone 只能取 destructive（高风险）或 warning（中风险）；
 target_tab 只能取 tech 或 business；score 为 0–100 整数。
 给体检分 score；high/mid/passed 计数由系统按 items 自动推导，不必填。
