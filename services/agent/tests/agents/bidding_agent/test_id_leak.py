@@ -40,6 +40,11 @@ class TestCleaner:
         """两端都写全的区间要当成一组抹掉；只认缩写会留下「（~）」。"""
         assert clean_internal_ids("技术规格（sec-55-c11~sec-55-c20）不符") == "技术规格不符"
 
+    def test_three_or_more_ids_leave_no_separator_run(self):
+        """三个以上编号连写，抹完只收末尾那个分隔符不够——会剩「：, 。」。"""
+        assert clean_internal_ids("<p>对应条款：sec-6-c1, sec-6-c2, sec-6-c3。</p>") == "<p>对应条款：。</p>"
+        assert clean_internal_ids("对应条款：sec-1-c1, sec-1-c2 见附件三") == "对应条款：见附件三"
+
     def test_no_dangling_punctuation(self):
         """抹完不能留下「（、）」「<td>, </td>」这种残渣——比编号本身还难看。"""
         assert clean_internal_ids("所有★关键条款（sec-54-c1、sec-58-c1）均完全满足") == "所有★关键条款均完全满足"
