@@ -39,7 +39,7 @@ import { AiNotice } from "@/components/tool/ai-notice"
 import { type LibraryItem } from "@/lib/library"
 import { ApiError } from "@/lib/api-client"
 import { stepPrereq, useStep } from "@/lib/use-step"
-import { presentRerender, triggerDownload, patchErrorMessage, patchStep } from "@/lib/project"
+import { deckPreviews, presentRerender, triggerDownload, patchErrorMessage, patchStep } from "@/lib/project"
 import { AiPanel } from "./ai-panel"
 import { EmptyState, DURATIONS, type Duration } from "./empty-state"
 import { NotReadyCard } from "./not-ready-card"
@@ -125,6 +125,23 @@ export default function PresentPage() {
   /* 当前预览样式：套用企业模板时优先，否则用内置预设 */
   const style = enterpriseStyle ?? slideStyles.find((s) => s.id === styleId)!
   const active = slides.find((s) => s.id === activeId)
+  const activeIndex = slides.findIndex((s) => s.id === activeId)
+
+  /* 真实 PPT 的逐页渲染图（present 步产出）。空数组 = 老项目或本次渲染失败 → 回落 CSS 预览。 */
+  const [previewUrls, setPreviewUrls] = useState<string[]>([])
+  /* 生成之后又改过内容：图还是上一版，必须在画布上说明，否则用户以为改动没生效 */
+  const [deckDirty, setDeckDirty] = useState(false)
+  useEffect(() => {
+    if (!projectId) return
+    let alive = true
+    deckPreviews(projectId)
+      .then((u) => {
+        if (alive) setPreviewUrls(u)
+      })
+      .catch(() => {
+        if (alive) setPreviewUrls([])   // 拉不到就用 CSS 预览，不打扰用户
+      })
+  }, [projectId, realDeck])
   const estMin = useMemo(() => estimateMinutes(slides), [slides])
 
   /* 选内置预设：清除企业模板套用 */
@@ -201,6 +218,7 @@ export default function PresentPage() {
 
   /* ---------------- 幻灯片编辑 ---------------- */
   function updateSlide(id: string, patch: Partial<Slide>) {
+    setDeckDirty(true)   // 渲染图是上一版了，画布上要如实标注
     setSlides((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)))
   }
   function updateBullet(id: string, idx: number, value: string) {
@@ -624,8 +642,28 @@ export default function PresentPage() {
           <main className="min-w-0 flex-1 overflow-y-auto bg-muted/30 p-4 sm:p-6">
             {active && (
               <div className="mx-auto max-w-3xl">
-                {/* 幻灯片预览画布 */}
-                <SlidePreview slide={active} style={style} />
+                {/* 幻灯片预览画布：优先显示**真实 PPT 渲染图**。
+                    此前这里是一套手写 CSS 近似，与导出的 PPT 是两套渲染器，必然漂移——
+                    2026-08-07 拿客户产物逐页比对，评分点位置/要点编号/页码/分隔线四处都不一致，
+                    用户反馈「相差太大」。没有渲染图（老项目、或本次渲染失败）才回落 CSS 预览。 */}
+                {previewUrls[activeIndex] ? (
+                  <div className="relative">
+                    {/* eslint-disable-next-line @next/next/no-img-element -- 预签名地址，非静态资源 */}
+                    <img
+                      src={previewUrls[activeIndex]}
+                      alt={`第 ${activeIndex + 1} 页预览`}
+                      className="aspect-video w-full rounded-2xl border border-border bg-white object-contain shadow-lg"
+                    />
+                    {deckDirty && (
+                      // 改过内容但图还是上一版：说清楚，别让用户以为改动没生效
+                      <span className="absolute right-3 top-3 rounded-lg bg-foreground/70 px-2 py-1 text-[11px] text-white">
+                        预览为上次生成的效果，导出后即为最新
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <SlidePreview slide={active} style={style} />
+                )}
 
                 {/* 编辑区 */}
                 <div className="mt-5 rounded-2xl border border-border bg-card p-5">

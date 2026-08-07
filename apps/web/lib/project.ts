@@ -403,6 +403,13 @@ export async function runStep<T>(
   return payload.result
 }
 
+/** 述标预览图：present 步渲染的逐页真实 PPT 位图，按页序返回预签名地址。
+ *  没有（老项目 / 本次渲染失败）时回空数组——那不是错误，前端回落到 CSS 预览。 */
+export async function deckPreviews(id: string): Promise<string[]> {
+  const r = await api.request<{ urls: string[] }>(`/api/projects/${id}/deck-previews`)
+  return r.urls ?? []
+}
+
 /** PATCH 步结果失败的用户可读文案：404 = 该步还没有真实生成结果（无 done 行），不可编辑保存。 */
 export function patchErrorMessage(e: unknown): string {
   if (e instanceof ApiError && e.status === 404) return "该步骤还未生成，请先生成"

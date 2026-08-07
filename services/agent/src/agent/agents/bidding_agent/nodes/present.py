@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import logging
 import json
 import re
 from agent.framework.create_agent import run_submit_agent
@@ -10,6 +11,9 @@ from agent.agents.bidding_agent.nodes.common import (
 from agent.agents.bidding_agent.schemas import DeckDraft, DeckSpec, Slide, SlideNotes
 from agent.agents.bidding_agent.prompts.present import PRESENT_SKELETON_PROMPT, PRESENT_NOTES_PROMPT
 from agent.agents.bidding_agent.render.pptx import render_pptx
+from agent.agents.bidding_agent.render.preview import render_deck_previews
+
+logger = logging.getLogger(__name__)
 
 
 def _plain(html: str) -> str:
@@ -41,6 +45,32 @@ def _notes_user_msg(draft: DeckDraft, duration: int) -> str:
     return (f"为以下每页幻灯片写口播稿。时长 {duration} 分钟。\n"
             f"{json.dumps(skeleton, ensure_ascii=False)}\n"
             "用 submit_slide_notes 一次性提交，notes 数组每项 {id, notes}，id 必须与输入页 id 一一对应。")
+
+
+async def _upload_previews(ctx, pptx_bytes: bytes) -> list[str]:
+    """把 .pptx 渲染成逐页 PNG 并落 MinIO，返回 key 列表（顺序即页序）。
+
+    述标页据此显示**真实渲染图**，不再用另一套 CSS 近似——两套渲染器并存必然漂移，
+    2026-08-07 拿客户产物比对，评分点位置/要点编号/页码/分隔线四处都不一致。
+
+    **全程吞错**：渲染失败（soffice 缺失、超时、PDF 渲染异常）绝不能影响述标交付——
+    PPT 本身已经生成好了，预览只是让人看得更准。失败时返回空列表，前端回落到原来的
+    CSS 预览，用户至少还有得看。渲染在线程池里做：LibreOffice 是同步阻塞进程，
+    直接在事件循环上跑会卡住同进程所有并发 run（本仓在 Redis/PG 同步调用上踩过同款）。
+    """
+    try:
+        images = await asyncio.to_thread(render_deck_previews, pptx_bytes)
+    except Exception:  # noqa: BLE001 预览是增强，绝不反噬交付
+        logger.warning("述标预览图渲染失败，前端将回落到 CSS 预览", exc_info=True)
+        return []
+    keys: list[str] = []
+    for i, png in enumerate(images, 1):
+        try:
+            keys.append(await upload_artifact(ctx, f"preview-{i:02d}.png", png, "image/png"))
+        except Exception:  # noqa: BLE001 单页上传失败就整组放弃：半套图会让页码错位，比没有更糟
+            logger.warning("预览图上传失败（第 %d 页），本次不提供预览图", i, exc_info=True)
+            return []
+    return keys
 
 
 def _merge_deck(draft: DeckDraft, slide_notes: SlideNotes) -> DeckSpec:
@@ -124,5 +154,7 @@ def make_present_node(ctx):
         key = await upload_artifact(
             ctx, "present.pptx", data,
             "application/vnd.openxmlformats-officedocument.presentationml.presentation")
-        return {"deck": deck.model_dump(), "artifacts": {"pptx": key}}
+        previews = await _upload_previews(ctx, data)
+        return {"deck": deck.model_dump(),
+                "artifacts": {"pptx": key, **({"previews": previews} if previews else {})}}
     return present_node

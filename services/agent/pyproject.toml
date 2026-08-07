@@ -17,6 +17,10 @@ dependencies = [
   "deepagents>=0.6.12",
   "python-docx>=1.2.0",
   "pypdf>=6.14.2",
+  # PDF→位图：述标预览要显示**真实 PPT 渲染图**（两套渲染器并存必然长期漂移，
+  # 实测预览与下载在评分点位置/要点编号/页码/分隔线上都不一致）。pptx→pdf 走 LibreOffice，
+  # pdf→png 走这个：纯 wheel 自带二进制，不必再往镜像里装 poppler。
+  "pypdfium2>=4.30.0",
   "openpyxl>=3.1.5",
   "boto3>=1.43.38",
   "python-pptx>=1.0.2",

@@ -1225,6 +1225,28 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     return c.json({ url: await presign(key, 300, filename), filename })
   })
 
+  /** 述标预览图：present 步渲染的**逐页真实 PPT 位图**，按页序返回预签名地址。
+   *
+   *  述标页原本用另一套 CSS 近似地画幻灯片，与导出的 PPT 必然漂移（2026-08-07 拿客户产物比对，
+   *  评分点位置/要点编号/页码/分隔线四处不一致，用户反馈「相差太大」）。改为直接显示真实渲染图。
+   *  没有预览图时回 200 + 空数组而不是 404：老项目的述标结果里本就没有这组图，
+   *  前端据此回落到 CSS 预览，那不是错误。
+   *  TTL 取 30 分钟：用户会在述标页停留翻页，5 分钟的下载短签会让后半程图全裂。 */
+  r.get("/:id/deck-previews", async (c) => {
+    const { id } = c.req.param()
+    if (!isUuid(id)) return c.json({ error: "not_found" }, 404)
+    const p = await ownedProject(id, c.get("user").id)
+    if (!p) return c.json({ error: "not_found" }, 404)
+    const row = await latestDoneStep(p.id, "present")
+    const r0 = row?.result as { artifacts?: { previews?: unknown } } | null
+    const keys = r0?.artifacts?.previews
+    if (!Array.isArray(keys) || keys.length === 0) return c.json({ urls: [] })
+    const urls = await Promise.all(
+      keys.filter((k): k is string => typeof k === "string").map((k) => presign(k, 1800)),
+    )
+    return c.json({ urls })
+  })
+
   // 删除标书（前端有二次确认）：生成中（有 running 步）的拒删——删了会打断在途 run 且钱已预扣；
   // 连带清理：steps 随 FK 级联删，上传文件记录按 key 删，MinIO 对象 best-effort 删。
   // 审查修正（2026-07-23）：①招标文件可能被克隆兄弟项目共用（再投场景 clone 原样复用 key）——
