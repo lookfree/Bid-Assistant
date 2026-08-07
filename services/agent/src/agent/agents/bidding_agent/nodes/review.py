@@ -4,6 +4,7 @@ import json
 from agent.framework.create_agent import run_submit_agent
 from agent.agents.bidding_agent.nodes.common import (
     slim_read, filter_read_by_package, parse_bid_chapters, publish_phase, html_to_review_text,
+    allocate_chapter_budget,
 )
 from agent.agents.bidding_agent.nodes.classify import classify_from_chapters, empty_category
 from agent.agents.bidding_agent.schemas import RiskReport
@@ -11,7 +12,15 @@ from agent.agents.bidding_agent.prompts.review import REVIEW_SYSTEM_PROMPT
 from agent.agents.bidding_agent.prompts.categories import category_scope, industry_patches
 
 
-_CHAPTER_CAP = 4000  # 每章喂给审查模型的正文上限（合规要点集中在前部；整本不截会顶穿上下文窗）
+# 喂给审查模型的正文**总量**上限（字符）。原来是每章固定 4000，那个口径对线下标书是灾难：
+# 上传的标书常常整本解析成一章，2026-08-07 实测一份 75425 字的响应文件只有 1 章，
+# 模型因此只看到 4000 字（**5%**），剩下 95% 的内容一律被判成"缺失"——用户反馈的
+# 「识别出的风险实际在响应文件里都有」正是这么来的。
+# 按总量分配后：1 章的文档能整本进去，多章文档各章按需分配，总量仍然可控。
+# 8 万取自原口径的最坏情况（20 章 × 4000），不比从前更费；模型上下文 13 万 token，留足余量。
+_TOTAL_CAP = 80_000
+# 单章保底：再多的章也要让每章有点内容，否则等于没看
+_MIN_PER_CHAPTER = 1_000
 
 
 # 通用自查（未提供招标文件）的口径说明:必须明示局限,防用户把自查结果当成对照审查结论
@@ -65,8 +74,9 @@ def make_review_node(ctx):
         # 喂进去的字符有 **56% 是标签**，有一章正文才 5261 字、本可整章放下，却因表格标签把串撑到
         # 38431，模型只读到 561 字（10%）。表格结构保留成「单元格 | 单元格 / 换行」，
         # 因为审查要靠表格行判断★条款有没有逐条登进偏离表。
-        chapters = {cid: (t[:_CHAPTER_CAP] + "…（截断）" if len(t := html_to_review_text(html)) > _CHAPTER_CAP else t)
-                    for cid, html in chapters_src.items()}
+        chapters = allocate_chapter_budget(
+            {cid: html_to_review_text(html) for cid, html in chapters_src.items()},
+            _TOTAL_CAP, _MIN_PER_CHAPTER)
         # 分类判定（spec334）：**在审查之前**做，这一轮就能用上分类知识——放到审查之后的话，
         # 用户看到分类时报告已经出完，得再花一次钱重跑才生效。
         # 有读标结论的项目在读标步已判过，这里不重复判；用户确认过的值优先。

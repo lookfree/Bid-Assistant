@@ -13,7 +13,8 @@ from agent.runtime.progress import publish_phase     # 各节点推阶段事件�
 logger = logging.getLogger(__name__)
 
 __all__ = ["publish_phase", "upload_artifact", "fetch_master_bytes", "package_scope",
-           "filter_read_by_package", "slim_read", "parse_bid_chapters", "html_to_review_text"]
+           "filter_read_by_package", "slim_read", "parse_bid_chapters", "html_to_review_text",
+           "allocate_chapter_budget"]
 
 
 def parse_bid_chapters(keys: str | list[str]) -> dict[str, str]:
@@ -126,6 +127,35 @@ def strip_inline_images(html: str | None) -> str:
         return f"［图片：{alt}］" if alt and alt.lower() not in _GENERIC_ALT else "［图片］"
 
     return _IMG_RE.sub(_sub, html)
+
+
+def allocate_chapter_budget(texts: dict[str, str], total: int, floor: int) -> dict[str, str]:
+    """在总量上限内给各章分配可喂给模型的字数。
+
+    **为什么不是"每章固定上限"**：那个口径对线下标书是灾难——上传的标书常常整本解析成一章。
+    2026-08-07 实测一份 75425 字的响应文件只解析出 1 章，按每章 4000 字截断后模型只看到 5%，
+    剩下 95% 的内容全被判成"缺失"，用户拿到一堆"实际文件里都有"的假风险。
+
+    分配用注水法：短章按原样全给（它们占不满份额），省下的额度自动匀给长章。
+    这样 1 章的文档能整本进去，多章文档也不会因为某一章特别长就把别人挤没。
+    截断处补「…（截断）」，让模型知道后面还有，而不是当成写完了。
+    """
+    if not texts:
+        return {}
+    remaining, out = total, {}
+    pending = dict(texts)
+    while pending:
+        share = max(floor, remaining // len(pending))
+        short = {k: v for k, v in pending.items() if len(v) <= share}
+        if not short:                       # 剩下的都超额：按当前份额一刀切
+            for k, v in pending.items():
+                out[k] = v[:share] + "…（截断）"
+            break
+        for k, v in short.items():          # 短章全给，把省下的额度让给长章
+            out[k] = v
+            remaining -= len(v)
+            pending.pop(k)
+    return out
 
 
 _CELL_END = re.compile(r"</(?:td|th)\s*>", re.I)

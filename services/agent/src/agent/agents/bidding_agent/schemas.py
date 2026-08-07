@@ -178,6 +178,30 @@ class Outline(BaseModel):
         return [c for c in self.chapters if c.group == "business"]
 
 
+# 内部标识不能出现在给用户看的文字里。2026-08-08 用户截图：风险卡上赫然写着
+# 「（sec-8-c95）」「——required_structure 构成项未提供」——前者是我们的条款 id，
+# 后者是读标结果里的**字段名**。用户不知道那是什么，只会当成乱码或系统出错。
+# 字段说明里已经明写不要带，但那是"请模型配合"；确定性清洗才是能保证的那一半。
+_LEAK_PATTERNS = (
+    re.compile(r"[（(]\s*sec-\d+(?:-c\d+)?\s*[)）]"),   # （sec-8-c95）连括号一起去掉
+    re.compile(r"\bsec-\d+(?:-c\d+)?\b"),               # 裸露的 sec-8-c95
+    re.compile(r"\b(?:required_structure|clause_ids|target_id|target_tab|chapter_id)\b"),
+)
+
+
+def _clean_user_text(text: str) -> str:
+    """抹掉内部条款 id 与字段名，并收拾抹完留下的标点/空白残迹。"""
+    if not text:
+        return text
+    out = text
+    for pat in _LEAK_PATTERNS:
+        out = pat.sub("", out)
+    out = re.sub(r"\s{2,}", " ", out)
+    out = re.sub(r"(——|—)\s+", r"\1", out)                       # 抹掉字段名后破折号后面留下的空格
+    out = re.sub(r"(?:——|—|-{2,})\s*(?=[，。；、]|$)", "", out)   # 「xxx——」后面全空了，破折号也别留
+    return out.strip(" 　·、，,")
+
+
 class RiskFinding(BaseModel):
     level: Literal["高风险", "中风险"]              # 前端按此渲染，收紧取值
     tone: Literal["destructive", "warning"]
@@ -185,9 +209,16 @@ class RiskFinding(BaseModel):
     # 「响应文件构成缺漏——缺少」，整改建议一片空白——这样的卡片对用户毫无价值。
     # 此前 advice 是可选带默认值（顾虑"漏填让整单被拒"多一种失败模式），代价是空建议直接发给
     # 付费用户。_forced_submit 会把校验错误喂回模型重试 3 轮，正是为这种漏填准备的。
-    title: str = Field(..., min_length=2, description="风险点标题：一句话说清缺什么/哪里不符，必须写完整")
+    title: str = Field(
+        ..., min_length=2,
+        description=("风险点标题：一句话说清缺什么/哪里不符，必须写完整。"
+                     "用业务语言，**不得出现 required_structure、clause_ids、sec-8-c95 这类内部字段名与编号**"))
     chapter_title: str = Field(default="", description="对应的标书章节标题，用于把问题落到具体章节")
-    tender_ref: str = Field(default="", description='对应的招标条款，写成"对应：第X章 xxx（★不可偏离）"')
+    tender_ref: str = Field(
+        default="",
+        description=('对应的招标条款，写成"对应：第X章 xxx（★不可偏离）"。'
+                     "**只写人看得懂的条款出处**：不要带 sec-8-c95 这类内部条款 id，"
+                     "也不要出现 required_structure、clause_ids 这类字段名——用户看不懂，只会以为是乱码"))
     advice: str = Field(..., min_length=2,
                         description="整改建议**必填**：具体怎么改、补什么材料、放到哪一章，一句话讲清；不得留空")
     target_tab: Literal["tech", "business"]
@@ -208,9 +239,13 @@ class RiskFinding(BaseModel):
 
     @model_validator(mode="after")
     def _strip_blank(self):
-        """全空白等同于没填：min_length 挡不住 "   "。"""
+        """全空白等同于没填：min_length 挡不住 "   "。顺带抹掉泄露的内部标识。"""
         if not self.title.strip() or not self.advice.strip():
             raise ValueError("风险项的标题与整改建议都不能为空白")
+        self.title = _clean_user_text(self.title)
+        self.advice = _clean_user_text(self.advice)
+        self.tender_ref = _clean_user_text(self.tender_ref)
+        self.chapter_title = _clean_user_text(self.chapter_title)
         return self
 
 
