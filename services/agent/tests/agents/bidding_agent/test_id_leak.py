@@ -42,8 +42,30 @@ class TestCleaner:
 
     def test_three_or_more_ids_leave_no_separator_run(self):
         """三个以上编号连写，抹完只收末尾那个分隔符不够——会剩「：, 。」。"""
-        assert clean_internal_ids("<p>对应条款：sec-6-c1, sec-6-c2, sec-6-c3。</p>") == "<p>对应条款：。</p>"
+        assert clean_internal_ids("<p>对应条款：sec-6-c1, sec-6-c2, sec-6-c3。</p>") == ""
         assert clean_internal_ids("对应条款：sec-1-c1, sec-1-c2 见附件三") == "对应条款：见附件三"
+
+    @pytest.mark.parametrize("raw,want", [
+        # 编号列表起头于单元格/段首：左边界是标签的 >，不是冒号
+        ("<td>sec-1-c1, sec-2-c1, sec-3-c1 均满足</td>", "<td>均满足</td>"),
+        ("<p>sec-1-c1, sec-1-c2, sec-1-c3 详见附件</p>", "<p>详见附件</p>"),
+        ("要求：sec-1-c1；sec-2-c1；sec-3-c1", "要求："),       # 分号分隔
+    ])
+    def test_separator_runs_at_other_boundaries(self, raw, want):
+        assert clean_internal_ids(raw) == want
+
+    @pytest.mark.parametrize("raw", [
+        "<li>投标人须提供近三年财务报表；</li>",   # 合法的分号结尾
+        "<p>说明：</p>",                          # 领起下文的标签，没有句末标点，不是空壳
+        "<p><strong>说明：</strong>投标人应……</p>",
+    ])
+    def test_legit_punctuation_survives(self, raw):
+        assert clean_internal_ids(raw) == raw
+
+    def test_shell_paragraph_is_dropped(self):
+        """内容全是编号的段落，抹完只剩「对应招标文件条款：。」——这段要印进交给评委的标书。"""
+        html = "<h3>6.7 制造商授权书</h3><p>对应招标文件条款：sec-6-c1, sec-6-c2, sec-6-c3。</p><p>说明：详见附件</p>"
+        assert clean_internal_ids(html) == "<h3>6.7 制造商授权书</h3><p>说明：详见附件</p>"
 
     def test_no_dangling_punctuation(self):
         """抹完不能留下「（、）」「<td>, </td>」这种残渣——比编号本身还难看。"""
