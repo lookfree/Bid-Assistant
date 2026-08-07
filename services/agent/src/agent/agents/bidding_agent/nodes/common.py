@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from html import unescape
 
 from agent.parsing import storage_read
 from agent.parsing.service import read_and_parse
@@ -12,7 +13,7 @@ from agent.runtime.progress import publish_phase     # 各节点推阶段事件�
 logger = logging.getLogger(__name__)
 
 __all__ = ["publish_phase", "upload_artifact", "fetch_master_bytes", "package_scope",
-           "filter_read_by_package", "slim_read", "parse_bid_chapters"]
+           "filter_read_by_package", "slim_read", "parse_bid_chapters", "html_to_review_text"]
 
 
 def parse_bid_chapters(keys: str | list[str]) -> dict[str, str]:
@@ -125,6 +126,32 @@ def strip_inline_images(html: str | None) -> str:
         return f"［图片：{alt}］" if alt and alt.lower() not in _GENERIC_ALT else "［图片］"
 
     return _IMG_RE.sub(_sub, html)
+
+
+_CELL_END = re.compile(r"</(?:td|th)\s*>", re.I)
+_BLOCK_END = re.compile(r"</(?:p|div|h[1-6]|li|tr|table|thead|tbody|blockquote)\s*>", re.I)
+_ANY_TAG = re.compile(r"<[^>]+>")
+
+
+def html_to_review_text(html: str | None) -> str:
+    """章节 HTML → 喂给审查模型的紧凑文本。
+
+    审查按章截断（_CHAPTER_CAP），而**标签同样占额度**：2026-08-07 全量实测，喂进去的
+    2066168 字符里只有 924829 是正文，**56% 花在 HTML 标签上**。表格类章节尤其离谱——
+    有一章正文才 5261 字、本来完全放得下 4000 的额度，却因为 <td>/<tr> 把串撑到 38431，
+    模型只读到 561 字（10%）。不是章节太长，是额度被标签吃了。
+
+    只剥不改结构：单元格之间留 " | "、行与段落留换行——审查要靠表格行判断
+    「★条款有没有逐条登进偏离表」，把表格压成一坨连续文字就查不出来了。
+    """
+    s = strip_inline_images(html)          # 必须先做：图片要留下 alt（证照识别文字在里面）
+    s = _CELL_END.sub(" | ", s)
+    s = _BLOCK_END.sub("\n", s)
+    s = _ANY_TAG.sub("", s)
+    s = unescape(s)                        # &nbsp;/&amp; 一个实体就占 5–6 字符，表格里成片出现
+    s = re.sub(r"[ \t]+", " ", s)
+    s = re.sub(r" *\n[\s\n]*", "\n", s)
+    return s.strip()
 
 
 # 单章 AI 改写：原章 HTML 整个喂给模型、再用模型输出**整章替换**。内联图片是 base64

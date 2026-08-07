@@ -3,7 +3,7 @@ import asyncio
 import json
 from agent.framework.create_agent import run_submit_agent
 from agent.agents.bidding_agent.nodes.common import (
-    slim_read, filter_read_by_package, parse_bid_chapters, publish_phase, strip_inline_images,
+    slim_read, filter_read_by_package, parse_bid_chapters, publish_phase, html_to_review_text,
 )
 from agent.agents.bidding_agent.nodes.classify import classify_from_chapters, empty_category
 from agent.agents.bidding_agent.schemas import RiskReport
@@ -60,10 +60,12 @@ def make_review_node(ctx):
             # run 直接失败,App 侧 settleFailed 全额退款,错误文案告知原因
             if not chapters_src:
                 raise RuntimeError("上传的标书未能解析出任何正文（扫描件/图片版暂不支持），请上传可复制文字的 docx/pdf 后重试")
-        # 先剥内联图片再截断：一张插入的图就有二十万字符，不剥的话 _CHAPTER_CAP 全被 base64
-        # 吃光，图片之后的正文一个字都进不了审查——用户把营业执照放进正文，审查却报「缺少该材料」
-        # （2026-08-06 用户反馈）。占位符让模型知道这里有图。
-        chapters = {cid: (t[:_CHAPTER_CAP] + "…（截断）" if len(t := strip_inline_images(html)) > _CHAPTER_CAP else t)
+        # 截断前先压实成紧凑文本：图片换占位符（一张 base64 就有二十万字符，2026-08-06 用户反馈
+        # 「证照放进正文、审查却报缺件」的真因），HTML 标签与实体一并剥掉——2026-08-07 全量实测
+        # 喂进去的字符有 **56% 是标签**，有一章正文才 5261 字、本可整章放下，却因表格标签把串撑到
+        # 38431，模型只读到 561 字（10%）。表格结构保留成「单元格 | 单元格 / 换行」，
+        # 因为审查要靠表格行判断★条款有没有逐条登进偏离表。
+        chapters = {cid: (t[:_CHAPTER_CAP] + "…（截断）" if len(t := html_to_review_text(html)) > _CHAPTER_CAP else t)
                     for cid, html in chapters_src.items()}
         # 分类判定（spec334）：**在审查之前**做，这一轮就能用上分类知识——放到审查之后的话，
         # 用户看到分类时报告已经出完，得再花一次钱重跑才生效。
