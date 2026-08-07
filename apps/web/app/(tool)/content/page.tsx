@@ -177,6 +177,11 @@ export default function ContentPage() {
   // 当前 tab 对应的章节列表（全文按提纲组顺序合并，商务标在前时商务组先行）
   const fullList = (): Chapter[] => (bizFirst ? [...data.business, ...data.tech] : [...data.tech, ...data.business])
   const list: Chapter[] = bidType === "full" ? fullList() : data[bidType]
+  // 全部真实章节 id（不分组）：体检报告据此判断某条问题跳不跳得过去
+  const allChapterIds = useMemo(
+    () => new Set([...data.tech, ...data.business].map((c) => c.id)),
+    [data.tech, data.business],
+  )
   const active = list.find((c) => c.id === activeId) ?? list[0]
   const generatedCount = list.filter((c) => c.html.trim()).length
   // 本章字数/页数只在 html 变化时重算（正则扫大章节不便宜，页面因保存态/余额刷新频繁重渲染）；
@@ -286,6 +291,9 @@ export default function ContentPage() {
 
   /* 从报告中「定位到本章修改」：切换到对应 tab 与章节并滚动到顶部 */
   function gotoChapter(tab: BidType, id: string) {
+    // 章节不存在就不动。此前照跳，而 active 是 `list.find(...) ?? list[0]`——等于静默跳到第一章，
+    // 用户以为问题出在那一章（2026-08-07 反馈：点哪条都定位到同一处）。按钮侧已挡，这里兜底。
+    if (!allChapterIds.has(id)) return
     setBidType(tab)
     setActiveId(id)
     setReportOpen(false)
@@ -761,6 +769,7 @@ export default function ContentPage() {
         <ReportDialog
           report={healthCheck}
           exportStatus={reportExportStatus}
+          chapterIds={allChapterIds}
           onClose={() => setReportOpen(false)}
           onGoto={gotoChapter}
           onExportReport={exportReport}

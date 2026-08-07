@@ -49,7 +49,16 @@ function ReportHeader({ report, onClose }: { report: HealthReport; onClose: () =
 
 /** 单条风险卡：整改建议 + 定位到对应章节。整改建议可见性由服务端决定（评审修正:此前本弹层
  *  完全无锁,与摘要弹层一锁一不锁自相矛盾）——advice 被裁剪时渲染统一解锁引导。 */
-function RiskCard({ item, onGoto }: { item: CheckItem; onGoto: (tab: BidType, id: string) => void }) {
+function RiskCard({
+  item,
+  onGoto,
+  locatable,
+}: {
+  item: CheckItem
+  onGoto: (tab: BidType, id: string) => void
+  /** 这条问题是否真的指向某一章。false = 全文性要求（装订、密封、递交时间…），无章可跳。 */
+  locatable: boolean
+}) {
   const tc = checkToneClasses[item.tone]
   return (
     <div className={`rounded-xl border ${tc.border} p-3.5`}>
@@ -63,13 +72,21 @@ function RiskCard({ item, onGoto }: { item: CheckItem; onGoto: (tab: BidType, id
           <FileText className="size-3.5" />
           {item.chapter}
         </span>
-        <button
-          onClick={() => onGoto(item.targetTab, item.targetId)}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-primary/40 gradient-brand-soft px-3 py-1.5 text-xs font-semibold text-primary transition-opacity hover:opacity-90"
-        >
-          定位到本章修改
-          <ArrowRight className="size-3.5" />
-        </button>
+        {/* 无章可跳时不给按钮。此前一律渲染，点下去 list.find(...) ?? list[0] 会**跳到第一章**，
+            看起来像定位成功了——实测线上一份报告 63 条里有 10 条如此（都是「装订/密封/递交时间/
+            报价有效期」这类全文性要求，模型没有章节可指，就填了个不存在的 b0）。
+            假装定位比不给定位更糟：用户会以为问题出在第一章。 */}
+        {locatable ? (
+          <button
+            onClick={() => onGoto(item.targetTab, item.targetId)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-primary/40 gradient-brand-soft px-3 py-1.5 text-xs font-semibold text-primary transition-opacity hover:opacity-90"
+          >
+            定位到本章修改
+            <ArrowRight className="size-3.5" />
+          </button>
+        ) : (
+          <span className="text-[11px] text-muted-foreground">全文性要求，不限于某一章</span>
+        )}
       </div>
     </div>
   )
@@ -147,6 +164,7 @@ function ReportFooter({
 export function ReportDialog({
   report,
   exportStatus,
+  chapterIds,
   onClose,
   onGoto,
   onExportReport,
@@ -154,6 +172,8 @@ export function ReportDialog({
 }: {
   report: HealthReport
   exportStatus: string
+  /** 当前标书真实存在的章节 id。用来判断某条问题到底跳不跳得过去。 */
+  chapterIds: ReadonlySet<string>
   onClose: () => void
   onGoto: (tab: BidType, id: string) => void
   onExportReport: (format: ExportFormat) => void
@@ -174,7 +194,7 @@ export function ReportDialog({
           <p className="text-xs font-semibold text-foreground">待处理风险项</p>
           <div className="mt-2 flex flex-col gap-3">
             {report.items.map((it, i) => (
-              <RiskCard key={i} item={it} onGoto={onGoto} />
+              <RiskCard key={i} item={it} onGoto={onGoto} locatable={chapterIds.has(it.targetId)} />
             ))}
           </div>
 
