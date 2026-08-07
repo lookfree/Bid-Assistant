@@ -204,4 +204,6 @@ def clean_internal_ids(text: str) -> str:
     # （正文里编号出现在表格单元格中，清完会留下 <td>, </td> 这样的残渣）
     out = re.sub(r"[、,，]\s*(?=[）)。；<]|$)", "", out)
     out = re.sub(r"\s+[、,，]\s+", " ", out)      # 句中连续编号被抹后留下的孤立顿号
+    # 中文标点后不该有空格：述标评分行「sec-54-c1 ★A；sec-58-c1 ★B」抹完会留下「★A； ★B」
+    out = re.sub(r"(?<=[，。；、：])[ 　]+", "", out)
     return out.strip(" 　·、，,")

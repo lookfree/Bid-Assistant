@@ -74,8 +74,9 @@ class TestAppliedEverywhere:
         assert "sec-" not in it.title and "sec-" not in it.value
 
     def test_slide_scoring_line(self):
+        """这行印在述标页标题下面，抹完不能留下「； ★」这种空格残渣。"""
         s = Slide(id="s1", title="技术响应", scoring="sec-54-c1 ★关键条款响应；sec-58-c1 ★逐条响应")
-        assert "sec-" not in s.scoring
+        assert s.scoring == "★关键条款响应；★逐条响应"
 
     def test_read_clause_ids_field_is_kept(self):
         """**只清洗给人看的自然语言**：clause_ids 字段本身必须留着，前端靠它点回原文定位。"""
