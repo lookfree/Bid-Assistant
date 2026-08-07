@@ -16,6 +16,7 @@ setDefaultTimeout(TEST_TIMEOUT_MS) // 连真库（钱路径走真账本，只 mo
 // hold(rewrite=25) → agent → 持久化 → settle 足额；失败 settleFailed 净 0；余额不足 402；content 未 done 409。
 
 let agentFail = false
+let agentTruncated = false // 置 true 模拟 agent 因输出被长度上限截断而拒收
 let agentReturnsProse = false // 置 true 模拟模型纯文字回答（无任何 HTML 标签）
 let settleFail = false // 置 true 模拟 settle 瞬断（持久化已成功）
 let duringRewrite: (() => Promise<void>) | null = null // agent 调用期间执行（模拟并发 PATCH 编辑）
@@ -46,6 +47,8 @@ const mockDeps: Partial<ProjectDeps> = {
   rewriteChapter: async (opts) => {
     captured.rewriteArgs = opts
     if (agentFail) throw new Error("agent boom")
+    // 与 agent-client 真实抛法同形：`agent rewriteChapter <status>: <agent 的 error 文本>`
+    if (agentTruncated) throw new Error("agent rewriteChapter 502: rewrite_truncated: 模型没能完整改写本章（输出被长度上限截断）。")
     if (duringRewrite) await duringRewrite() // 改写耗时窗口里的并发编辑
     return { chapter_id: opts.chapterId, html: agentReturnsProse ? "这一章主要修改了响应时间与故障分级。" : NEW_HTML }
   },
@@ -169,6 +172,21 @@ describe("POST /:id/chapters/:chapterId/rewrite 单章改写（真账本）", ()
       expect((await contentResult())["ch-2"]).toBe("<p>旧正文二</p>") // 失败不落任何改写
     } finally {
       agentFail = false
+    }
+  })
+
+  it("②c 输出被长度上限截断：422 rewrite_truncated、result 不变", async () => {
+    // 这个映射靠跨三个模块拼出来的字符串（Python RuntimeError → chapters.py str(e) →
+    // agent-client 模板）。任何一环改了错误形状，分支会**静默**退回笼统的 agent_failed，
+    // 用户又只看到「改写失败，请稍后重试」——正是本次要消除的那个死循环。
+    agentTruncated = true
+    try {
+      const res = await rewrite(projectId, "ch-2", { instruction: "扩写" }, tokenA)
+      expect(res.status).toBe(422)
+      expect(((await res.json()) as { error: string }).error).toBe("rewrite_truncated")
+      expect((await contentResult())["ch-2"]).toBe("<p>旧正文二</p>") // 半截结果绝不落库
+    } finally {
+      agentTruncated = false
     }
   })
 

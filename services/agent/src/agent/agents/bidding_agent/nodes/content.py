@@ -647,8 +647,7 @@ async def rewrite_chapter(ctx, chapter_id: str, instruction: str, state: dict) -
     # 里 finish_reason='length' 共 53 次），信号一直有、只是没人用。
     if (getattr(last, "response_metadata", None) or {}).get("finish_reason") == "length":
         raise RuntimeError(
-            "rewrite_truncated: 本章太长，模型没能完整改写（输出被长度上限截断）。"
-            "已放弃本次改写以免丢失后半章，请把本章拆分后再改。")
+            "rewrite_truncated: 模型没能完整改写本章（输出被长度上限截断）。已放弃本次改写以免丢失后半章。")
     # 先剥对话包装（开场白/```围栏）再剥文档壳：提示词禁不住模型客套，确定性清洗兜底
     new = strip_document_shell(strip_chat_wrapper(last.content))
     return restore_images(new, kept_images)
