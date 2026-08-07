@@ -389,10 +389,18 @@ export async function runStep<T>(
 /** PATCH 步结果失败的用户可读文案：404 = 该步还没有真实生成结果（无 done 行），不可编辑保存。 */
 export function patchErrorMessage(e: unknown): string {
   if (e instanceof ApiError && e.status === 404) return "该步骤还未生成，请先生成"
+  // AbortSignal.timeout 抛的是 DOMException(name=TimeoutError)。笼统说「保存失败」会让用户
+  // 以为服务端拒了这份内容、反复原样重试；实际是网太慢，该提示的是等一等再试。
+  if (e instanceof Error && e.name === "TimeoutError") return "保存超时（网络较慢），请稍后重试"
   return "保存失败，请重试"
 }
 
 // 步结果编辑回写：把编辑后的结果整份覆盖该步已完成的 result（outline/content/present）。
+/** 保存超时：60s。客户网络实测 21-75KB/s，一份大提纲要传十几秒，所以给得宽；
+ *  但必须有——请求永不返回时调用方的"保存中"状态会一直钉住，提纲页那边等于把唯一的
+ *  落盘通道锁死（自动保存跳过、手动按钮 disabled），之后每一笔编辑都在静默丢失。 */
+const PATCH_TIMEOUT_MS = 60_000
+
 export async function patchStep(
   id: string,
   step: "outline" | "content" | "present",
@@ -401,6 +409,7 @@ export async function patchStep(
   await api.request<{ ok: boolean }>(`/api/projects/${id}/steps/${step}`, {
     method: "PATCH",
     body: JSON.stringify({ result }),
+    signal: AbortSignal.timeout(PATCH_TIMEOUT_MS),
   })
   invalidateProjectCache(id)
 }

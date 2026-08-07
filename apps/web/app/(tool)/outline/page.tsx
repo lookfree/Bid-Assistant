@@ -169,6 +169,24 @@ export default function OutlinePage() {
   const dirty =
     !!real && JSON.stringify(buildOutlinePayload(techChapters, businessChapters, bizFirst)) !== savedRef.current
   const [leaveAsk, setLeaveAsk] = useState(false)
+  const [going, setGoing] = useState(false)
+
+  /** 「确认大纲，生成投标正文」：先把没落盘的存掉再跳。
+   *  存不下就不跳并弹窗说明——跳了改动就真没了，那正是本次要修的丢失。 */
+  async function confirmAndGo() {
+    if (going) return
+    setGoing(true)
+    try {
+      if (dirty && !(await persistOutline())) {
+        setLeaveAsk(true)
+        return
+      }
+      setLeaveAsk(false)
+      router.push("/content")
+    } finally {
+      setGoing(false)
+    }
+  }
 
   // 编辑后自动保存（与正文编辑器同一约定）。此前改动只活在前端 state，唯一落盘入口是手动
   // 「保存提纲」，而右下角唯一显眼的按钮「确认大纲，生成投标正文」是纯跳转——用户改完直接点它，
@@ -182,6 +200,23 @@ export default function OutlinePage() {
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- persistOutline 每次渲染都是新函数，进依赖会让防抖永远重置
   }, [projectId, dirty, saveState, techChapters, businessChapters, bizFirst])
+
+  // 离开本页时把还没落盘的补发一次。防抖那 1.2 秒里从顶部流程导航切走（next/link 是客户端
+  // 跳转，不触发 beforeunload），组件一卸载定时器就被清掉，这笔改动照样丢——正是本次要修的
+  // 那种丢失，只是窗口从"一直"缩到了"1.2 秒"。卸载时直接发请求，不走 persistOutline：
+  // 组件已经没了，setState 没有意义。
+  const pendingRef = useRef<{ projectId: string; parts: unknown[] } | null>(null)
+  useEffect(() => {
+    pendingRef.current =
+      projectId && dirty ? { projectId, parts: buildOutlinePayload(techChapters, businessChapters, bizFirst) } : null
+  })
+  useEffect(
+    () => () => {
+      const p = pendingRef.current
+      if (p) void patchStep(p.projectId, "outline", { chapters: p.parts }).catch(() => {})
+    },
+    [],
+  )
 
   // 组显示顺序（全文视图/编号/保存共用）
   const groupSeq: { label: string; kind: "tech" | "business"; chapters: Chapter[] }[] = [
@@ -332,9 +367,12 @@ export default function OutlinePage() {
           {/* 保存提纲：仅该步有真实 done 结果时可用（否则 PATCH 必 404 step_not_done） */}
           {projectId && real && (
             <div className="flex items-center gap-2">
+              {/* 状态要说实话：防抖那一秒里还没落盘，此时写「编辑后自动保存」等于给用户一个
+                  错误的安全感（复核指出的问题）。失败更要说——否则用户以为存好了就走人。 */}
               {saveState === "error" ? (
-                /* 自动保存失败必须说出来：用户以为存好了就走人，正文照旧按旧提纲生成 */
                 <span className="text-xs font-medium text-destructive">{saveError || "自动保存失败，请点保存重试"}</span>
+              ) : dirty && saveState !== "saving" ? (
+                <span className="text-xs font-medium text-primary">待保存…</span>
               ) : (
                 <span className="text-xs text-muted-foreground">编辑后自动保存</span>
               )}
@@ -581,29 +619,28 @@ export default function OutlinePage() {
           自相矛盾（用户反馈：逻辑混乱）；提纲尚未生成的普通项目同理，没什么「大纲」可确认。 */}
       {real && !stepNotApplicable(info, "outline") && (
         <button
-          onClick={() => (dirty ? setLeaveAsk(true) : router.push("/content"))}
-          className="fixed bottom-6 right-6 z-40 inline-flex items-center gap-2 rounded-full gradient-brand px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-primary/30 transition-opacity hover:opacity-90"
+          onClick={() => void confirmAndGo()}
+          disabled={going}
+          className="fixed bottom-6 right-6 z-40 inline-flex items-center gap-2 rounded-full gradient-brand px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-primary/30 transition-opacity hover:opacity-90 disabled:opacity-70"
         >
-          <CheckCircle2 className="size-4" />
+          {going ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
           确认大纲，生成投标正文
           <ArrowRight className="size-4" />
         </button>
       )}
 
-      {/* 编辑后自动保存，走到这个弹窗只有两种情况：保存正在途中，或者保存失败了。
-          正文按**库里**的提纲写，此时放行等于用户改的标题、加的子项全部作废，事后回提纲页
-          也看不到了（2026-08-07 用户反馈的正是这一幕），所以宁可拦住。 */}
+      {/* 只在**保存失败**时出现。正文按库里的提纲生成，此时放行等于用户改的标题、加的子项
+          全部作废，事后回提纲页也看不到（2026-08-07 用户反馈的正是这一幕），所以宁可拦住。
+          保存成功/仍在防抖窗口这两种常态不弹窗——confirmAndGo 会先存好再跳。 */}
       {leaveAsk && (
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-foreground/40 backdrop-blur-sm" onClick={() => setLeaveAsk(false)} aria-hidden />
           <div role="dialog" aria-modal="true" className="relative w-full max-w-md rounded-2xl border border-border bg-card p-5 shadow-xl">
-            <h3 className="text-base font-semibold text-foreground">提纲还没保存好</h3>
+            <h3 className="text-base font-semibold text-foreground">提纲没能保存，暂时不能生成正文</h3>
             <p className="mt-2 text-sm text-muted-foreground">
-              正文按已保存的提纲生成。现在直接生成，这次改的标题和新增的子项不会生效，也不会保留。
+              正文按已保存的提纲生成。这次改的标题和新增的子项还没存上，现在生成不会生效，也不会保留。
             </p>
-            {saveState === "error" && (
-              <p className="mt-2 text-sm font-medium text-destructive">{saveError || "保存失败，请重试"}</p>
-            )}
+            <p className="mt-2 text-sm font-medium text-destructive">{saveError || "保存失败，请重试"}</p>
             <div className="mt-5 flex justify-end gap-2">
               <button
                 onClick={() => setLeaveAsk(false)}
@@ -612,15 +649,12 @@ export default function OutlinePage() {
                 返回继续编辑
               </button>
               <button
-                disabled={saveState === "saving"}
-                onClick={async () => {
-                  // 存不下就别跳：跳了改动就真没了，这正是要修的那个 bug
-                  if (await persistOutline()) router.push("/content")
-                }}
+                disabled={going}
+                onClick={() => void confirmAndGo()}
                 className="inline-flex items-center gap-1.5 rounded-xl gradient-brand px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-70"
               >
-                {saveState === "saving" ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
-                保存并生成正文
+                {going ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+                重试保存并生成
               </button>
             </div>
           </div>
