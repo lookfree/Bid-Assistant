@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useRef } from "react"
+import { useEffect, useMemo, useRef } from "react"
 import { AlertTriangle, CheckCircle2 } from "lucide-react"
 import { countChars, fmtChars } from "@/lib/doc-stats"
 import { estimateChapterLines, pagesFromLines, type ChapterLines } from "@/lib/page-estimate"
@@ -113,8 +113,16 @@ function ChapterRow({
   onSelect: (id: string) => void
 }) {
   const isMissing = !ch.html.trim()
+  // 选中的章滚进可视范围。从体检报告「定位到本章修改」跳过来时，正文和选中态都对了，但目录
+  // 可能还停在前几章——用户看不到自己现在在第几章（2026-08-07 用户提的体验问题）。
+  // block:"nearest" 是刻意的：已经看得见就不动，避免每次点章节目录都跳一下。
+  const ref = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (isActive) ref.current?.scrollIntoView({ block: "nearest" })
+  }, [isActive])
   return (
     <button
+      ref={ref}
       onClick={() => onSelect(ch.id)}
       className={`mb-1 flex w-full items-start gap-2 rounded-xl px-3 py-2.5 text-left transition-colors ${
         isActive ? "gradient-brand-soft border border-primary/30" : "hover:bg-muted"
