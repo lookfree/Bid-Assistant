@@ -21,6 +21,7 @@ class TestCleaner:
         ("授权委托书（clause_ids: sec-12-c4~c5, sec-65-c122）", "clause_ids"),   # 区间 + 字段名
         ("<td>sec-37-c36~c37, sec-37-c39</td>", "sec-37"),                      # 表格单元格
         ("依据 sec-1-c2、sec-1-c3 编制", "sec-1"),
+        ("技术规格（sec-55-c11~sec-55-c20）不符", "sec-55"),   # 区间两端都写全
         ("供应商情况一览表缺失——required_structure 构成项未提供", "required_structure"),
     ])
     def test_identifiers_are_removed(self, raw, expect_gone):
@@ -34,6 +35,10 @@ class TestCleaner:
     ])
     def test_normal_text_is_untouched(self, raw):
         assert clean_internal_ids(raw) == raw
+
+    def test_full_range_leaves_no_empty_parens(self):
+        """两端都写全的区间要当成一组抹掉；只认缩写会留下「（~）」。"""
+        assert clean_internal_ids("技术规格（sec-55-c11~sec-55-c20）不符") == "技术规格不符"
 
     def test_no_dangling_punctuation(self):
         """抹完不能留下「（、）」「<td>, </td>」这种残渣——比编号本身还难看。"""
