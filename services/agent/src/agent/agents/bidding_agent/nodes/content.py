@@ -6,6 +6,7 @@ import re
 import time
 from typing import Any
 from deepagents import create_deep_agent          # 全流程唯一 deepagent 节点（§4.5）
+from agent.models.resilient import resilient_chat  # 正文绕过 create_agent，降级链要自己带
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import HumanMessage
 from agent.models.usage import UsageCallback
@@ -481,7 +482,11 @@ def make_content_node(ctx):
     上下文压缩用 deepagents 内建 summarization middleware（长标书防超窗）；
     虚拟 FS 是默认 StateBackend、不开 execute；一章未产出即失败（run failed 可重试）。"""
     async def content_node(state):
-        model = ctx.gateway.get_chat(provider=None) if ctx.gateway else None
+        # 带降级的模型：正文是全流程唯一不走 create_agent 的节点，也就绕过了 model_stream 那套
+        # 降级链——生产实测近 10 天 content 成功 3 次/失败 25 次，其中 18 次是瞬断
+        # （APIConnectionError），而连接类错误在其它步骤一次都没有。正文一跑十几二十分钟，
+        # 跑到尾声被一次瞬断打掉全部作废，代价最大的一步反而最脆弱。
+        model = resilient_chat(ctx.gateway, provider=None) if ctx.gateway else None
         # 分类落笔要点（spec334）**必须拼进子写手的 system_prompt**，不能只加在规划轮的用户消息里：
         # 真正落笔的是子写手，规划轮只是派活；靠它转述等于把要点的存亡押在模型愿不愿意复述上——
         # 提纲 desc 就是这么丢过的（CONTENT_PLANNER_PROMPT 里那句「必须原样转述」是事后补的）。
