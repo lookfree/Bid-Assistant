@@ -176,3 +176,32 @@ def strip_chat_wrapper(text: str) -> str:
     return text.strip()
 
 
+# 内部标识不能出现在给用户看的文字里。2026-08-08 全量扫描线上产物，四处都在漏：
+# 审查报告 115 处（「对应：评审办法（sec-2-c8）…」）、正文 3 处（连表格单元格里都写着
+# 「sec-37-c36~c37」，等于交给评委的标书上印着我们的内部编号）、述标 1 处、读标 1 处。
+# sec-N-cM 是条款 id，required_structure/clause_ids 是读标结果的字段名——用户看只会当成乱码。
+# 字段说明里已明写禁止，但那是"请模型配合"；确定性清洗才是能保证的那一半。
+_ID = r"sec-\d+(?:-c\d+(?:\s*[~～-]\s*c?\d+)?)?"
+# 整组括号里全是编号（含顿号/逗号分隔的多个）→ 连括号一起去掉
+_ID_GROUP = re.compile(rf"[（(]\s*(?:clause_ids\s*[:：]\s*)?{_ID}(?:\s*[、,，;；]\s*{_ID})*\s*[)）]")
+_ID_BARE = re.compile(_ID)
+_FIELD_NAMES = re.compile(r"\b(?:required_structure|clause_ids|target_id|target_tab|chapter_id)\b")
+_EMPTY_PARENS = re.compile(r"[（(]\s*[、,，;；\s]*\s*[)）]")
+
+
+def clean_internal_ids(text: str) -> str:
+    """抹掉内部条款 id 与字段名，并收拾抹完留下的括号/标点/空白残迹。"""
+    if not text:
+        return text
+    out = _ID_GROUP.sub("", text)
+    out = _ID_BARE.sub("", out)
+    out = _FIELD_NAMES.sub("", out)
+    out = _EMPTY_PARENS.sub("", out)
+    out = re.sub(r"\s{2,}", " ", out)
+    out = re.sub(r"(——|—)\s+", r"\1", out)                      # 抹掉字段名后破折号后面留下的空格
+    out = re.sub(r"(?:——|—|-{2,})\s*(?=[，。；、]|$)", "", out)   # 「xxx——」后面全空了，破折号也别留
+    # 抹掉编号后遗留的悬挂顿号/逗号：句末、右括号前，以及**标签边界前**
+    # （正文里编号出现在表格单元格中，清完会留下 <td>, </td> 这样的残渣）
+    out = re.sub(r"[、,，]\s*(?=[）)。；<]|$)", "", out)
+    out = re.sub(r"\s+[、,，]\s+", " ", out)      # 句中连续编号被抹后留下的孤立顿号
+    return out.strip(" 　·、，,")

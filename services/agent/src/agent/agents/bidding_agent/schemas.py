@@ -4,6 +4,8 @@ import re
 from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
+from agent.agents.bidding_agent.render.sanitize import clean_internal_ids
+
 logger = logging.getLogger(__name__)
 
 CategoryKey = Literal["overview", "qualification", "commercial", "technical", "scoring", "format"]
@@ -68,6 +70,15 @@ class ReadResult(BaseModel):
     risk_summary: list[str] = Field(default_factory=list)   # 废标红线汇总
     required_structure: list[StructureItem] = Field(default_factory=list)  # 投标文件构成清单（spec321）
     packages: list[PackageInfo] = Field(default_factory=list)  # 包件划分（spec324），单包标书留空
+
+    @model_validator(mode="after")
+    def _clean_ids(self) -> "ReadResult":
+        """废标红线汇总是直接展示给用户的文字，不该带内部条款 id
+        （2026-08-08 实测：「★条款不允许负偏离…（sec-33-c28, sec-75-c2）」）。
+        categories/scoring 里的 clause_ids **字段本身要保留**——前端靠它点回原文定位，
+        这里只清洗给人看的自然语言。"""
+        self.risk_summary = [clean_internal_ids(x) for x in self.risk_summary]
+        return self
 
     @model_validator(mode="after")
     def _dedup_categories(self) -> "ReadResult":
@@ -178,30 +189,6 @@ class Outline(BaseModel):
         return [c for c in self.chapters if c.group == "business"]
 
 
-# 内部标识不能出现在给用户看的文字里。2026-08-08 用户截图：风险卡上赫然写着
-# 「（sec-8-c95）」「——required_structure 构成项未提供」——前者是我们的条款 id，
-# 后者是读标结果里的**字段名**。用户不知道那是什么，只会当成乱码或系统出错。
-# 字段说明里已经明写不要带，但那是"请模型配合"；确定性清洗才是能保证的那一半。
-_LEAK_PATTERNS = (
-    re.compile(r"[（(]\s*sec-\d+(?:-c\d+)?\s*[)）]"),   # （sec-8-c95）连括号一起去掉
-    re.compile(r"\bsec-\d+(?:-c\d+)?\b"),               # 裸露的 sec-8-c95
-    re.compile(r"\b(?:required_structure|clause_ids|target_id|target_tab|chapter_id)\b"),
-)
-
-
-def _clean_user_text(text: str) -> str:
-    """抹掉内部条款 id 与字段名，并收拾抹完留下的标点/空白残迹。"""
-    if not text:
-        return text
-    out = text
-    for pat in _LEAK_PATTERNS:
-        out = pat.sub("", out)
-    out = re.sub(r"\s{2,}", " ", out)
-    out = re.sub(r"(——|—)\s+", r"\1", out)                       # 抹掉字段名后破折号后面留下的空格
-    out = re.sub(r"(?:——|—|-{2,})\s*(?=[，。；、]|$)", "", out)   # 「xxx——」后面全空了，破折号也别留
-    return out.strip(" 　·、，,")
-
-
 class RiskFinding(BaseModel):
     level: Literal["高风险", "中风险"]              # 前端按此渲染，收紧取值
     tone: Literal["destructive", "warning"]
@@ -242,10 +229,10 @@ class RiskFinding(BaseModel):
         """全空白等同于没填：min_length 挡不住 "   "。顺带抹掉泄露的内部标识。"""
         if not self.title.strip() or not self.advice.strip():
             raise ValueError("风险项的标题与整改建议都不能为空白")
-        self.title = _clean_user_text(self.title)
-        self.advice = _clean_user_text(self.advice)
-        self.tender_ref = _clean_user_text(self.tender_ref)
-        self.chapter_title = _clean_user_text(self.chapter_title)
+        self.title = clean_internal_ids(self.title)
+        self.advice = clean_internal_ids(self.advice)
+        self.tender_ref = clean_internal_ids(self.tender_ref)
+        self.chapter_title = clean_internal_ids(self.chapter_title)
         return self
 
 
@@ -378,6 +365,15 @@ class Slide(BaseModel):
         derive_layout(self)
         return self
 
+
+    @model_validator(mode="after")
+    def _no_internal_ids(self):
+        """抹掉内部条款 id：2026-08-08 线上实测述标页写着「所有★关键条款（sec-54-c1、sec-58-c1）
+        均完全满足」——那是要投到评委面前的 PPT。喂给模型的读标结论里带 clause_ids，模型顺手抄了。"""
+        self.title = clean_internal_ids(self.title)
+        self.bullets = [clean_internal_ids(b) for b in self.bullets]
+        self.notes = clean_internal_ids(self.notes)
+        return self
 
 class QA(BaseModel):
     q: str

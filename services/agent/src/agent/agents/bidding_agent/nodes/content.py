@@ -19,7 +19,7 @@ from agent.agents.bidding_agent.prompts.categories import category_scope
 from agent.agents.bidding_agent.prompts.content import (
     CONTENT_PLANNER_PROMPT, CHAPTER_WRITER_PROMPT, REWRITE_PROMPT, DEVIATION_TABLE_GUIDE, TEMPLATE_GUIDE)
 from agent.rag import retrieve as rag_retrieve
-from agent.agents.bidding_agent.render.sanitize import strip_document_shell, strip_chat_wrapper
+from agent.agents.bidding_agent.render.sanitize import strip_document_shell, strip_chat_wrapper, clean_internal_ids
 from agent.runtime.channels import progress_stream
 
 logger = logging.getLogger(__name__)
@@ -399,7 +399,10 @@ def _collect_chapters(files: dict | None, allowed: set[str] | None = None) -> di
             continue
         # content 允许缺省（deepagents 自身也按可缺处理）；空稿跳过——全空最终触发 fail-loud
         content = data.get("content", "") if isinstance(data, dict) else str(data)
-        content = strip_document_shell(strip_chat_wrapper(content))  # 收稿统一清洗：剥对话包装 + 文档壳（防样式泄漏/围栏入库）
+        # 收稿统一清洗：剥对话包装 + 文档壳（防样式泄漏/围栏入库），并抹掉内部条款 id——
+        # 2026-08-08 线上实测正文里出现过 <td>sec-37-c36~c37</td>，等于交给评委的标书上
+        # 印着我们的内部编号（喂给写手的读标结论里带 clause_ids，模型顺手抄进了正文）。
+        content = clean_internal_ids(strip_document_shell(strip_chat_wrapper(content)))
         if content:
             chapters[cid] = content
     if dropped:
@@ -654,5 +657,5 @@ async def rewrite_chapter(ctx, chapter_id: str, instruction: str, state: dict) -
         raise RuntimeError(
             "rewrite_truncated: 模型没能完整改写本章（输出被长度上限截断）。已放弃本次改写以免丢失后半章。")
     # 先剥对话包装（开场白/```围栏）再剥文档壳：提示词禁不住模型客套，确定性清洗兜底
-    new = strip_document_shell(strip_chat_wrapper(last.content))
+    new = clean_internal_ids(strip_document_shell(strip_chat_wrapper(last.content)))
     return restore_images(new, kept_images)
