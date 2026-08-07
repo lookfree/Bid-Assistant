@@ -117,10 +117,11 @@ def test_rewrite_chapter_sends_the_chapter_context(monkeypatch):
         "chapters": {"t3": "<h3>3.3 SLA</h3><p>旧…</p>"},
         "outline": {"chapters": [
             {"id": "t2", "no": "第二章", "title": "技术方案"},
+            # 依据挂在子项上：章本身没有 clause_ids 字段（schemas.OutlineChapter）
             {"id": "t3", "no": "第三章", "title": "服务级别承诺", "desc": "写清分级响应时限",
-             "clause_ids": ["sec-5-c1"]},
+             "items": [{"label": "3.1 响应时限承诺", "clause_ids": ["sec-5-c1"]}]},
         ]},
-        "read": {"categories": [{"name": "商务要求", "items": [
+        "read": {"categories": [{"key": "business", "title": "商务要求", "items": [
             {"title": "响应时限", "value": "1 小时内到场", "star": True, "clause_ids": ["sec-5-c1"]},
         ]}]},
     }

@@ -556,6 +556,19 @@ _REWRITE_CTX_CAP = 2000   # 上下文块上限：改写是免费功能，不能�
 _REWRITE_REQ_MAX = 12     # 最多列几条招标要求，★ 优先
 
 
+def _collect_clause_ids(nodes: list[dict] | None) -> set[str]:
+    """递归收集提纲子树上的条款 id。
+
+    提纲是五级（节→小节→细分→明细），**每一级都带 clause_ids**；只遍历两层会把四、五级
+    的招标依据整片丢掉，而恰恰是拆得最细的那些节点才有明确条款。
+    章本身没有 clause_ids 字段（见 schemas.OutlineChapter），所以只从 items 往下走。"""
+    out: set[str] = set()
+    for n in nodes or []:
+        out |= set(n.get("clause_ids") or [])
+        out |= _collect_clause_ids(n.get("children"))
+    return out
+
+
 def _chapter_requirements(read: dict, clause_ids: set[str]) -> list[str]:
     """本章对应的招标要求（按 clause_ids 从读标结论里捞），★ 条款排前面。"""
     hits: list[tuple[bool, str]] = []
@@ -596,16 +609,19 @@ def _rewrite_context_block(state: dict, chapter_id: str) -> str:
     neighbours = [chapters[i].get("title") or "" for i in (idx - 1, idx + 1) if 0 <= i < len(chapters)]
     if any(neighbours):
         parts.append("相邻章节（内容不要与它们重复）：" + "、".join(n for n in neighbours if n))
-    # 本章 + 各子项的条款 id 合起来找招标依据
-    cids = set(ch.get("clause_ids") or [])
-    for it in ch.get("items") or []:
-        cids |= set(it.get("clause_ids") or [])
-        for sub in it.get("children") or []:
-            cids |= set(sub.get("clause_ids") or [])
-    reqs = _chapter_requirements(state.get("read") or {}, cids) if cids else []
-    if reqs:
-        parts.append("本章须响应的招标要求（★ 为不可偏离）：\n" + "\n".join(f"- {r}" for r in reqs))
-    return "\n".join(parts)[:_REWRITE_CTX_CAP]
+    # 选包时必须先按包过滤：多包件招标里同一条款会拆成「包1工期90天」「包2工期120天」两条、
+    # 共用同一个 clause_id。不过滤就会把**别的包**的要求当成本章的★不可偏离项写进标书。
+    read = filter_read_by_package(state.get("read") or {}, state.get("run_input"))
+    cids = _collect_clause_ids(ch.get("items"))
+    reqs = _chapter_requirements(read, cids) if cids else []
+    head = "\n".join(parts)
+    if not reqs:
+        return head[:_REWRITE_CTX_CAP]
+    # 要求块**整块保留，先裁上面的**。若把 head+要求 拼起来再一刀切，先掉的恰是排在最后的
+    # ★ 条款，而提示词刚刚向模型保证「★ 改写后必须仍然逐条响应」——那就成了空头承诺。
+    # 要求块本身放得下：每条 ≤120 字 × 最多 12 条，加标题也不到 1500，小于上限。
+    block = "本章须响应的招标要求（★ 为不可偏离）：\n" + "\n".join(f"- {r}" for r in reqs)
+    return (head[: max(0, _REWRITE_CTX_CAP - len(block) - 1)] + "\n" + block).lstrip("\n")
 
 
 def _rewrite_msg(old: str, instruction: str, ref: str, chapter_ctx: str = "") -> str:
