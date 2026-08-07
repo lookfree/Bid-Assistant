@@ -29,10 +29,17 @@ logger = logging.getLogger(__name__)
 class ResilientChat(ChatOpenAI):
     """主模型失败即改用降级模型重试一次。只接管瞬断与鉴权失败，其余（400 语义错误等）原样抛。"""
 
-    fallback: Any = None   # 降级用的 ChatOpenAI；None = 无降级（行为与原来一致）
+    fallback: Any = None            # 第二跳用的模型；None = 无降级（行为与原来一致）
+    fallback_is_self: bool = False  # 第二跳打的就是主模型自己（运营没配降级模型时）
 
     def _should_fallback(self, e: BaseException) -> bool:
-        return self.fallback is not None and (_is_transient_stream_error(e) or _is_auth_error(e))
+        if self.fallback is None:
+            return False
+        # 鉴权失败时，若第二跳就是主模型自己，重试毫无意义：同一把 key 再打一万次还是 401，
+        # 只会把一次「配置错误」拖成两倍时长。瞬断才值得对同一端点再试一次。
+        if _is_auth_error(e):
+            return not self.fallback_is_self
+        return _is_transient_stream_error(e)
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
         try:
@@ -64,13 +71,18 @@ class ResilientChat(ChatOpenAI):
 
 
 def resilient_chat(gateway, **kw) -> Any:
-    """按网关的降级链造一个带降级的模型。链里只有一项（或取不到）时退回普通模型，行为不变。"""
+    """按网关的降级链造一个带降级的模型。
+
+    **没有配降级模型时，第二跳仍然打主模型自己**——与 forced_stream_submit 的
+    `tries[1] if len(tries) > 1 else tries[0]` 同一口径。瞬断本就是一瞬的事，同一端点隔一下
+    再打通常就成了；此时放弃重试等于把"没配降级"变成"没有任何保护"，而正文恰恰是最长最贵的一步。
+    """
     chain = getattr(gateway, "chain", None)
     items = chain() if callable(chain) else []
     primary = gateway.get_chat(**kw)
-    if len(items) < 2:
-        return primary
-    fb = items[1]
+    if not items:
+        return primary                      # 连链都取不到（异常/桩装配）：保持原样，不臆造
+    fb = items[1] if len(items) > 1 else items[0]
     # 合并而不是并列传参：调用方的 kw 里本就可能有 provider（正文传的就是 provider=None），
     # 再显式写一次会 TypeError，整个正文节点当场崩——链里的取值优先。
     fallback = gateway.get_chat(**{**kw, "provider": fb.get("provider"), "model": fb.get("model"),
@@ -79,7 +91,7 @@ def resilient_chat(gateway, **kw) -> Any:
     # 用主模型的构造参数重建成 ResilientChat：直接改 primary 的类不安全（pydantic 校验字段）
     data = {k: v for k, v in primary.__dict__.items() if not k.startswith("_")}
     try:
-        return ResilientChat(**{**data, "fallback": fallback})
+        return ResilientChat(**{**data, "fallback": fallback, "fallback_is_self": len(items) < 2})
     except Exception:  # noqa: BLE001 构造失败绝不能连累正文生成——退回无降级的原模型
         logger.warning("构造带降级的模型失败，本次无降级", exc_info=True)
         return primary

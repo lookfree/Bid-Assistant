@@ -113,7 +113,7 @@ class _GatewayOne:
         return [{"provider": "p", "model": "m"}]
 
     def get_chat(self, **kw):
-        return "普通模型"
+        return ResilientChat(model=kw.get("model") or "m", api_key="k", base_url="http://x/v1")
 
 
 class _GatewayTwo:
@@ -128,9 +128,44 @@ class _GatewayTwo:
         return ResilientChat(model=kw.get("model") or "m", api_key="k", base_url="http://x/v1")
 
 
-def test_single_model_chain_returns_plain_model():
-    """只配了一个模型时不该凭空造降级——行为与改动前逐字节一致。"""
-    assert resilient_chat(_GatewayOne(), provider=None) == "普通模型"
+def test_single_model_chain_still_retries_the_primary():
+    """没配降级模型时，第二跳打主模型自己——与 forced_stream_submit 同一口径。
+
+    瞬断是一瞬的事，同一端点隔一下再打通常就成了。此时放弃重试等于把"没配降级"
+    变成"没有任何保护"，而正文恰恰是最长最贵的一步。
+    """
+    g = _GatewayOne()
+    out = resilient_chat(g, provider=None)
+    assert isinstance(out, ResilientChat)
+    assert out.fallback is not None and out.fallback_is_self is True
+
+
+def test_no_chain_at_all_returns_plain_model():
+    """连链都取不到（异常/桩装配）：保持原样，不臆造降级。"""
+
+    class _NoChain:
+        def get_chat(self, **kw):
+            return "普通模型"
+
+    assert resilient_chat(_NoChain(), provider=None) == "普通模型"
+
+
+def test_auth_error_is_not_retried_against_the_same_key():
+    """第二跳就是自己时，401 不重试：同一把 key 再打一万次还是 401，只会拖成两倍时长。"""
+    fb = _Fallback()
+    c = _patched(fallback=fb, raise_exc=Exception("Error code: 401 - invalid api key"))
+    object.__setattr__(c, "fallback_is_self", True)
+    with pytest.raises(Exception, match="401"):
+        asyncio.run(c._agenerate([HumanMessage(content="x")]))
+    assert fb.calls == 0
+
+
+def test_transient_error_is_retried_even_against_the_same_endpoint():
+    fb = _Fallback()
+    c = _patched(fallback=fb, raise_exc=_APIConnectionError("Connection error."))
+    object.__setattr__(c, "fallback_is_self", True)
+    asyncio.run(c._agenerate([HumanMessage(content="x")]))
+    assert fb.calls == 1
 
 
 def test_two_model_chain_wires_the_second_as_fallback():
