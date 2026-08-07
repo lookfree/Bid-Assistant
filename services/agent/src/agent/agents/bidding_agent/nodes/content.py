@@ -641,6 +641,14 @@ async def rewrite_chapter(ctx, chapter_id: str, instruction: str, state: dict) -
     sub = build_create_agent(REWRITE_PROMPT, [], ctx)
     msg = _rewrite_msg(old, instruction, ref, _rewrite_context_block(state, chapter_id))
     out = await sub.ainvoke({"messages": [HumanMessage(content=msg)]})
+    last = out["messages"][-1]
+    # 输出被长度上限截断 → 拒收。改写是**整章替换**，收下半截等于把用户这一章的后半部分删了，
+    # 而校验只看"含不含标签"，截断的 HTML 照样过关。实测该信号真实发生过（agent.agent_token_usage
+    # 里 finish_reason='length' 共 53 次），信号一直有、只是没人用。
+    if (getattr(last, "response_metadata", None) or {}).get("finish_reason") == "length":
+        raise RuntimeError(
+            "rewrite_truncated: 本章太长，模型没能完整改写（输出被长度上限截断）。"
+            "已放弃本次改写以免丢失后半章，请把本章拆分后再改。")
     # 先剥对话包装（开场白/```围栏）再剥文档壳：提示词禁不住模型客套，确定性清洗兜底
-    new = strip_document_shell(strip_chat_wrapper(out["messages"][-1].content))
+    new = strip_document_shell(strip_chat_wrapper(last.content))
     return restore_images(new, kept_images)

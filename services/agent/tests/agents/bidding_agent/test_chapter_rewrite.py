@@ -35,13 +35,14 @@ class _CapturingChat:
     def __init__(self, reply):
         self.reply = reply
         self.captured = None
+        self.finish_reason = "stop"
 
     def bind_tools(self, tools, **kw):
         return self
 
     async def ainvoke(self, messages):
         self.captured = messages
-        return AIMessage(content=self.reply)
+        return AIMessage(content=self.reply, response_metadata={"finish_reason": self.finish_reason})
 
 
 class _CapturingGateway:
@@ -131,3 +132,29 @@ def test_rewrite_chapter_sends_the_chapter_context(monkeypatch):
     assert "写清分级响应时限" in msg             # 提纲里的写作说明
     assert "★" in msg and "响应时限" in msg      # 本章要响应的★条款
     assert "技术方案" in msg                     # 相邻章（防重复）
+
+
+def test_rewrite_refuses_a_truncated_output(monkeypatch):
+    """输出被长度上限截断时拒收，绝不整章覆盖。
+
+    改写是**整章替换**，而校验只看「含不含标签」——截断的 HTML 照样过关，用户这一章的后半部分
+    就这么没了。信号一直有：agent.agent_token_usage 里 finish_reason='length' 实测发生过 53 次。
+    """
+    import pytest
+
+    monkeypatch.setattr(content_mod, "rag_retrieve", _FakeRagRetrieve(enabled=False))
+    gateway = _CapturingGateway("<h3>只写了开头</h3><p>后面被截断")
+    gateway.chat.finish_reason = "length"
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gateway, user_id="u1")
+    state = {"chapters": {"t3": "<h3>3.3 SLA</h3><p>很长的原文…</p>"}}
+    with pytest.raises(RuntimeError, match="rewrite_truncated"):
+        asyncio.run(rewrite_chapter(ctx, "t3", "补充分级 SLA 响应时间表", state))
+
+
+def test_normal_finish_is_accepted(monkeypatch):
+    """正常收尾（stop）不能被误伤。"""
+    monkeypatch.setattr(content_mod, "rag_retrieve", _FakeRagRetrieve(enabled=False))
+    gateway = _CapturingGateway(_NEW_HTML)
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gateway, user_id="u1")
+    html = asyncio.run(rewrite_chapter(ctx, "t3", "补充分级 SLA", {"chapters": {"t3": "<p>旧</p>"}}))
+    assert html == _NEW_HTML

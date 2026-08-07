@@ -101,6 +101,10 @@ function previewOf(html: string): string {
         push({ role: "ai", text: "这看起来是提问而不是改写指令,本次未修改正文、积分已全额退还。想改正文请用指令句式,例如「把响应时间改为15分钟」。" })
       } else if (e instanceof ApiError && e.code === "rewrite_not_html") {
         push({ role: "ai", text: "本次指令没有产出有效正文，积分已全额退还。请把要求写成修改指令再试，例如「把响应时间改为15分钟」。" })
+      } else if (e instanceof ApiError && e.code === "rewrite_truncated") {
+        // 长章改写会被模型的输出上限截断。收下半截等于删掉本章后半部分，所以宁可不改——
+        // 但必须说清楚是"太长"，否则用户会对着一个永远改不完整的章反复重试。
+        push({ role: "ai", text: "本章太长，模型没能完整改写，已放弃本次修改以免丢失后半章的内容。建议在「提纲生成」里把本章拆成几个小节后再改。" })
       } else {
         push({ role: "ai", text: "改写失败，请稍后重试。" })
       }

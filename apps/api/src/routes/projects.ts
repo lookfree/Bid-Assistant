@@ -1046,7 +1046,12 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         model,
         userId,
       }))
-    } catch {
+    } catch (e) {
+      // 「本章太长、模型没能完整改写」是用户能自己解决的（拆章），值得单独告知；
+      // 笼统的 agent_failed 会让用户对着一个永远改不完整的长章反复重试。
+      if (e instanceof Error && e.message.includes("rewrite_truncated")) {
+        return c.json({ error: "rewrite_truncated" }, 422)
+      }
       return c.json({ error: "agent_failed" }, 502)
     }
 

@@ -180,7 +180,12 @@ export async function rewriteChapter(opts: {
       signal: AbortSignal.timeout(120_000),
     },
   )
-  if (!r.ok) throw new Error(`agent rewriteChapter ${r.status}`)
+  if (!r.ok) {
+    // 带上 agent 的错误文本：路由据此区分「本章太长改不完整」这类**用户能自己解决**的失败，
+    // 只丢状态码的话用户永远只看到「改写失败，请重试」，然后对着一个永远改不完的长章反复重试。
+    const detail = await r.json().catch(() => ({}))
+    throw new Error(`agent rewriteChapter ${r.status}: ${(detail as { error?: string }).error ?? ""}`)
+  }
   return (await r.json()) as { chapter_id: string; html: string }
 }
 
