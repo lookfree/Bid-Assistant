@@ -16,6 +16,15 @@ class ReadItem(BaseModel):
     value: str
     clause_ids: list[str] = Field(default_factory=list)  # 条款 id（${secId}-cN，对齐原型 clauseIds），供前端定位
     source_quote: str = ""                        # 原文摘录，可选补充
+
+    @model_validator(mode="after")
+    def _no_internal_ids(self) -> "ReadItem":
+        """条目标题/取值是读标页直接显示的文字，不该带内部条款 id
+        （2026-08-08 全库实测 26 处：「报价含税，为完成本项目的所有费用，包干价（sec-16-c49）」）。
+        clause_ids 字段本身保留——前端靠它点回原文定位；source_quote 是原文摘录，逐字不动。"""
+        self.title = clean_internal_ids(self.title)
+        self.value = clean_internal_ids(self.value)
+        return self
     status: Literal["found", "missing"] = "found"  # 文件未明确 -> missing
     risk: bool = False                             # 废标风险点
     star: bool = False                             # ★不可偏离
@@ -254,6 +263,10 @@ class RiskReport(BaseModel):
     def _derive_counts(self):
         """去重后再计数。计数一律从 items/passed_items 推导，不信模型口头报数（两处口径必然漂移）。
         去重：用户截图里同一条发现重复出现三张一模一样的卡片——重复是噪音，且会把风险数虚报高。"""
+        # 通过项与风险项一样是给用户看的整句（2026-08-08 实测 12 处：
+        # 「响应函已提供，含90天有效期承诺…（sec-8-c10）」）。风险项在 RiskFinding 里已清，
+        # 这个平级列表当时漏了。
+        self.passed_items = [clean_internal_ids(p) for p in self.passed_items]
         seen: set[tuple[str, str]] = set()
         uniq = []
         for i in self.items:
@@ -371,6 +384,7 @@ class Slide(BaseModel):
         """抹掉内部条款 id：2026-08-08 线上实测述标页写着「所有★关键条款（sec-54-c1、sec-58-c1）
         均完全满足」——那是要投到评委面前的 PPT。喂给模型的读标结论里带 clause_ids，模型顺手抄了。"""
         self.title = clean_internal_ids(self.title)
+        self.scoring = clean_internal_ids(self.scoring)
         self.bullets = [clean_internal_ids(b) for b in self.bullets]
         self.notes = clean_internal_ids(self.notes)
         return self

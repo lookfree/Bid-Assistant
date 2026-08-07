@@ -11,7 +11,7 @@
 import pytest
 
 from agent.agents.bidding_agent.render.sanitize import clean_internal_ids
-from agent.agents.bidding_agent.schemas import ReadResult, RiskFinding, Slide
+from agent.agents.bidding_agent.schemas import ReadResult, RiskFinding, RiskReport, Slide
 
 
 class TestCleaner:
@@ -60,6 +60,22 @@ class TestAppliedEverywhere:
     def test_read_risk_summary(self):
         r = ReadResult(categories=[], risk_summary=["★条款不允许负偏离（sec-33-c28, sec-75-c2）"])
         assert not any("sec-" in x for x in r.risk_summary)
+
+    def test_review_passed_items(self):
+        """通过项和风险项一样直接显示给用户——第一版只清了风险项，漏了这个平级列表。"""
+        r = RiskReport(score=80, items=[],
+                       passed_items=["响应函已提供，含90天有效期承诺（sec-8-c10）"])
+        assert not any("sec-" in p for p in r.passed_items)
+
+    def test_read_item_value(self):
+        from agent.agents.bidding_agent.schemas import ReadItem
+
+        it = ReadItem(title="报价方式（sec-16-c49）", value="包干价（sec-16-c49）", clause_ids=["sec-16-c49"])
+        assert "sec-" not in it.title and "sec-" not in it.value
+
+    def test_slide_scoring_line(self):
+        s = Slide(id="s1", title="技术响应", scoring="sec-54-c1 ★关键条款响应；sec-58-c1 ★逐条响应")
+        assert "sec-" not in s.scoring
 
     def test_read_clause_ids_field_is_kept(self):
         """**只清洗给人看的自然语言**：clause_ids 字段本身必须留着，前端靠它点回原文定位。"""
