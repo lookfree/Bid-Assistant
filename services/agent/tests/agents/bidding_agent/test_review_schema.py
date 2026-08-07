@@ -7,7 +7,7 @@ _SAMPLE = {
     "score": 78, "high": 1, "mid": 2, "passed": 9,
     "items": [{"level": "高风险", "tone": "destructive", "title": "缺少 ISO27001 认证",
                "chapter_title": "企业资质与信誉证明", "tender_ref": "对应：第二章 资格要求（★不可偏离）",
-               "advice": "补 ISO27001 证书并附商务标第四章，否则废标", "target_tab": "business", "target_id": "b4"}],
+               "advice": "补 ISO27001 证书并附商务标第四章，否则废标", "target_tab": "business", "target_id": "b4", "anchor_text": "ISO27001 认证证书复印件"}],
     "passed_items": ["投标报价未超最高限价", "投标函格式与签章合规"],
 }
 
@@ -54,7 +54,7 @@ def test_findings_and_passed_items_are_required_in_the_tool_schema():
 # _forced_submit 会把校验错误喂回模型重试 3 轮，正是为这种情况准备的。
 def _item(**over):
     base = {"level": "高风险", "tone": "destructive", "title": "缺少 ISO27001",
-            "advice": "补证书并附商务标第四章", "target_tab": "business", "target_id": "b4"}
+            "advice": "补证书并附商务标第四章", "target_tab": "business", "target_id": "b4", "anchor_text": "ISO27001 认证证书复印件"}
     return {**base, **over}
 
 
@@ -94,3 +94,26 @@ def test_advice_is_required_in_the_tool_schema():
     item = params["properties"]["items"]["items"]   # RiskFinding 被内联在数组项里
     assert "advice" in item["required"]
     assert item["properties"]["advice"].get("description")
+
+
+def test_anchor_text_is_required_but_may_be_empty():
+    """章内定位锚点：必填、可空。
+
+    必填——弱模型对"可选且无描述"的字段的做法是整个省略（2026-08-01 实测），
+    而字段一旦缺席，定位就退回章节顶部，等于这个功能没做。
+    可空——"缺少某材料"这类问题未必有可摘抄的原文，逼模型编一段会把用户带到错的地方。
+    """
+    from pydantic import ValidationError
+    from agent.agents.bidding_agent.schemas import RiskFinding
+
+    base = dict(level="高风险", tone="destructive", title="缺 ISO27001",
+                advice="补证书", target_tab="business", target_id="b4")
+    try:
+        RiskFinding(**base)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("anchor_text 缺席竟然通过了校验——弱模型会直接省略它")
+
+    assert RiskFinding(**base, anchor_text="").anchor_text == ""
+    assert RiskFinding(**base, anchor_text="采购需求偏离表（附件5-1）").anchor_text == "采购需求偏离表（附件5-1）"

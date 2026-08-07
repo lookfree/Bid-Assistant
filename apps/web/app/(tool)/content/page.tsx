@@ -34,6 +34,7 @@ import { tiersCostText } from "@/lib/content-tiers"
 import { useLibrary } from "@/lib/use-library"
 import { type LibraryItem } from "@/lib/library"
 import { deriveHealthReport } from "@/lib/risk-derive"
+import { scrollToAnchor } from "@/lib/anchor"
 import { stepNotApplicable, stepPrereq, useOtherStepResult, useStep } from "@/lib/use-step"
 import { normalizeChapterHtml } from "@/lib/chapter-normalize"
 import { useExport } from "./use-export"
@@ -290,7 +291,7 @@ export default function ContentPage() {
   }
 
   /* 从报告中「定位到本章修改」：切换到对应 tab 与章节并滚动到顶部 */
-  function gotoChapter(tab: BidType, id: string) {
+  function gotoChapter(tab: BidType, id: string, anchor = "") {
     // 章节不存在就不动。此前照跳，而 active 是 `list.find(...) ?? list[0]`——等于静默跳到第一章，
     // 用户以为问题出在那一章（2026-08-07 反馈：点哪条都定位到同一处）。按钮侧已挡，这里兜底。
     if (!allChapterIds.has(id)) return
@@ -298,6 +299,10 @@ export default function ContentPage() {
     setActiveId(id)
     setReportOpen(false)
     editorScrollRef.current?.scrollTo({ top: 0 })
+    // 章内定位：只到章还不够——实测一份报告 63 条里 31 条都指向同一章（偏离表），
+    // 逐条点过去全落在章节顶部，看起来就是"点哪条都跳同一个地方"。
+    // 换章后 TipTap 要重渲染，故放到下一帧；找不到锚点就维持顶部（老报告没有这个字段）。
+    if (anchor.trim()) requestAnimationFrame(() => scrollToAnchor(editorScrollRef.current, anchor))
   }
 
   /* 在体检报告弹层内直接导出标书文件：已查看风险，软放行后导出 */

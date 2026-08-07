@@ -28,6 +28,8 @@ export type CheckItem = {
   advice: string
   targetTab: "tech" | "business"
   targetId: string
+  /** 章内定位锚点（可能为空：老报告没有这个字段，缺失类问题也未必有可摘的原文） */
+  anchorText: string
 }
 
 export type HealthReport = {
@@ -54,6 +56,7 @@ export function deriveHealthReport(f: RealRisk): HealthReport {
       advice: x.advice,
       targetTab: x.targetTab,
       targetId: x.targetId,
+      anchorText: x.anchorText ?? "",
     })),
     passedItems: f.passedItems,
   }

@@ -55,7 +55,7 @@ function RiskCard({
   locatable,
 }: {
   item: CheckItem
-  onGoto: (tab: BidType, id: string) => void
+  onGoto: (tab: BidType, id: string, anchor: string) => void
   /** 这条问题是否真的指向某一章。false = 全文性要求（装订、密封、递交时间…），无章可跳。 */
   locatable: boolean
 }) {
@@ -78,7 +78,7 @@ function RiskCard({
             假装定位比不给定位更糟：用户会以为问题出在第一章。 */}
         {locatable ? (
           <button
-            onClick={() => onGoto(item.targetTab, item.targetId)}
+            onClick={() => onGoto(item.targetTab, item.targetId, item.anchorText)}
             className="inline-flex items-center gap-1.5 rounded-lg border border-primary/40 gradient-brand-soft px-3 py-1.5 text-xs font-semibold text-primary transition-opacity hover:opacity-90"
           >
             定位到本章修改
@@ -175,7 +175,7 @@ export function ReportDialog({
   /** 当前标书真实存在的章节 id。用来判断某条问题到底跳不跳得过去。 */
   chapterIds: ReadonlySet<string>
   onClose: () => void
-  onGoto: (tab: BidType, id: string) => void
+  onGoto: (tab: BidType, id: string, anchor: string) => void
   onExportReport: (format: ExportFormat) => void
   onExportBid: (format: ExportFormat) => void
 }) {

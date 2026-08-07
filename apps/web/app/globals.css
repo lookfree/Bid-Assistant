@@ -247,3 +247,10 @@
 
 /* TipTap 编辑器内图片:限宽防溢出侧栏（新插图与遗留 class 被剥的图都兜住） */
 .tiptap img { max-width: 100%; height: auto; }
+
+/* 体检报告「定位到本章修改」跳过来时，短暂标出问题所在的那一段。
+   用背景色而不是边框:边框会撑动表格布局,在偏离表这类多行表格里整页跳一下。 */
+.anchor-hit {
+  background: color-mix(in srgb, var(--color-primary, #2563eb) 14%, transparent);
+  transition: background 0.4s ease;
+}
