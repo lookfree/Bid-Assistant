@@ -192,3 +192,62 @@ def test_real_gateway_call_signature(monkeypatch):
     assert isinstance(out, ResilientChat), "真实网关下没有装配出带降级的模型"
     assert out.fallback is not None
     assert hasattr(out, "bind_tools")
+
+
+def test_self_fallback_matches_the_primary_exactly(monkeypatch):
+    """第二跳是自己时，构造参数必须与主模型完全一致。
+
+    get_chat(provider=None) 的「沿用链首」分支**不抄 thinking**，主模型用的是全局默认（关）；
+    若照链里那项把 thinking=True 带上，重试这一跳就成了另一个模型——延迟与成本都不同，
+    而本仓记录过「思考 + 流式强制 tool_choice = 400」，等于把可恢复的瞬断变成必挂的 400。
+    """
+    from agent.models.gateway import ModelGateway
+    from agent.config import settings
+
+    monkeypatch.setattr(settings, "model_chain", [
+        {"provider": "deepseek", "model": "m1", "base_url": None, "api_key": "k1", "thinking": True},
+    ], raising=False)
+    out = resilient_chat(ModelGateway(settings), provider=None)
+    assert isinstance(out, ResilientChat) and out.fallback_is_self
+    # extra_body 是 ChatOpenAI 的顶层属性，不在 model_kwargs 里——第一版取错了地方，
+    # 两边都读出 None、断言恒真，变异测试才把这条空守卫揪出来。
+    prim_extra = getattr(out, "extra_body", None)
+    fb_extra = getattr(out.fallback, "extra_body", None)
+    assert prim_extra == fb_extra, f"自我重试与主模型参数不一致：{prim_extra} vs {fb_extra}"
+
+
+def test_self_retry_waits_but_cross_model_does_not():
+    """重打同一端点前要等一下（openai SDK 已经连打过 3 次）；换别的端点不必等。"""
+    import agent.models.resilient as mod
+
+    slept = []
+
+    async def _fake_sleep(s):
+        slept.append(s)
+
+    orig = mod.asyncio.sleep
+    mod.asyncio.sleep = _fake_sleep
+    try:
+        c = _patched(fallback=_Fallback(), raise_exc=_APIConnectionError("Connection error."))
+        object.__setattr__(c, "fallback_is_self", True)
+        asyncio.run(c._wait_before_self_retry())
+        assert slept == [mod._SELF_RETRY_DELAY_S], "重打自己之前没有等待"
+        slept.clear()
+        object.__setattr__(c, "fallback_is_self", False)
+        asyncio.run(c._wait_before_self_retry())
+        assert slept == [], "换模型不该白等"
+    finally:
+        mod.asyncio.sleep = orig
+
+
+def test_chain_raising_does_not_kill_content():
+    """gateway.chain() 抛错时退回普通模型。在「建模型」这步崩比瞬断更糟——整步直接没了。"""
+
+    class _Boom:
+        def chain(self):
+            raise RuntimeError("配置读取炸了")
+
+        def get_chat(self, **kw):
+            return "普通模型"
+
+    assert resilient_chat(_Boom(), provider=None) == "普通模型"
