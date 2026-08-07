@@ -541,3 +541,67 @@ def test_prompts_carry_length_budget_discipline():
     assert "每次派工必须写明本章目标字数" in CONTENT_PLANNER_PROMPT
     assert "绝不自造新 id" in CONTENT_PLANNER_PROMPT
     assert "宁短勿爆" in CHAPTER_WRITER_PROMPT
+
+
+class _DeepThatStopsEarly:
+    """桩 deepagent：第一轮只写一部分章，被追问后才补齐剩下的。
+
+    这正是 2026-08-06 的生产实例：20 章的标书写到第 14 章就停了，而当时的收稿逻辑只在
+    "一章都没有"时才失败，于是半本标书被当成功交付、照常扣费、照常进入审查与导出。
+    """
+
+    def __init__(self, first: dict, second: dict | None = None):
+        self.first, self.second = first, second
+        self.calls = 0
+
+    async def ainvoke(self, _input, config=None):
+        self.calls += 1
+        files = self.first if self.calls == 1 else (self.second or {})
+        return {"messages": [], "files": files}
+
+
+def _outline(ids):
+    return {"chapters": [{"id": i, "title": f"第{i}章"} for i in ids]}
+
+
+def test_missing_chapters_are_retried(monkeypatch):
+    """漏写的章要补一轮，且只补漏的那几章。"""
+    first = {f"/chapters/{i}.html": {"content": f"<p>{i}</p>"} for i in ("t1", "t2")}
+    second = {**first, **{f"/chapters/{i}.html": {"content": f"<p>{i}</p>"} for i in ("t3", "t4")}}
+    deep = _DeepThatStopsEarly(first, second)
+    monkeypatch.setattr(content_mod, "create_deep_agent", lambda **kw: deep)
+    node = content_mod.make_content_node(_ctx())
+    out = asyncio.run(node({"outline": _outline(["t1", "t2", "t3", "t4"]), "read": {}}))
+    assert set(out["chapters"]) == {"t1", "t2", "t3", "t4"}
+    assert deep.calls == 2, "漏了章却没有补写"
+
+
+def test_no_retry_when_complete(monkeypatch):
+    """写全了就不该多跑一轮——补写要花钱花时间。"""
+    files = {f"/chapters/{i}.html": {"content": f"<p>{i}</p>"} for i in ("t1", "t2")}
+    deep = _DeepThatStopsEarly(files)
+    monkeypatch.setattr(content_mod, "create_deep_agent", lambda **kw: deep)
+    node = content_mod.make_content_node(_ctx())
+    out = asyncio.run(node({"outline": _outline(["t1", "t2"]), "read": {}}))
+    assert set(out["chapters"]) == {"t1", "t2"} and deep.calls == 1
+
+
+def test_partial_delivery_survives_a_failed_retry(monkeypatch):
+    """补写这一轮自己炸了，也不能连累已经写好的章节。
+
+    14 章成稿远比"整步失败、全额退款、从头再跑"对用户有价值。
+    """
+    first = {"/chapters/t1.html": {"content": "<p>t1</p>"}}
+
+    class _Boom(_DeepThatStopsEarly):
+        async def ainvoke(self, _input, config=None):
+            self.calls += 1
+            if self.calls == 1:
+                return {"messages": [], "files": self.first}
+            raise RuntimeError("补写轮超时")
+
+    deep = _Boom(first)
+    monkeypatch.setattr(content_mod, "create_deep_agent", lambda **kw: deep)
+    node = content_mod.make_content_node(_ctx())
+    out = asyncio.run(node({"outline": _outline(["t1", "t2"]), "read": {}}))
+    assert set(out["chapters"]) == {"t1"}, "补写失败把已成稿的章节也弄丢了"

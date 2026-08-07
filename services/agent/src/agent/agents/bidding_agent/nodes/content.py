@@ -406,6 +406,57 @@ def _collect_chapters(files: dict | None, allowed: set[str] | None = None) -> di
     return chapters
 
 
+async def _log_incomplete(ctx, missing: list[str], total: int, phase: str) -> None:
+    """漏章落 observability 事件。生产 root logger 是 WARNING 且日志会滚掉——
+    「这次交付少了几章」必须查得到，否则复盘时只剩用户截图（与 length_telemetry 同款做法）。"""
+    try:
+        if ctx.recorder and ctx.run_id:
+            await asyncio.to_thread(
+                ctx.recorder.log_event,
+                ctx.run_id, ctx.agent_type, "content_incomplete", node="content",
+                data={"missing": missing, "missing_count": len(missing), "total": total, "phase": phase},
+                thread_id=ctx.thread_id,
+            )
+    except Exception:  # noqa: BLE001 埋点失败绝不影响交付
+        logger.warning("content incomplete event write failed", exc_info=True)
+
+
+async def _fill_missing_chapters(ctx, deep, chapters: dict[str, str], meta: dict, limit: int, progress_cb) -> dict[str, str]:
+    """漏写的章补一轮。
+
+    2026-08-06 生产实例：20 章的标书写到第 14 章就停了（t6–t11 一个字没有），而
+    `if not chapters` 只在**一章都没有**时才失败，于是整步标 done、照常扣费、照常进入
+    审查与导出——审查报「缺章」，导出连挂 9 次，用户拿到的是半本标书却没收到任何提示。
+    （那次的诱因是首个 write_todos 因参数类型被拒、计划清单没建起来，但补写不赌原因：
+    不管模型为什么停，漏了就补。）
+
+    只补漏的那几章，不重写已有的：已写好的是用户付过钱的成果，重跑一遍既费钱又可能变差。
+    补完仍缺就如实记一条事件——此时不抛错，14 章成稿比"全额退款、从头再来"对用户更有价值，
+    前端每章本就有「待生成」标记。
+    """
+    missing = [cid for cid in meta if cid not in chapters]
+    if not missing:
+        return chapters
+    logger.warning("content 漏写 %d/%d 章，补写：%s", len(missing), len(meta), missing)
+    await _log_incomplete(ctx, missing, len(meta), "before_retry")
+    lines = "\n".join(f"- {cid}：{meta.get(cid)}" for cid in missing)
+    msg = (f"还有 {len(missing)} 章没有写：\n{lines}\n"
+           "请**只写这几章**，逐章写入 chapters/<章id>.html，不要改动已经写好的其它章节。")
+    try:
+        res = await deep.ainvoke(
+            {"messages": [HumanMessage(content=msg)]},
+            config={"recursion_limit": limit, "callbacks": [
+                UsageCallback(ctx, "content"), progress_cb, ToolCallRecorder(ctx, "content")]})
+        chapters = {**chapters, **_collect_chapters(res.get("files"), allowed=set(meta))}
+    except Exception as e:  # 补写失败不能连累已成稿的章节
+        logger.warning("content 补写失败（保留已成稿章节）：%s", e)
+    still = [cid for cid in meta if cid not in chapters]
+    if still:
+        logger.error("content 补写后仍缺 %d 章：%s", len(still), still)
+        await _log_incomplete(ctx, still, len(meta), "after_retry")
+    return chapters
+
+
 def _heartbeat_label(done: int, total: int, chapter_elapsed_s: float) -> str:
     """正文心跳文案：横幅每 5s 动一次，用户能看到"写到第几章、本章写了多久"。
     正文没有读标那种流式字数（deepagent 直驱模型非流式），能给的活信息就是章序 + 本章计时。"""
@@ -483,6 +534,7 @@ def make_content_node(ctx):
         chapters = _collect_chapters(res.get("files"), allowed=set(chapters_meta))
         if not chapters:
             raise RuntimeError("deepagent 未产出任何章节草稿（chapters/*.html）")
+        chapters = await _fill_missing_chapters(ctx, deep, chapters, chapters_meta, recursion_limit, progress_cb)
         await _log_length_telemetry(ctx, state.get("run_input") or {}, chapters)  # 超写系数的校准数据源（评审 F2）
         return {"chapters": chapters}
     return content_node
