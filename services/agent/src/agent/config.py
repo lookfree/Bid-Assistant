@@ -61,8 +61,14 @@ class Settings(BaseSettings):
     model_idle_timeout_s: int = 30              # 流式中连续 N 秒无新 token = 连接挂死 → 降级重试
     model_first_token_timeout_s: int = 120      # 首 token（含连接+大 prompt 预填）宽限，避免误杀慢启动
     # 单轮总时长兜底：服务商限流时 token 细流(每 20s 一个)骗过空闲检测、单轮磨 30+ 分钟(生产实测
-    # tech18)。⚠️ 别改小：600s 曾把晚高峰慢而健康的全文骨架轮(实测需 ~11 分钟)连同降级一起
-    # 冤杀成永久失败——20 分钟顶格仍未完成=事实不可用 → 判超时进降级重试通道。
+    # tech18)。顶格仍未完成 = 事实不可用 → 判超时进降级重试通道。
+    #
+    # ⚠️ 别改小：600s 曾把晚高峰**慢而健康**的全文骨架轮(实测需 ~11 分钟)连同降级一起冤杀成
+    # 永久失败。下限得是"实测最慢的健康轮 + 足够余量"，不是拍脑袋的整数——15 分钟只剩 4 分钟余量，
+    # 2026-08-08 评估后维持 20 分钟不动。
+    # 真要更快发现挂死，靠的是**流式空闲检测**（30 秒），不是继续压这个盖：正文已于同日打开流式，
+    # 两者分工不同——空闲检测杀"挂死"，这个盖杀"慢而不死"（限流下每 20s 吐一个 token 骗过空闲检测）。
+    # 线上可用 MODEL_ROUND_TIMEOUT_S 环境变量随时调，不必改代码发版。
     model_round_timeout_s: int = 1200
     # 结构化模型链（spec319.1）：每项 {provider, model, base_url, api_key}；仅由 App run override
     # 经 model_copy(update=...) 注入，不从 env 解析（pydantic-settings 对 list[dict] 复杂字段不读 env）。

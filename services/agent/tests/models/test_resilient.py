@@ -10,10 +10,11 @@
 deepagents 内部要绑工具，这也是不能用 Runnable.with_fallbacks 的原因。
 """
 import asyncio
+import time
 
 import pytest
 from langchain_core.messages import HumanMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.messages import AIMessage, AIMessageChunk
 
 from agent.config import settings
@@ -284,7 +285,7 @@ def test_hung_stream_raises_instead_of_hanging_forever(monkeypatch):
     monkeypatch.setattr(settings, "model_round_timeout_s", 60)
 
     async def go():
-        async for _ in _timed_chat()._timed(_never_yields()):
+        async for _ in _timed_chat()._timed(_never_yields(), time.monotonic() + 60):
             pass
 
     with pytest.raises(ModelIdleTimeout):
@@ -295,10 +296,9 @@ def test_round_cap_catches_slow_but_not_dead(monkeypatch):
     """限流下每隔一点吐一个 token，能骗过空闲检测——总时长盖才杀得掉。"""
     monkeypatch.setattr(settings, "model_first_token_timeout_s", 5)
     monkeypatch.setattr(settings, "model_idle_timeout_s", 5)      # 空闲检测抓不住
-    monkeypatch.setattr(settings, "model_round_timeout_s", 0.2)   # 靠总时长盖
 
     async def go():
-        async for _ in _timed_chat()._timed(_trickle()):
+        async for _ in _timed_chat()._timed(_trickle(), time.monotonic() + 0.2):
             pass
 
     with pytest.raises(ModelIdleTimeout):
@@ -323,7 +323,7 @@ def test_healthy_stream_passes_through(monkeypatch):
             yield AIMessageChunk(content=t)
 
     async def go():
-        return [c.content async for c in _timed_chat()._timed(three())]
+        return [c.content async for c in _timed_chat()._timed(three(), time.monotonic() + 60)]
 
     assert asyncio.run(go()) == ["一", "二", "三"]
 
@@ -337,7 +337,8 @@ class _HungPrimary(ResilientChat):
 
     async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
         """复刻真实 _astream 的结构，只把 super()._astream 换成挂死的桩。"""
-        it = self._timed(self._primary_stream(messages, stop=stop, run_manager=run_manager, **kwargs))
+        deadline = time.monotonic() + settings.model_round_timeout_s
+        it = self._timed(self._primary_stream(messages, stop=stop, run_manager=run_manager, **kwargs), deadline)
         try:
             first = await it.__anext__()
         except StopAsyncIteration:
@@ -346,7 +347,7 @@ class _HungPrimary(ResilientChat):
             if not self._should_fallback(e):
                 raise
             async for c in self._timed(
-                    self.fallback._astream(messages, stop=stop, run_manager=run_manager, **kwargs)):
+                    self.fallback._astream(messages, stop=stop, run_manager=run_manager, **kwargs), deadline):
                 yield c
             return
         yield first
@@ -405,7 +406,7 @@ def test_hung_non_streaming_call_is_capped(monkeypatch):
         await asyncio.sleep(3600)
 
     object.__setattr__(c, "_primary_agenerate",
-                       lambda *a, **k: c._capped(hang(*a, **k)))
+                       lambda *a, **k: c._capped(hang(*a, **k), time.monotonic() + 0.1))
 
     out = asyncio.run(asyncio.wait_for(
         c._agenerate([HumanMessage(content="写")]), timeout=5))
@@ -428,3 +429,119 @@ def test_healthy_non_streaming_call_is_untouched(monkeypatch):
     c = _patched()
     out = asyncio.run(c._agenerate([HumanMessage(content="写")]))
     assert out.generations[0].message.content == "主模型的回答"
+
+
+# ---------------- 流式开关（2026-08-08）----------------
+# 用 deepagents **不等于**只能非流式：langgraph 的执行器调 ainvoke，而 ainvoke 是否转流式
+# 由模型实例说了算（BaseChatModel._should_stream：streaming=True / stream= / 挂流式回调）。
+# 不改 deepagents 一行，打开 streaming 就能用上 30 秒空闲检测，而不是干等 20 分钟总时长盖。
+
+def test_content_model_has_streaming_on():
+    """正文用的模型必须开着流式——关着就没有 token 流，空闲检测形同虚设。"""
+    class _GW:
+        s = None
+
+        def chain(self):
+            return [{"provider": "deepseek", "model": "m"}]
+
+        def get_chat(self, **kw):
+            return ResilientChat(model="m", api_key="k", base_url="http://x/v1")
+
+    c = resilient_chat(_GW())
+    assert getattr(c, "streaming", False) is True, "正文模型没开流式"
+    assert getattr(c, "stream_usage", False) is True, "流式下不要 usage 会让 token 用量静默丢失"
+
+
+def test_ainvoke_actually_reaches_the_timed_stream(monkeypatch):
+    """**证明这条链路真的通**：不碰 deepagents，只把 streaming 打开，
+    ainvoke 就会走进我们加了限时的 _astream。挂死时因此能在 30 秒内判掉、换模型。"""
+    monkeypatch.setattr(settings, "model_first_token_timeout_s", 0.05)
+    monkeypatch.setattr(settings, "model_idle_timeout_s", 0.05)
+    monkeypatch.setattr(settings, "model_round_timeout_s", 60)
+
+    seen = {"astream": 0, "agenerate": 0}
+
+    class _Probe(ResilientChat):
+        async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+            seen["astream"] += 1
+            yield ChatGenerationChunk(message=AIMessageChunk(content="流式产出"))
+
+        async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+            seen["agenerate"] += 1
+            return _result("非流式产出")
+
+    c = _Probe(model="m", api_key="k", base_url="http://x/v1", streaming=True, fallback=None)
+    out = asyncio.run(c.ainvoke([HumanMessage(content="写")]))
+    assert seen["astream"] == 1 and seen["agenerate"] == 0, f"ainvoke 没走流式：{seen}"
+    assert "流式产出" in out.content
+
+
+# ---------------- 审查提出的三点（2026-08-08）----------------
+
+def test_timed_closes_the_stream_it_abandons():
+    """超时/提前退出都要**立刻关流**。
+
+    不关的话，挂死的那条 SSE 连接会一直挂到 GC，而我们下一步马上又去连降级模型——
+    两条连接同时占着。model_stream 的 astream_collect 早就这么做了，这条路当时没跟上。
+    """
+    closed = {"n": 0}
+
+    class _Stream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(3600)
+
+        async def aclose(self):
+            closed["n"] += 1
+
+    async def go():
+        async for _ in ResilientChat(model="m", api_key="k", base_url="http://x/v1")._timed(
+                _Stream(), time.monotonic() + 0.05):
+            pass
+
+    with pytest.raises(ModelIdleTimeout):
+        asyncio.run(asyncio.wait_for(go(), timeout=5))
+    assert closed["n"] == 1, "挂死的流没关掉"
+
+
+def test_both_attempts_share_one_deadline():
+    """主/降级两跳共用一个截止时刻——各算各的会让"单轮 20 分钟"实际变成 40 分钟。"""
+    import inspect
+
+    for fn in (ResilientChat._astream, ResilientChat._agenerate):
+        src = inspect.getsource(fn)
+        assert src.count("deadline") >= 3, f"{fn.__name__} 没把同一个 deadline 传给两跳"
+        assert "model_round_timeout_s" in src, f"{fn.__name__} 没有算截止时刻"
+    # 截止时刻只在入口算一次，_timed/_capped 内部不得再算
+    for fn in (ResilientChat._timed, ResilientChat._capped):
+        assert "model_round_timeout_s" not in inspect.getsource(fn), \
+            f"{fn.__name__} 又自己算了一遍上限，两跳就不共用了"
+
+
+def test_hang_does_not_retry_the_same_endpoint(monkeypatch):
+    """挂死之后不再对**同一个端点**重来。
+
+    自重试是为"瞬断"设的（隔几秒就通了）；刚挂满一个总时长盖的端点再等一轮多半还是挂，
+    只会把 20 分钟拖成 40 分钟。换的是**别的模型**时照常重试。
+    """
+    monkeypatch.setattr(settings, "model_round_timeout_s", 0.05)
+
+    async def hang(self, messages, stop=None, run_manager=None, **kw):
+        await asyncio.sleep(3600)
+
+    # 第二跳就是自己：挂死直接抛，不再重打
+    c = ResilientChat(model="m", api_key="k", base_url="http://x/v1",
+                      fallback=_Fallback(), fallback_is_self=True)
+    monkeypatch.setattr(type(c).__mro__[1], "_agenerate", hang, raising=False)
+    with pytest.raises(ModelIdleTimeout):
+        asyncio.run(asyncio.wait_for(c._agenerate([HumanMessage(content="写")]), timeout=5))
+
+    # 第二跳是别的模型：照常换过去
+    fb = _Fallback()
+    c2 = ResilientChat(model="m", api_key="k", base_url="http://x/v1",
+                       fallback=fb, fallback_is_self=False)
+    monkeypatch.setattr(type(c2).__mro__[1], "_agenerate", hang, raising=False)
+    out = asyncio.run(asyncio.wait_for(c2._agenerate([HumanMessage(content="写")]), timeout=5))
+    assert out.generations[0].message.content == "降级模型的回答" and fb.calls == 1

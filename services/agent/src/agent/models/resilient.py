@@ -67,23 +67,28 @@ class ResilientChat(ChatOpenAI):
         非流式没有 token 流可测，"30 秒不吐字"这种空闲判据在这里根本不适用，只能整通调用限时。
         2026-08-08 生产：一次非流式调用挂了 36 分钟没有任何响应，而这条路当时没有任何上限。
         """
+        deadline = time.monotonic() + settings.model_round_timeout_s
         try:
             return await self._capped(
-                super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs))
+                super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs), deadline)
         except Exception as e:  # noqa: BLE001 只接管可降级的两类，见 _should_fallback
             if not self._should_fallback(e):
+                raise
+            # 挂死之后**不再对同一个端点重来**：自重试是为"瞬断"设的（隔几秒就通了），
+            # 而刚刚已经挂满一个总时长盖的端点，再等一轮多半还是挂——那只会把 20 分钟拖成 40 分钟。
+            if self.fallback_is_self and isinstance(e, ModelIdleTimeout):
                 raise
             logger.warning("主模型调用失败（%s），改用降级模型重试：%s", type(e).__name__, str(e)[:120])
             await self._wait_before_self_retry()
             return await self._capped(
-                self.fallback._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs))
+                self.fallback._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs), deadline)
 
     @staticmethod
-    async def _capped(coro):
-        """整通调用限时；超时抛 ModelIdleTimeout（被 _should_fallback 认作可降级）。
-        上限取单轮总时长盖——它本就是为"慢而不死"设的，非流式挂死同样适用。"""
+    async def _capped(coro, deadline: float):
+        """整通调用限时到给定截止时刻；超时抛 ModelIdleTimeout（_should_fallback 显式认它）。
+        deadline 由调用方给且两跳共用——各算各的会让"单轮 20 分钟"实际变成 40 分钟。"""
         try:
-            return await asyncio.wait_for(coro, timeout=settings.model_round_timeout_s)
+            return await asyncio.wait_for(coro, timeout=max(deadline - time.monotonic(), 0.01))
         except asyncio.TimeoutError as e:
             raise ModelIdleTimeout() from e
 
@@ -97,7 +102,9 @@ class ResilientChat(ChatOpenAI):
         空闲超时杀"挂死"，总时长盖杀"慢而不死"（限流下每 20s 吐一个 token 能骗过空闲检测），
         两者都当作可降级错误，交给上面的降级分支换模型重来。
         """
-        it = self._timed(super()._astream(messages, stop=stop, run_manager=run_manager, **kwargs))
+        # 两跳共用一个截止时刻：各算各的会让"单轮 20 分钟"实际变成 40 分钟
+        deadline = time.monotonic() + settings.model_round_timeout_s
+        it = self._timed(super()._astream(messages, stop=stop, run_manager=run_manager, **kwargs), deadline)
         try:
             first = await it.__anext__()
         except StopAsyncIteration:
@@ -108,34 +115,50 @@ class ResilientChat(ChatOpenAI):
             logger.warning("主模型流式起始失败（%s），改用降级模型：%s", type(e).__name__, str(e)[:120])
             await self._wait_before_self_retry()
             async for c in self._timed(
-                    self.fallback._astream(messages, stop=stop, run_manager=run_manager, **kwargs)):
+                    self.fallback._astream(messages, stop=stop, run_manager=run_manager, **kwargs),
+                    deadline):
                 yield c
             return
         yield first
         async for c in it:
             yield c
 
-    async def _timed(self, stream):
-        """给一条流套上首 token 宽限、token 间隔空闲超时、单轮总时长盖。
-        超时一律抛 ModelIdleTimeout——它被 _is_transient_stream_error 认作可降级错误。"""
+    async def _timed(self, stream, deadline: float):
+        """给一条流套上首 token 宽限、token 间隔空闲超时、总时长盖（deadline 由调用方给）。
+
+        超时抛 ModelIdleTimeout。**注意它不是网络异常的子类**，_is_transient_stream_error
+        认不出它——能进降级通道全靠 _should_fallback 里那句显式 isinstance，别把那句删了。
+
+        deadline 由调用方传入而不是这里现算：主/降级两跳必须共用同一个截止时刻，
+        各算各的会让"20 分钟单轮盖"实际变成 40 分钟（审查提出）。
+        """
         idle_s = settings.model_idle_timeout_s
         first_s = settings.model_first_token_timeout_s
-        deadline = time.monotonic() + settings.model_round_timeout_s
         it = stream.__aiter__()
         got_any = False
-        while True:
-            budget = deadline - time.monotonic()
-            if budget <= 0:
-                raise ModelIdleTimeout()      # 总时长顶格：事实不可用，进降级重试
-            try:
-                chunk = await asyncio.wait_for(
-                    it.__anext__(), timeout=min(first_s if not got_any else idle_s, budget))
-            except StopAsyncIteration:
-                return
-            except asyncio.TimeoutError as e:
-                raise ModelIdleTimeout() from e
-            got_any = True
-            yield chunk
+        try:
+            while True:
+                budget = deadline - time.monotonic()
+                if budget <= 0:
+                    raise ModelIdleTimeout()      # 总时长顶格：事实不可用，进降级重试
+                try:
+                    chunk = await asyncio.wait_for(
+                        it.__anext__(), timeout=min(first_s if not got_any else idle_s, budget))
+                except StopAsyncIteration:
+                    return
+                except asyncio.TimeoutError as e:
+                    raise ModelIdleTimeout() from e
+                got_any = True
+                yield chunk
+        finally:
+            # 超时/异常/调用方提前退出都要**立刻关流**，不等 GC：挂死的那条 SSE 连接不关掉，
+            # 下面马上又去连降级模型，两条连接同时挂着（model_stream 的 astream_collect 同款处理）。
+            aclose = getattr(stream, "aclose", None)
+            if aclose is not None:
+                try:
+                    await aclose()
+                except Exception:  # noqa: BLE001 关流 best-effort
+                    pass
 
 
 def resilient_chat(gateway, **kw) -> Any:
@@ -171,7 +194,14 @@ def resilient_chat(gateway, **kw) -> Any:
     # 用主模型的构造参数重建成 ResilientChat：直接改 primary 的类不安全（pydantic 校验字段）
     data = {k: v for k, v in primary.__dict__.items() if not k.startswith("_")}
     try:
-        return ResilientChat(**{**data, "fallback": fallback, "fallback_is_self": len(items) < 2})
+        # **打开流式**：langgraph 的执行器调 ainvoke，而 ainvoke 只在
+        # `streaming=True`／显式 stream=／挂了流式回调时才转流式（见 BaseChatModel._should_stream）。
+        # 不开就是一次普通 HTTP 调用，没有 token 流可测——"30 秒不吐字判挂死"这条根本用不上，
+        # 只能干等 20 分钟的总时长盖（2026-08-08：一次挂死等了 36 分钟）。
+        # deepagents 并没有写死非流式，是我们造模型时没开。
+        # stream_usage 一并带上：流式下服务商要显式要求才回 usage，否则 token 用量静默丢失。
+        return ResilientChat(**{**data, "streaming": True, "stream_usage": True,
+                                "fallback": fallback, "fallback_is_self": len(items) < 2})
     except Exception:  # noqa: BLE001 构造失败绝不能连累正文生成——退回无降级的原模型
         logger.warning("构造带降级的模型失败，本次无降级", exc_info=True)
         return primary
