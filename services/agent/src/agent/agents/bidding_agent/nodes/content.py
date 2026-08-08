@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -37,7 +38,9 @@ class ChapterProgressCallback(AsyncCallbackHandler):
         self.titles = titles          # chapter_id → 标题(前端展示用)；键集合即提纲的合法章 id
         self.done: list[str] = []
         self.rewrites: dict[str, int] = {}   # chapter_id → 重写次数（首写不算）
-        self.chapter_started = time.monotonic()   # 当前章起笔时刻（心跳显示"本章已 N 分"）
+        self.batch_started = time.monotonic()     # 本批起算时刻（心跳显示"本批已 N 分"）
+        self.in_flight = 0                        # 此刻有几路子写手在写
+        self._tasks: set = set()                  # 在飞的 task 的 run_id（按 id 配对，见 _task_finished）
 
     async def _log_pg(self, event_type: str, data: dict, level: str = "info") -> None:
         """章节事件同步落 agent_event_log（best-effort）。Redis 进度流 24h 过期，2026-08-01 空转
@@ -53,7 +56,41 @@ class ChapterProgressCallback(AsyncCallbackHandler):
         except Exception:  # noqa: BLE001 埋点 best-effort，绝不影响正文生成
             logger.warning("chapter event log failed", exc_info=True)
 
+    def seed_done(self, files: dict) -> None:
+        """续跑时把检查点里已写好的章记成"已完成"。
+
+        回调只看得见**本轮**的 write_file——不接管的话，崩在第 19 章的任务重试时横幅会从
+        "已完成 0/20"开始爬，而它其实只剩一章要写，用户会以为又从头来了。
+        只认提纲里有的章 id（与 done 计数同一口径，幽灵章不进计数）。"""
+        for path in files or {}:
+            m = re.search(r"chapters/([^\"'/\\\s\]\},]+?)\.html", str(path))
+            cid = m.group(1) if m else None
+            if cid and cid not in self.done and (not self.titles or cid in self.titles):
+                self.done.append(cid)
+
+    def _task_finished(self, run_id) -> None:
+        """按 run_id 配对着减：**这个回调收到的是所有工具的结束事件**（子写手的 read_file /
+        write_file 也会来）。无条件减的话，7 路在写时会被几次 write_file 减到 0，
+        横幅退回含糊的"撰写中"，而下一次 task 开始又把计时归零——恰好把要暴露的长停顿藏了起来。"""
+        if run_id in self._tasks:
+            self._tasks.discard(run_id)
+            self.in_flight = len(self._tasks)
+
+    async def on_tool_end(self, output, *, run_id=None, **kwargs):
+        self._task_finished(run_id)
+
+    async def on_tool_error(self, error, *, run_id=None, **kwargs):
+        self._task_finished(run_id)
+
     async def on_tool_start(self, serialized, input_str, *, inputs=None, **kwargs):
+        # task = 派一个子写手去写一章（deepagents 的分派工具）。数它的开始/结束就拿到**真实并发数**，
+        # 不必去猜——横幅此前假设串行，把并行写成"第 N 章卡了 15 分钟"（2026-08-08 用户来问）。
+        if (serialized or {}).get("name") == "task" if isinstance(serialized, dict) else False:
+            self._tasks.add(kwargs.get("run_id"))
+            self.in_flight = len(self._tasks)
+            if self.in_flight == 1:
+                self.batch_started = time.monotonic()   # 新一批开始，计时归零
+            return
         # 只认 write_file 工具：deepagent 的 write_todos 等规划工具 input 里也含 "chapters/<id>.html"
         # （todo 项，带 status），之前误判成"写完一章"→ 计数虚高、标题解析成 todo 的 repr 残片。
         name = (serialized or {}).get("name") if isinstance(serialized, dict) else None
@@ -96,7 +133,7 @@ class ChapterProgressCallback(AsyncCallbackHandler):
             logger.warning("chapter progress publish failed", exc_info=True)
         await self._log_pg("chapter.done", {"chapterId": cid, "title": self.titles.get(cid, cid),
                            "done": len(self.done), "total": self.total})
-        self.chapter_started = time.monotonic()   # 下一章从现在起算
+        self.batch_started = time.monotonic()     # 下一批从现在起算
 
 _CHAPTER_PREFIX = "/chapters/"
 _REWRITE_QUERY_CHARS = 200   # 改写检索 query 取原章前 N 字，避免整章 HTML 顶穿 embed 输入
@@ -445,7 +482,8 @@ async def _log_incomplete(ctx, missing: list[str], total: int, phase: str) -> No
         logger.warning("content incomplete event write failed", exc_info=True)
 
 
-async def _fill_missing_chapters(ctx, deep, chapters: dict[str, str], meta: dict, limit: int, progress_cb) -> dict[str, str]:
+async def _fill_missing_chapters(ctx, deep, chapters: dict[str, str], meta: dict, limit: int,
+                                 progress_cb, thread_id: str | None = None) -> dict[str, str]:
     """漏写的章补一轮。
 
     2026-08-06 生产实例：20 章的标书写到第 14 章就停了（t6–t11 一个字没有），而
@@ -467,10 +505,15 @@ async def _fill_missing_chapters(ctx, deep, chapters: dict[str, str], meta: dict
     msg = (f"还有 {len(missing)} 章没有写：\n{lines}\n"
            "请**只写这几章**，逐章写入 chapters/<章id>.html，不要改动已经写好的其它章节。")
     try:
-        res = await deep.ainvoke(
-            {"messages": [HumanMessage(content=msg)]},
-            config={"recursion_limit": limit, "callbacks": [
-                UsageCallback(ctx, "content"), progress_cb, ToolCallRecorder(ctx, "content")]})
+        # **必须与主轮同一个 thread_id**：主轮挂上自定义 thread 之后，这里若不带，
+        # 读到的是一份空状态——没有招标原文、没有提纲、也不知道已经写过哪几章，
+        # 补出来的只能是凭空编的内容（2026-08-08 审查提出；此前两处都没带 configurable，
+        # 恰好落在同一条血缘上才没出事）。
+        cfg = {"recursion_limit": limit, "callbacks": [
+            UsageCallback(ctx, "content"), progress_cb, ToolCallRecorder(ctx, "content")]}
+        if thread_id:
+            cfg["configurable"] = {"thread_id": thread_id}
+        res = await deep.ainvoke({"messages": [HumanMessage(content=msg)]}, config=cfg)
         chapters = {**chapters, **_collect_chapters(res.get("files"), allowed=set(meta))}
     except Exception as e:  # 补写失败不能连累已成稿的章节
         logger.warning("content 补写失败（保留已成稿章节）：%s", e)
@@ -481,12 +524,21 @@ async def _fill_missing_chapters(ctx, deep, chapters: dict[str, str], meta: dict
     return chapters
 
 
-def _heartbeat_label(done: int, total: int, chapter_elapsed_s: float) -> str:
-    """正文心跳文案：横幅每 5s 动一次，用户能看到"写到第几章、本章写了多久"。
-    正文没有读标那种流式字数（deepagent 直驱模型非流式），能给的活信息就是章序 + 本章计时。"""
-    n = min(done + 1, total)
-    m, s = divmod(int(chapter_elapsed_s), 60)
-    return f"正文·第 {n}/{total} 章成稿中（本章已 {m} 分 {s:02d} 秒）"
+def _heartbeat_label(done: int, total: int, elapsed_s: float, in_flight: int = 0) -> str:
+    """正文心跳文案：横幅每 5s 动一次。
+
+    **不再假装是一章接一章写的**：实测正文是多路并行（2026-08-08 用调用区间算出并发峰值 7 路、
+    54% 的调用互相重叠）。旧文案写"第 9/20 章成稿中（本章已 15 分）"，两个数都是错的——
+    序号其实是"已完成+1"，计时其实是"距上一章写完多久"。用户读成"这一章卡了 15 分钟"来问，
+    而那会儿实际有六七章在同时写、每两三分钟就完成一章。
+
+    现在只说得准的话：完成了几章、此刻有几路在写、这一批写了多久。
+    """
+    m, s = divmod(int(elapsed_s), 60)
+    if in_flight > 0:
+        return f"正文·已完成 {done}/{total} 章，{in_flight} 章同时撰写中（本批已 {m} 分 {s:02d} 秒）"
+    # 拿不到并发数（模型还在规划、或派活工具改了名）：只报进度与用时，不编造章序
+    return f"正文·已完成 {done}/{total} 章，撰写中（已 {m} 分 {s:02d} 秒）"
 
 
 async def _chapter_heartbeat(ctx, cb: "ChapterProgressCallback", interval_s: float = 5.0) -> None:
@@ -495,7 +547,8 @@ async def _chapter_heartbeat(ctx, cb: "ChapterProgressCallback", interval_s: flo
     from agent.runtime.progress import publish_event
     while True:
         await asyncio.sleep(interval_s)
-        label = _heartbeat_label(len(cb.done), cb.total, time.monotonic() - cb.chapter_started)
+        label = _heartbeat_label(len(cb.done), cb.total,
+                                 time.monotonic() - cb.batch_started, cb.in_flight)
         await publish_event(getattr(ctx, "redis", None), getattr(ctx, "run_id", None),
                             {"kind": "heartbeat", "label": label, "chars": 0})
 
@@ -515,10 +568,14 @@ def make_content_node(ctx):
         # 提纲 desc 就是这么丢过的（CONTENT_PLANNER_PROMPT 里那句「必须原样转述」是事后补的）。
         cats = (state.get("run_input") or {}).get("bid_category")
         writer_prompt = CHAPTER_WRITER_PROMPT + category_scope(cats, "writing")
+        # 挂 checkpointer：正文是最长最贵的一步，进程一死（挂死被杀/发版/崩溃）已写好的章
+        # 连同消息历史一起丢，重跑得从第一章开始——2026-08-08 一次挂死白写了 19 章。
+        # deepagents 本来就支持，只是此前没传。thread id 随输入变化自动失效，见 content_resume_thread。
         deep = create_deep_agent(
             model=model, tools=[], system_prompt=CONTENT_PLANNER_PROMPT,
             subagents=[{"name": "chapter_writer", "description": "写指定一章的标书正文 HTML",
                         "system_prompt": writer_prompt}],
+            checkpointer=getattr(ctx, "checkpointer", None),
         )
         # 读标依据走 slim_read（与 outline/review 一致）：read result 已并入全文分句 doc_sections
         # 与逐条 source_quote（token 大头），原样 dumps 会把整份招标原文灌进规划轮直接顶穿上下文。
@@ -556,18 +613,26 @@ def make_content_node(ctx):
         progress_cb = ChapterProgressCallback(ctx, len(chapters_meta), chapters_meta)
         hb = asyncio.create_task(_chapter_heartbeat(ctx, progress_cb))  # 横幅每 5s 动一次
         try:
-            res = await deep.ainvoke(
-                {"messages": [HumanMessage(content=user)]},
-                config={"recursion_limit": recursion_limit, "callbacks": [
-                    UsageCallback(ctx, "content"),
-                    progress_cb,
-                    ToolCallRecorder(ctx, "content")]})  # agent_tool_call 落库（此前全库 0 行）
+            cfg = {"recursion_limit": recursion_limit, "callbacks": [
+                UsageCallback(ctx, "content"),
+                progress_cb,
+                ToolCallRecorder(ctx, "content")]}       # agent_tool_call 落库（此前全库 0 行）
+            if getattr(deep, "checkpointer", None) is not None:
+                resume_thread = content_resume_thread(
+                    ctx, outline=outline, read=read, run_input=state.get("run_input") or {},
+                    writer_prompt=writer_prompt)
+                cfg["configurable"] = {"thread_id": resume_thread}
+                res = await _resume_or_start(deep, resume_thread, user, cfg, progress_cb=progress_cb)
+            else:                                        # 无 checkpointer（测试桩/单跑）：行为不变
+                resume_thread = None
+                res = await deep.ainvoke({"messages": [HumanMessage(content=user)]}, config=cfg)
         finally:
             hb.cancel()
         chapters = _collect_chapters(res.get("files"), allowed=set(chapters_meta))
         if not chapters:
             raise RuntimeError("deepagent 未产出任何章节草稿（chapters/*.html）")
-        chapters = await _fill_missing_chapters(ctx, deep, chapters, chapters_meta, recursion_limit, progress_cb)
+        chapters = await _fill_missing_chapters(ctx, deep, chapters, chapters_meta, recursion_limit,
+                                                progress_cb, resume_thread)
         await _log_length_telemetry(ctx, state.get("run_input") or {}, chapters)  # 超写系数的校准数据源（评审 F2）
         return {"chapters": chapters}
     return content_node
@@ -714,3 +779,54 @@ async def rewrite_chapter(ctx, chapter_id: str, instruction: str, state: dict,
     # 先剥对话包装（开场白/```围栏）再剥文档壳：提示词禁不住模型客套，确定性清洗兜底
     new = clean_internal_ids(strip_document_shell(strip_chat_wrapper(last.content)))
     return restore_images(new, kept_images)
+
+
+def content_resume_thread(ctx, *, outline: dict, read: dict, run_input: dict,
+                          writer_prompt: str) -> str:
+    """正文断点续跑用的 thread id。
+
+    哈希只盖**确定性且用户能感知**的那几样：提纲、读标结论、本 run 参数（选包/时长/字数档）、
+    规划与写手提示词。改了其中任何一样，id 就对不上，旧检查点自然作废、从头重写——
+    从旧检查点接着跑意味着按**旧计划**出稿且毫无提示，用户拿到的是一份他以为改过、其实没改的标书。
+
+    **刻意不含检索出来的参考资料段**：那东西每次跑都可能不一样（资料库更新、召回顺序抖动），
+    含进来会让用户什么都没改、哈希却变了，旧检查点白白作废——续跑就等于没做。
+    宁可对"资料变了"不敏感（它不改变要写哪些章、写什么要求），也不能让功能静默失效。
+    """
+    seed = json.dumps({"outline": outline, "read": read,
+                       # content_generation 不进哈希：它是"第几次生成"，单独作后缀（见下），
+                       # 混进哈希会让人查不出 id 为什么变
+                       "run_input": {k: v for k, v in (run_input or {}).items()
+                                     if k != "content_generation"}},
+                      ensure_ascii=False, sort_keys=True)
+    seed += f"\n--\n{CONTENT_PLANNER_PROMPT}\n--\n{writer_prompt}"
+    # 第几次生成（App 下发 = 已成功完成的正文步数）。**不能用 run_id 做盐**：
+    # 那样一次"重新生成"失败后，重试会算出另一个 id，接不上刚写了一半的那条，
+    # 反而回落到上一次**已完成**的检查点——ainvoke 什么都不做，直接把旧文档当新结果交回来，
+    # 用户付了钱拿回同一份文档（2026-08-08 审查提出，正是换 thread 要防的那件事）。
+    # 用"第几次"就稳：重试时它不变（接得上），重新生成时它 +1（换一条干净的线）。
+    gen = (run_input or {}).get("content_generation") or 0
+    tid = f"{ctx.thread_id}-content-{hashlib.sha256(seed.encode()).hexdigest()[:16]}"
+    return f"{tid}-g{gen}" if gen else tid
+
+
+async def _resume_or_start(deep, thread_id: str, user_msg: str, config: dict, *, progress_cb=None):
+    """这条线上有检查点就接着写，没有就从头开始。
+
+    **"要不要从头"由 thread id 表达，不再单独开一个意图开关**：重新生成会换到新的一条线
+    （见 content_resume_thread 的 content_generation），那条线上本来就没有检查点，自然从头跑；
+    而失败重试算出的是同一条线，自然接得上。少一个开关，就少一处"开关对了但 id 没换"的错法。
+
+    续跑必须用 `None` 作输入：再传一次 messages 会往历史里**追加一条同样的指令**，
+    模型看到两条"请逐章生成正文"，可能把已写好的章重写一遍——那正是续跑要省掉的开销。
+    """
+    snap = await deep.aget_state({"configurable": {"thread_id": thread_id}})
+    if snap.values and (snap.next or snap.values.get("files")):
+        done = snap.values.get("files") or {}
+        logger.info("正文续跑：已有检查点（待执行 %s，已写 %d 章）", snap.next, len(done))
+        # 进度从已写的章起算：回调只看得见**本轮**的 write_file，不接管的话，
+        # 崩在第 19 章的任务重试时横幅会从"第 1/20 章"开始爬，而它其实只剩一章要写。
+        if progress_cb is not None:
+            progress_cb.seed_done(done)
+        return await deep.ainvoke(None, config=config)
+    return await deep.ainvoke({"messages": [HumanMessage(content=user_msg)]}, config=config)

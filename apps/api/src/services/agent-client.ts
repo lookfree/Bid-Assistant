@@ -337,9 +337,13 @@ export async function getRun(
  *  只放行 RuntimeError：节点里 `raise RuntimeError("上传的标书未能解析出任何正文…")` 这类是我们
  *  自己为用户写的话，可行动、无内部细节。其它异常（ValueError/TypeError…）是代码 bug，
  *  原文（如 `invalid literal for int() with base 10: 'wer'`）对用户毫无意义，还可能带出内部结构。 */
+/** 除 RuntimeError 外也放行的异常类：它们同样自带面向用户的中文文案。
+ *  ModelIdleTimeout = 模型长时间无响应（2026-08-08：用户跑了 57 分钟失败，界面上没有任何原因）。 */
+const USER_FACING_ERROR_TYPES = new Set(["RuntimeError", "ModelIdleTimeout"])
+
 export function userFacingRunError(e: { error?: string | null; errorType?: string | null }): string | null {
   const msg = (e.error ?? "").trim()
-  if (!msg || e.errorType !== "RuntimeError") return null
+  if (!msg || !USER_FACING_ERROR_TYPES.has(e.errorType ?? "")) return null
   if (msg.includes("Traceback")) return null // 兜底：别把栈喂给用户
   return msg.slice(0, 200)
 }

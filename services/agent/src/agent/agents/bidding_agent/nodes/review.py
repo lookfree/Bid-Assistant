@@ -5,7 +5,8 @@ from agent.framework.budget import run_with_shrink
 from agent.framework.create_agent import run_submit_agent
 from agent.agents.bidding_agent.nodes.common import (
     slim_read, filter_read_by_package, parse_bid_chapters, publish_phase, html_to_review_text,
-    allocate_chapter_budget, chapters_budget, compress_read, MIN_CHAPTER_CHARS,
+    allocate_chapter_budget, chapters_budget, chapters_in_outline, compress_read,
+    MIN_CHAPTER_CHARS,
 )
 from agent.agents.bidding_agent.nodes.classify import classify_from_chapters, empty_category
 from agent.agents.bidding_agent.schemas import RiskReport
@@ -66,6 +67,14 @@ def make_review_node(ctx):
         # 喂进去的字符有 **56% 是标签**，有一章正文才 5261 字、本可整章放下，却因表格标签把串撑到
         # 38431，模型只读到 561 字（10%）。表格结构保留成「单元格 | 单元格 / 换行」，
         # 因为审查要靠表格行判断★条款有没有逐条登进偏离表。
+        # 删章留下的孤儿键（chapters 是合并通道）不该被体检：那是不会交付的内容，
+        # 报出来的风险用户在文档里根本找不到。无提纲的线下审查项目原样放行。
+        filtered = chapters_in_outline(chapters_src, state.get("outline") or {})
+        # 只拦"**被过滤清空**"这一种：本来就没有正文的场景（自查/空提纲）上面已有各自的处理，
+        # 一刀切会把它们一起误杀。过滤清空 = 正文与提纲对不上，拿空文档跑计费步骤等于骗钱。
+        if chapters_src and not filtered:
+            raise RuntimeError("投标正文与提纲章节对不上（提纲可能已改动），请重新生成正文后再审查")
+        chapters_src = filtered
         texts = {cid: html_to_review_text(html) for cid, html in chapters_src.items()}
         # 分类判定（spec334）：**在审查之前**做，这一轮就能用上分类知识——放到审查之后的话，
         # 用户看到分类时报告已经出完，得再花一次钱重跑才生效。

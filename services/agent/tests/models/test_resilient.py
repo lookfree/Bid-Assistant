@@ -545,3 +545,15 @@ def test_hang_does_not_retry_the_same_endpoint(monkeypatch):
     monkeypatch.setattr(type(c2).__mro__[1], "_agenerate", hang, raising=False)
     out = asyncio.run(asyncio.wait_for(c2._agenerate([HumanMessage(content="写")]), timeout=5))
     assert out.generations[0].message.content == "降级模型的回答" and fb.calls == 1
+
+
+def test_timeout_carries_a_message_for_the_user():
+    """**超时异常必须自带人话**。
+
+    `raise ModelIdleTimeout()` 不带参数时 str(e) 是空串，一路传到界面就成了干巴巴的
+    "生成失败，请重试"——2026-08-08 生产实测：用户跑了 57 分钟、写到 18/20 章后失败，
+    库里记着 error_type=ModelIdleTimeout 而 error='' ，界面上一个字的原因都没有。
+    """
+    assert str(ModelIdleTimeout()) != ""
+    assert "模型" in str(ModelIdleTimeout()) and "无响应" in str(ModelIdleTimeout())
+    assert str(ModelIdleTimeout("自定义原因")) == "自定义原因"

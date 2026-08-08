@@ -50,16 +50,38 @@ def record_llm_usage(recorder: Any, *, run_id: str | None, agent_type: str | Non
         pass
 
 
+def _provider_of(ctx: Any, model_name: str | None) -> str | None:
+    """按**实际应答的模型名**在模型链里反查服务商。
+
+    2026-08-08 的教训：这里原本回落成 settings.model_default_provider，于是正文那条路
+    （UsageCallback 不显式传 provider）**每一行都记成默认家 "deepseek"**，与实际打的端点无关。
+    排查"为什么慢"时照着这一列读，得出"全跑在官方降级上"的结论——而 model 列明明白白写着
+    自研模型，279 次调用一次都没降级过。宁可记空，也不要记一个看起来像真的假值。
+    """
+    if not model_name:
+        return None
+    chain = getattr(ctx.gateway, "chain", None) if ctx.gateway else None
+    try:
+        hits = [it for it in ((chain() if callable(chain) else []) or [])
+                if (it.get("model") or "") == model_name]
+    except Exception:  # noqa: BLE001 埋点 best-effort，取不到就记空
+        return None
+    # 同一个模型名同时挂在自建端点和官方端点上是常见配法（base_url 不同、模型名一样）。
+    # 这时按名字猜必然把降级那次也算到主模型头上——**又是一次"看起来像真的假值"**。
+    # 认不准就记空：查表的人看到空会去查别的证据，看到假值只会被带偏（2026-08-08 我就被带偏过）。
+    return hits[0].get("provider") if len(hits) == 1 else None
+
+
 def record_ctx_usage(ctx: Any, msg: Any, *, node: str | None, model: str | None = None,
                      provider: str | None = None, latency_s: float | None = None) -> None:
     """按 RunContext 记一条 LLM 用量（best-effort）。make_agent_node 与 UsageCallback 共用，
     provider/run 维度参数只在这里拼一次，避免两条埋点路径漂移。latency_s（秒）由调用方计时传入。
-    provider 显式给了用它（降级/结构化链跑的是非默认服务商，需按实际归属，否则错记成默认家）。"""
-    _s = getattr(ctx.gateway, "s", None) if ctx.gateway else None
+    provider 显式给了用它（降级/结构化链跑的是非默认服务商，需按实际归属）；没给就按实际
+    应答的模型名反查——**绝不回落默认值**，那会让这一列变成误导（见 _provider_of）。"""
+    name = model or (getattr(msg, "response_metadata", None) or {}).get("model_name")
     record_llm_usage(ctx.recorder, run_id=ctx.run_id, agent_type=ctx.agent_type,
-                     provider=provider or getattr(_s, "model_default_provider", None),
-                     model=model or (getattr(msg, "response_metadata", None) or {}).get("model_name"),
-                     msg=msg, node=node, thread_id=ctx.thread_id, latency_s=latency_s)
+                     provider=provider or _provider_of(ctx, name),
+                     model=name, msg=msg, node=node, thread_id=ctx.thread_id, latency_s=latency_s)
 
 
 class UsageCallback(AsyncCallbackHandler):

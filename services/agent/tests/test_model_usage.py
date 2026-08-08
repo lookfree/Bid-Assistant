@@ -114,3 +114,32 @@ def test_recorder_without_log_event_still_records_usage():
     rec = _CapRecorder()
     record_ctx_usage(_ctx(rec), _truncated_msg(), node="content", model="qwen")
     assert rec.calls   # record_usage 正常
+
+
+def test_provider_is_the_actual_endpoint_not_the_default():
+    """**provider 必须记实际应答的那家，记不出就记空**。
+
+    2026-08-08：这一列原本回落成 settings.model_default_provider，于是正文那条路每一行都
+    写着默认家 "deepseek"，与实际打的端点无关。排查"为什么慢"时照它读，得出"全跑在官方降级上"
+    的结论——而 model 列明明白白是自研模型，279 次调用一次都没降级过。
+    记一个看起来像真的假值，比记空危险得多。
+    """
+    from types import SimpleNamespace
+
+    from agent.models.usage import _provider_of
+
+    ctx = SimpleNamespace(gateway=SimpleNamespace(
+        chain=lambda: [{"provider": "custom", "model": "DeepSeek-V4-Flash"},
+                       {"provider": "deepseek", "model": "deepseek-v4-flash"}]))
+    assert _provider_of(ctx, "DeepSeek-V4-Flash") == "custom"      # 自研
+    assert _provider_of(ctx, "deepseek-v4-flash") == "deepseek"    # 官方降级
+    assert _provider_of(ctx, "某个没配过的模型") is None            # 认不出就记空，不编
+    assert _provider_of(ctx, None) is None
+
+    # 同名模型同时挂在自建与官方端点上（base_url 不同、模型名一样）是常见配法：
+    # 按名字猜必然把降级那次也算到主模型头上——又一个"看起来像真的假值"。认不准就记空。
+    ambiguous = SimpleNamespace(gateway=SimpleNamespace(chain=lambda: [
+        {"provider": "custom", "model": "同名", "base_url": "http://自建/v1"},
+        {"provider": "deepseek", "model": "同名"}]))
+    assert _provider_of(ambiguous, "同名") is None
+    assert _provider_of(SimpleNamespace(gateway=None), "x") is None

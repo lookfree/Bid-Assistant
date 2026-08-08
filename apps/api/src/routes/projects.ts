@@ -11,7 +11,7 @@ import { isUuid } from "../lib/uuid"
 import * as billing from "../services/billing-stub"
 import { ContentTiersConfigError } from "../services/content-pricing"
 import * as client from "../services/agent-client"
-import { healStuckStep, finalizeStepSuccess, STEP_ORDER, type Step } from "../services/step-finalize"
+import { healStuckStep, finalizeStepSuccess, STEP_ORDER, type Step, contentGeneration } from "../services/step-finalize"
 import { failStepAndRefund } from "../services/stuck-steps"
 import { ensureChecklistTemplate } from "../services/checklist-template"
 import { ragRunInput } from "../services/rag-config"
@@ -795,6 +795,11 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         // 超写校准系数（运营可调,billing_configs generation.*）随 content 步一并下发
         ...(step === "content" && gen.targetChars ? { target_chars: gen.targetChars } : {}),
         ...(step === "content" ? await generationRunInput() : {}),
+        // 正文断点续跑：下发**已成功完成过几次正文**。agent 据此选检查点线路——
+        // 重试时这个数不变（接上刚写了一半的那条），重新生成时 +1（换一条干净的线）。
+        // 不用布尔"是不是重新生成"：那个推断在"重新生成失败后重试"时会翻转，
+        // 于是接到上一次**已完成**的检查点上，把旧稿当新结果交回来（2026-08-08 审查提出）。
+        ...(step === "content" ? { content_generation: await contentGeneration(p.id) } : {}),
         ...(step === "export" && gen.format ? { format: gen.format } : {}),
         // spec334 标书分类：有效值 = 确认值 ?? 判定值。read 步不带——判定正是在那一步产生的，
         // 带上去会让节点跳过判定、把上一轮的结论钉死，重跑读标就再也刷不出新判定。

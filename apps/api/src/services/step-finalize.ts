@@ -278,3 +278,19 @@ async function hasSettlement(holdId: string): Promise<boolean> {
     .limit(1)
   return rows.length > 0
 }
+
+/** 已成功完成过几次正文。
+
+ *  给 agent 当"第几次生成"的线索：**重试时它不变**（接得上刚写了一半的检查点），
+ *  **重新生成时它 +1**（换一条干净的线，不会把上一份成稿当成新结果交回来）。
+ *  比布尔开关稳：布尔要靠"上一条是不是 done"推意图，而一次失败的重新生成之后，
+ *  那个推断会翻转，重试就接到上一次**已完成**的检查点上去了（2026-08-08 审查提出）。 */
+export async function contentGeneration(projectId: string): Promise<number> {
+  const rows = await getDb()
+    .select({ id: projectSteps.id })
+    .from(projectSteps)
+    .where(and(eq(projectSteps.projectId, projectId), eq(projectSteps.step, "content"),
+               eq(projectSteps.status, "done")))
+  return rows.length
+}
+

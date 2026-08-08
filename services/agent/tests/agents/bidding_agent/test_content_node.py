@@ -525,12 +525,24 @@ def test_collect_chapters_drops_phantom_ids():
     assert set(_collect_chapters(files)) == {"t1", "t6-new"}
 
 
-def test_heartbeat_label_shows_chapter_and_elapsed():
-    """心跳文案：横幅每 5s 动一次——单章一次长调用 2~8 分钟，定格会被读成"卡住"（实测反馈）。"""
+def test_heartbeat_label_does_not_pretend_writing_is_sequential():
+    """心跳文案：横幅每 5s 动一次——一次长调用 2~8 分钟，定格会被读成"卡住"（实测反馈）。
+
+    但**不能假装是一章接一章写的**：实测正文多路并行（2026-08-08 按调用区间算出并发峰值 7 路、
+    54% 的调用互相重叠）。旧文案"第 9/20 章成稿中（本章已 15 分）"两个数都是错的——
+    序号其实是"已完成+1"，计时其实是"距上一章写完多久"，用户据此来问"这一章怎么卡了 15 分钟"，
+    而那会儿有六七章在同时写、每两三分钟就完成一章。
+    """
     from agent.agents.bidding_agent.nodes.content import _heartbeat_label
 
-    assert _heartbeat_label(3, 15, 130) == "正文·第 4/15 章成稿中（本章已 2 分 10 秒）"
-    assert _heartbeat_label(15, 15, 5) == "正文·第 15/15 章成稿中（本章已 0 分 05 秒）"  # 收尾不越界
+    label = _heartbeat_label(8, 20, 905, in_flight=6)
+    assert "已完成 8/20 章" in label and "6 章同时撰写中" in label and "15 分 05 秒" in label
+    assert "第 9/20 章" not in label, "又把并行写成了串行的章序"
+    assert "本章已" not in label, "那个计时不是本章耗时，是距上一章完成的时长"
+
+    # 拿不到并发数时只报进度与用时，不编造章序
+    bare = _heartbeat_label(8, 20, 65)
+    assert "已完成 8/20 章" in bare and "1 分 05 秒" in bare and "第 9" not in bare
 
 
 def test_prompts_carry_length_budget_discipline():
@@ -605,3 +617,63 @@ def test_partial_delivery_survives_a_failed_retry(monkeypatch):
     node = content_mod.make_content_node(_ctx())
     out = asyncio.run(node({"outline": _outline(["t1", "t2"]), "read": {}}))
     assert set(out["chapters"]) == {"t1"}, "补写失败把已成稿的章节也弄丢了"
+
+
+def test_in_flight_counts_dispatched_writers():
+    """并发数必须**从 task 工具的开始/结束按 run_id 配对数出来**。
+
+    写死成 0 或数不上，横幅就退回"撰写中"，用户还是看不出有几路在写——而那正是他
+    误以为"卡在某一章"的原因（2026-08-08）。
+    """
+    import asyncio
+
+    from agent.agents.bidding_agent.nodes.content import ChapterProgressCallback
+
+    cb = ChapterProgressCallback(_ctx(), total=20, titles={"t1": "一"})
+    assert cb.in_flight == 0
+
+    async def go():
+        for i in range(3):                                        # 派出去 3 路
+            await cb.on_tool_start({"name": "task"}, "", inputs={}, run_id=f"r{i}")
+        assert cb.in_flight == 3
+        await cb.on_tool_end("done", run_id="r0")                 # 收工一路
+        assert cb.in_flight == 2
+        await cb.on_tool_error(RuntimeError("写挂了"), run_id="r1")  # 挂掉一路也要减
+        assert cb.in_flight == 1
+        await cb.on_tool_end("done", run_id="r0")                 # 重复结束不重复减
+        assert cb.in_flight == 1
+
+    asyncio.run(go())
+
+
+def test_other_tools_do_not_decrement_in_flight():
+    """**这个回调收到的是所有工具的结束事件**：子写手内部的 read_file / write_file 也会来。
+    无条件减的话，7 路在写时会被几次 write_file 减到 0，横幅退回含糊的"撰写中"，
+    而下一次 task 开始又把计时归零——恰好把要暴露的长停顿藏了起来。"""
+    import asyncio
+
+    from agent.agents.bidding_agent.nodes.content import ChapterProgressCallback
+
+    cb = ChapterProgressCallback(_ctx(), total=20, titles={"t1": "一"})
+
+    async def go():
+        for i in range(7):
+            await cb.on_tool_start({"name": "task"}, "", inputs={}, run_id=f"task-{i}")
+        assert cb.in_flight == 7
+        for i in range(7):                                        # 子写手内部的工具结束
+            await cb.on_tool_end("ok", run_id=f"inner-{i}")
+        assert cb.in_flight == 7, "被别的工具的结束事件误减了"
+
+    asyncio.run(go())
+
+
+def test_write_file_is_not_counted_as_a_dispatch():
+    """只有 task 才是"派一路去写"；write_file 是交稿，数进去会让并发数虚高一倍。"""
+    import asyncio
+
+    from agent.agents.bidding_agent.nodes.content import ChapterProgressCallback
+
+    cb = ChapterProgressCallback(_ctx(), total=20, titles={"t1": "一"})
+    asyncio.run(cb.on_tool_start({"name": "write_file"}, "", inputs={"file_path": "chapters/t1.html"}))
+    assert cb.in_flight == 0
+    assert cb.done == ["t1"]      # 交稿照常计数

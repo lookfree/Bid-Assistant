@@ -48,8 +48,15 @@ class BiddingAgent(BaseAgent):
         # 否则 present/export 步的 pptx/docx key App 拿不到）。
         if ran_node:
             values = (await graph.aget_state(config)).values or {}
+            result = values.get(_RESULT_KEY[ran_node])
+            if ran_node == "content":
+                # chapters 是合并通道（单章改写只更新一章），删章留下的孤儿键会一直在。
+                # 上报前按提纲过滤：这份结果既是用户看到的正文，也是**计费的字数依据**——
+                # 已删掉的章不该继续占字数、把用户顶到更高一档。
+                from agent.agents.bidding_agent.nodes.common import chapters_in_outline
+                result = chapters_in_outline(result or {}, values.get("outline") or {})
             yield {"type": "step.done", "node": ran_node,
-                   "data": {"result": values.get(_RESULT_KEY[ran_node]),
+                   "data": {"result": result,
                             **({"artifacts": values.get("artifacts", {})}
                                if ran_node in _ARTIFACT_STEPS else {})}}
 

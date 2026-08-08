@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["publish_phase", "upload_artifact", "fetch_master_bytes", "package_scope",
            "filter_read_by_package", "slim_read", "parse_bid_chapters", "html_to_review_text",
-           "allocate_chapter_budget", "chapters_budget", "compress_read", "strip_clause_ids",
+           "allocate_chapter_budget", "chapters_budget", "chapters_in_outline", "compress_read",
+           "strip_clause_ids",
            "MIN_CHAPTER_CHARS"]
 
 
@@ -320,3 +321,19 @@ def strip_clause_ids(obj):
     if isinstance(obj, list):
         return [strip_clause_ids(v) for v in obj]
     return obj
+
+
+def chapters_in_outline(chapters: dict, outline: dict) -> dict:
+    """只保留提纲里还在的章。
+
+    state 里的 chapters 是**合并**语义（单章改写只更新一章，不能覆盖全量），代价是
+    用户在提纲里删掉的章、以及早期版本混进来的杂项键（实测有一条 README.md），
+    会一直留在状态里。导出按提纲遍历取稿，天然忽略它们；但另外两处会当真：
+      · 审查照单全收地喂给模型 → 对**不会交付的内容**做体检，报出用户在文档里找不到的风险；
+      · 计费按结果里所有字符串的字数分档 → 已删掉的章仍计入，可能把用户顶到更高一档。
+    提纲为空（线下标书审查/述标这类没有提纲的项目）→ 原样返回，不做过滤。
+    """
+    ids = {c.get("id") for c in (outline or {}).get("chapters", []) if c.get("id")}
+    if not ids:
+        return chapters
+    return {k: v for k, v in (chapters or {}).items() if k in ids}

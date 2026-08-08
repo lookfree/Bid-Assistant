@@ -162,7 +162,28 @@ async def run_loop() -> None:
             await asyncio.sleep(2)
 
 
+def _setup_logging() -> None:
+    """把应用日志接到 stdout。
+
+    **此前整个 worker 没有任何 logging 配置**：`logger.warning("主模型调用失败，改用降级模型重试")`
+    这类日志从来没输出过，容器日志里只有启动那几行。2026-08-08 一次正文失败查了半天——
+    异常类型（ModelIdleTimeout）能从库里读到，但"降级有没有被触发、为什么没救回来"无从判断，
+    因为那些决策全靠日志。级别用 LOG_LEVEL 环境变量调，默认 INFO。
+    """
+    import logging
+    import os
+
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        force=True,          # 覆盖依赖库可能装过的 handler，否则我们的配置静默不生效
+    )
+    logging.getLogger("httpx").setLevel("WARNING")      # 每次模型调用一条 INFO，噪声盖过正事
+    logging.getLogger("httpcore").setLevel("WARNING")
+
+
 def main() -> None:
+    _setup_logging()
     wait_for_deps()
     try:
         asyncio.run(run_loop())

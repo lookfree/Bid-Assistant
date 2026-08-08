@@ -17,7 +17,15 @@ _HEARTBEAT_S = 4   # 块内心跳节流：token 持续吐时每 ~4s 才推一条
 
 
 class ModelIdleTimeout(Exception):
-    """流式调用连续超时秒数无新 token —— 判定连接挂死；正常慢生成（token 持续吐）不会触发。"""
+    """流式调用连续超时秒数无新 token —— 判定连接挂死；正常慢生成（token 持续吐）不会触发。
+
+    **必须自带消息**：`raise ModelIdleTimeout()` 不带参数时 str(e) 是空串，一路传到界面就成了
+    干巴巴的"生成失败，请重试"——2026-08-08 生产实测，用户跑了 57 分钟、写到 18/20 章后失败，
+    界面上一个字的原因都没有。这条文案是给用户看的，别改成英文或内部术语。
+    """
+
+    def __init__(self, msg: str = "模型长时间无响应（已自动切换备用模型仍未恢复），本次生成中止") -> None:
+        super().__init__(msg)
 
 
 _TRANSIENT_TEXTS = (
