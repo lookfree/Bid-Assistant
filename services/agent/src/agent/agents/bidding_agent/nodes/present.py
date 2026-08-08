@@ -127,6 +127,11 @@ def make_present_node(ctx):
         # 正文额度按剩余窗口算（与审查同一口径）：读标结论、系统提示、schema 先占，剩下的给正文。
         fixed = PRESENT_SKELETON_PROMPT + json.dumps(payload, ensure_ascii=False) + tail
         budget = chapters_budget(ctx, fixed)
+        # 固定部分（读标结论 + 提示词 + schema）本身就撑满窗口：正文一个字都放不下。
+        # 这种载荷缩多少轮都装不进去，与其白烧三轮 400，不如当场失败——App 侧全额退款。
+        if budget < MIN_CHAPTER_CHARS:
+            raise RuntimeError("招标文件的解析结果过大，超出模型可处理的长度；"
+                               "请在「招标解读」页选择本次投标的包件后重试")
         await publish_phase(ctx, "述标·基于标书与评分点搭建 PPT 骨架")
 
         async def _attempt(factor: float):

@@ -58,3 +58,51 @@ class TestCompress:
         tight = compress_read(_read(400), 20_000)
         assert len(loose["categories"][0]["items"]) >= len(tight["categories"][0]["items"])
         assert _tok(loose) > _tok(tight)
+
+
+class TestReviewFindings:
+    """代码审查（2026-08-08）挑出的三处，都能在真实流程里踩到。"""
+
+    def test_many_sections_still_respect_the_budget(self):
+        """章一多，单章保底就让总量形同虚设——收缩重试三轮发同一条消息，白烧两轮还是 400。
+
+        线下标书每个标题解析成一节，90 多节是常态，这条路一点都不偏门。
+        """
+        from agent.agents.bidding_agent.nodes.common import allocate_chapter_budget
+
+        texts = {f"sec-{i}": "内容" * 3000 for i in range(150)}
+        sizes = [sum(len(v) for v in allocate_chapter_budget(texts, int(40_000 * f), 1_000).values())
+                 for f in (1.0, 0.5, 0.25)]
+        assert all(s <= b * 1.1 for s, b in zip(sizes, (40_000, 20_000, 10_000))), sizes
+        assert sizes[0] > sizes[1] > sizes[2], f"收缩没起作用，三轮一样大: {sizes}"
+
+    def test_scoring_rows_lose_their_clause_ids_too(self):
+        """评分行同样带 clause_ids——只清条目不清它，编号照样进模型。"""
+        read = {"project_meta": {}, "categories": [], "risk_summary": [],
+                "scoring": [{"id": "s1", "category": "技术", "name": "方案完整性",
+                             "clause_ids": ["sec-2-c8"]}]}
+        assert "sec-2-c8" not in json.dumps(compress_read(read, 100_000), ensure_ascii=False)
+
+    def test_industry_patches_match_the_uncompressed_read(self, submit_gateway):
+        """资质术语藏在条目取值里，压缩会截短甚至丢掉它们——恰恰是需要压缩的大标书，
+        行业必查项会静默失效（漏一条即废标）。审查必须拿未压缩的读标去匹配。"""
+        import asyncio
+
+        from agent.agents.bidding_agent.nodes.review import make_review_node
+        from agent.runtime.registry import RunContext
+
+        read = {"categories": [{"key": "qualification", "title": "资格", "items": (
+            [{"title": f"普通{i}", "value": "详" * 300, "risk": False, "star": False}
+             for i in range(400)]
+            # 关键词必须落在**截断线之后**，才测得出"匹配用了压缩后的读标"这个错误：
+            # 压缩把普通条目的取值截到 60 字，前 60 字里的词无论如何都还在。
+            + [{"title": "服务范围", "value": "详" * 120 + "本项目含劳务派遣用工",
+                "risk": False, "star": False}])}],
+            "scoring": [], "risk_summary": [], "project_meta": {}}
+        gw = submit_gateway({"submit_risk_report": {
+            "score": 80, "items": [], "passed_items": []}})
+        ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
+        asyncio.run(make_review_node(ctx)(
+            {"read": read, "outline": {}, "chapters": {"b1": "<p>正文</p>"}}))
+        user = gw.chats[-1].last_messages[1].content
+        assert "劳务派遣经营许可证" in user, "资质补丁匹配用了压缩后的读标，行业必查项静默失效"

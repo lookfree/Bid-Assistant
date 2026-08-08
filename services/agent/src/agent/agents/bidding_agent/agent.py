@@ -50,8 +50,16 @@ class BiddingAgent(BaseAgent):
             values = (await graph.aget_state(config)).values or {}
             yield {"type": "step.done", "node": ran_node,
                    "data": {"result": values.get(_RESULT_KEY[ran_node]),
-                            "artifacts": values.get("artifacts", {})}}
+                            **({"artifacts": values.get("artifacts", {})}
+                               if ran_node in _ARTIFACT_STEPS else {})}}
 
+
+# 只有这些步的产物 key 需要单独带给 App。**不能对所有步都带**：state.artifacts 是
+# 整个线程累积合并的快照（state.py 的 _merge_dict），谁最后跑就带谁的全量；而正文步的结果是
+# {章id: html} 自由字典，多塞一个 artifacts 键就等于凭空多出一"章"，下次回灌当 chapters
+# 直接 TypeError（先跑述标/导出、再重跑正文就会踩到，markExportDirty 说明这是正常流程）。
+# export 的结果本身就是 artifacts（见 _RESULT_KEY），不需要也不该再嵌一层。
+_ARTIFACT_STEPS = {"present"}
 
 _RESULT_KEY = {"read": "read", "outline": "outline", "content": "chapters",
                "review": "risk", "present": "deck", "export": "artifacts"}

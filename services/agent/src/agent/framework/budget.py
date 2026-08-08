@@ -49,7 +49,8 @@ _SCHEMA_RESERVE_TOKENS = 8_000
 # 再留一成给估算误差本身：换模型、换网关，字/token 的系数就变。
 _SAFETY_RATIO = 0.9
 # 正文再挤也要留的下限：低于这个数不如直接失败——喂几千字进去出来的审查结论没有意义，
-# 用户却照样付费。真到这一步说明读标结论该压缩了（见 slim_read 侧）。
+# 用户却照样付费。节点据此当场失败退款，而不是硬塞一个下限、再把三轮收缩重试全烧在
+# 一个注定装不下的载荷上（收缩只动正文，而这种情况下超额的是固定部分，缩多少轮都没用）。
 MIN_CHAPTER_TOKENS = 4_000
 
 
@@ -65,7 +66,7 @@ def chapter_budget(fixed_text: str, *, context_window: int | None, max_tokens: i
     # 预留 0 会把整个窗口都当成输入额度，输出一长就又是 400。
     reserved_out = max_tokens or _DEFAULT_OUTPUT_RESERVE
     left = window - reserved_out - estimate_tokens(fixed_text) - _SCHEMA_RESERVE_TOKENS
-    return max(int(left * _SAFETY_RATIO), MIN_CHAPTER_TOKENS)
+    return max(int(left * _SAFETY_RATIO), 0)
 
 
 # 端点报"输入太长"的说法各家不一。只认一家就等于没兜底——换个网关又是整步失败。

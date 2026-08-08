@@ -88,12 +88,20 @@ def make_review_node(ctx):
         # {"project_meta": {}, "categories": [], ...}——**非空 dict 恒为真**，
         # 写成 `payload["read"] or texts` 就永远取不到正文，自查项目的资质补丁静默全失效。
         extra = category_scope(category.get("value"), "review")
-        extra += industry_patches(json.dumps(payload["read"] if read_state else texts,
+        # 匹配用**未压缩**的读标结论：资质术语藏在条目的 title/value 里，而压缩会把普通条目的
+        # 取值截短甚至整条丢掉——恰恰是需要压缩的大标书，行业必查项会静默失效（漏一条即废标）。
+        # 字面匹配不花 token，用全量没有代价。
+        extra += industry_patches(json.dumps(slim_read(read_state) if read_state else texts,
                                              ensure_ascii=False))
         # 正文额度按剩余窗口算：固定部分（系统提示 + 读标结论 + 约束文字）先占，剩下的才是正文的。
         # 写死常量的下场见 chapters_budget 的注释——砍不够是 400，砍过头是白丢内容。
         fixed = REVIEW_SYSTEM_PROMPT + json.dumps(payload, ensure_ascii=False) + mode_note + extra
         budget = chapters_budget(ctx, fixed)
+        # 固定部分（读标结论 + 提示词 + schema）本身就撑满窗口：正文一个字都放不下。
+        # 这种载荷缩多少轮都装不进去，与其白烧三轮 400，不如当场失败——App 侧全额退款。
+        if budget < MIN_CHAPTER_CHARS:
+            raise RuntimeError("招标文件的解析结果过大，超出模型可处理的长度；"
+                               "请在「招标解读」页选择本次投标的包件后重试")
 
         async def _attempt(factor: float):
             """按给定折扣重建载荷再跑——估算失准时由 run_with_shrink 逐档收缩。"""

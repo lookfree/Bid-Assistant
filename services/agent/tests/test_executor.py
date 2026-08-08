@@ -651,3 +651,25 @@ async def test_no_artifacts_leaves_the_result_untouched(monkeypatch):
     """没有产物的步（读标/提纲/审查）结果逐字节不变，不平白多一个空键。"""
     result = await _run_and_capture(monkeypatch, _ArtifactAgent({"categories": []}, {}))
     assert result == {"categories": []}
+
+
+async def test_content_result_is_not_polluted_with_artifacts(monkeypatch):
+    """**正文步的结果绝不能被塞进 artifacts 键**。
+
+    state.artifacts 是整个线程累积的快照，谁最后跑就带谁的全量。而正文结果是
+    {章id: html} 自由字典——多一个 artifacts 键就等于凭空多出一"章"，下次把它回灌成
+    chapters 时 html_to_review_text 直接 TypeError。
+    先跑述标/导出、再重跑正文就会踩到（markExportDirty 说明这是正常流程）。
+    """
+    from agent.agents.bidding_agent.agent import _ARTIFACT_STEPS
+
+    assert "content" not in _ARTIFACT_STEPS and "present" in _ARTIFACT_STEPS
+
+    class _ContentAgent:
+        async def astream(self, input, ctx):
+            yield {"type": "step.done", "node": "content",
+                   "data": {"result": {"t1": "<p>正文</p>"}}}   # 正文步不带 artifacts
+
+    result = await _run_and_capture(monkeypatch, _ContentAgent())
+    assert result == {"t1": "<p>正文</p>"}
+    assert all(isinstance(v, str) for v in result.values()), "混进了非章节内容"

@@ -48,10 +48,14 @@ class TestBudget:
         assert (chapter_budget("", context_window=131072, max_tokens=None)
                 == chapter_budget("", context_window=131072, max_tokens=_DEFAULT_OUTPUT_RESERVE))
 
-    def test_never_returns_negative(self):
-        """固定部分本身就撑爆窗口时也要给个正数（下游据此截断），不能回负数。"""
-        assert chapter_budget("超长" * 100000, context_window=131072,
-                              max_tokens=32768) == MIN_CHAPTER_TOKENS
+    def test_reports_zero_room_instead_of_a_fake_floor(self):
+        """固定部分本身就撑爆窗口 → 回 0，让节点当场失败退款。
+
+        以前硬塞一个下限，结果是拿一个注定装不下的载荷去撞三轮 400 才失败——
+        收缩重试只动正文，而这种情况超额的是固定部分，缩多少轮都没用。
+        """
+        assert chapter_budget("超长" * 100000, context_window=131072, max_tokens=32768) == 0
+        assert chapter_budget("", context_window=131072, max_tokens=32768) > MIN_CHAPTER_TOKENS
 
 
 class TestSettingsPlumbing:
@@ -68,6 +72,14 @@ class TestSettingsPlumbing:
         from agent.models.gateway import model_override_to_settings
 
         out = model_override_to_settings({"params": {"max_tokens": 32768, "context_window": 4096}})
+        assert "model_context_window" not in out
+
+    def test_absurd_window_rejected_even_without_max_tokens_in_the_same_payload(self):
+        """只跟同一份 params 里的 max_tokens 比是不够的：这份没带时判据退化成 window > 0，
+        4096 的窗口照样被采纳，而 settings 里可能还有一个 env 下发的 32768。"""
+        from agent.models.gateway import model_override_to_settings
+
+        out = model_override_to_settings({"params": {"context_window": 4096}})
         assert "model_context_window" not in out
 
     def test_node_reads_it_from_the_gateway(self):

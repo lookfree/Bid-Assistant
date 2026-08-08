@@ -164,6 +164,10 @@ def allocate_chapter_budget(texts: dict[str, str], total: int, floor: int) -> di
     """
     if not texts:
         return {}
+    # 单章保底不能高过均分份额，否则章一多，总量就形同虚设：150 章 × 1000 字保底 = 15 万字，
+    # 无论 total 给 4 万还是 1 万都照样吐 15 万（收缩重试三轮发的是同一条消息，白烧两轮还是 400）。
+    # 线下标书每个标题解析成一节，90 多节是常态，这条路一点都不偏门。
+    floor = max(1, min(floor, total // len(texts)))
     remaining, out = total, {}
     pending = dict(texts)
     while pending:
@@ -282,7 +286,9 @@ def compress_read(read: dict, budget_tokens: int) -> dict:
         cats = [{**c, "items": [_item_for_model(i, None if keep(i) else value_chars)
                                 for i in c.get("items", []) if plain or keep(i)]}
                 for c in read.get("categories", [])]
-        return {**read, "categories": cats}
+        # 评分行同样带 clause_ids——只清条目不清它，编号照样进模型（也照样可能被抄进报告）。
+        scoring = [_item_for_model(s, None) for s in read.get("scoring", [])]
+        return {**read, "categories": cats, "scoring": scoring}
 
     for value_chars, plain in ((None, True), (_PLAIN_VALUE_CHARS, True), (0, True), (None, False)):
         out = build(value_chars, plain)
