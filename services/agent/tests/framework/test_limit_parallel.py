@@ -6,7 +6,17 @@
 """
 import asyncio
 
+import pytest
+
 from agent.framework.limit_parallel import LimitParallelWritersMiddleware
+
+
+@pytest.fixture(autouse=True)
+def _use_deepagent_engine(monkeypatch):
+    """本模块测的是 deepagent 旧引擎（引擎开关默认已切到代码编排流水线，任务 #84）。
+    旧引擎保留为配置回退，这些测试守住的就是那条回退路——别删，删了回退等于没验证。"""
+    from agent.config import settings as _s
+    monkeypatch.setattr(_s, "model_content_engine", "deepagent")
 
 
 def _req(name: str):
@@ -67,6 +77,7 @@ def test_gate_is_wired_into_the_deep_agent(monkeypatch):
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
     from agents.bidding_agent.test_content_node import _FakeDeep, _ctx
     from agent.agents.bidding_agent.nodes import content as content_mod
+
 
     seen = {}
 

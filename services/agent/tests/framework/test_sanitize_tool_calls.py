@@ -7,6 +7,8 @@ create_agent 路线早有 DropMalformedToolCallsHook，deepagents 路线此前�
 """
 import json
 
+import pytest
+
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from agent.framework.sanitize_tool_calls import SanitizeToolCallsMiddleware, sanitize_messages
@@ -18,6 +20,14 @@ _BAD_MSG = AIMessage(
     additional_kwargs={"tool_calls": [{
         "id": "call_x", "type": "function",
         "function": {"name": "write_todos", "arguments": _BAD_ARGS}}]})
+
+
+@pytest.fixture(autouse=True)
+def _use_deepagent_engine(monkeypatch):
+    """本模块测的是 deepagent 旧引擎（引擎开关默认已切到代码编排流水线，任务 #84）。
+    旧引擎保留为配置回退，这些测试守住的就是那条回退路——别删，删了回退等于没验证。"""
+    from agent.config import settings as _s
+    monkeypatch.setattr(_s, "model_content_engine", "deepagent")
 
 
 def _all_args_parse(messages) -> bool:
@@ -75,6 +85,7 @@ def test_middleware_is_wired_into_the_deep_agent(monkeypatch):
     import sys, pathlib
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
     from agents.bidding_agent.test_content_node import _FakeDeep, _ctx
+
 
     seen = {}
 

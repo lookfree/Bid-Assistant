@@ -30,6 +30,14 @@ _FAKE_KNOWLEDGE = [
 _FAKE_PATCHES = [{"keywords": ["劳务派遣"], "item": "须提供劳务派遣经营许可证", "level": "高", "status": "unverified"}]
 
 
+@pytest.fixture(autouse=True)
+def _use_deepagent_engine(monkeypatch):
+    """本模块测的是 deepagent 旧引擎（引擎开关默认已切到代码编排流水线，任务 #84）。
+    旧引擎保留为配置回退，这些测试守住的就是那条回退路——别删，删了回退等于没验证。"""
+    from agent.config import settings as _s
+    monkeypatch.setattr(_s, "model_content_engine", "deepagent")
+
+
 @pytest.fixture
 def knowledge(monkeypatch):
     monkeypatch.setattr(cat_mod, "CATEGORY_KNOWLEDGE", _FAKE_KNOWLEDGE)
@@ -116,6 +124,7 @@ def test_writing_points_reach_the_chapter_writer_prompt(knowledge, submit_gatewa
     writer_prompt = seen["subagents"][0]["system_prompt"]
     assert "偏离表逐条对照不得概括" in writer_prompt
     assert "报价明细表须含产地与品牌两列" not in writer_prompt, "章节层面的要点不该塞给子写手"
+
 
 
 def test_checklist_prefers_the_body_value_over_the_detected_one(knowledge, submit_gateway):

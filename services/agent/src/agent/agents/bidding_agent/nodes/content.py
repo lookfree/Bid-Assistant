@@ -7,6 +7,7 @@ import re
 import time
 from typing import Any
 from deepagents import create_deep_agent          # 全流程唯一 deepagent 节点（§4.5）
+from agent.config import settings
 from agent.models.resilient import resilient_chat  # 正文绕过 create_agent，降级链要自己带
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import HumanMessage
@@ -18,6 +19,7 @@ from agent.framework.rewrite_guard import RewriteGuardMiddleware
 from agent.framework.sanitize_tool_calls import SanitizeToolCallsMiddleware
 from agent.agents.bidding_agent.nodes.common import (
     slim_read, package_scope, filter_read_by_package, protect_images, restore_images,
+    publish_phase,
     strip_clause_ids,
 )
 from agent.agents.bidding_agent.prompts.categories import category_scope
@@ -567,6 +569,15 @@ def make_content_node(ctx):
     上下文压缩用 deepagents 内建 summarization middleware（长标书防超窗）；
     虚拟 FS 是默认 StateBackend、不开 execute；一章未产出即失败（run failed 可重试）。"""
     async def content_node(state):
+        # 引擎开关（任务 #84）：默认走代码编排流水线；deepagent 旧引擎留作配置回退，
+        # 跑稳后删除。回退口径：MODEL_CONTENT_ENGINE=deepagent。
+        if getattr(settings, "model_content_engine", "pipeline") == "pipeline":
+            from agent.agents.bidding_agent.nodes.content_pipeline import run_content_pipeline
+            await publish_phase(ctx, "逐章撰写投标正文（代码编排）")
+            chapters = await run_content_pipeline(ctx, state)
+            await _log_length_telemetry(ctx, state.get("run_input") or {}, chapters)
+            return {"chapters": chapters}
+
         # 带降级的模型：正文是全流程唯一不走 create_agent 的节点，也就绕过了 model_stream 那套
         # 降级链——生产实测近 10 天 content 成功 3 次/失败 25 次，其中 18 次是瞬断
         # （APIConnectionError），而连接类错误在其它步骤一次都没有。正文一跑十几二十分钟，

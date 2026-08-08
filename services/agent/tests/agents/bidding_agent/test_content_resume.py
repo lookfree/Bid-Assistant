@@ -22,6 +22,14 @@ _BASE = {"outline": {"chapters": [{"id": "t1", "title": "项目理解"}]},
          "writer_prompt": "写手提示词"}
 
 
+@pytest.fixture(autouse=True)
+def _use_deepagent_engine(monkeypatch):
+    """本模块测的是 deepagent 旧引擎（引擎开关默认已切到代码编排流水线，任务 #84）。
+    旧引擎保留为配置回退，这些测试守住的就是那条回退路——别删，删了回退等于没验证。"""
+    from agent.config import settings as _s
+    monkeypatch.setattr(_s, "model_content_engine", "deepagent")
+
+
 def _tid(ctx=_CTX, **over):
     return content_resume_thread(ctx, **{**_BASE, **over})
 
@@ -284,6 +292,7 @@ class TestBrokenHistory:
     def test_same_broken_history_always_derives_the_same_new_lineage(self):
         """盐必须稳定：新线写了一半失败，重试要能找到同一条线接着写。"""
         import asyncio
+
 
         class _Deep:
             def __init__(self):

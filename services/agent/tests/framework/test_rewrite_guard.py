@@ -5,11 +5,21 @@
 """
 import asyncio
 
+import pytest
+
 from langchain_core.messages import ToolMessage
 
 from agent.framework.rewrite_guard import RewriteGuardMiddleware
 
 _META = {"t1": "项目理解", "t2": "技术方案", "b8": "服务人员配置方案"}
+
+
+@pytest.fixture(autouse=True)
+def _use_deepagent_engine(monkeypatch):
+    """本模块测的是 deepagent 旧引擎（引擎开关默认已切到代码编排流水线，任务 #84）。
+    旧引擎保留为配置回退，这些测试守住的就是那条回退路——别删，删了回退等于没验证。"""
+    from agent.config import settings as _s
+    monkeypatch.setattr(_s, "model_content_engine", "deepagent")
 
 
 def _req(name="write_file", path="chapters/b8.html", files=None):
@@ -57,6 +67,7 @@ def test_guard_is_wired_with_the_outline(monkeypatch):
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
     from agents.bidding_agent.test_content_node import _FakeDeep, _ctx
     from agent.agents.bidding_agent.nodes import content as content_mod
+
 
     seen = {}
 

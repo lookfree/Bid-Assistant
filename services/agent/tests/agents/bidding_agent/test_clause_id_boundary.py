@@ -29,6 +29,14 @@ _OUTLINE = {"chapters": [{"id": "b2", "no": "第二章", "title": "报价一览�
                                                       "clause_ids": ["sec-51-c1"]}]}]}
 
 
+@pytest.fixture(autouse=True)
+def _use_deepagent_engine(monkeypatch):
+    """本模块测的是 deepagent 旧引擎（引擎开关默认已切到代码编排流水线，任务 #84）。
+    旧引擎保留为配置回退，这些测试守住的就是那条回退路——别删，删了回退等于没验证。"""
+    from agent.config import settings as _s
+    monkeypatch.setattr(_s, "model_content_engine", "deepagent")
+
+
 class TestStripper:
     @pytest.mark.parametrize("src", [_READ, _OUTLINE, slim_read(_READ)])
     def test_no_internal_id_survives(self, src):
@@ -110,6 +118,7 @@ class TestDeviationTable:
 
     def test_items_fed_to_the_table_carry_no_ids(self):
         from agent.agents.bidding_agent.nodes.content import _deviation_items_block
+
 
         block = _deviation_items_block(_READ)
         assert not _ID.search(block), f"偏离表条目里还带内部 id：{_ID.findall(block)[:5]}"

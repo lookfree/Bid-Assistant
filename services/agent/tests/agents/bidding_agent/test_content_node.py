@@ -6,6 +6,14 @@ from agent.agents.bidding_agent.nodes import content as content_mod
 from agent.agents.bidding_agent.nodes.common import slim_read
 
 
+@pytest.fixture(autouse=True)
+def _use_deepagent_engine(monkeypatch):
+    """本模块测的是 deepagent 旧引擎（引擎开关默认已切到代码编排流水线，任务 #84）。
+    旧引擎保留为配置回退，这些测试守住的就是那条回退路——别删，删了回退等于没验证。"""
+    from agent.config import settings as _s
+    monkeypatch.setattr(_s, "model_content_engine", "deepagent")
+
+
 class _FakeDeep:
     """桩 deepagent：ainvoke 直接回预置 files（v2 结构，路径带前导斜杠），绕过真实 LLM 规划。"""
 
@@ -677,6 +685,7 @@ def test_write_file_is_not_counted_as_a_dispatch():
     import asyncio
 
     from agent.agents.bidding_agent.nodes.content import ChapterProgressCallback
+
 
     cb = ChapterProgressCallback(_ctx(), total=20, titles={"t1": "一"})
     asyncio.run(cb.on_tool_start({"name": "write_file"}, "", inputs={"file_path": "chapters/t1.html"}))
