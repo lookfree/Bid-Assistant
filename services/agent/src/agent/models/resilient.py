@@ -61,14 +61,31 @@ class ResilientChat(ChatOpenAI):
             await asyncio.sleep(_SELF_RETRY_DELAY_S)
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        """**正文实际走的就是这条路**（langgraph 的执行器调 model.ainvoke，而 ainvoke 只有挂了
+        流式回调才转流式——正文挂的三个回调都不是），所以总时长盖必须加在这里。
+
+        非流式没有 token 流可测，"30 秒不吐字"这种空闲判据在这里根本不适用，只能整通调用限时。
+        2026-08-08 生产：一次非流式调用挂了 36 分钟没有任何响应，而这条路当时没有任何上限。
+        """
         try:
-            return await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+            return await self._capped(
+                super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs))
         except Exception as e:  # noqa: BLE001 只接管可降级的两类，见 _should_fallback
             if not self._should_fallback(e):
                 raise
             logger.warning("主模型调用失败（%s），改用降级模型重试：%s", type(e).__name__, str(e)[:120])
             await self._wait_before_self_retry()
-            return await self.fallback._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+            return await self._capped(
+                self.fallback._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs))
+
+    @staticmethod
+    async def _capped(coro):
+        """整通调用限时；超时抛 ModelIdleTimeout（被 _should_fallback 认作可降级）。
+        上限取单轮总时长盖——它本就是为"慢而不死"设的，非流式挂死同样适用。"""
+        try:
+            return await asyncio.wait_for(coro, timeout=settings.model_round_timeout_s)
+        except asyncio.TimeoutError as e:
+            raise ModelIdleTimeout() from e
 
     async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
         """流式路径：**只在第一块之前**才允许降级。

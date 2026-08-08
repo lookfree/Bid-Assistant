@@ -388,3 +388,43 @@ def test_the_real_astream_wraps_the_stream_in_the_timeout():
     src = inspect.getsource(ResilientChat._astream)
     assert "self._timed(" in src, "_astream 没有套上限时包装"
     assert src.count("self._timed(") >= 2, "降级那一支也必须套（否则换了模型照样能挂死）"
+
+
+# ---------------- 非流式路径（正文实际走的那条）----------------
+# langgraph 的执行器调 model.ainvoke，而 ainvoke 只有挂了流式回调才转流式——正文挂的三个回调
+# 都不是。所以正文走 _agenerate，"30 秒不吐字"那种空闲判据在这里根本不适用，只能整通调用限时。
+# 2026-08-08：先给 _astream 加了超时，而生产路径压根不经过它——写了但没接上。
+
+def test_hung_non_streaming_call_is_capped(monkeypatch):
+    """非流式调用挂死 → 判超时 → 换降级模型，而不是无限等。"""
+    monkeypatch.setattr(settings, "model_round_timeout_s", 0.1)
+    fb = _Fallback()
+    c = _Patched(model="m", api_key="k", base_url="http://x/v1", fallback=fb)
+
+    async def hang(messages, stop=None, run_manager=None, **kw):
+        await asyncio.sleep(3600)
+
+    object.__setattr__(c, "_primary_agenerate",
+                       lambda *a, **k: c._capped(hang(*a, **k)))
+
+    out = asyncio.run(asyncio.wait_for(
+        c._agenerate([HumanMessage(content="写")]), timeout=5))
+    assert out.generations[0].message.content == "降级模型的回答"
+    assert fb.calls == 1
+
+
+def test_the_real_agenerate_applies_the_cap():
+    """守住"限时只加在流式路径上"这一种失败法——正文根本不走流式，
+    那样改测试全绿而线上照挂（2026-08-08 就是这么发生的）。降级那一支也必须限时。"""
+    import inspect
+
+    src = inspect.getsource(ResilientChat._agenerate)
+    assert src.count("self._capped(") >= 2, "_agenerate 或它的降级分支没有限时"
+
+
+def test_healthy_non_streaming_call_is_untouched(monkeypatch):
+    """正常返回的调用不受影响——上限是兜底，不该误杀慢而健康的生成。"""
+    monkeypatch.setattr(settings, "model_round_timeout_s", 60)
+    c = _patched()
+    out = asyncio.run(c._agenerate([HumanMessage(content="写")]))
+    assert out.generations[0].message.content == "主模型的回答"
