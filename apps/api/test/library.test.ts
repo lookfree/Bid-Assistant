@@ -20,6 +20,8 @@ let userB = ""
 let fileA = "" // A 的已上传文件（POST 附件用）
 let fileB = "" // B 的文件（验证挂他人文件被拒）
 let fileDel = "" // A 的文件（验证删条目清附件）
+let filePdfSrc = "" // A 的 PDF 源文件（验证 sourceFileId 往返）
+let filePageImg = "" // A 的页图文件（attachments 里带 sourceFileId 指回 filePdfSrc）
 
 type Item = {
   id: string
@@ -30,7 +32,7 @@ type Item = {
   fields: { label: string; value: string }[] | null
   expiry: string | null
   tags: string[] | null
-  attachments: { fileId: string; name: string }[] | null
+  attachments: { fileId: string; name: string; sourceFileId?: string }[] | null
   body: string | null
 }
 
@@ -61,6 +63,8 @@ beforeAll(async () => {
   fileA = await insertFile(userA, "iso27001.pdf")
   fileB = await insertFile(userB, "b-only.pdf")
   fileDel = await insertFile(userA, "to-delete.pdf")
+  filePdfSrc = await insertFile(userA, "cert-src.pdf")
+  filePageImg = await insertFile(userA, "cert-src-page-1.png")
 })
 
 afterAll(async () => {
@@ -127,6 +131,29 @@ describe("/api/library 资料库", () => {
     })
     expect(theft.status).toBe(400)
     expect(((await theft.json()) as { error: string }).error).toBe("invalid_attachments")
+  })
+
+  it("attachments.sourceFileId 往返：建条目→保存→查回，页图附件的 sourceFileId 仍在（防 zod strip 静默丢字段）", async () => {
+    const created = await req("", tokenA, {
+      method: "POST",
+      body: JSON.stringify({
+        category: "qualification",
+        title: "带页图的证书",
+        attachments: [
+          { fileId: filePdfSrc, name: "cert-src.pdf" },
+          { fileId: filePageImg, name: "cert-src-page-1.png", sourceFileId: filePdfSrc },
+        ],
+      }),
+    })
+    expect(created.status).toBe(201)
+    const row = (await created.json()) as Item
+    expect(row.attachments?.[1]?.sourceFileId).toBe(filePdfSrc) // POST 响应即应保留
+
+    // 查回（真正落库后重读，而非只信任 insert().returning() 的回显）
+    const list = (await (await req("", tokenA)).json()) as { items: Item[] }
+    const reloaded = list.items.find((i) => i.id === row.id)
+    expect(reloaded?.attachments?.[1]?.sourceFileId).toBe(filePdfSrc)
+    expect(reloaded?.attachments?.[0]?.sourceFileId).toBeUndefined() // 源 PDF 自身没有 sourceFileId
   })
 
   it("GET：A 能看到自己的条目，B 看不到（属主隔离）", async () => {

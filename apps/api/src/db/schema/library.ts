@@ -21,7 +21,7 @@ export const libraryItems = pgTable(
     fields: jsonb("fields").$type<{ label: string; value: string }[]>(), // 结构化字段
     expiry: text("expiry"), // 有效期（ISO 日期或可读文本，如「长期有效」）
     tags: jsonb("tags").$type<string[]>(),
-    attachments: jsonb("attachments").$type<{ fileId: string; name: string }[]>(), // 关联 project_files 已上传文件
+    attachments: jsonb("attachments").$type<{ fileId: string; name: string; sourceFileId?: string }[]>(), // 关联 project_files 已上传文件；sourceFileId：页图附件指向来源 PDF 的 fileId
     body: text("body"), // 正文（text 类素材的常用段落）
     createdAt: createdAt(),
     updatedAt: tz("updated_at").notNull().defaultNow(),

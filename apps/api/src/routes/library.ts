@@ -19,7 +19,13 @@ export type LibraryDeps = {
 // 条目 body 校验：POST 必填 category/title；PUT 契约为「缺键=不改，null=清空」，
 // 故可清空字段一律 .nullable().optional()（title 不可 null，category 枚举可选但不可 null）。
 const fieldSchema = z.object({ label: z.string(), value: z.string() })
-const attachmentSchema = z.object({ fileId: z.string().uuid(), name: z.string() })
+// sourceFileId：页图附件指向其来源 PDF 的 fileId（spec 2026-08-08）；zod 默认 strip 未声明键，
+// 漏写会导致该字段静默丢失（保存后 hasDerivedPages 恒 false，「转为图片」按钮重现、PDF 被重复列出）。
+const attachmentSchema = z.object({
+  fileId: z.string().uuid(),
+  name: z.string(),
+  sourceFileId: z.string().uuid().optional(),
+})
 const itemSchema = z.object({
   category: z.enum(LIBRARY_CATEGORIES),
   title: z.string().min(1),

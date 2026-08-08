@@ -1,6 +1,4 @@
 """spec 2026-08-08-library-pdf-pages:agent 工具路由(mock storage,不连 MinIO)。"""
-import pytest
-
 from agent.routes import pdf_pages as mod
 from agent.routes.pdf_pages import PdfPagesBody, pdf_pages
 
