@@ -810,6 +810,23 @@ def content_resume_thread(ctx, *, outline: dict, read: dict, run_input: dict,
     return f"{tid}-g{gen}" if gen else tid
 
 
+_BROKEN_TOOL_MARKS = ("could not be executed", "无法执行", "not be executed")
+
+
+def _history_is_broken(values: dict) -> bool:
+    """这份检查点历史还能不能接着用。
+
+    判据：末尾附近出现"工具调用执行不了"的回执——那意味着上一轮卡在一个悬空调用上，
+    模型看到的是一段自相矛盾的对话（我发了调用、系统说执行不了），接着写只会重蹈覆辙。
+    只看末尾几条：更早的失败若已被后续轮次绕过去，就不该因此丢掉整条进度。
+    """
+    for m in (values.get("messages") or [])[-4:]:
+        text = str(getattr(m, "content", "") or "")
+        if any(mark in text for mark in _BROKEN_TOOL_MARKS):
+            return True
+    return False
+
+
 async def _resume_or_start(deep, thread_id: str, user_msg: str, config: dict, *, progress_cb=None):
     """这条线上有检查点就接着写，没有就从头开始。
 
@@ -821,6 +838,14 @@ async def _resume_or_start(deep, thread_id: str, user_msg: str, config: dict, *,
     模型看到两条"请逐章生成正文"，可能把已写好的章重写一遍——那正是续跑要省掉的开销。
     """
     snap = await deep.aget_state({"configurable": {"thread_id": thread_id}})
+    if snap.values and _history_is_broken(snap.values):
+        # 坏历史绝不继承：2026-08-08 线上实测——某一轮的 write_todos 被拒（参数类型问题，
+        # 仓库里 2026-08-06 就记过这个老毛病），状态里留下一个"执行不了"的悬空工具调用；
+        # 用户点重试，新指令接在这份坏历史后面，于是**再失败一次**，点几次坏几次。
+        # 挂 checkpointer 本身没引入这个失败，但把一次偶发变成了持续——回滚前每轮新建
+        # namespace，坏历史随手丢掉，重试天然是干净的。续跑要保住那份干净。
+        logger.warning("正文检查点历史已损坏（有执行不了的工具调用），本轮从头跑，不继承")
+        return await deep.ainvoke({"messages": [HumanMessage(content=user_msg)]}, config=config)
     if snap.values and (snap.next or snap.values.get("files")):
         done = snap.values.get("files") or {}
         logger.info("正文续跑：已有检查点（待执行 %s，已写 %d 章）", snap.next, len(done))

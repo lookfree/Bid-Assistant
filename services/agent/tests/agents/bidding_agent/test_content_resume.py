@@ -212,3 +212,59 @@ class TestReviewFindings:
         assert len(cb.done) == 19
         cb.seed_done({"/chapters/幽灵.html": {"content": "x"}})    # 提纲里没有的不计
         assert len(cb.done) == 19
+
+
+class TestBrokenHistory:
+    """**坏历史绝不继承**（2026-08-08 线上实测）。
+
+    某一轮的 write_todos 被拒（参数类型问题，仓库里 2026-08-06 就记过这个老毛病），
+    状态里留下一个"执行不了"的悬空工具调用。用户点重试，新指令接在这份坏历史后面——
+    再失败一次，点几次坏几次。挂 checkpointer 本身没引入这个失败，但**把一次偶发变成了持续**：
+    回滚前每轮新建 namespace，坏历史随手丢掉，重试天然干净。续跑必须保住那份干净。
+    """
+
+    def _msg(self, text):
+        return SimpleNamespace(content=text)
+
+    def test_dangling_tool_call_counts_as_broken(self):
+        from agent.agents.bidding_agent.nodes.content import _history_is_broken
+
+        broken = {"messages": [self._msg("提纲…"), self._msg(""),
+                               self._msg("Tool call write_todos with id call_x could not be executed")]}
+        assert _history_is_broken(broken) is True
+
+    def test_healthy_history_is_kept(self):
+        from agent.agents.bidding_agent.nodes.content import _history_is_broken
+
+        assert _history_is_broken({"messages": [self._msg("提纲…"), self._msg("已写入 t1")]}) is False
+        assert _history_is_broken({"messages": []}) is False
+        assert _history_is_broken({}) is False
+
+    def test_old_failure_already_worked_around_is_not_broken(self):
+        """更早的失败若已被后续轮次绕过去，不该因此丢掉整条进度——只看末尾几条。"""
+        from agent.agents.bidding_agent.nodes.content import _history_is_broken
+
+        values = {"messages": [self._msg("could not be executed")] + [self._msg(f"第{i}章写完") for i in range(5)]}
+        assert _history_is_broken(values) is False
+
+    def test_broken_history_starts_fresh_instead_of_resuming(self):
+        """**接线**：判出来坏了，就得真的从头跑，而不是照旧 ainvoke(None) 接上去。"""
+        import asyncio
+
+        from agent.agents.bidding_agent.nodes.content import _resume_or_start
+
+        class _Deep:
+            called_with = None
+
+            async def aget_state(self, config):
+                return SimpleNamespace(
+                    values={"files": {"/chapters/t1.html": {"content": "半截"}},
+                            "messages": [SimpleNamespace(content="write_todos could not be executed")]},
+                    next=("model",))
+
+            async def ainvoke(self, payload, config=None):
+                _Deep.called_with = "续跑" if payload is None else "从头"
+                return {"files": {}}
+
+        asyncio.run(_resume_or_start(_Deep(), "th", "请逐章生成正文", {}))
+        assert _Deep.called_with == "从头", "继承了坏历史——用户点几次就失败几次"
