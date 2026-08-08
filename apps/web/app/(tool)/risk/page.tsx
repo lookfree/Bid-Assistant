@@ -23,6 +23,7 @@ import { deriveRisk, type RealRisk } from "@/lib/risk-derive"
 import { stepPrereq, useStep } from "@/lib/use-step"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
+import { ContrastReviewCta } from "./contrast-run"
 import { Checklist } from "./checklist"
 import { DedupReview } from "./dedup-review"
 import { toneClasses } from "./shared"
@@ -91,6 +92,7 @@ function RejectReview() {
   const { projectId, info, data: real, dataLoading, running, phase, error, errorAction, start } = useStep<RealRisk>("review")
   const { overview: membershipOverview } = useMembership()
   const reviewCost = creditCostValue(membershipOverview, "review", 60)
+  const readCost = creditCostValue(membershipOverview, "read", 20)
 
   // ?view=entry：用户从面板里点了「从我的标书选择」，给「选项目 / 传标书」的中转页。
   // 「返回当前项目的审查」仅在当前项目确可审查时给出——否则不给，避免对未生成正文的在途项目
@@ -102,7 +104,7 @@ function RejectReview() {
       />
     )
   // 没有当前项目：只能传文件（选项目那张卡在中转页里，由上面的次要入口进）
-  if (!projectId) return <RejectUploadPanel onPickExisting={goEntry} />
+  if (!projectId) return <RejectUploadPanel onPickExisting={goEntry} onCreated={() => window.location.reload()} />
 
   // 项目状态/审查报告加载中：数据未就绪绝不裸露「开始废标体检」计费按钮
   if (!info || dataLoading) return <StepPlaceholder text={dataLoading ? "正在加载审查报告…" : "正在加载项目…"} delayMs={250} />
@@ -154,7 +156,19 @@ function RejectReview() {
         )}
         {/* 刚传完文件建好项目、正在读标时回到本页，原来只剩一张空白上传面板——
             用户会以为"刚才没传成功"再传一遍，等于重复付一次读标钱。明确告诉他项目在哪。 */}
-        {gap && (
+        {/* 上传了招标文件与投标文件的独立审查项目：**不再把用户支去招标解读**。
+            读标是对照审查的必需输入（要求清单从那儿来），但它是内部步骤，这里一并跑掉。
+            其它形态（库内项目缺正文等）保留原来的"前往上一步"引导。 */}
+        {gap && // review-kind 建项目时就强制带投标文件（bidFileKey 必填），故只需判有没有招标文件
+            info.project.kind === "review" && !!info.project.tenderFileKey ? (
+          <ContrastReviewCta
+            projectId={projectId}
+            projectName={info.project.name ?? "我的标书"}
+            readCost={readCost}
+            reviewCost={reviewCost}
+            onDone={() => window.location.reload()}
+          />
+        ) : gap ? (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-primary/30 gradient-brand-soft px-4 py-3 text-sm">
             <span className="text-foreground">
               当前项目「{info?.project.name ?? "我的标书"}」还差一步：{gap.label}完成后即可体检，无需重新上传
@@ -163,7 +177,7 @@ function RejectReview() {
               前往{gap.label}
             </a>
           </div>
-        )}
+        ) : null}
         {/* 「审查当前项目」只在**显式选了项目之后**出现（?view=project，从「从我的标书选择」进来）。
             默认落地页不摆它：用户口径「不要有审查当前项目，统一走从我的标书选择」——
             默认页只有上传面板 + 一个去列表的入口，路径唯一，不会一进来就对着一个不知是哪份标书的
@@ -185,7 +199,7 @@ function RejectReview() {
             ← 换一份标书审查
           </button>
         ) : (
-          <RejectUploadPanel onPickExisting={goEntry} />
+          <RejectUploadPanel onPickExisting={goEntry} onCreated={() => window.location.reload()} />
         )}
       </div>
     )

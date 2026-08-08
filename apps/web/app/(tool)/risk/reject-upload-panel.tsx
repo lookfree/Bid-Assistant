@@ -10,7 +10,9 @@ import { uploadFile, uploadErrorMessage, uploadHint, checkFiles, ACCEPT_BID, ACC
  *  不允许单独拿投标文件做废标审查）——缺一侧按钮就禁用，避免用户只传一份也被扣掉积分。
  *  隐私文案按**实际实现**写（加密传输存储 / 仅本人可见 / 模型不训练 / 可阅后即焚）——
  *  文件确实会传到服务端解析，不能照抄「浏览器本地存储、不上传服务器」那种做不到的承诺。 */
-export function RejectUploadPanel({ onPickExisting }: { onPickExisting: () => void }) {
+export function RejectUploadPanel(
+  { onPickExisting, onCreated }: { onPickExisting: () => void; onCreated: () => void },
+) {
   const [tender, setTender] = useState<File[]>([])
   const [bid, setBid] = useState<File[]>([])
   const [busy, setBusy] = useState(false)
@@ -28,7 +30,9 @@ export function RejectUploadPanel({ onPickExisting }: { onPickExisting: () => vo
       ])
       const id = await createReviewProject(bidUp.map((f) => f.key), tenderUp.map((f) => f.key))
       setCurrentProjectId(id)
-      window.location.href = "/read" // 先读标，读完自动接续审查步
+      // 留在本页：读标由「开始对照审查」一并跑掉（用户口径"不需要跳转到招标解读"）。
+      // 之前跳去 /read，用户得等它跑完再自己回来点生成，中间还容易以为没传成功又传一遍。
+      onCreated()
     } catch (e) {
       setError(uploadErrorMessage(e, "创建失败，请重试"))
       setBusy(false)
