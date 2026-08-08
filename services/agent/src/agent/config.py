@@ -67,11 +67,6 @@ class Settings(BaseSettings):
     # 预填充同时打自建端点，吞吐被挤满、横幅几分钟不动，端点"掉线"多半也是被打满。
     # 5 是产品定的（用户拍板）；端点扩容后可经 MODEL_CONTENT_MAX_PARALLEL 上调，不用改代码。
     model_content_max_parallel: int = 5
-    # 正文引擎：pipeline=代码编排（默认，任务 #84——章节清单代码拿在手里、每章独立调用、
-    # Semaphore 限流、每章落 Redis 断点；write_todos/task 两个故障源整个消失），
-    # deepagent=旧引擎（模型编排，2026-08-08 一下午的失忆/坏参数/自堵事故都出自它），
-    # 留作回退开关，新引擎跑稳后删除。
-    model_content_engine: str = "pipeline"
     # 流式空闲超时（大标书读标实测：单块生成慢而健康达数分钟，"总超时"会误杀——只在"连续无 token"时判挂死）。
     model_idle_timeout_s: int = 30              # 流式中连续 N 秒无新 token = 连接挂死 → 降级重试
     model_first_token_timeout_s: int = 120      # 首 token（含连接+大 prompt 预填）宽限，避免误杀慢启动

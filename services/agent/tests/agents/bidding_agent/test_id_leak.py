@@ -118,8 +118,24 @@ class TestAppliedEverywhere:
             ReadItem(title="国密", value="SM3", clause_ids=["sec-4-c9"])])])
         assert r.categories[0].items[0].clause_ids == ["sec-4-c9"]
 
-    def test_content_collection_cleans(self):
-        from agent.agents.bidding_agent.nodes.content import _collect_chapters
+    def test_content_collection_cleans(self, monkeypatch):
+        """流水线收稿同样清洗：模型把喂进去的内部 id 抄进正文（实测 <td>sec-37-c36~c37</td>），
+        入库前必须抹掉——交给评委的标书上不能印我们的内部编号。"""
+        import asyncio
+        from types import SimpleNamespace
 
-        out = _collect_chapters({"/chapters/t1.html": {"content": "<p>依据 sec-1-c2 编制</p>"}}, allowed={"t1"})
+        from langchain_core.messages import AIMessage
+
+        from agent.agents.bidding_agent.nodes import content_pipeline as pmod
+
+        class _Chat:
+            async def ainvoke(self, msgs, config=None):
+                return AIMessage(content=f"<h3>一、编制依据</h3><p>依据 sec-1-c2 编制{'内容' * 60}</p>")
+
+        monkeypatch.setattr(pmod, "resilient_chat", lambda gw, provider=None: _Chat())
+        ctx = SimpleNamespace(thread_id="t", run_id="r", redis=None, gateway=object(),
+                              recorder=None, user_id=None)
+        out = asyncio.run(pmod.run_content_pipeline(ctx, {
+            "outline": {"chapters": [{"id": "t1", "no": "一", "title": "方案", "group": "tech", "items": []}]},
+            "read": {}}))
         assert "sec-1-c2" not in out["t1"]

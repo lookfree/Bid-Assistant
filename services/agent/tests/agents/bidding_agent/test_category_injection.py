@@ -10,7 +10,6 @@ from agent.runtime.registry import RunContext
 from agent.agents.bidding_agent.prompts import categories as cat_mod
 from agent.agents.bidding_agent.nodes.outline import make_outline_node
 from agent.agents.bidding_agent.nodes.review import make_review_node
-from agent.agents.bidding_agent.nodes.content import make_content_node
 from agent.agents.bidding_agent.checklist_gen import generate_checklist
 
 _OUTLINE_ARGS = {"chapters": [{"id": "t1", "no": "第一章", "title": "整体方案", "group": "tech",
@@ -30,22 +29,10 @@ _FAKE_KNOWLEDGE = [
 _FAKE_PATCHES = [{"keywords": ["劳务派遣"], "item": "须提供劳务派遣经营许可证", "level": "高", "status": "unverified"}]
 
 
-@pytest.fixture(autouse=True)
-def _use_deepagent_engine(monkeypatch):
-    """本模块测的是 deepagent 旧引擎（引擎开关默认已切到代码编排流水线，任务 #84）。
-    旧引擎保留为配置回退，这些测试守住的就是那条回退路——别删，删了回退等于没验证。"""
-    from agent.config import settings as _s
-    monkeypatch.setattr(_s, "model_content_engine", "deepagent")
-
-
 @pytest.fixture
 def knowledge(monkeypatch):
     monkeypatch.setattr(cat_mod, "CATEGORY_KNOWLEDGE", _FAKE_KNOWLEDGE)
     monkeypatch.setattr(cat_mod, "INDUSTRY_PATCHES", _FAKE_PATCHES)
-
-
-def _ctx(submit_gateway, args):
-    return RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=submit_gateway(args))
 
 
 def test_empty_knowledge_changes_nothing(monkeypatch, submit_gateway):
@@ -102,28 +89,30 @@ def test_industry_patch_not_injected_when_no_keyword_hit(knowledge, submit_gatew
     assert "劳务派遣经营许可证" not in gw.chats[-1].last_messages[1].content
 
 
-def test_writing_points_reach_the_chapter_writer_prompt(knowledge, submit_gateway):
-    """**落笔要点必须进子写手的 system_prompt**，不能只加在规划轮的用户消息里——
-    真正落笔的是子写手，靠规划轮转述等于把要点押在模型愿不愿复述上（提纲 desc 就是这么丢过的）。"""
-    seen: dict = {}
+def test_writing_points_reach_the_chapter_system_prompt(knowledge, monkeypatch):
+    """**落笔要点必须进每章调用的 system 消息**（流水线引擎里落笔的就是这次调用）——
+    旧引擎靠规划轮转述丢过提纲 desc；新引擎由代码直接拼进 system，这里守住这根线。"""
+    from types import SimpleNamespace
 
-    def fake_create_deep_agent(**kw):
-        seen.update(kw)
-        raise RuntimeError("stop-here")   # 只验证构造参数，不跑整个 deepagent
+    from langchain_core.messages import AIMessage
 
-    import agent.agents.bidding_agent.nodes.content as content_mod
-    orig = content_mod.create_deep_agent
-    content_mod.create_deep_agent = fake_create_deep_agent
-    try:
-        ctx = _ctx(submit_gateway, {})
-        with pytest.raises(RuntimeError):
-            asyncio.run(make_content_node(ctx)({"outline": {}, "read": {},
-                                                "run_input": {"bid_category": ["goods"]}}))
-    finally:
-        content_mod.create_deep_agent = orig
-    writer_prompt = seen["subagents"][0]["system_prompt"]
-    assert "偏离表逐条对照不得概括" in writer_prompt
-    assert "报价明细表须含产地与品牌两列" not in writer_prompt, "章节层面的要点不该塞给子写手"
+    from agent.agents.bidding_agent.nodes import content_pipeline as pmod
+    from agent.agents.bidding_agent.nodes.content_pipeline import run_content_pipeline
+
+    seen: list = []
+
+    class _Chat:
+        async def ainvoke(self, msgs, config=None):
+            seen.append(msgs[0].content)
+            return AIMessage(content=f"<h3>一、正文</h3><p>{'内容' * 60}</p>")
+
+    monkeypatch.setattr(pmod, "resilient_chat", lambda gw, provider=None: _Chat())
+    ctx = SimpleNamespace(thread_id="t", run_id="r", redis=None, gateway=object(), recorder=None, user_id=None)
+    asyncio.run(run_content_pipeline(ctx, {
+        "outline": {"chapters": [{"id": "t1", "no": "一", "title": "方案", "group": "tech", "items": []}]},
+        "read": {}, "run_input": {"bid_category": ["goods"]}}))
+    assert seen and "偏离表逐条对照不得概括" in seen[0]
+    assert "报价明细表须含产地与品牌两列" not in seen[0], "章节层面的要点不该塞给落笔层"
 
 
 

@@ -29,14 +29,6 @@ _OUTLINE = {"chapters": [{"id": "b2", "no": "第二章", "title": "报价一览�
                                                       "clause_ids": ["sec-51-c1"]}]}]}
 
 
-@pytest.fixture(autouse=True)
-def _use_deepagent_engine(monkeypatch):
-    """本模块测的是 deepagent 旧引擎（引擎开关默认已切到代码编排流水线，任务 #84）。
-    旧引擎保留为配置回退，这些测试守住的就是那条回退路——别删，删了回退等于没验证。"""
-    from agent.config import settings as _s
-    monkeypatch.setattr(_s, "model_content_engine", "deepagent")
-
-
 class TestStripper:
     @pytest.mark.parametrize("src", [_READ, _OUTLINE, slim_read(_READ)])
     def test_no_internal_id_survives(self, src):
@@ -60,25 +52,29 @@ class TestStripper:
 class TestBoundary:
     """逐步核对：谁的模型输入里还能看到内部 id。"""
 
-    def test_content_message_has_none(self, monkeypatch):
+    def test_content_briefs_have_none(self, monkeypatch):
+        """流水线引擎逐章简报同守此界（#85 删旧引擎后由 deepagent 规划消息改为逐章简报）。"""
         import asyncio
+        from types import SimpleNamespace
 
-        from agent.agents.bidding_agent.nodes import content as content_mod
-        from .test_content_node import _FakeDeep, _ctx
+        from langchain_core.messages import AIMessage
 
-        captured = {}
+        from agent.agents.bidding_agent.nodes import content_pipeline as pmod
 
-        class _Capturing(_FakeDeep):
-            async def ainvoke(self, _input, config=None):
-                captured["user"] = _input["messages"][0].content
-                return await super().ainvoke(_input, config)
+        captured: list = []
 
-        monkeypatch.setattr(content_mod, "create_deep_agent",
-                            lambda **kw: _Capturing({"/chapters/b2.html": {"content": "<p>x</p>"}}))
-        asyncio.run(content_mod.make_content_node(_ctx())({"outline": _OUTLINE, "read": _READ}))
-        assert not _ID.search(captured["user"]), \
-            f"正文的模型输入里还有内部 id：{_ID.findall(captured['user'])[:5]}"
-        assert "报价一览表" in captured["user"]      # 该给的内容一个没少
+        class _Chat:
+            async def ainvoke(self, msgs, config=None):
+                captured.append(msgs[-1].content)
+                return AIMessage(content=f"<h3>一、正文</h3><p>{'内容' * 60}</p>")
+
+        monkeypatch.setattr(pmod, "resilient_chat", lambda gw, provider=None: _Chat())
+        ctx = SimpleNamespace(thread_id="t", run_id="r", redis=None, gateway=object(),
+                              recorder=None, user_id=None)
+        asyncio.run(pmod.run_content_pipeline(ctx, {"outline": _OUTLINE, "read": _READ}))
+        joined = "\n".join(captured)
+        assert not _ID.search(joined), f"正文简报里还有内部 id：{_ID.findall(joined)[:5]}"
+        assert "报价一览表" in joined      # 该给的内容一个没少
 
     def test_outline_step_still_gets_them(self):
         """提纲是**唯一**要保留的一步：条目要产出 clause_ids，前端靠它点回原文定位。

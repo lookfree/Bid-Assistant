@@ -1,146 +1,22 @@
 from __future__ import annotations
 import asyncio
-import hashlib
 import json
 import logging
 import re
-import time
-from typing import Any
-from deepagents import create_deep_agent          # 全流程唯一 deepagent 节点（§4.5）
-from agent.config import settings
-from agent.models.resilient import resilient_chat  # 正文绕过 create_agent，降级链要自己带
-from langchain_core.callbacks import AsyncCallbackHandler
-from langchain_core.messages import HumanMessage
-from agent.models.usage import UsageCallback
-from agent.telemetry.tool_recorder import ToolCallRecorder
 from agent.framework.create_agent import build_create_agent
-from agent.framework.limit_parallel import LimitParallelWritersMiddleware
-from agent.framework.rewrite_guard import RewriteGuardMiddleware
-from agent.framework.sanitize_tool_calls import SanitizeToolCallsMiddleware
+from langchain_core.messages import HumanMessage
 from agent.agents.bidding_agent.nodes.common import (
-    slim_read, package_scope, filter_read_by_package, protect_images, restore_images,
+    filter_read_by_package, protect_images, restore_images,
     publish_phase,
-    strip_clause_ids,
 )
-from agent.agents.bidding_agent.prompts.categories import category_scope
 from agent.agents.bidding_agent.prompts.content import (
-    CONTENT_PLANNER_PROMPT, CHAPTER_WRITER_PROMPT, CHAPTER_DRAFT_PROMPT, REWRITE_PROMPT,
+    CHAPTER_DRAFT_PROMPT, REWRITE_PROMPT,
     DEVIATION_TABLE_GUIDE, TEMPLATE_GUIDE)
 from agent.rag import retrieve as rag_retrieve
 from agent.agents.bidding_agent.render.sanitize import strip_document_shell, strip_chat_wrapper, clean_internal_ids
-from agent.runtime.channels import progress_stream
 
 logger = logging.getLogger(__name__)
 
-
-class ChapterProgressCallback(AsyncCallbackHandler):
-    """逐章进度埋点:deepagent 每次 write_file 到 chapters/<id>.html 就往进度流推一条 chapter.progress
-    事件(done/total + 已完成章 id),前端据此实时勾选「哪章写完、还剩几章」。best-effort,推送失败不影响生成。"""
-
-    def __init__(self, ctx: Any, total: int, titles: dict[str, str]):
-        self.ctx = ctx
-        self.total = total
-        self.titles = titles          # chapter_id → 标题(前端展示用)；键集合即提纲的合法章 id
-        self.done: list[str] = []
-        self.rewrites: dict[str, int] = {}   # chapter_id → 重写次数（首写不算）
-        self.batch_started = time.monotonic()     # 本批起算时刻（心跳显示"本批已 N 分"）
-        self.in_flight = 0                        # 此刻有几路子写手在写
-        self._tasks: set = set()                  # 在飞的 task 的 run_id（按 id 配对，见 _task_finished）
-
-    async def _log_pg(self, event_type: str, data: dict, level: str = "info") -> None:
-        """章节事件同步落 agent_event_log（best-effort）。Redis 进度流 24h 过期，2026-08-01 空转
-        事故复盘时 PG 里只有一条 run.start——正文步跑了什么必须能事后查。"""
-        recorder = getattr(self.ctx, "recorder", None)
-        if recorder is None or not getattr(self.ctx, "run_id", None):
-            return
-        try:
-            await asyncio.to_thread(
-                recorder.log_event, self.ctx.run_id, getattr(self.ctx, "agent_type", "unknown"),
-                event_type, node="content", level=level, data=data,
-                thread_id=getattr(self.ctx, "thread_id", None))
-        except Exception:  # noqa: BLE001 埋点 best-effort，绝不影响正文生成
-            logger.warning("chapter event log failed", exc_info=True)
-
-    def seed_done(self, files: dict) -> None:
-        """续跑时把检查点里已写好的章记成"已完成"。
-
-        回调只看得见**本轮**的 write_file——不接管的话，崩在第 19 章的任务重试时横幅会从
-        "已完成 0/20"开始爬，而它其实只剩一章要写，用户会以为又从头来了。
-        只认提纲里有的章 id（与 done 计数同一口径，幽灵章不进计数）。"""
-        for path in files or {}:
-            m = re.search(r"chapters/([^\"'/\\\s\]\},]+?)\.html", str(path))
-            cid = m.group(1) if m else None
-            if cid and cid not in self.done and (not self.titles or cid in self.titles):
-                self.done.append(cid)
-
-    def _task_finished(self, run_id) -> None:
-        """按 run_id 配对着减：**这个回调收到的是所有工具的结束事件**（子写手的 read_file /
-        write_file 也会来）。无条件减的话，7 路在写时会被几次 write_file 减到 0，
-        横幅退回含糊的"撰写中"，而下一次 task 开始又把计时归零——恰好把要暴露的长停顿藏了起来。"""
-        if run_id in self._tasks:
-            self._tasks.discard(run_id)
-            self.in_flight = len(self._tasks)
-
-    async def on_tool_end(self, output, *, run_id=None, **kwargs):
-        self._task_finished(run_id)
-
-    async def on_tool_error(self, error, *, run_id=None, **kwargs):
-        self._task_finished(run_id)
-
-    async def on_tool_start(self, serialized, input_str, *, inputs=None, **kwargs):
-        # task = 派一个子写手去写一章（deepagents 的分派工具）。数它的开始/结束就拿到**真实并发数**，
-        # 不必去猜——横幅此前假设串行，把并行写成"第 N 章卡了 15 分钟"（2026-08-08 用户来问）。
-        if (serialized or {}).get("name") == "task" if isinstance(serialized, dict) else False:
-            self._tasks.add(kwargs.get("run_id"))
-            self.in_flight = len(self._tasks)
-            if self.in_flight == 1:
-                self.batch_started = time.monotonic()   # 新一批开始，计时归零
-            return
-        # 只认 write_file 工具：deepagent 的 write_todos 等规划工具 input 里也含 "chapters/<id>.html"
-        # （todo 项，带 status），之前误判成"写完一章"→ 计数虚高、标题解析成 todo 的 repr 残片。
-        name = (serialized or {}).get("name") if isinstance(serialized, dict) else None
-        if name and name != "write_file":
-            return
-        # 结构化 file_path 才是可信来源（write_file 的 inputs.file_path 是干净的 chapters/x.html；
-        # write_todos 的 file_path 嵌在 todos 列表里，inputs.get 取不到）。input_str（工具入参 dict repr）
-        # 只在"确认是 write_file"时才兜底——否则 write_todos 若 serialized 无 name（绕过上面名字门），
-        # 其 repr 里的 todo 项 chapters/<id>.html 会被正则误抠成"写完一章"（虚高计数）。
-        path = (inputs or {}).get("file_path") or (inputs or {}).get("path") or ""
-        if not path and name == "write_file":
-            path = input_str or ""
-        m = re.search(r"chapters/([^\"'/\\\s\]\},]+?)\.html", str(path))
-        if not m:
-            return
-        cid = m.group(1)
-        if self.titles and cid not in self.titles:
-            # 幽灵章：模型写了提纲里不存在的章 id（实测 2026-08-01：t6 重写混乱中造出 "t6-new"，
-            # 前端横幅显示「已完成 16/15 章（刚写完「t6-new」）」）。不计数、不推前端，只记 warn 供排查；
-            # 收稿侧 _collect_chapters 同样按提纲过滤——两道闸，任何一道漏了幽灵章都到不了交付。
-            await self._log_pg("chapter.phantom", {"chapterId": cid}, level="warn")
-            return
-        if cid in self.done:
-            # 同一章第二次被写入 = 模型在重写已完成的章。这是上下文压缩丢进度的信号（2026-08-01
-            # 实测：5 次整章重写、计数 45 分钟不动，只能靠人肉对 token_usage 时间线才看出来）。
-            # 只进 PG 不进 Redis——前端计数不能虚高。
-            self.rewrites[cid] = self.rewrites.get(cid, 0) + 1
-            await self._log_pg("chapter.rewrite", {"chapterId": cid, "title": self.titles.get(cid, cid),
-                               "rewrite": self.rewrites[cid]}, level="warn")
-            return
-        self.done.append(cid)
-        ev = {"type": "progress", "data": {"kind": "chapter", "chapterId": cid,
-              "title": self.titles.get(cid, cid), "done": len(self.done), "total": self.total,
-              "doneIds": list(self.done)}}
-        try:
-            if self.ctx.redis and self.ctx.run_id:
-                await asyncio.to_thread(self.ctx.redis.xadd, progress_stream(self.ctx.run_id),
-                                        {"event": json.dumps(ev, ensure_ascii=False)})
-        except Exception:  # noqa: BLE001 进度埋点 best-effort,推送失败绝不影响正文生成
-            logger.warning("chapter progress publish failed", exc_info=True)
-        await self._log_pg("chapter.done", {"chapterId": cid, "title": self.titles.get(cid, cid),
-                           "done": len(self.done), "total": self.total})
-        self.batch_started = time.monotonic()     # 下一批从现在起算
-
-_CHAPTER_PREFIX = "/chapters/"
 _REWRITE_QUERY_CHARS = 200   # 改写检索 query 取原章前 N 字，避免整章 HTML 顶穿 embed 输入
 _DEVIATION_KEYWORD = "偏离"          # 偏离表章节识别关键字（技术偏离表/商务偏离表，spec322）
 _DEVIATION_CATEGORY_KEYS = ("technical", "commercial", "qualification")
@@ -445,90 +321,6 @@ async def _content_reference_block(ctx, state: dict) -> str:
         ctx.user_id, queries, _default_top_k(run_input), tender_thread_id=ctx.thread_id)
 
 
-def _collect_chapters(files: dict | None, allowed: set[str] | None = None) -> dict[str, str]:
-    """从 deepagent 虚拟 FS 结果（v2：{path: {content,...}}，路径带前导斜杠）按前缀收稿。
-    allowed=提纲章 id 集合：不在提纲里的幽灵章（模型混乱时自造 id，实测 "t6-new"）一律不收——
-    上次没混进交付纯属模型后来自己覆盖了它，不过滤等于把交付质量押在运气上。"""
-    chapters: dict[str, str] = {}
-    dropped: list[str] = []
-    for path, data in (files or {}).items():
-        norm = path if path.startswith("/") else f"/{path}"
-        if not norm.startswith(_CHAPTER_PREFIX):
-            continue
-        cid = norm[len(_CHAPTER_PREFIX):].removesuffix(".html")
-        if allowed is not None and cid not in allowed:
-            dropped.append(cid)
-            continue
-        # content 允许缺省（deepagents 自身也按可缺处理）；空稿跳过——全空最终触发 fail-loud
-        content = data.get("content", "") if isinstance(data, dict) else str(data)
-        # 收稿统一清洗：剥对话包装 + 文档壳（防样式泄漏/围栏入库），并抹掉内部条款 id——
-        # 2026-08-08 线上实测正文里出现过 <td>sec-37-c36~c37</td>，等于交给评委的标书上
-        # 印着我们的内部编号（喂给写手的读标结论里带 clause_ids，模型顺手抄进了正文）。
-        content = clean_internal_ids(strip_document_shell(strip_chat_wrapper(content)))
-        if content:
-            chapters[cid] = content
-    if dropped:
-        logger.warning("collect_chapters dropped phantom ids: %s", dropped)
-    return chapters
-
-
-async def _log_incomplete(ctx, missing: list[str], total: int, phase: str) -> None:
-    """漏章落 observability 事件。生产 root logger 是 WARNING 且日志会滚掉——
-    「这次交付少了几章」必须查得到，否则复盘时只剩用户截图（与 length_telemetry 同款做法）。"""
-    try:
-        if ctx.recorder and ctx.run_id:
-            await asyncio.to_thread(
-                ctx.recorder.log_event,
-                ctx.run_id, ctx.agent_type, "content_incomplete", node="content",
-                data={"missing": missing, "missing_count": len(missing), "total": total, "phase": phase},
-                thread_id=ctx.thread_id,
-            )
-    except Exception:  # noqa: BLE001 埋点失败绝不影响交付
-        logger.warning("content incomplete event write failed", exc_info=True)
-
-
-async def _fill_missing_chapters(ctx, deep, chapters: dict[str, str], meta: dict, limit: int,
-                                 progress_cb, thread_id: str | None = None) -> dict[str, str]:
-    """漏写的章补一轮。
-
-    2026-08-06 生产实例：20 章的标书写到第 14 章就停了（t6–t11 一个字没有），而
-    `if not chapters` 只在**一章都没有**时才失败，于是整步标 done、照常扣费、照常进入
-    审查与导出——审查报「缺章」，导出连挂 9 次，用户拿到的是半本标书却没收到任何提示。
-    （那次的诱因是首个 write_todos 因参数类型被拒、计划清单没建起来，但补写不赌原因：
-    不管模型为什么停，漏了就补。）
-
-    只补漏的那几章，不重写已有的：已写好的是用户付过钱的成果，重跑一遍既费钱又可能变差。
-    补完仍缺就如实记一条事件——此时不抛错，14 章成稿比"全额退款、从头再来"对用户更有价值，
-    前端每章本就有「待生成」标记。
-    """
-    missing = [cid for cid in meta if cid not in chapters]
-    if not missing:
-        return chapters
-    logger.warning("content 漏写 %d/%d 章，补写：%s", len(missing), len(meta), missing)
-    await _log_incomplete(ctx, missing, len(meta), "before_retry")
-    lines = "\n".join(f"- {cid}：{meta.get(cid)}" for cid in missing)
-    msg = (f"还有 {len(missing)} 章没有写：\n{lines}\n"
-           "请**只写这几章**，逐章写入 chapters/<章id>.html，不要改动已经写好的其它章节。")
-    try:
-        # **必须与主轮同一个 thread_id**：主轮挂上自定义 thread 之后，这里若不带，
-        # 读到的是一份空状态——没有招标原文、没有提纲、也不知道已经写过哪几章，
-        # 补出来的只能是凭空编的内容（2026-08-08 审查提出；此前两处都没带 configurable，
-        # 恰好落在同一条血缘上才没出事）。
-        cfg = {"recursion_limit": limit, "callbacks": [
-            UsageCallback(ctx, "content"), progress_cb, ToolCallRecorder(ctx, "content")]}
-        if thread_id:
-            cfg["configurable"] = {"thread_id": thread_id}
-        res = await deep.ainvoke({"messages": [HumanMessage(content=msg)]}, config=cfg)
-        chapters = {**chapters, **_collect_chapters(res.get("files"), allowed=set(meta))}
-    except Exception as e:  # 补写失败不能连累已成稿的章节
-        logger.warning("content 补写失败（保留已成稿章节）：%s", e)
-    still = [cid for cid in meta if cid not in chapters]
-    if still:
-        logger.error("content 补写后仍缺 %d 章：%s", len(still), still)
-        await _log_incomplete(ctx, still, len(meta), "after_retry")
-    return chapters
-
-
 def _heartbeat_label(done: int, total: int, elapsed_s: float, in_flight: int = 0) -> str:
     """正文心跳文案：横幅每 5s 动一次。
 
@@ -552,117 +344,13 @@ def _heartbeat_label(done: int, total: int, elapsed_s: float, in_flight: int = 0
     return f"上一批已收稿，正在安排下一批（已 {m} 分 {s:02d} 秒）"
 
 
-async def _chapter_heartbeat(ctx, cb: "ChapterProgressCallback", interval_s: float = 5.0) -> None:
-    """正文步心跳泵：deepagent 单章一次长调用（大章 4~8 分钟），期间没有任何事件——
-    横幅定格会被用户读成"卡住了"（实测反馈）。每 interval 推一条 heartbeat 直到被取消。"""
-    from agent.runtime.progress import publish_event
-    while True:
-        await asyncio.sleep(interval_s)
-        label = _heartbeat_label(len(cb.done), cb.total,
-                                 time.monotonic() - cb.batch_started, cb.in_flight)
-        await publish_event(getattr(ctx, "redis", None), getattr(ctx, "run_id", None),
-                            {"kind": "heartbeat", "label": label, "chars": 0})
-
-
 def make_content_node(ctx):
-    """deepagent 节点：主控规划（todos）→ 按章派子写手 → 虚拟 FS 收稿 → state['chapters']。
-    上下文压缩用 deepagents 内建 summarization middleware（长标书防超窗）；
-    虚拟 FS 是默认 StateBackend、不开 execute；一章未产出即失败（run failed 可重试）。"""
+    """正文节点：代码编排流水线（任务 #84/#85）——章清单来自提纲、每章一次独立模型调用、
+    并发受限、每章落 Redis 断点。编排细节见 content_pipeline.run_content_pipeline。"""
     async def content_node(state):
-        # 引擎开关（任务 #84）：默认走代码编排流水线；deepagent 旧引擎留作配置回退，
-        # 跑稳后删除。回退口径：MODEL_CONTENT_ENGINE=deepagent。
-        if getattr(settings, "model_content_engine", "pipeline") == "pipeline":
-            from agent.agents.bidding_agent.nodes.content_pipeline import run_content_pipeline
-            await publish_phase(ctx, "逐章撰写投标正文（代码编排）")
-            chapters = await run_content_pipeline(ctx, state)
-            await _log_length_telemetry(ctx, state.get("run_input") or {}, chapters)
-            return {"chapters": chapters}
-
-        # 带降级的模型：正文是全流程唯一不走 create_agent 的节点，也就绕过了 model_stream 那套
-        # 降级链——生产实测近 10 天 content 成功 3 次/失败 25 次，其中 18 次是瞬断
-        # （APIConnectionError），而连接类错误在其它步骤一次都没有。正文一跑十几二十分钟，
-        # 跑到尾声被一次瞬断打掉全部作废，代价最大的一步反而最脆弱。
-        model = resilient_chat(ctx.gateway, provider=None) if ctx.gateway else None
-        # 分类落笔要点（spec334）**必须拼进子写手的 system_prompt**，不能只加在规划轮的用户消息里：
-        # 真正落笔的是子写手，规划轮只是派活；靠它转述等于把要点的存亡押在模型愿不愿意复述上——
-        # 提纲 desc 就是这么丢过的（CONTENT_PLANNER_PROMPT 里那句「必须原样转述」是事后补的）。
-        cats = (state.get("run_input") or {}).get("bid_category")
-        writer_prompt = CHAPTER_WRITER_PROMPT + category_scope(cats, "writing")
-        # 挂 checkpointer：正文是最长最贵的一步，进程一死（挂死被杀/发版/崩溃）已写好的章
-        # 连同消息历史一起丢，重跑得从第一章开始——2026-08-08 一次挂死白写了 19 章。
-        # deepagents 本来就支持，只是此前没传。thread id 随输入变化自动失效，见 content_resume_thread。
-        # 逐章进度:从 outline 取章 id→标题（重写闸与进度回调共用，须先于 deepagent 构造）。
-        chapters_meta = {c.get("id"): c.get("title", c.get("id"))
-                         for c in (state.get("outline") or {}).get("chapters", []) if c.get("id")}
-        deep = create_deep_agent(
-            model=model, tools=[], system_prompt=CONTENT_PLANNER_PROMPT,
-            subagents=[{"name": "chapter_writer", "description": "写指定一章的标书正文 HTML",
-                        "system_prompt": writer_prompt}],
-            checkpointer=getattr(ctx, "checkpointer", None),
-            # 喂模型前无害化历史里被拼坏的工具调用参数（create_agent 路线的同款防护）：
-            # 坏参数存进检查点后，每次回传都会让端点在渲染模板时 json.loads 失败——
-            # 400 的病根在这，不在流式（2026-08-08 生产实证）。
-            # 并发闸在前、无害化在后：闸住 task 派发（15 路同时打端点会把它挤满），
-            # 每次调模型前再清洗历史里的坏工具参数
-            # 三道闸：并发限 5（15 路自堵实测）→ 重写闸（失忆循环实测，b8 连写四遍）
-            # → 发送前无害化坏工具参数（400 病根实测）
-            middleware=[LimitParallelWritersMiddleware(), RewriteGuardMiddleware(chapters_meta),
-                        SanitizeToolCallsMiddleware()],
-        )
-        # 读标依据走 slim_read（与 outline/review 一致）：read result 已并入全文分句 doc_sections
-        # 与逐条 source_quote（token 大头），原样 dumps 会把整份招标原文灌进规划轮直接顶穿上下文。
-        # 参考资料段插在「读标依据」与「请逐章生成」指令之间（brief §5）；ref 为空则消息与未启用 RAG 逐字节一致。
-        outline = state.get("outline") or {}
-        # 选包时把读标收窄到该包(spec324 优化):slim_read/偏离表/构成都只喂该包数据,上下文大降。
-        read = filter_read_by_package(state.get("read") or {}, state.get("run_input"))
-        # **只在喂给模型的这条消息上剥内部条款 id**：id 是我们代码内部的连接键——
-        # _template_block 靠它把招标原文的格式模板捞出来、_chapter_requirements 靠它取要求，
-        # 前端靠它让用户点回原文，这些都照常用。模型需要的是它**指向的文本**，不是这个键：
-        # 看得见就会写出来（2026-08-08 用户截图：偏离表整列印着 sec-19-c129…，那一列还正是
-        # 提示词点名要的）。事后清洗只能把格子抹空，留个有表头没内容的列，更难看。
-        head = (f"提纲：\n{json.dumps(strip_clause_ids(outline), ensure_ascii=False)}\n\n"
-                f"读标依据：\n{json.dumps(strip_clause_ids(slim_read(read)), ensure_ascii=False)}")
-        # 偏离表章节存在时附加【偏离表指引】+ 全量条目数据（spec322）；无偏离表章节则与今天逐字节一致。
-        structure = read.get("required_structure") or []
-        deviation = _deviation_items_block(read) if _has_deviation_chapters(outline, structure) else ""
-        # 招标自带格式模板（响应函/证明/一览表等）：抠原文随规划轮下发，对应章沿用模板不得自创格式
-        template = _template_block(read, outline)
-        length_plan = _length_plan_block(state.get("run_input") or {}, outline, read.get("scoring") or [])  # spec330 目标字数（评分加权）
-        ref = await _content_reference_block(ctx, state)
-        mid_parts = [p for p in (length_plan, deviation, template, ref) if p]
-        mid = ("\n\n".join(mid_parts) + "\n\n") if mid_parts else ""
-        user = f"{head}\n\n{mid}请逐章生成正文，每章写入 chapters/<章id>.html。"
-        user += package_scope(state.get("run_input"))  # 选包时追加范围约束（spec324）
-        user += category_scope(cats, "planning")       # 章节层面的写作要点（spec334，只取主类别）
-
-        # recursion_limit 随章数动态放大:每章约需「规划+派子写手+写文件+收稿」多步,加上下文压缩中间件;
-        # 固定 100 步在 17 章的多包件标必撞 GraphRecursionError(实测跑 23 分钟后中止)。按 15 步/章 + 60 基础,
-        # 封顶 600 防失控。选包过滤(spec324)缩了章数时这里也随之更省。
-        recursion_limit = min(600, max(100, len(chapters_meta) * 15 + 60))
-        # UsageCallback 补记 token（deepagent 直驱模型，不经 make_agent_node 埋点）。
-        progress_cb = ChapterProgressCallback(ctx, len(chapters_meta), chapters_meta)
-        hb = asyncio.create_task(_chapter_heartbeat(ctx, progress_cb))  # 横幅每 5s 动一次
-        try:
-            cfg = {"recursion_limit": recursion_limit, "callbacks": [
-                UsageCallback(ctx, "content"),
-                progress_cb,
-                ToolCallRecorder(ctx, "content")]}       # agent_tool_call 落库（此前全库 0 行）
-            if getattr(deep, "checkpointer", None) is not None:
-                resume_thread = content_resume_thread(
-                    ctx, outline=outline, read=read, run_input=state.get("run_input") or {},
-                    writer_prompt=writer_prompt)
-                cfg["configurable"] = {"thread_id": resume_thread}
-                res = await _resume_or_start(deep, resume_thread, user, cfg, progress_cb=progress_cb)
-            else:                                        # 无 checkpointer（测试桩/单跑）：行为不变
-                resume_thread = None
-                res = await deep.ainvoke({"messages": [HumanMessage(content=user)]}, config=cfg)
-        finally:
-            hb.cancel()
-        chapters = _collect_chapters(res.get("files"), allowed=set(chapters_meta))
-        if not chapters:
-            raise RuntimeError("deepagent 未产出任何章节草稿（chapters/*.html）")
-        chapters = await _fill_missing_chapters(ctx, deep, chapters, chapters_meta, recursion_limit,
-                                                progress_cb, resume_thread)
+        from agent.agents.bidding_agent.nodes.content_pipeline import run_content_pipeline
+        await publish_phase(ctx, "逐章撰写投标正文（代码编排）")
+        chapters = await run_content_pipeline(ctx, state)
         await _log_length_telemetry(ctx, state.get("run_input") or {}, chapters)  # 超写系数的校准数据源（评审 F2）
         return {"chapters": chapters}
     return content_node
@@ -809,85 +497,3 @@ async def rewrite_chapter(ctx, chapter_id: str, instruction: str, state: dict,
     # 先剥对话包装（开场白/```围栏）再剥文档壳：提示词禁不住模型客套，确定性清洗兜底
     new = clean_internal_ids(strip_document_shell(strip_chat_wrapper(last.content)))
     return restore_images(new, kept_images)
-
-
-def content_resume_thread(ctx, *, outline: dict, read: dict, run_input: dict,
-                          writer_prompt: str) -> str:
-    """正文断点续跑用的 thread id。
-
-    哈希只盖**确定性且用户能感知**的那几样：提纲、读标结论、本 run 参数（选包/时长/字数档）、
-    规划与写手提示词。改了其中任何一样，id 就对不上，旧检查点自然作废、从头重写——
-    从旧检查点接着跑意味着按**旧计划**出稿且毫无提示，用户拿到的是一份他以为改过、其实没改的标书。
-
-    **刻意不含检索出来的参考资料段**：那东西每次跑都可能不一样（资料库更新、召回顺序抖动），
-    含进来会让用户什么都没改、哈希却变了，旧检查点白白作废——续跑就等于没做。
-    宁可对"资料变了"不敏感（它不改变要写哪些章、写什么要求），也不能让功能静默失效。
-    """
-    seed = json.dumps({"outline": outline, "read": read,
-                       # content_generation 不进哈希：它是"第几次生成"，单独作后缀（见下），
-                       # 混进哈希会让人查不出 id 为什么变
-                       "run_input": {k: v for k, v in (run_input or {}).items()
-                                     if k != "content_generation"}},
-                      ensure_ascii=False, sort_keys=True)
-    seed += f"\n--\n{CONTENT_PLANNER_PROMPT}\n--\n{writer_prompt}"
-    # 第几次生成（App 下发 = 已成功完成的正文步数）。**不能用 run_id 做盐**：
-    # 那样一次"重新生成"失败后，重试会算出另一个 id，接不上刚写了一半的那条，
-    # 反而回落到上一次**已完成**的检查点——ainvoke 什么都不做，直接把旧文档当新结果交回来，
-    # 用户付了钱拿回同一份文档（2026-08-08 审查提出，正是换 thread 要防的那件事）。
-    # 用"第几次"就稳：重试时它不变（接得上），重新生成时它 +1（换一条干净的线）。
-    gen = (run_input or {}).get("content_generation") or 0
-    tid = f"{ctx.thread_id}-content-{hashlib.sha256(seed.encode()).hexdigest()[:16]}"
-    return f"{tid}-g{gen}" if gen else tid
-
-
-_BROKEN_TOOL_MARKS = ("could not be executed", "无法执行", "not be executed")
-
-
-def _history_is_broken(values: dict) -> bool:
-    """这份检查点历史还能不能接着用。
-
-    判据：末尾附近出现"工具调用执行不了"的回执——那意味着上一轮卡在一个悬空调用上，
-    模型看到的是一段自相矛盾的对话（我发了调用、系统说执行不了），接着写只会重蹈覆辙。
-    只看末尾几条：更早的失败若已被后续轮次绕过去，就不该因此丢掉整条进度。
-    """
-    for m in (values.get("messages") or [])[-4:]:
-        text = str(getattr(m, "content", "") or "")
-        if any(mark in text for mark in _BROKEN_TOOL_MARKS):
-            return True
-    return False
-
-
-async def _resume_or_start(deep, thread_id: str, user_msg: str, config: dict, *, progress_cb=None):
-    """这条线上有检查点就接着写，没有就从头开始。
-
-    **"要不要从头"由 thread id 表达，不再单独开一个意图开关**：重新生成会换到新的一条线
-    （见 content_resume_thread 的 content_generation），那条线上本来就没有检查点，自然从头跑；
-    而失败重试算出的是同一条线，自然接得上。少一个开关，就少一处"开关对了但 id 没换"的错法。
-
-    续跑必须用 `None` 作输入：再传一次 messages 会往历史里**追加一条同样的指令**，
-    模型看到两条"请逐章生成正文"，可能把已写好的章重写一遍——那正是续跑要省掉的开销。
-    """
-    # 坏历史绝不继承，而且**必须换线路**（2026-08-08 生产两连击）：
-    # ① 某轮 write_todos 的参数 JSON 被拼坏（malformed），带着坏参数的消息存进了检查点；
-    # ② 之后每次重试，历史原样发回端点，vLLM 渲染对话模板时 json.loads 那串坏参数，
-    #    在固定字符位炸出 400 "Expecting ',' delimiter"——流式非流式都一样，因为病根在库里。
-    # 第一版体检只做了"从头跑"却留在同一条 thread 上：langgraph 会把新输入**并进**旧状态，
-    # 坏消息照样进请求。所以坏历史 → 用坏检查点 id 做盐换一条线。盐是稳定的：
-    # 同一份坏历史永远派生同一条新线，新线写了一半再失败，下次重试仍能找到它接着写。
-    for _ in range(5):   # 防环：连环坏历史逐层换线，五层足够（每层盐都来自唯一的检查点 id）
-        snap = await deep.aget_state({"configurable": {"thread_id": thread_id}})
-        if not (snap.values and _history_is_broken(snap.values)):
-            break
-        ck = ((snap.config or {}).get("configurable") or {}).get("checkpoint_id", "x")
-        thread_id = f"{thread_id}-r{str(ck)[:8]}"
-        config = {**config, "configurable": {**(config.get("configurable") or {}), "thread_id": thread_id}}
-        logger.warning("正文检查点历史已损坏（工具调用参数被拼坏），换线路重跑：%s", thread_id[-24:])
-    if snap.values and (snap.next or snap.values.get("files")):
-        done = snap.values.get("files") or {}
-        logger.info("正文续跑：已有检查点（待执行 %s，已写 %d 章）", snap.next, len(done))
-        # 进度从已写的章起算：回调只看得见**本轮**的 write_file，不接管的话，
-        # 崩在第 19 章的任务重试时横幅会从"第 1/20 章"开始爬，而它其实只剩一章要写。
-        if progress_cb is not None:
-            progress_cb.seed_done(done)
-        return await deep.ainvoke(None, config=config)
-    return await deep.ainvoke({"messages": [HumanMessage(content=user_msg)]}, config=config)

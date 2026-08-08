@@ -64,6 +64,21 @@ async def _cache_set(ctx, key: str, html: str) -> None:
         logger.warning("chapter cache set failed key=%s", key, exc_info=True)
 
 
+async def _log_pg(ctx, event_type: str, data: dict, level: str = "info") -> None:
+    """章节事件落 agent_event_log（best-effort）：生产 root logger 是 WARNING 且日志会滚掉，
+    「写完哪几章、最后缺了哪几章」必须查得到。落库走 to_thread（log_event 是同步 PG 写）。"""
+    recorder = getattr(ctx, "recorder", None)
+    if recorder is None or not getattr(ctx, "run_id", None):
+        return
+    try:
+        await asyncio.to_thread(
+            recorder.log_event, ctx.run_id, getattr(ctx, "agent_type", "bidding_agent"),
+            event_type, node="content", level=level, data=data,
+            thread_id=getattr(ctx, "thread_id", None))
+    except Exception:  # noqa: BLE001 埋点 best-effort，绝不影响正文生成
+        logger.warning("chapter event log failed", exc_info=True)
+
+
 class _Progress:
     """进度出口：与 deepagent 引擎同一事件形状，前端零改动。
     在代码编排下这些数字**不再靠回调猜**——写完就是写完，几路在写就是几路。"""
@@ -86,6 +101,10 @@ class _Progress:
                                         {"event": json.dumps(ev, ensure_ascii=False)})
         except Exception:  # noqa: BLE001 进度 best-effort
             logger.warning("chapter progress publish failed", exc_info=True)
+        # 同步落 agent_event_log：Redis 进度流 24h 过期，正文步跑了什么必须能事后查
+        # （2026-08-01 空转事故复盘时 PG 里只有一条 run.start——这条审计线删旧引擎时不能丢）。
+        await _log_pg(self.ctx, "chapter.done", {"chapterId": cid, "title": self.titles.get(cid, cid),
+                      "done": len(self.done), "total": self.total})
 
     async def heartbeat(self, interval_s: float = 5.0) -> None:
         from agent.agents.bidding_agent.nodes.content import _heartbeat_label
@@ -204,8 +223,11 @@ async def run_content_pipeline(ctx, state: dict) -> dict[str, str]:
         await asyncio.gather(hb, return_exceptions=True)
     out = {cid: html for cid, html in results if html}
     if not out:
-        raise RuntimeError("deepagent 未产出任何章节草稿（chapters/*.html）")   # 沿用既有错误文案，App 侧同一处理
+        raise RuntimeError("未产出任何章节草稿（全部章节生成失败）")
     missing = [cid for cid, html in results if not html]
     if missing:
         logger.error("代码编排收尾仍缺 %d 章：%s（前端可免费补齐）", len(missing), missing)
+        # 漏章落 observability 事件（与旧引擎同一事件名，复盘查询口径不变）
+        await _log_pg(ctx, "content_incomplete", {"missing": missing, "missing_count": len(missing),
+                      "total": len(chapters), "phase": "final"}, level="warn")
     return out
