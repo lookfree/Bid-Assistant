@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["publish_phase", "upload_artifact", "fetch_master_bytes", "package_scope",
            "filter_read_by_package", "slim_read", "parse_bid_chapters", "html_to_review_text",
-           "allocate_chapter_budget", "chapters_budget", "compress_read", "MIN_CHAPTER_CHARS"]
+           "allocate_chapter_budget", "chapters_budget", "compress_read", "strip_clause_ids",
+           "MIN_CHAPTER_CHARS"]
 
 
 def parse_bid_chapters(keys: str | list[str]) -> dict[str, str]:
@@ -295,3 +296,27 @@ def compress_read(read: dict, budget_tokens: int) -> dict:
         if estimate_tokens(json.dumps(out, ensure_ascii=False)) <= cap:
             return out
     return out   # 压到只剩★/风险仍超额：交给 run_with_shrink 的收缩重试兜底
+
+
+# 内部条款 id 的字段名。这些 id 是**我们自己的键**（sec-19-c129），用来让前端点回招标原文定位；
+# 评委看不懂，写进标书就是废纸。
+_CLAUSE_ID_FIELDS = ("clause_ids", "evidence_clause_ids")
+
+
+def strip_clause_ids(obj):
+    """递归剥掉内部条款 id 字段——**喂模型之前统一过一遍**。
+
+    规则很简单：**内部 id 只在提纲这一步进出模型**。提纲条目要产出 clause_ids（前端靠它
+    点回原文定位），所以提纲步必须看得见；正文/审查/述标的产出里没有任何承载 id 的字段，
+    给了只会被抄进交付文档。
+
+    为什么不能只靠"抹掉输出"：2026-08-08 用户截图，偏离表整整一列印着 sec-19-c129…，
+    而那一列正是提示词点名要的（"招标要求条款（章节号/clause_ids）"）——模型是照做的。
+    事后清洗只能把那些格子抹空，留下一个有表头、内容全空的列，比原样更难看。
+    模型看不见，才不会写出来。
+    """
+    if isinstance(obj, dict):
+        return {k: strip_clause_ids(v) for k, v in obj.items() if k not in _CLAUSE_ID_FIELDS}
+    if isinstance(obj, list):
+        return [strip_clause_ids(v) for v in obj]
+    return obj

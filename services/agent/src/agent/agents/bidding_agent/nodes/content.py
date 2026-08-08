@@ -14,6 +14,7 @@ from agent.telemetry.tool_recorder import ToolCallRecorder
 from agent.framework.create_agent import build_create_agent
 from agent.agents.bidding_agent.nodes.common import (
     slim_read, package_scope, filter_read_by_package, protect_images, restore_images,
+    strip_clause_ids,
 )
 from agent.agents.bidding_agent.prompts.categories import category_scope
 from agent.agents.bidding_agent.prompts.content import (
@@ -364,8 +365,8 @@ def _deviation_items_block(read: dict) -> str:
     for c in (read.get("categories") or []):
         if c.get("key") not in _DEVIATION_CATEGORY_KEYS:
             continue
-        items = [{"title": it.get("title"), "value": it.get("value"),
-                  "clause_ids": it.get("clause_ids", []), "star": it.get("star", False)}
+        # 不带 clause_ids：那是内部键，模型会照着提示词把它填进偏离表的"出处"列
+        items = [{"title": it.get("title"), "value": it.get("value"), "star": it.get("star", False)}
                  for it in c.get("items", [])]
         cats.append({"key": c.get("key"), "title": c.get("title"), "items": items})
     return (f"{DEVIATION_TABLE_GUIDE}\n"
@@ -507,8 +508,13 @@ def make_content_node(ctx):
         outline = state.get("outline") or {}
         # 选包时把读标收窄到该包(spec324 优化):slim_read/偏离表/构成都只喂该包数据,上下文大降。
         read = filter_read_by_package(state.get("read") or {}, state.get("run_input"))
-        head = (f"提纲：\n{json.dumps(outline, ensure_ascii=False)}\n\n"
-                f"读标依据：\n{json.dumps(slim_read(read), ensure_ascii=False)}")
+        # **只在喂给模型的这条消息上剥内部条款 id**：id 是我们代码内部的连接键——
+        # _template_block 靠它把招标原文的格式模板捞出来、_chapter_requirements 靠它取要求，
+        # 前端靠它让用户点回原文，这些都照常用。模型需要的是它**指向的文本**，不是这个键：
+        # 看得见就会写出来（2026-08-08 用户截图：偏离表整列印着 sec-19-c129…，那一列还正是
+        # 提示词点名要的）。事后清洗只能把格子抹空，留个有表头没内容的列，更难看。
+        head = (f"提纲：\n{json.dumps(strip_clause_ids(outline), ensure_ascii=False)}\n\n"
+                f"读标依据：\n{json.dumps(strip_clause_ids(slim_read(read)), ensure_ascii=False)}")
         # 偏离表章节存在时附加【偏离表指引】+ 全量条目数据（spec322）；无偏离表章节则与今天逐字节一致。
         structure = read.get("required_structure") or []
         deviation = _deviation_items_block(read) if _has_deviation_chapters(outline, structure) else ""
