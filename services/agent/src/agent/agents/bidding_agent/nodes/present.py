@@ -7,7 +7,7 @@ from agent.framework.budget import run_with_shrink
 from agent.framework.create_agent import run_submit_agent
 from agent.agents.bidding_agent.nodes.common import (
     slim_read, upload_artifact, fetch_master_bytes, filter_read_by_package, parse_bid_chapters, publish_phase,
-    allocate_chapter_budget, chapters_budget, MIN_CHAPTER_CHARS,
+    allocate_chapter_budget, chapters_budget, compress_read, MIN_CHAPTER_CHARS,
     strip_inline_images,
 )
 from agent.agents.bidding_agent.schemas import DeckDraft, DeckSpec, Slide, SlideNotes
@@ -119,7 +119,9 @@ def make_present_node(ctx):
         # 选包时读标收窄到该包（spec324，与 review/outline 一致）：述标只按该包评分点组织，不把别包的
         # 评分/要求混进 PPT。未选包（单包/缺省/review-kind 独立线程无 read）→ 原样，行为不变。
         read_state = filter_read_by_package(state.get("read") or {}, run_input)
-        payload = {"chapters": {}, "read": slim_read(read_state),   # chapters 占位保住键序
+        # 读标结论先压进额度的一半（与审查同一口径）：★条款与废标风险条一条不动。
+        payload = {"chapters": {},                                  # 占位保住键序
+                   "read": compress_read(slim_read(read_state), chapters_budget(ctx, "")),
                    "duration": duration}
         tail = f"\n客户指定模板：{template}（template 字段必须用它）。" if template else ""
         # 正文额度按剩余窗口算（与审查同一口径）：读标结论、系统提示、schema 先占，剩下的给正文。

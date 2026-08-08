@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from html import unescape
 
-from agent.framework.budget import chapter_budget
+from agent.framework.budget import chapter_budget, estimate_tokens
 from agent.parsing import storage_read
 from agent.parsing.service import read_and_parse
 from agent.parsing.storage_read import storage      # spec106 MinIO 单例
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["publish_phase", "upload_artifact", "fetch_master_bytes", "package_scope",
            "filter_read_by_package", "slim_read", "parse_bid_chapters", "html_to_review_text",
-           "allocate_chapter_budget", "chapters_budget", "MIN_CHAPTER_CHARS"]
+           "allocate_chapter_budget", "chapters_budget", "compress_read", "MIN_CHAPTER_CHARS"]
 
 
 def parse_bid_chapters(keys: str | list[str]) -> dict[str, str]:
@@ -245,3 +246,46 @@ def restore_images(html: str, keep: dict[int, str]) -> str:
     out = _MARKER_RE.sub(_sub, html)
     missing = [keep[n] for n in sorted(keep) if n not in used]
     return out + "".join(missing)
+
+
+# 读标结论最多占输入预算的一半，另一半留给标书正文。
+# 2026-08-08 实测：最大的一份读标结论 210311 tokens（2747 个条目），单它一个就是窗口的两倍，
+# 正文一个字都放不进去——这种项目只截正文是没用的，得先压结论本身。
+_READ_SHARE = 0.5
+# 普通条目压缩后保留的取值长度：够模型知道"有这么个要求"，不够的它会从正文里找。
+_PLAIN_VALUE_CHARS = 60
+
+
+def _item_for_model(it: dict, value_chars: int | None) -> dict:
+    """条目 → 喂模型的形状。**丢掉 clause_ids**：审查/述标的产出里不需要条款 id
+    （风险项用的是文字 tender_ref），而它既占 10% 的量，又是模型把内部编号抄进
+    用户可见文字的源头（2026-08-08 全库实测四处泄露）。"""
+    out = {k: v for k, v in it.items() if k not in ("clause_ids", "packages", "source_quote")}
+    if value_chars is not None and len(out.get("value") or "") > value_chars:
+        out["value"] = out["value"][:value_chars] + "…"
+    return out
+
+
+def compress_read(read: dict, budget_tokens: int) -> dict:
+    """把读标结论压进额度，按「损失从小到大」逐级降级：
+
+    ① 原样（已去掉 clause_ids/原文摘录）→ ② 普通条目的取值截短 →
+    ③ 普通条目只留标题 → ④ 只留 ★条款与废标风险条。
+
+    ★与风险条**任何一级都不动**：它们漏一条就是废标，而普通条目模型还能从正文里看到。
+    实测最大那份 2747 条里只有 198 条是 ★/风险，压到第 ④ 级是 12074 tokens（降 94%）。
+    """
+    cap = int(budget_tokens * _READ_SHARE)
+    keep = lambda it: bool(it.get("star") or it.get("risk"))
+
+    def build(value_chars: int | None, plain: bool) -> dict:
+        cats = [{**c, "items": [_item_for_model(i, None if keep(i) else value_chars)
+                                for i in c.get("items", []) if plain or keep(i)]}
+                for c in read.get("categories", [])]
+        return {**read, "categories": cats}
+
+    for value_chars, plain in ((None, True), (_PLAIN_VALUE_CHARS, True), (0, True), (None, False)):
+        out = build(value_chars, plain)
+        if estimate_tokens(json.dumps(out, ensure_ascii=False)) <= cap:
+            return out
+    return out   # 压到只剩★/风险仍超额：交给 run_with_shrink 的收缩重试兜底

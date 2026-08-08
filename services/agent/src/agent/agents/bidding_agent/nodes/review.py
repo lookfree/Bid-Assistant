@@ -5,7 +5,7 @@ from agent.framework.budget import run_with_shrink
 from agent.framework.create_agent import run_submit_agent
 from agent.agents.bidding_agent.nodes.common import (
     slim_read, filter_read_by_package, parse_bid_chapters, publish_phase, html_to_review_text,
-    allocate_chapter_budget, chapters_budget, MIN_CHAPTER_CHARS,
+    allocate_chapter_budget, chapters_budget, compress_read, MIN_CHAPTER_CHARS,
 )
 from agent.agents.bidding_agent.nodes.classify import classify_from_chapters, empty_category
 from agent.agents.bidding_agent.schemas import RiskReport
@@ -72,7 +72,10 @@ def make_review_node(ctx):
         # 有读标结论的项目在读标步已判过，这里不重复判；用户确认过的值优先。
         # 用未截断的 texts 判：分类只取每章开头若干字（_chapters_summary 自带上限），不吃预算。
         category, self_detected = await _resolve_category(ctx, run_input, read_state, texts)
-        payload = {"read": slim_read(read_state), "outline": state.get("outline") or {},
+        # 读标结论先压进额度的一半：实测最大一份 210311 tokens（2747 个条目），
+        # 单它一个就是窗口的两倍，这种项目光截正文没有用。★条款与废标风险条一条不动。
+        payload = {"read": compress_read(slim_read(read_state), chapters_budget(ctx, "")),
+                   "outline": state.get("outline") or {},
                    "chapters": {}}     # chapters 占位保住键序，额度算完再填
         structure = read_state.get("required_structure") or []
         if structure:
