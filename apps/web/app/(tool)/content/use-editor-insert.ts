@@ -22,6 +22,12 @@ export function isImageAttachment(a: { name: string }): boolean {
   return IMAGE_EXT.test(a.name || "")
 }
 
+/** 该附件是否已有转出的页图(sourceFileId 指向它)。已转出的 PDF 不再按文件名列出,
+ *  防审查把一份证书数成两份;按钮显隐同用此判定(item-editor)。 */
+export function hasDerivedPages(att: { fileId: string }, all: { sourceFileId?: string }[]): boolean {
+  return all.some((a) => a.sourceFileId === att.fileId)
+}
+
 /** 资料条目 → 可插入的 HTML 片段：有正文逐行成段；无正文拼标题/字段/附件摘要。
  *
  *  images：附件 fileId → 压缩后的 data URL（由调用方异步取好再传进来，本函数保持纯函数）。
@@ -48,7 +54,7 @@ export function libraryItemHtml(item: LibraryItem, images?: Map<string, string>,
   const parts: string[] = [`<strong>${esc(item.title)}</strong>`]
   if (item.meta) parts.push(esc(item.meta))
   if (item.fields?.length) parts.push(item.fields.map((f) => `${esc(f.label)}：${esc(f.value)}`).join("；"))
-  const rest = atts.filter((a) => !embeddedIds.has(a.fileId))   // 已内嵌的不再重复列文件名
+  const rest = atts.filter((a) => !embeddedIds.has(a.fileId) && !hasDerivedPages(a, atts))   // 已内嵌的不再重复列文件名
   if (rest.length) parts.push(`附件：${rest.map((a) => esc(a.name)).join("、")}`)
   return `<p>${parts.join("，")}。</p>` + imgHtml
 }
