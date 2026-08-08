@@ -5,11 +5,14 @@ import {
   presignUpload,
   confirmUpload,
   presignDownload,
+  convertPdfToPages,
   FileTooLargeError,
   FileNotFoundError,
   ObjectMissingError,
   UnsupportedFileTypeError,
   FileContentRejectedError,
+  PdfPagesRejectedError,
+  AgentUnavailableError,
 } from "../services/files"
 import { ocrImage, OcrUnconfiguredError } from "../services/ocr"
 import type { User } from "../db/schema"
@@ -73,6 +76,19 @@ export function fileRoutes() {
       return c.json(await presignDownload(c.req.param("id"), c.get("user").id))
     } catch (e) {
       if (e instanceof FileNotFoundError) return c.json({ error: "not_found" }, 404)
+      throw e
+    }
+  })
+
+  // 资料库 PDF 转页图：显式动作，错误码逐类给前端出短提示（spec 2026-08-08）
+  r.post("/:id/pdf-pages", async (c) => {
+    try {
+      return c.json(await convertPdfToPages(c.req.param("id"), c.get("user").id))
+    } catch (e) {
+      if (e instanceof FileNotFoundError) return c.json({ error: "not_found" }, 404)
+      if (e instanceof PdfPagesRejectedError)
+        return c.json({ error: e.code }, e.code === "too_large" ? 413 : e.code === "not_pdf" ? 400 : 422)
+      if (e instanceof AgentUnavailableError) return c.json({ error: "agent_unavailable" }, 502)
       throw e
     }
   })

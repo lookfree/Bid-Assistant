@@ -140,3 +140,69 @@ export async function presignDownload(
   const url = await presignGet(file.key, getEnv().FILE_PRESIGN_TTL_SECONDS, file.filename)
   return { url, filename: file.filename }
 }
+
+// ---- 资料库 PDF 转页图（spec 2026-08-08-library-pdf-pages） ----
+
+const PDF_PAGES_MAX_BYTES = 20 * 1024 * 1024 // 证书类不会这么大；防手册误传拖垮 agent
+const PDF_PAGES_TIMEOUT_MS = 30_000
+
+export class PdfPagesRejectedError extends Error {
+  constructor(public code: "not_pdf" | "too_large" | "too_many_pages" | "unrenderable") {
+    super(code)
+  }
+}
+export class AgentUnavailableError extends Error {}
+
+type AgentPage = { key: string; width: number; height: number }
+
+/** 调 agent 工具路由渲染（默认实现；测试注入假的）。agent 422 → 业务码透传，网络失败 → 不可用。 */
+async function agentPdfPages(key: string): Promise<{ pages: AgentPage[] }> {
+  let r: Response
+  try {
+    r = await fetch(`${getEnv().AGENT_BASE_URL}/tools/pdf-pages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key }),
+      signal: AbortSignal.timeout(PDF_PAGES_TIMEOUT_MS),
+    })
+  } catch {
+    throw new AgentUnavailableError()
+  }
+  if (r.status === 422) {
+    const body = (await r.json().catch(() => ({}))) as { error?: string }
+    throw new PdfPagesRejectedError(body.error === "too_many_pages" ? "too_many_pages" : "unrenderable")
+  }
+  if (!r.ok) throw new AgentUnavailableError()
+  return (await r.json()) as { pages: AgentPage[] }
+}
+
+/** PDF 附件 → 页图文件记录。归属校验复用 ownFile；页图行 status 直接 uploaded
+ *  （对象由 agent 写入 MinIO，不走浏览器直传三段式）。 */
+export async function convertPdfToPages(
+  fileId: string,
+  userId: string,
+  callAgent: (key: string) => Promise<{ pages: AgentPage[] }> = agentPdfPages,
+): Promise<{ pages: { fileId: string; name: string }[] }> {
+  const file = await ownFile(fileId, userId)
+  if (!/\.pdf$/i.test(file.filename)) throw new PdfPagesRejectedError("not_pdf")
+  if (file.size > PDF_PAGES_MAX_BYTES) throw new PdfPagesRejectedError("too_large")
+  const { pages } = await callAgent(file.key)
+  const stem = file.filename.replace(/\.pdf$/i, "")
+  const out: { fileId: string; name: string }[] = []
+  for (const [i, p] of pages.entries()) {
+    const name = `${stem}-第${i + 1}页.png`
+    const [row] = await getDb()
+      .insert(projectFiles)
+      .values({
+        userId,
+        bucket: bucket(),
+        key: p.key,
+        filename: name,
+        contentType: "image/png",
+        status: "uploaded",
+      })
+      .returning()
+    out.push({ fileId: row!.id, name })
+  }
+  return { pages: out }
+}
