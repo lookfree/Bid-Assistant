@@ -3,6 +3,9 @@ export class ApiError extends Error {
     public status: number,
     public code?: string,
     public retryAfter?: number,
+    /** 服务端给的可展示原因。有它就该原样说给用户——「请稍后重试」对着一件做不到的事
+     *  只会让人反复重试（2026-08-08：从未生成过的章被拒，用户看到的却是「稍后重试」）。 */
+    public detail?: string,
   ) {
     super(`API ${status}${code ? " " + code : ""}`)
   }
@@ -28,13 +31,13 @@ export function createApiClient(opts: ApiClientOptions) {
     const raw: unknown = await res.json().catch(() => ({}))
     if (!res.ok) {
       // 仅当请求确实带了令牌时，401 才代表“会话失效”；登录端点（未带令牌）的 401 是登录失败，不该清会话。
-      const err = (raw ?? {}) as { error?: string; retryAfter?: number }
+      const err = (raw ?? {}) as { error?: string; retryAfter?: number; detail?: string }
       // 使用中被封禁（403 account_banned）同样清会话跳登录——登录页会按错误码显示封禁文案。
       // auth 端点豁免（评审二轮 F7）：已登录的 A 在登录页尝试登入被封的 B,响应也是 account_banned
       // 且请求自动带了 A 的令牌——不能清掉 A 自己的有效会话。
       const isAuthEndpoint = path.startsWith("/auth/")
       if ((res.status === 401 || (err.error === "account_banned" && !isAuthEndpoint)) && token) opts.onUnauthorized?.()
-      throw new ApiError(res.status, err.error, err.retryAfter)
+      throw new ApiError(res.status, err.error, err.retryAfter, err.detail)
     }
     return raw as T
   }

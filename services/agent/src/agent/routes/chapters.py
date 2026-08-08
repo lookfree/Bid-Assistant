@@ -47,7 +47,12 @@ async def rewrite(agent_type: str, thread_id: str, body: RewriteBody):
     config = {"configurable": {"thread_id": thread_id}}
     values = (await graph.aget_state(config)).values or {}
     chapters = values.get("chapters") or {}
-    if body.chapter_id not in chapters:   # base_html 也要求该章在 state 存在，防拿任意 id 乱调
+    # 校验按**提纲**而不是按已生成章：正文生成被打断时，剩下的章根本不在 chapters 里，
+    # 而它们正是用户最需要补写的（页面标着「待生成」）。此前这道守卫在调模型之前就把请求拒了，
+    # 用户只看到一句「改写失败，请稍后重试」——2026-08-08 生产实例，观测表里连一次模型调用都没有。
+    # 防「拿任意 id 乱调」的初衷不变：提纲里没有的章 id 照样拒。
+    known = {c.get("id") for c in (values.get("outline") or {}).get("chapters", []) if c.get("id")}
+    if body.chapter_id not in chapters and body.chapter_id not in known:
         return JSONResponse({"error": f"章节不存在: {body.chapter_id}"}, status_code=404)
     if body.base_html is not None:        # DB 编辑后的原文比 agent state 新 → 用它做改写底稿
         values = {**values, "chapters": {**chapters, body.chapter_id: body.base_html}}

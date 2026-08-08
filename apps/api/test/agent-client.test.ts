@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test"
-import { createRun, rewriteChapter, ragIndex, ragDelete, testModel, listModels } from "../src/services/agent-client"
+import { createRun, rewriteChapter, ragIndex, ragDelete, testModel, listModels, rewriteFailureDetail } from "../src/services/agent-client"
 
 function fakeFetch(capture: { body?: any }) {
   return (async (_url: string, init: any) => {
@@ -239,4 +239,16 @@ test("relayStream 心跳：读取间隙超过 heartbeatMs 时插入 ': hb' 注�
     } finally {
       ;(globalThis as any).fetch = orig
     }
+})
+
+test("rewriteFailureDetail：把服务端那句话原样带给用户", () => {
+  // 2026-08-08 生产：从未生成过的章被 agent 侧守卫拒掉，连模型都没调，
+  // 而 App 把所有错误压成 agent_failed，用户对着一件做不到的事反复重试。
+  expect(rewriteFailureDetail(new Error("agent rewriteChapter 404: 章节不存在: t6"))).toBe("章节不存在: t6")
+})
+
+test("rewriteFailureDetail：栈不外泄，认不出就不编", () => {
+  expect(rewriteFailureDetail(new Error("Traceback (most recent call last): ..."))).toBeUndefined()
+  expect(rewriteFailureDetail(undefined)).toBeUndefined()
+  expect(rewriteFailureDetail(new Error(""))).toBeUndefined()
 })

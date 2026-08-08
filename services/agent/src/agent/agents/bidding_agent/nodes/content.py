@@ -632,6 +632,14 @@ def _rewrite_context_block(state: dict, chapter_id: str) -> str:
     return (head[: max(0, _REWRITE_CTX_CAP - len(block) - 1)] + "\n" + block).lstrip("\n")
 
 
+def _draft_msg(instruction: str, ref: str, chapter_ctx: str = "") -> str:
+    """本章还没有正文时的写稿消息：只有本章定位与招标依据可依，没有"原章"。
+    用户指令为空（"继续生成"这类批量补写）时不硬塞一句空指令——那会让模型去揣摩空要求。"""
+    blocks = [b for b in (chapter_ctx, ref) if b]
+    tail = f"\n\n用户补充要求：{instruction}" if instruction.strip() else ""
+    return "\n\n".join(blocks) + f"\n\n请按上述定位与要求撰写本章正文（本章此前尚未生成）。{tail}"
+
+
 def _rewrite_msg(old: str, instruction: str, ref: str, chapter_ctx: str = "") -> str:
     """上下文放在原章之前、指令放在最后：指令是用户当下最想要的，压轴最不容易被淹没。"""
     blocks = [b for b in (chapter_ctx, f"原章 HTML：\n{old}", ref) if b]
@@ -639,15 +647,23 @@ def _rewrite_msg(old: str, instruction: str, ref: str, chapter_ctx: str = "") ->
 
 
 async def rewrite_chapter(ctx, chapter_id: str, instruction: str, state: dict) -> str:
-    """单章改写（/content 右栏 AI 对话）：原章 HTML + 用户指令 → 新 HTML。走轻量 create_agent，不重规划全本。
-    state 传工作流状态**值 dict**（如 `(await graph.aget_state(cfg)).values`），不是 StateSnapshot 本身。"""
+    """单章改写/补写（/content 右栏 AI 对话）：原章 HTML + 用户指令 → 新 HTML。
+    走轻量 create_agent，不重规划全本。
+    state 传工作流状态**值 dict**（如 `(await graph.aget_state(cfg)).values`），不是 StateSnapshot 本身。
+
+    **本章还没有正文时写初稿，而不是"改写空白"**：正文生成被打断是常态（实测一份 20 章的标书
+    停在第 14 章），剩下的章在界面上是「待生成」。此前这里一律走改写提示词——那份提示词从头到尾
+    只说"仅就当前章按用户指令改写"，手里却没有原章，模型无从下手；而页面的空章提示语写的是
+    "由 AI 生成/改写本章正文"，等于让用户去做一件后端不支持的事。"""
     raw_old = state.get("chapters", {}).get(chapter_id, "")
     # 图片先换成短标记：内联 base64 单张就有二十万字符，直接喂过去模型不可能原样吐回，
     # 而本函数用模型输出**整章替换**——等于一次改写就把用户放进正文的证照弄丢。
     old, kept_images = protect_images(raw_old)
     ref = await _rewrite_reference_block(ctx, state, old, instruction)
-    sub = build_create_agent(REWRITE_PROMPT, [], ctx)
-    msg = _rewrite_msg(old, instruction, ref, _rewrite_context_block(state, chapter_id))
+    drafting = not old.strip()
+    sub = build_create_agent(CHAPTER_WRITER_PROMPT if drafting else REWRITE_PROMPT, [], ctx)
+    msg = (_draft_msg(instruction, ref, _rewrite_context_block(state, chapter_id)) if drafting
+           else _rewrite_msg(old, instruction, ref, _rewrite_context_block(state, chapter_id)))
     out = await sub.ainvoke({"messages": [HumanMessage(content=msg)]})
     last = out["messages"][-1]
     # 输出被长度上限截断 → 拒收。改写是**整章替换**，收下半截等于把用户这一章的后半部分删了，

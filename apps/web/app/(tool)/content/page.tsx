@@ -39,7 +39,8 @@ import { stepNotApplicable, stepPrereq, useOtherStepResult, useStep } from "@/li
 import { normalizeChapterHtml } from "@/lib/chapter-normalize"
 import { useExport } from "./use-export"
 import { AiNotice } from "@/components/tool/ai-notice"
-import { triggerDownload } from "@/lib/project"
+import { ApiError } from "@/lib/api-client"
+import { rewriteChapter, triggerDownload } from "@/lib/project"
 import { exportRiskReport } from "@/lib/risk-api"
 import { ChatPanel } from "./chat-panel"
 import { EditorToolbar } from "./editor-toolbar"
@@ -67,6 +68,17 @@ const bidTabs: { id: BidType; name: string; icon: React.ElementType }[] = [
   { id: "business", name: "商务标", icon: Briefcase },
   { id: "full", name: "标书全文", icon: Layers },
 ]
+
+/** 补写失败的可读文案：服务端给了 detail 就用它——「请稍后重试」对着一件做不到的事没有意义。 */
+function rewriteErrorText(e: unknown): string {
+  if (e instanceof ApiError) {
+    if (e.status === 402) return "积分余额不足"
+    if (e.code === "feature_locked") return "当前会员档位未包含该权益"
+    if (e.code === "rewrite_truncated") return "本章篇幅过大，模型未能完整输出"
+    if (e.detail) return e.detail
+  }
+  return "请稍后重试"
+}
 
 export default function ContentPage() {
   const [bidType, setBidType] = useState<BidType>("tech")
@@ -217,6 +229,38 @@ export default function ContentPage() {
     setBidType(id)
     const newList = id === "full" ? fullList() : data[id]
     setActiveId(newList[0]?.id ?? "")
+  }
+
+  /* ---- 补写「待生成」的章 ----
+     正文生成被打断是常态（实测 20 章的标书停在第 14 章）。此前页面只在"一章都没有"时给
+     生成入口，跑出部分结果后入口就消失，用户只剩右侧小助手一条路——而那条路当时还打不通。
+     补写走的是单章通道（不消耗积分），只补空的那几章，绝不重写已写好的：那是用户付过钱的成果。 */
+  const DRAFT_INSTRUCTION = "本章尚无正文，请按提纲与招标要求撰写本章正文初稿"
+  const missingChapters = useMemo(
+    () => [...data.tech, ...data.business].filter((c) => !c.html.trim()),
+    [data],
+  )
+  const [filling, setFilling] = useState<{ done: number; total: number } | null>(null)
+  const [fillError, setFillError] = useState("")
+
+  async function draftChapters(list: Chapter[]) {
+    if (!projectId || !list.length || filling) return
+    setFillError("")
+    setFilling({ done: 0, total: list.length })
+    let failed = ""
+    for (const [i, ch] of list.entries()) {
+      try {
+        const r = await rewriteChapter(projectId, ch.id, DRAFT_INSTRUCTION)
+        applyRewrite(ch.id, r.html)     // 逐章落地：中途失败也保住已补好的几章
+      } catch (e) {
+        // 失败就停：同一个原因往下跑只会连错 N 次，每次都在烧模型调用
+        failed = `「${ch.no} ${ch.title}」补写失败：${rewriteErrorText(e)}`
+        break
+      }
+      setFilling({ done: i + 1, total: list.length })
+    }
+    setFilling(null)
+    setFillError(failed)
   }
 
   function selectChapter(id: string, anchor?: string) {
@@ -465,6 +509,28 @@ export default function ContentPage() {
         onRetry={() => void startContent()}
         action={errorAction ?? undefined}
       />
+      {isReal && missingChapters.length > 0 && (
+        <div className="mb-3 flex flex-col gap-3 rounded-2xl border border-warning/30 bg-warning/5 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold text-foreground">
+              还有 {missingChapters.length} 章未生成
+            </p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {filling
+                ? `正在补写第 ${filling.done + 1}/${filling.total} 章…`
+                : fillError || "正文生成中断时会留下待生成的章节，可在此一键补齐（不消耗积分，已写好的章不会被重写）"}
+            </p>
+          </div>
+          <button
+            onClick={() => void draftChapters(missingChapters)}
+            disabled={!!filling}
+            className="inline-flex shrink-0 items-center gap-2 rounded-xl gradient-brand px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            <Sparkles className="size-4" />
+            {filling ? "补写中…" : "补齐缺失章节"}
+          </button>
+        </div>
+      )}
       {needsRun && (
         <div className="mb-3 flex flex-col gap-3 rounded-2xl border border-primary/20 gradient-brand-soft px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -579,10 +645,20 @@ export default function ContentPage() {
                   : "该章节为提纲新增内容，招标文件中无直接对应，建议结合自身情况补写。"}
               </p>
               {isReal ? (
-                /* 正文已生成但本章为空：引导走真实单章改写通道 */
-                <p className="mt-5 max-w-xs rounded-xl border border-primary/20 gradient-brand-soft px-4 py-2.5 text-xs leading-relaxed text-primary">
-                  在右侧 AI 助手中选中本章并输入指令，由 AI 生成/改写本章正文（不消耗积分）
-                </p>
+                /* 正文已生成但本章为空：直接补写本章（走单章通道，不消耗积分）。
+                   此前这里只写一句"去右侧 AI 助手输入指令"，而那条路当时对**从未生成过的章**
+                   根本不通——请求在调模型之前就被拒了，用户只看到「改写失败，请稍后重试」。 */
+                <div className="mt-5 flex flex-col items-center gap-2">
+                  <button
+                    onClick={() => void draftChapters([active])}
+                    disabled={!!filling}
+                    className="inline-flex items-center gap-2 rounded-xl gradient-brand px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                  >
+                    <Sparkles className="size-4" />
+                    {filling ? "补写中…" : "生成本章正文"}
+                  </button>
+                  <span className="text-[11px] text-muted-foreground">不消耗积分；也可在右侧 AI 助手输入具体要求</span>
+                </div>
               ) : (
                 /* 正文步未跑：指向顶部显式生成入口（生成中由顶部横幅提示进度） */
                 <p className="mt-5 max-w-xs rounded-xl border border-primary/20 gradient-brand-soft px-4 py-2.5 text-xs leading-relaxed text-primary">

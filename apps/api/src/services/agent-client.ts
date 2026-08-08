@@ -343,3 +343,17 @@ export type AgentClient = {
   relayStream: typeof relayStream
   getRun: typeof getRun
 }
+
+/** 单章改写失败的可展示原因。
+ *
+ *  改写走的是同步路由，错误只有一条字符串（agent 侧 `{"error": "..."}` 原样回传）。
+ *  这里做的是同一件事：**能看懂的说给用户，看不懂的不硬编故事**。
+ *  2026-08-08：从未生成过的章被 agent 侧守卫直接拒掉（连模型都没调），而 App 把所有错误
+ *  压成 agent_failed，用户只看到「改写失败，请稍后重试」，对着一件做不到的事反复重试。 */
+export function rewriteFailureDetail(e: unknown): string | undefined {
+  const raw = e instanceof Error ? e.message : ""
+  if (!raw || raw.includes("Traceback")) return undefined
+  // 客户端封装的前缀（`agent rewriteChapter 404: …`）去掉，只留服务端那句话
+  const msg = raw.replace(/^agent rewriteChapter \d+:\s*/, "").trim()
+  return msg ? msg.slice(0, 200) : undefined
+}

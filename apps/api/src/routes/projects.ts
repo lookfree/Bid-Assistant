@@ -1055,7 +1055,10 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       if (e instanceof Error && e.message.includes("rewrite_truncated")) {
         return c.json({ error: "rewrite_truncated" }, 422)
       }
-      return c.json({ error: "agent_failed" }, 502)
+      // 真实原因带给用户：压成笼统的 agent_failed 只会让人反复重试同一件做不到的事
+      // （2026-08-08：从未生成过的章被 agent 侧守卫直接拒掉，用户只看到「请稍后重试」，
+      // 连一次模型调用都没发生过）。detail 走同一套过滤，不外泄栈。
+      return c.json({ error: "agent_failed", detail: client.rewriteFailureDetail(e) }, 502)
     }
 
     // 意图哨兵（审查修正 2026-07-23）：>20 字的提问会绕过前端拦截,模型被提示词强制 HTML 输出后

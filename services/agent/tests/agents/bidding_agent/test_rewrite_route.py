@@ -1,4 +1,5 @@
 import asyncio
+from fastapi.responses import JSONResponse
 from langgraph.checkpoint.memory import MemorySaver
 from agent.runtime.registry import RunContext, get_agent
 from agent.agents.bidding_agent.graph import build_bidding_workflow
@@ -182,3 +183,59 @@ def test_rewrite_llm_error_502(monkeypatch):
     res = asyncio.run(go())
     assert res.status_code == 502
     assert "模型网关不可用" in res.body.decode()
+
+
+_OUTLINE = {"chapters": [{"id": "t1", "no": "第一章", "title": "项目理解", "group": "tech",
+                          "sourced": True, "items": [{"id": "t1.1", "label": "一、项目理解"}]},
+                         {"id": "t6", "no": "第六章", "title": "应急预案", "group": "tech",
+                          "sourced": True, "items": [{"id": "t6.1", "label": "一、应急响应"}]}]}
+
+
+def test_never_generated_chapter_can_be_drafted(monkeypatch, submit_gateway):
+    """**正文生成被打断后剩下的章必须能补写**。
+
+    2026-08-08 生产实例：一份标书停在一半，界面把剩下的章标成「待生成」并引导用户去右侧
+    AI 助手补写，而这道守卫要求「该章已在 chapters 里」——从没生成过的章当然不在，
+    请求在**调模型之前**就被 404 拒掉（观测表里连一次模型调用都没有），
+    用户只看到一句「改写失败，请稍后重试」，对着一件做不到的事反复重试。
+    """
+    cp = _use_memory_cp(monkeypatch)
+    monkeypatch.setattr(chapters_mod, "_make_gateway", lambda m: submit_gateway({}, reply=_NEW_HTML))
+    agent = get_agent("bidding_agent")
+    ctx = RunContext(run_id="r-draft", agent_type="bidding_agent", thread_id="th-draft",
+                     gateway=submit_gateway({"submit_read_result": _READ_ARGS}), checkpointer=cp)
+
+    async def go():
+        async for _ in agent.astream({"file_key": "k"}, ctx):   # 先跑到 read 断点，thread 才有运行历史
+            pass
+        g = build_bidding_workflow(ctx)
+        cfg = {"configurable": {"thread_id": "th-draft"}}
+        await g.aupdate_state(cfg, {"outline": _OUTLINE})
+        await g.aupdate_state(cfg, {"chapters": {"t1": "<p>一</p>"}})   # t6 从未生成
+        return await rewrite("bidding_agent", "th-draft",
+                             RewriteBody(chapter_id="t6", instruction="按提纲撰写本章正文初稿"))
+
+    res = asyncio.run(go())
+    assert not isinstance(res, JSONResponse), f"补写被拒: {getattr(res, 'body', res)}"
+    assert res["chapter_id"] == "t6" and res["html"] == _NEW_HTML
+
+
+def test_chapter_id_outside_the_outline_is_still_rejected(monkeypatch, submit_gateway):
+    """放行的只是「提纲里有、正文还没写」的章；提纲里没有的 id 照样拒——
+    这道守卫本来就是防拿任意 id 乱调的，不能因为要补写就整个拆掉。"""
+    cp = _use_memory_cp(monkeypatch)
+    monkeypatch.setattr(chapters_mod, "_make_gateway", lambda m: submit_gateway({}, reply=_NEW_HTML))
+    agent = get_agent("bidding_agent")
+    ctx = RunContext(run_id="r-bad", agent_type="bidding_agent", thread_id="th-bad",
+                     gateway=submit_gateway({"submit_read_result": _READ_ARGS}), checkpointer=cp)
+
+    async def go():
+        async for _ in agent.astream({"file_key": "k"}, ctx):
+            pass
+        g = build_bidding_workflow(ctx)
+        cfg = {"configurable": {"thread_id": "th-bad"}}
+        await g.aupdate_state(cfg, {"outline": _OUTLINE})
+        await g.aupdate_state(cfg, {"chapters": {"t1": "<p>一</p>"}})
+        return await rewrite("bidding_agent", "th-bad", RewriteBody(chapter_id="t99", instruction="写"))
+
+    assert asyncio.run(go()).status_code == 404

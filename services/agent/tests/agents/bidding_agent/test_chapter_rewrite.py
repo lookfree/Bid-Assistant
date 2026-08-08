@@ -158,3 +158,52 @@ def test_normal_finish_is_accepted(monkeypatch):
     ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gateway, user_id="u1")
     html = asyncio.run(rewrite_chapter(ctx, "t3", "补充分级 SLA", {"chapters": {"t3": "<p>旧</p>"}}))
     assert html == _NEW_HTML
+
+
+def test_empty_chapter_gets_a_drafting_prompt_not_a_rewrite_one(monkeypatch):
+    """本章还没有正文时要**写初稿**，不是"改写空白"。
+
+    正文生成被打断是常态（实测一份 20 章的标书停在第 14 章），剩下的章在界面上标着「待生成」。
+    改写提示词从头到尾只说"仅就当前章按用户指令改写"，手里却没有原章——模型无从下手，
+    而页面的空章提示语写的是"由 AI 生成/改写本章正文"，等于让用户去做一件后端不支持的事。
+    """
+    monkeypatch.setattr(content_mod, "rag_retrieve", _FakeRagRetrieve(enabled=False))
+    gateway = _CapturingGateway(_NEW_HTML)
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gateway)
+    state = {
+        "chapters": {"t3": ""},                        # 本章从未生成
+        "outline": {"chapters": [{"id": "t3", "no": "第三章", "title": "应急预案",
+                                  "items": [{"label": "一、应急响应流程"}]}]},
+        "read": {"categories": []},
+    }
+    asyncio.run(rewrite_chapter(ctx, "t3", "", state))
+    msgs = gateway.chat.captured
+    system = msgs[0].content
+    user = msgs[-1].content
+    assert "子写手" in system, "空章仍在用改写提示词，模型手里没有原章可改"
+    assert "改写指令" not in user, "空章不该再拼「改写指令」段"
+    assert "第三章 应急预案" in user               # 本章定位仍要给
+    assert "尚未生成" in user
+
+
+def test_drafting_still_honours_a_user_instruction(monkeypatch):
+    """用户在助手里给了具体要求时，补写要照办——批量补齐时指令为空，也不能硬塞一句空要求。"""
+    monkeypatch.setattr(content_mod, "rag_retrieve", _FakeRagRetrieve(enabled=False))
+    gateway = _CapturingGateway(_NEW_HTML)
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gateway)
+    state = {"chapters": {"t3": ""}, "read": {"categories": []},
+             "outline": {"chapters": [{"id": "t3", "no": "第三章", "title": "应急预案"}]}}
+    asyncio.run(rewrite_chapter(ctx, "t3", "重点写 2 小时到场承诺", state))
+    assert "重点写 2 小时到场承诺" in gateway.chat.captured[-1].content
+
+
+def test_existing_chapter_still_uses_the_rewrite_prompt(monkeypatch):
+    """有正文的章行为不变——补写不能顺手把改写也改了。"""
+    monkeypatch.setattr(content_mod, "rag_retrieve", _FakeRagRetrieve(enabled=False))
+    gateway = _CapturingGateway(_NEW_HTML)
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gateway)
+    state = {"chapters": {"t3": "<p>已有正文</p>"}, "read": {"categories": []},
+             "outline": {"chapters": [{"id": "t3", "no": "第三章", "title": "应急预案"}]}}
+    asyncio.run(rewrite_chapter(ctx, "t3", "改得更正式", state))
+    assert "润色专家" in gateway.chat.captured[0].content
+    assert "改写指令：改得更正式" in gateway.chat.captured[-1].content
