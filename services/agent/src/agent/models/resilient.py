@@ -18,11 +18,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from langchain_openai import ChatOpenAI
 
-from agent.framework.model_stream import _is_auth_error, _is_transient_stream_error
+from agent.config import settings
+from agent.framework.model_stream import (
+    ModelIdleTimeout, _is_auth_error, _is_transient_stream_error)
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +46,10 @@ class ResilientChat(ChatOpenAI):
         # 只会把一次「配置错误」拖成两倍时长。瞬断才值得对同一端点再试一次。
         if _is_auth_error(e):
             return not self.fallback_is_self
-        return _is_transient_stream_error(e)
+        # 超时也算可降级：ModelIdleTimeout 不是网络异常的子类，_is_transient_stream_error 认不出它
+        # （forced_stream_submit 那条路是单独 isinstance 判的）。漏了这一句，新加的超时只会把
+        # "一直挂着"变成"直接失败"，而不是"换个模型重来"——那还不如不加。
+        return isinstance(e, ModelIdleTimeout) or _is_transient_stream_error(e)
 
     async def _wait_before_self_retry(self) -> None:
         """重打同一个端点之前先等一下。
@@ -66,8 +72,15 @@ class ResilientChat(ChatOpenAI):
 
     async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
         """流式路径：**只在第一块之前**才允许降级。
-        已经吐出内容再切模型会把两次生成拼在一起，产出四不像——宁可让本次失败。"""
-        it = super()._astream(messages, stop=stop, run_manager=run_manager, **kwargs).__aiter__()
+        已经吐出内容再切模型会把两次生成拼在一起，产出四不像——宁可让本次失败。
+
+        三层保护缺一不可（本仓生产铁律）：流式 + 空闲超时 + 单轮总时长盖 + 降级链。
+        2026-08-08 生产实测：正文写到第 20/20 章挂死 **26 分钟、一个字都没吐**，而这条路
+        当时只有降级链——没有任何超时，挂死了就一直挂着，用户干等、积分冻着。
+        空闲超时杀"挂死"，总时长盖杀"慢而不死"（限流下每 20s 吐一个 token 能骗过空闲检测），
+        两者都当作可降级错误，交给上面的降级分支换模型重来。
+        """
+        it = self._timed(super()._astream(messages, stop=stop, run_manager=run_manager, **kwargs))
         try:
             first = await it.__anext__()
         except StopAsyncIteration:
@@ -77,12 +90,35 @@ class ResilientChat(ChatOpenAI):
                 raise
             logger.warning("主模型流式起始失败（%s），改用降级模型：%s", type(e).__name__, str(e)[:120])
             await self._wait_before_self_retry()
-            async for c in self.fallback._astream(messages, stop=stop, run_manager=run_manager, **kwargs):
+            async for c in self._timed(
+                    self.fallback._astream(messages, stop=stop, run_manager=run_manager, **kwargs)):
                 yield c
             return
         yield first
         async for c in it:
             yield c
+
+    async def _timed(self, stream):
+        """给一条流套上首 token 宽限、token 间隔空闲超时、单轮总时长盖。
+        超时一律抛 ModelIdleTimeout——它被 _is_transient_stream_error 认作可降级错误。"""
+        idle_s = settings.model_idle_timeout_s
+        first_s = settings.model_first_token_timeout_s
+        deadline = time.monotonic() + settings.model_round_timeout_s
+        it = stream.__aiter__()
+        got_any = False
+        while True:
+            budget = deadline - time.monotonic()
+            if budget <= 0:
+                raise ModelIdleTimeout()      # 总时长顶格：事实不可用，进降级重试
+            try:
+                chunk = await asyncio.wait_for(
+                    it.__anext__(), timeout=min(first_s if not got_any else idle_s, budget))
+            except StopAsyncIteration:
+                return
+            except asyncio.TimeoutError as e:
+                raise ModelIdleTimeout() from e
+            got_any = True
+            yield chunk
 
 
 def resilient_chat(gateway, **kw) -> Any:

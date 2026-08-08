@@ -14,8 +14,10 @@ import asyncio
 import pytest
 from langchain_core.messages import HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
 
+from agent.config import settings
+from agent.framework.model_stream import ModelIdleTimeout
 from agent.models.resilient import ResilientChat, resilient_chat
 
 
@@ -251,3 +253,138 @@ def test_chain_raising_does_not_kill_content():
             return "普通模型"
 
     assert resilient_chat(_Boom(), provider=None) == "普通模型"
+
+
+# ---------------- 超时三层（2026-08-08 生产事故）----------------
+# 正文写到第 20/20 章挂死 **26 分钟、一个字都没吐**：那时这条路只有降级链，没有任何超时，
+# 挂死了就一直挂着——用户干等，积分冻着，而其它步骤 20 分钟就会判超时并降级重试。
+# 本仓铁律：流式 + 空闲超时 + 单轮总时长盖 + 降级链，**三层缺一不可**。
+
+async def _never_yields():
+    """连上了但一个 token 都不吐——生产里挂死的样子。"""
+    await asyncio.sleep(3600)
+    yield  # pragma: no cover
+
+
+async def _trickle():
+    """慢而不死：每次都在空闲阈值之内吐一个，靠空闲检测永远抓不住。"""
+    while True:
+        await asyncio.sleep(0.01)
+        yield AIMessageChunk(content="慢")
+
+
+def _timed_chat() -> ResilientChat:
+    return ResilientChat(model="m", api_key="k", base_url="http://x/v1", fallback=None)
+
+
+def test_hung_stream_raises_instead_of_hanging_forever(monkeypatch):
+    """首 token 迟迟不来 → 判挂死，而不是无限等。"""
+    monkeypatch.setattr(settings, "model_first_token_timeout_s", 0.05)
+    monkeypatch.setattr(settings, "model_idle_timeout_s", 0.05)
+    monkeypatch.setattr(settings, "model_round_timeout_s", 60)
+
+    async def go():
+        async for _ in _timed_chat()._timed(_never_yields()):
+            pass
+
+    with pytest.raises(ModelIdleTimeout):
+        asyncio.run(asyncio.wait_for(go(), timeout=5))
+
+
+def test_round_cap_catches_slow_but_not_dead(monkeypatch):
+    """限流下每隔一点吐一个 token，能骗过空闲检测——总时长盖才杀得掉。"""
+    monkeypatch.setattr(settings, "model_first_token_timeout_s", 5)
+    monkeypatch.setattr(settings, "model_idle_timeout_s", 5)      # 空闲检测抓不住
+    monkeypatch.setattr(settings, "model_round_timeout_s", 0.2)   # 靠总时长盖
+
+    async def go():
+        async for _ in _timed_chat()._timed(_trickle()):
+            pass
+
+    with pytest.raises(ModelIdleTimeout):
+        asyncio.run(asyncio.wait_for(go(), timeout=5))
+
+
+def test_timeout_is_treated_as_retryable(monkeypatch):
+    """超时必须被认作**可降级**错误——否则加了超时也只是把"挂死"换成"直接失败"。"""
+    assert _timed_chat()._should_fallback(ModelIdleTimeout()) is False   # 无降级模型时不重试
+    c = ResilientChat(model="m", api_key="k", base_url="http://x/v1", fallback=_Fallback())
+    assert c._should_fallback(ModelIdleTimeout()) is True
+
+
+def test_healthy_stream_passes_through(monkeypatch):
+    """正常吐字的流一个 chunk 都不能少——超时不该误杀健康的慢生成。"""
+    monkeypatch.setattr(settings, "model_first_token_timeout_s", 5)
+    monkeypatch.setattr(settings, "model_idle_timeout_s", 5)
+    monkeypatch.setattr(settings, "model_round_timeout_s", 60)
+
+    async def three():
+        for t in ("一", "二", "三"):
+            yield AIMessageChunk(content=t)
+
+    async def go():
+        return [c.content async for c in _timed_chat()._timed(three())]
+
+    assert asyncio.run(go()) == ["一", "二", "三"]
+
+
+class _HungPrimary(ResilientChat):
+    """主模型连上了却一个 token 都不吐（生产里挂死的样子）。"""
+
+    async def _primary_stream(self, messages, stop=None, run_manager=None, **kwargs):
+        await asyncio.sleep(3600)
+        yield  # pragma: no cover
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        """复刻真实 _astream 的结构，只把 super()._astream 换成挂死的桩。"""
+        it = self._timed(self._primary_stream(messages, stop=stop, run_manager=run_manager, **kwargs))
+        try:
+            first = await it.__anext__()
+        except StopAsyncIteration:
+            return
+        except Exception as e:  # noqa: BLE001
+            if not self._should_fallback(e):
+                raise
+            async for c in self._timed(
+                    self.fallback._astream(messages, stop=stop, run_manager=run_manager, **kwargs)):
+                yield c
+            return
+        yield first
+        async for c in it:
+            yield c
+
+
+def test_hung_primary_switches_to_the_fallback(monkeypatch):
+    """**挂死必须换模型，而不是一直等，也不是直接失败**。
+
+    这是 2026-08-08 那次事故的完整链路：主模型不吐 token → 超时判挂死 →
+    该超时被认作可降级 → 换降级模型接着写。三个环节缺一，用户就是干等 26 分钟。
+    """
+    monkeypatch.setattr(settings, "model_first_token_timeout_s", 0.05)
+    monkeypatch.setattr(settings, "model_idle_timeout_s", 0.05)
+    monkeypatch.setattr(settings, "model_round_timeout_s", 60)
+
+    fb = _Fallback()
+
+    async def fb_stream(messages, stop=None, run_manager=None, **kw):
+        fb.calls += 1
+        yield AIMessageChunk(content="降级模型接手")
+
+    object.__setattr__(fb, "_astream", fb_stream)
+    c = _HungPrimary(model="m", api_key="k", base_url="http://x/v1", fallback=fb)
+
+    async def go():
+        return [x.content async for x in c._astream([HumanMessage(content="写")])]
+
+    assert asyncio.run(asyncio.wait_for(go(), timeout=5)) == ["降级模型接手"]
+    assert fb.calls == 1
+
+
+def test_the_real_astream_wraps_the_stream_in_the_timeout():
+    """守住"写了限时包装却没在 _astream 里用它"这一种失败法——
+    只测 _timed() 本身的话，那种改法测试照样全绿，而线上依旧挂死。"""
+    import inspect
+
+    src = inspect.getsource(ResilientChat._astream)
+    assert "self._timed(" in src, "_astream 没有套上限时包装"
+    assert src.count("self._timed(") >= 2, "降级那一支也必须套（否则换了模型照样能挂死）"
