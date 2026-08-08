@@ -13,6 +13,7 @@ from langchain_core.messages import HumanMessage
 from agent.models.usage import UsageCallback
 from agent.telemetry.tool_recorder import ToolCallRecorder
 from agent.framework.create_agent import build_create_agent
+from agent.framework.limit_parallel import LimitParallelWritersMiddleware
 from agent.framework.sanitize_tool_calls import SanitizeToolCallsMiddleware
 from agent.agents.bidding_agent.nodes.common import (
     slim_read, package_scope, filter_read_by_package, protect_images, restore_images,
@@ -586,7 +587,9 @@ def make_content_node(ctx):
             # 喂模型前无害化历史里被拼坏的工具调用参数（create_agent 路线的同款防护）：
             # 坏参数存进检查点后，每次回传都会让端点在渲染模板时 json.loads 失败——
             # 400 的病根在这，不在流式（2026-08-08 生产实证）。
-            middleware=[SanitizeToolCallsMiddleware()],
+            # 并发闸在前、无害化在后：闸住 task 派发（15 路同时打端点会把它挤满），
+            # 每次调模型前再清洗历史里的坏工具参数
+            middleware=[LimitParallelWritersMiddleware(), SanitizeToolCallsMiddleware()],
         )
         # 读标依据走 slim_read（与 outline/review 一致）：read result 已并入全文分句 doc_sections
         # 与逐条 source_quote（token 大头），原样 dumps 会把整份招标原文灌进规划轮直接顶穿上下文。

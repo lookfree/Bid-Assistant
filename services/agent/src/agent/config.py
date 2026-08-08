@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     # 在发送前无害化。坏参数本身流式非流式都出过（2026-08-06 非流式时代就有记录）。
     # 保留开关：端点侧真查出流式解析器问题时可一键关闭，无需改代码。
     model_content_streaming: bool = True
+    # 同时在写的子写手上限。2026-08-08 实测：规划者把 15 章一波全派，15 路各带 ~5 万 token
+    # 预填充同时打自建端点，吞吐被挤满、横幅几分钟不动，端点"掉线"多半也是被打满。
+    # 5 是产品定的（用户拍板）；端点扩容后可经 MODEL_CONTENT_MAX_PARALLEL 上调，不用改代码。
+    model_content_max_parallel: int = 5
     # 流式空闲超时（大标书读标实测：单块生成慢而健康达数分钟，"总超时"会误杀——只在"连续无 token"时判挂死）。
     model_idle_timeout_s: int = 30              # 流式中连续 N 秒无新 token = 连接挂死 → 降级重试
     model_first_token_timeout_s: int = 120      # 首 token（含连接+大 prompt 预填）宽限，避免误杀慢启动
