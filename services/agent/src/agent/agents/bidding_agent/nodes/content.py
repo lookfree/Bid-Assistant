@@ -14,6 +14,7 @@ from agent.models.usage import UsageCallback
 from agent.telemetry.tool_recorder import ToolCallRecorder
 from agent.framework.create_agent import build_create_agent
 from agent.framework.limit_parallel import LimitParallelWritersMiddleware
+from agent.framework.rewrite_guard import RewriteGuardMiddleware
 from agent.framework.sanitize_tool_calls import SanitizeToolCallsMiddleware
 from agent.agents.bidding_agent.nodes.common import (
     slim_read, package_scope, filter_read_by_package, protect_images, restore_images,
@@ -579,6 +580,9 @@ def make_content_node(ctx):
         # 挂 checkpointer：正文是最长最贵的一步，进程一死（挂死被杀/发版/崩溃）已写好的章
         # 连同消息历史一起丢，重跑得从第一章开始——2026-08-08 一次挂死白写了 19 章。
         # deepagents 本来就支持，只是此前没传。thread id 随输入变化自动失效，见 content_resume_thread。
+        # 逐章进度:从 outline 取章 id→标题（重写闸与进度回调共用，须先于 deepagent 构造）。
+        chapters_meta = {c.get("id"): c.get("title", c.get("id"))
+                         for c in (state.get("outline") or {}).get("chapters", []) if c.get("id")}
         deep = create_deep_agent(
             model=model, tools=[], system_prompt=CONTENT_PLANNER_PROMPT,
             subagents=[{"name": "chapter_writer", "description": "写指定一章的标书正文 HTML",
@@ -589,7 +593,10 @@ def make_content_node(ctx):
             # 400 的病根在这，不在流式（2026-08-08 生产实证）。
             # 并发闸在前、无害化在后：闸住 task 派发（15 路同时打端点会把它挤满），
             # 每次调模型前再清洗历史里的坏工具参数
-            middleware=[LimitParallelWritersMiddleware(), SanitizeToolCallsMiddleware()],
+            # 三道闸：并发限 5（15 路自堵实测）→ 重写闸（失忆循环实测，b8 连写四遍）
+            # → 发送前无害化坏工具参数（400 病根实测）
+            middleware=[LimitParallelWritersMiddleware(), RewriteGuardMiddleware(chapters_meta),
+                        SanitizeToolCallsMiddleware()],
         )
         # 读标依据走 slim_read（与 outline/review 一致）：read result 已并入全文分句 doc_sections
         # 与逐条 source_quote（token 大头），原样 dumps 会把整份招标原文灌进规划轮直接顶穿上下文。
@@ -616,9 +623,7 @@ def make_content_node(ctx):
         user = f"{head}\n\n{mid}请逐章生成正文，每章写入 chapters/<章id>.html。"
         user += package_scope(state.get("run_input"))  # 选包时追加范围约束（spec324）
         user += category_scope(cats, "planning")       # 章节层面的写作要点（spec334，只取主类别）
-        # 逐章进度:从 outline 取章 id→标题,写完一章推一条 chapter.progress(前端实时勾选)。
-        chapters_meta = {c.get("id"): c.get("title", c.get("id"))
-                         for c in outline.get("chapters", []) if c.get("id")}
+
         # recursion_limit 随章数动态放大:每章约需「规划+派子写手+写文件+收稿」多步,加上下文压缩中间件;
         # 固定 100 步在 17 章的多包件标必撞 GraphRecursionError(实测跑 23 分钟后中止)。按 15 步/章 + 60 基础,
         # 封顶 600 防失控。选包过滤(spec324)缩了章数时这里也随之更省。
