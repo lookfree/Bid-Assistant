@@ -536,10 +536,16 @@ def _heartbeat_label(done: int, total: int, elapsed_s: float, in_flight: int = 0
     现在只说得准的话：完成了几章、此刻有几路在写、这一批写了多久。
     """
     m, s = divmod(int(elapsed_s), 60)
+    # **不再带"已完成 N/M 章"**：前端横幅自己会拼这一段（contentRunningText），心跳再带一遍
+    # 就显示成"已完成 3/20 章，正文·已完成 3/20 章，撰写中"（2026-08-08 用户截图）。
+    # done/total 参数保留：前端拿不到 progress 时（首个 chapter.progress 事件之前）作兜底。
     if in_flight > 0:
-        return f"正文·已完成 {done}/{total} 章，{in_flight} 章同时撰写中（本批已 {m} 分 {s:02d} 秒）"
-    # 拿不到并发数（模型还在规划、或派活工具改了名）：只报进度与用时，不编造章序
-    return f"正文·已完成 {done}/{total} 章，撰写中（已 {m} 分 {s:02d} 秒）"
+        return f"{in_flight} 章同时撰写中（本批已 {m} 分 {s:02d} 秒）"
+    # in_flight 归零 ≠ 没在干活：批与批之间规划者在验收上一批、派下一批。
+    # 干巴巴一句"撰写中"会被读成"没在并行"（2026-08-08 用户看着横幅问了两回），把状态说清。
+    if done == 0:
+        return f"正在规划章节与分派写手（已 {m} 分 {s:02d} 秒）"
+    return f"上一批已收稿，正在安排下一批（已 {m} 分 {s:02d} 秒）"
 
 
 async def _chapter_heartbeat(ctx, cb: "ChapterProgressCallback", interval_s: float = 5.0) -> None:

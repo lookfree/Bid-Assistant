@@ -536,13 +536,18 @@ def test_heartbeat_label_does_not_pretend_writing_is_sequential():
     from agent.agents.bidding_agent.nodes.content import _heartbeat_label
 
     label = _heartbeat_label(8, 20, 905, in_flight=6)
-    assert "已完成 8/20 章" in label and "6 章同时撰写中" in label and "15 分 05 秒" in label
+    assert "6 章同时撰写中" in label and "15 分 05 秒" in label
     assert "第 9/20 章" not in label, "又把并行写成了串行的章序"
     assert "本章已" not in label, "那个计时不是本章耗时，是距上一章完成的时长"
+    # 计数交给前端拼：心跳再带一遍会显示成"已完成 3/20 章，正文·已完成 3/20 章"（用户截图）
+    assert "已完成" not in label
 
-    # 拿不到并发数时只报进度与用时，不编造章序
-    bare = _heartbeat_label(8, 20, 65)
-    assert "已完成 8/20 章" in bare and "1 分 05 秒" in bare and "第 9" not in bare
+    # in_flight 归零 ≠ 没在干活——批间隙要说清"在安排下一批"，不然一句"撰写中"
+    # 会被读成"没在并行"（用户看着横幅问了两回）
+    gap = _heartbeat_label(8, 20, 65)
+    assert "安排下一批" in gap and "1 分 05 秒" in gap and "第 9" not in gap and "已完成" not in gap
+    planning = _heartbeat_label(0, 20, 30)
+    assert "规划" in planning and "分派" in planning
 
 
 def test_prompts_carry_length_budget_discipline():
