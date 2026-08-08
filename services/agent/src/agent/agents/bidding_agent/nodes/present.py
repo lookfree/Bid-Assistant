@@ -3,6 +3,7 @@ import asyncio
 import logging
 import json
 import re
+from agent.framework.budget import run_with_shrink
 from agent.framework.create_agent import run_submit_agent
 from agent.agents.bidding_agent.nodes.common import (
     slim_read, upload_artifact, fetch_master_bytes, filter_read_by_package, parse_bid_chapters, publish_phase,
@@ -123,16 +124,22 @@ def make_present_node(ctx):
         tail = f"\n客户指定模板：{template}（template 字段必须用它）。" if template else ""
         # 正文额度按剩余窗口算（与审查同一口径）：读标结论、系统提示、schema 先占，剩下的给正文。
         fixed = PRESENT_SKELETON_PROMPT + json.dumps(payload, ensure_ascii=False) + tail
-        payload["chapters"] = allocate_chapter_budget(
-            texts, chapters_budget(ctx, fixed), MIN_CHAPTER_CHARS)
-        user = f"标书与评分点：\n{json.dumps(payload, ensure_ascii=False)}\n时长 {duration} 分钟，请产 DeckDraft 骨架。"
-        user += tail
+        budget = chapters_budget(ctx, fixed)
         await publish_phase(ctx, "述标·基于标书与评分点搭建 PPT 骨架")
-        # 骨架 schema 的约束最多（页数/分隔页/版式多样性/图表可比性/单位一致），3 轮实测会耗尽，
-        # 整步失败退款、用户什么都拿不到——比多跑两轮糟得多，故这一步单独放宽到 5 轮。
-        draft = await run_submit_agent(
-            ctx, PRESENT_SKELETON_PROMPT, user,
-            "submit_deck_draft", DeckDraft, "提交述标骨架（不含口播稿）", attempts=5)
+
+        async def _attempt(factor: float):
+            """按给定折扣重建载荷再跑——估算失准时由 run_with_shrink 逐档收缩。"""
+            payload["chapters"] = allocate_chapter_budget(
+                texts, int(budget * factor), MIN_CHAPTER_CHARS)
+            user = (f"标书与评分点：\n{json.dumps(payload, ensure_ascii=False)}"
+                    f"\n时长 {duration} 分钟，请产 DeckDraft 骨架。{tail}")
+            # 骨架 schema 的约束最多（页数/分隔页/版式多样性/图表可比性/单位一致），3 轮实测会耗尽，
+            # 整步失败退款、用户什么都拿不到——比多跑两轮糟得多，故这一步单独放宽到 5 轮。
+            return await run_submit_agent(
+                ctx, PRESENT_SKELETON_PROMPT, user,
+                "submit_deck_draft", DeckDraft, "提交述标骨架（不含口播稿）", attempts=5)
+
+        draft = await run_with_shrink(_attempt, label="述标骨架")
         await publish_phase(ctx, f"述标·逐页撰写口播稿（共{len(draft.slides)}页）")
         slide_notes = await run_submit_agent(
             ctx, PRESENT_NOTES_PROMPT, _notes_user_msg(draft, duration),

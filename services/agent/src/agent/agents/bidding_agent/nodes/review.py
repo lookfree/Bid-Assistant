@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import json
+from agent.framework.budget import run_with_shrink
 from agent.framework.create_agent import run_submit_agent
 from agent.agents.bidding_agent.nodes.common import (
     slim_read, filter_read_by_package, parse_bid_chapters, publish_phase, html_to_review_text,
@@ -89,13 +90,19 @@ def make_review_node(ctx):
         # 正文额度按剩余窗口算：固定部分（系统提示 + 读标结论 + 约束文字）先占，剩下的才是正文的。
         # 写死常量的下场见 chapters_budget 的注释——砍不够是 400，砍过头是白丢内容。
         fixed = REVIEW_SYSTEM_PROMPT + json.dumps(payload, ensure_ascii=False) + mode_note + extra
-        payload["chapters"] = allocate_chapter_budget(
-            texts, chapters_budget(ctx, fixed), MIN_CHAPTER_CHARS)
-        user = f"招标与投标材料：\n{json.dumps(payload, ensure_ascii=False)}{mode_note}\n请审查并提交体检报告。"
-        user += extra
-        result = await run_submit_agent(
-            ctx, REVIEW_SYSTEM_PROMPT, user,
-            "submit_risk_report", RiskReport, "提交审查报告")
+        budget = chapters_budget(ctx, fixed)
+
+        async def _attempt(factor: float):
+            """按给定折扣重建载荷再跑——估算失准时由 run_with_shrink 逐档收缩。"""
+            payload["chapters"] = allocate_chapter_budget(
+                texts, int(budget * factor), MIN_CHAPTER_CHARS)
+            user = (f"招标与投标材料：\n{json.dumps(payload, ensure_ascii=False)}{mode_note}"
+                    f"\n请审查并提交体检报告。{extra}")
+            return await run_submit_agent(
+                ctx, REVIEW_SYSTEM_PROMPT, user,
+                "submit_risk_report", RiskReport, "提交审查报告")
+
+        result = await run_with_shrink(_attempt, label="审查")
         # 与 read 节点同理：分类并进结果 dict，**不进 submit_risk_report 的工具 schema**。
         # 只有本节点现判出来的才落库当判定值——回显用户的选择会让它被当成系统判定（见 _resolve_category）。
         risk = result.model_dump()

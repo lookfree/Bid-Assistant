@@ -12,9 +12,15 @@ tokens, for a total of at least 131073 tokens」，超窗口 **1 个 token**，�
 """
 from __future__ import annotations
 
+import logging
 import re
 
-__all__ = ["estimate_tokens", "chapter_budget", "DEFAULT_CONTEXT_WINDOW"]
+from agent.models.errors import _chain_text
+
+logger = logging.getLogger(__name__)
+
+__all__ = ["estimate_tokens", "chapter_budget", "is_context_overflow", "run_with_shrink",
+           "DEFAULT_CONTEXT_WINDOW"]
 
 # 端点未告知窗口时的兜底。131072 = 128K，取自客户环境 vLLM 的 --max-model-len。
 # 正式来源是运营后台的模型配置（contextWindow），这里只在配置缺失时兜底。
@@ -60,3 +66,47 @@ def chapter_budget(fixed_text: str, *, context_window: int | None, max_tokens: i
     reserved_out = max_tokens or _DEFAULT_OUTPUT_RESERVE
     left = window - reserved_out - estimate_tokens(fixed_text) - _SCHEMA_RESERVE_TOKENS
     return max(int(left * _SAFETY_RATIO), MIN_CHAPTER_TOKENS)
+
+
+# 端点报"输入太长"的说法各家不一。只认一家就等于没兜底——换个网关又是整步失败。
+_OVERFLOW_MARKS = (
+    "maximum context length",       # OpenAI / vLLM
+    "context length",
+    "context_length_exceeded",
+    "reduce the length of the",     # "…of the input prompt / messages"
+    "too many tokens",
+    "input is too long",
+    "prompt is too long",
+)
+
+
+def is_context_overflow(e: BaseException) -> bool:
+    """这次失败是不是"输入超出窗口"。
+
+    沿 __cause__/__context__ 链下钻（本仓韧性铁律）：openai SDK 会把真因包一层，
+    只看 str(顶层) 认不出来。
+    """
+    return any(m in _chain_text(e).lower() for m in _OVERFLOW_MARKS)
+
+
+# 撞上超限后依次用的预算折扣。估算永远有偏差——换模型、换网关，字/token 的系数就变；
+# 与其把精度赌在估算上，不如撞上了就砍半重来。三次仍不行才认输（那多半不是长度问题）。
+_SHRINK_STEPS = (1.0, 0.5, 0.25)
+
+
+async def run_with_shrink(build_and_run, *, label: str = ""):
+    """跑一次调用；若因输入超窗口失败，就把预算打折重建载荷再试。
+
+    build_and_run(factor) 按给定折扣重建输入并发起调用——**必须重建**，
+    拿同一条消息重试没有任何意义，只是再烧一次钱。
+    """
+    last: BaseException | None = None
+    for factor in _SHRINK_STEPS:
+        try:
+            return await build_and_run(factor)
+        except Exception as e:  # noqa: BLE001
+            if not is_context_overflow(e):
+                raise
+            last = e
+            logger.warning("%s 按 %.0f%% 预算仍超出模型窗口，缩小后重建重试", label, factor * 100)
+    raise last  # type: ignore[misc]

@@ -1,9 +1,11 @@
 """输入预算：额度由窗口减出来，不是写死的常量。"""
+import asyncio
+
 import pytest
 
 from agent.framework.budget import (
     DEFAULT_CONTEXT_WINDOW, _DEFAULT_OUTPUT_RESERVE, MIN_CHAPTER_TOKENS,
-    chapter_budget, estimate_tokens)
+    chapter_budget, estimate_tokens, is_context_overflow, run_with_shrink)
 
 
 class TestEstimate:
@@ -78,3 +80,63 @@ class TestSettingsPlumbing:
         wide = chapters_budget(ctx, "")
         ctx.gateway.s.model_context_window = 131072
         assert wide > chapters_budget(ctx, "")
+
+
+class TestShrinkRetry:
+    """估算永远会有偏差（换模型、换网关，字/token 的系数就变）。
+    撞上超限时把预算打折重建，比把精度赌在估算上可靠。"""
+
+    def _overflow(self):
+        return Exception("Error code: 400 - {'error': {'message': \"This model's maximum "
+                         "context length is 131072 tokens.\", 'code': 400}}")
+
+    def test_recognises_the_real_400(self):
+        assert is_context_overflow(self._overflow())
+
+    def test_recognises_it_through_a_wrapper(self):
+        """openai SDK 会把真因包一层，只看 str(顶层) 认不出来（本仓韧性铁律）。"""
+        outer = RuntimeError("提交失败")
+        outer.__cause__ = self._overflow()
+        assert is_context_overflow(outer)
+
+    def test_unrelated_failures_are_not_retried(self):
+        assert not is_context_overflow(Exception("Connection error."))
+        assert not is_context_overflow(Exception("401 Unauthorized"))
+
+    def test_second_attempt_gets_a_smaller_budget(self):
+        """**重点**：重试必须拿更小的预算重建载荷。
+        原样重发同一条消息只是再烧一次钱，端点照样 400。"""
+        seen = []
+
+        async def build_and_run(factor):
+            seen.append(factor)
+            if len(seen) < 2:
+                raise self._overflow()
+            return "ok"
+
+        assert asyncio.run(run_with_shrink(build_and_run)) == "ok"
+        assert seen == [1.0, 0.5], f"重试用的折扣不对: {seen}"
+
+    def test_gives_up_after_the_last_step_and_raises_the_real_error(self):
+        """一直超限说明不是长度问题（或读标结论本身就撑爆了）——不能无限重试烧钱。"""
+        calls = []
+
+        async def always_overflow(factor):
+            calls.append(factor)
+            raise self._overflow()
+
+        with pytest.raises(Exception, match="maximum context length"):
+            asyncio.run(run_with_shrink(always_overflow))
+        assert calls == [1.0, 0.5, 0.25]
+
+    def test_other_errors_surface_immediately(self):
+        """非长度问题不重试：多跑一轮既拖时间又烧钱，还掩盖真因。"""
+        calls = []
+
+        async def boom(factor):
+            calls.append(factor)
+            raise ValueError("模型未提交结构化结果")
+
+        with pytest.raises(ValueError):
+            asyncio.run(run_with_shrink(boom))
+        assert calls == [1.0]
