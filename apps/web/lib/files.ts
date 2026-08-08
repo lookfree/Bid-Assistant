@@ -97,3 +97,15 @@ export function checkFiles(picked: File[], accept: string, already = 0): string 
   if (already + picked.length > UPLOAD_MAX_FILES) return `最多 ${UPLOAD_MAX_FILES} 份，请先移除多余文件`
   return null
 }
+
+/** PDF 转页图的错误短提示(spec 2026-08-08):显式动作不静默,逐码给对应文案。 */
+export function pdfPagesErrorMessage(e: unknown): string {
+  const code = (e as { code?: string } | null)?.code
+  switch (code) {
+    case "too_many_pages": return "页数超过 5 页,暂不支持转换"
+    case "unrenderable": return "该 PDF 已加密或无法解析"
+    case "agent_unavailable": return "转换服务暂不可用,稍后再试"
+    case "too_large": return "文件过大,暂不支持转换"
+    default: return "转换失败,请稍后再试"
+  }
+}

@@ -4,7 +4,8 @@ import { useRef, useState } from "react"
 import { Loader2, Paperclip, Upload, X } from "lucide-react"
 import type { LibraryAttachment, LibraryCategoryId } from "@/lib/library"
 import type { LibraryEntry, LibraryEntryInput } from "@/lib/library-api"
-import { uploadFile, uploadErrorMessage } from "@/lib/files"
+import { uploadFile, uploadErrorMessage, pdfPagesErrorMessage } from "@/lib/files"
+import { hasDerivedPages } from "@/app/(tool)/content/use-editor-insert"
 import { useEscapeClose } from "@/hooks/use-escape-close"
 
 const inputCls =
@@ -204,6 +205,25 @@ function AttachmentsField({
   onError: (msg: string | null) => void
 }) {
   const fileRef = useRef<HTMLInputElement>(null)
+  const [converting, setConverting] = useState<string | null>(null) // 正在转换的 fileId
+
+  /** 「转为图片」:调转换端点,页图追加为普通附件(带 sourceFileId)。
+   *  显式动作不静默:失败按错误码给短提示(pdfPagesErrorMessage)。 */
+  async function onConvertPdf(att: LibraryAttachment) {
+    if (converting) return
+    setConverting(att.fileId)
+    onError(null)
+    try {
+      const { api } = await import("@/lib/api")
+      const r = await api.request<{ pages: { fileId: string; name: string }[] }>(
+        `/files/${att.fileId}/pdf-pages`, { method: "POST" })
+      setAttachments((arr) => [...arr, ...r.pages.map((p) => ({ ...p, sourceFileId: att.fileId }))])
+    } catch (e) {
+      onError(pdfPagesErrorMessage(e))
+    } finally {
+      setConverting(null)
+    }
+  }
 
   async function onFilePicked(fileList: FileList | null) {
     const file = fileList?.[0]
@@ -227,6 +247,14 @@ function AttachmentsField({
         <span key={`${a.fileId}-${i}`} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground">
           <Paperclip className="size-3" />
           {a.name}
+          {/* PDF 需转为图片后才能作为插图进入标书正文;已转出页图的不再显示(防重复转出) */}
+          {/\.pdf$/i.test(a.name) && !hasDerivedPages(a, attachments) && (
+            <button onClick={() => void onConvertPdf(a)} disabled={converting !== null}
+                    title="PDF 需转为图片后才能作为插图进入标书正文"
+                    className="text-[11px] text-primary hover:underline disabled:opacity-50">
+              {converting === a.fileId ? "转换中…" : "转为图片"}
+            </button>
+          )}
           <button onClick={() => setAttachments((arr) => arr.filter((_, idx) => idx !== i))} aria-label="移除附件">
             <X className="size-3 hover:text-destructive" />
           </button>
