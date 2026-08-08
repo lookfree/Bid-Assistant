@@ -22,6 +22,9 @@ class RewriteBody(BaseModel):
     base_html: str | None = None  # App 传 DB 里该章现值（编辑过=编辑后）作改写底稿；缺省用 thread state
     model: RunModelOverride | None = None  # spec311 模式：App 下发的模型选择，覆盖 env 默认
     user_id: str | None = None  # 资料库 RAG 属主（spec316 A2）
+    # 章标题（App 从**库里的提纲**取，那份才是权威：用户在提纲页新增/改名后，图状态里的
+    # outline 直到下次跑 run 才会刷新）。补写新增章时必须靠它，否则守卫认不出这个 id。
+    chapter_title: str | None = None
 
 
 def _make_gateway(model: RunModelOverride | None):
@@ -52,12 +55,15 @@ async def rewrite(agent_type: str, thread_id: str, body: RewriteBody):
     # 用户只看到一句「改写失败，请稍后重试」——2026-08-08 生产实例，观测表里连一次模型调用都没有。
     # 防「拿任意 id 乱调」的初衷不变：提纲里没有的章 id 照样拒。
     known = {c.get("id") for c in (values.get("outline") or {}).get("chapters", []) if c.get("id")}
-    if body.chapter_id not in chapters and body.chapter_id not in known:
+    # chapter_title 由 App 按库里的提纲校验后下发——图状态里的 outline 只在跑 run 时刷新，
+    # 用户在提纲页**新增**的章在它里面根本不存在，而那正是「待生成」的主力。
+    if body.chapter_id not in chapters and body.chapter_id not in known and not body.chapter_title:
         return JSONResponse({"error": f"章节不存在: {body.chapter_id}"}, status_code=404)
     if body.base_html is not None:        # DB 编辑后的原文比 agent state 新 → 用它做改写底稿
         values = {**values, "chapters": {**chapters, body.chapter_id: body.base_html}}
     try:
-        html = await rewrite_chapter(ctx, body.chapter_id, body.instruction, values)
+        html = await rewrite_chapter(ctx, body.chapter_id, body.instruction, values,
+                                     chapter_title=body.chapter_title)
     except Exception as e:  # noqa: BLE001 LLM/网关错误 → 502 可读错误，App 侧 settleFailed 退款
         return JSONResponse({"error": str(e)}, status_code=502)
     # 只更新该章：chapters 合并 reducer 保证其余章不被覆盖

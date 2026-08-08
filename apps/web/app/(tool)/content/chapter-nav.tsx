@@ -125,8 +125,13 @@ function ChapterRow({
     if (isActive) ref.current?.scrollIntoView({ block: "nearest" })
   }, [isActive])
   // 展开态：选中的章默认展开——用户点进一章就是要在里面找位置。
-  const [open, setOpen] = useState(false)
-  const expanded = open || isActive
+  // 用 open 单独存，不写成 `open || isActive`：那样当前编辑的这一章永远收不起来
+  // （点收起只把 open 置 false，isActive 仍为真），箭头还一直说着"收起子目录"。
+  const [open, setOpen] = useState(isActive)
+  useEffect(() => {
+    if (isActive) setOpen(true)
+  }, [isActive])
+  const expanded = open
   const sub = ch.items ?? []
   return (
     <>
@@ -166,7 +171,7 @@ function ChapterRow({
           aria-label={expanded ? "收起子目录" : "展开子目录"}
           onClick={(e) => {
             e.stopPropagation()      // 只切换展开，不改变当前编辑的章
-            setOpen(!expanded)
+            setOpen(!open)
           }}
           className="mt-0.5 shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted"
         >

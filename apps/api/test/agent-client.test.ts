@@ -247,8 +247,19 @@ test("rewriteFailureDetail：把服务端那句话原样带给用户", () => {
   expect(rewriteFailureDetail(new Error("agent rewriteChapter 404: 章节不存在: t6"))).toBe("章节不存在: t6")
 })
 
-test("rewriteFailureDetail：栈不外泄，认不出就不编", () => {
+test("rewriteFailureDetail：白名单之外一律不外传", () => {
+  // agent 兜底是 except Exception: str(e)，裸传会把上游响应体/base_url/模型名甩到浏览器；
+  // 网络层失败还会变成对用户毫无意义的英文
   expect(rewriteFailureDetail(new Error("Traceback (most recent call last): ..."))).toBeUndefined()
+  expect(rewriteFailureDetail(new Error("The operation timed out."))).toBeUndefined()
+  expect(rewriteFailureDetail(new Error("fetch failed"))).toBeUndefined()
+  expect(rewriteFailureDetail(new Error(
+    "Error code: 400 - {'error': {'message': 'invalid api key'}} base_url=http://10.0.0.1:8000"))).toBeUndefined()
   expect(rewriteFailureDetail(undefined)).toBeUndefined()
   expect(rewriteFailureDetail(new Error(""))).toBeUndefined()
+})
+
+test("rewriteFailureDetail：为用户写的中文说明照常放行", () => {
+  expect(rewriteFailureDetail(new Error("agent rewriteChapter 502: 上传的标书未能解析出任何正文（扫描件/图片版暂不支持）")))
+    .toContain("扫描件")
 })

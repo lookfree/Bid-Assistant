@@ -17,7 +17,8 @@ from agent.agents.bidding_agent.nodes.common import (
 )
 from agent.agents.bidding_agent.prompts.categories import category_scope
 from agent.agents.bidding_agent.prompts.content import (
-    CONTENT_PLANNER_PROMPT, CHAPTER_WRITER_PROMPT, REWRITE_PROMPT, DEVIATION_TABLE_GUIDE, TEMPLATE_GUIDE)
+    CONTENT_PLANNER_PROMPT, CHAPTER_WRITER_PROMPT, CHAPTER_DRAFT_PROMPT, REWRITE_PROMPT,
+    DEVIATION_TABLE_GUIDE, TEMPLATE_GUIDE)
 from agent.rag import retrieve as rag_retrieve
 from agent.agents.bidding_agent.render.sanitize import strip_document_shell, strip_chat_wrapper, clean_internal_ids
 from agent.runtime.channels import progress_stream
@@ -632,6 +633,15 @@ def _rewrite_context_block(state: dict, chapter_id: str) -> str:
     return (head[: max(0, _REWRITE_CTX_CAP - len(block) - 1)] + "\n" + block).lstrip("\n")
 
 
+def _chapter_query_seed(state: dict, chapter_id: str, chapter_title: str = "") -> str:
+    """补写时用来检索资料库的种子：本章标题 + 提纲条目。
+    章标题优先取 App 下发的那份（库里的提纲是权威，图状态里的可能是旧的）。"""
+    ch = next((c for c in (state.get("outline") or {}).get("chapters", [])
+               if c.get("id") == chapter_id), {})
+    parts = [chapter_title or ch.get("title", ""), *(i.get("label", "") for i in ch.get("items") or [])]
+    return " ".join(p for p in parts if p)
+
+
 def _draft_msg(instruction: str, ref: str, chapter_ctx: str = "") -> str:
     """本章还没有正文时的写稿消息：只有本章定位与招标依据可依，没有"原章"。
     用户指令为空（"继续生成"这类批量补写）时不硬塞一句空指令——那会让模型去揣摩空要求。"""
@@ -646,7 +656,8 @@ def _rewrite_msg(old: str, instruction: str, ref: str, chapter_ctx: str = "") ->
     return "\n\n".join(blocks) + f"\n\n改写指令：{instruction}"
 
 
-async def rewrite_chapter(ctx, chapter_id: str, instruction: str, state: dict) -> str:
+async def rewrite_chapter(ctx, chapter_id: str, instruction: str, state: dict,
+                          chapter_title: str = "") -> str:
     """单章改写/补写（/content 右栏 AI 对话）：原章 HTML + 用户指令 → 新 HTML。
     走轻量 create_agent，不重规划全本。
     state 传工作流状态**值 dict**（如 `(await graph.aget_state(cfg)).values`），不是 StateSnapshot 本身。
@@ -659,9 +670,13 @@ async def rewrite_chapter(ctx, chapter_id: str, instruction: str, state: dict) -
     # 图片先换成短标记：内联 base64 单张就有二十万字符，直接喂过去模型不可能原样吐回，
     # 而本函数用模型输出**整章替换**——等于一次改写就把用户放进正文的证照弄丢。
     old, kept_images = protect_images(raw_old)
-    ref = await _rewrite_reference_block(ctx, state, old, instruction)
     drafting = not old.strip()
-    sub = build_create_agent(CHAPTER_WRITER_PROMPT if drafting else REWRITE_PROMPT, [], ctx)
+    # 检索用的查询：改写时用原章开头，补写时原章是空的——拿"请按提纲撰写本章正文初稿"这句
+    # 模板话去检索，批量补写的每一章都会命中同一堆无关资料。改用本章标题/条目才切题。
+    query_seed = (_chapter_query_seed(state, chapter_id, chapter_title) if drafting else old)
+    ref = await _rewrite_reference_block(ctx, state, query_seed, instruction if not drafting else "")
+    # 补写这条路没绑任何工具，收稿看消息正文——**不能用带 write_file 那版提示词**
+    sub = build_create_agent(CHAPTER_DRAFT_PROMPT if drafting else REWRITE_PROMPT, [], ctx)
     msg = (_draft_msg(instruction, ref, _rewrite_context_block(state, chapter_id)) if drafting
            else _rewrite_msg(old, instruction, ref, _rewrite_context_block(state, chapter_id)))
     out = await sub.ainvoke({"messages": [HumanMessage(content=msg)]})

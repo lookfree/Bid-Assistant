@@ -181,6 +181,11 @@ def test_empty_chapter_gets_a_drafting_prompt_not_a_rewrite_one(monkeypatch):
     system = msgs[0].content
     user = msgs[-1].content
     assert "子写手" in system, "空章仍在用改写提示词，模型手里没有原章可改"
+    # 收稿口径必须对：补写没绑任何工具，回复正文就是交稿。用带 write_file 的那版提示词，
+    # 听话的模型会回「已写入 chapters/t6.html」，App 校验「必须含 HTML 标签」判 502——
+    # 正是补写要修的那个失败（2026-08-08 审查抓到，假网关无论什么提示词都回 HTML，测不出来）。
+    assert "write_file" not in system, "补写用了写文件收稿的提示词，模型不会把正文放回消息里"
+    assert "首字符必须是 '<'" in system
     assert "改写指令" not in user, "空章不该再拼「改写指令」段"
     assert "第三章 应急预案" in user               # 本章定位仍要给
     assert "尚未生成" in user
@@ -207,3 +212,27 @@ def test_existing_chapter_still_uses_the_rewrite_prompt(monkeypatch):
     asyncio.run(rewrite_chapter(ctx, "t3", "改得更正式", state))
     assert "润色专家" in gateway.chat.captured[0].content
     assert "改写指令：改得更正式" in gateway.chat.captured[-1].content
+
+
+def test_drafting_retrieves_by_chapter_not_by_the_boilerplate_instruction(monkeypatch):
+    """补写的检索词要用本章标题/条目，不是那句模板指令。
+
+    改写时查询是「原章前 N 字 + 指令」；补写时原章是空的，而批量补齐给每章发的是同一句
+    "请按提纲与招标要求撰写本章正文初稿"——照搬就等于每一章都拿同一个与章节无关的词去检索，
+    参考资料对谁都不切题。
+    """
+    rag = _FakeRagRetrieve(enabled=True)
+    monkeypatch.setattr(content_mod, "rag_retrieve", rag)
+    gateway = _CapturingGateway(_NEW_HTML)
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gateway, user_id="u1")
+    state = {
+        "chapters": {"t3": ""},
+        "run_input": {"rag": {"enabled": True}},
+        "read": {"categories": []},
+        "outline": {"chapters": [{"id": "t3", "no": "第三章", "title": "应急预案",
+                                  "items": [{"label": "一、应急响应流程"}]}]},
+    }
+    asyncio.run(rewrite_chapter(ctx, "t3", "本章尚无正文，请按提纲与招标要求撰写本章正文初稿", state))
+    query = " ".join(rag.build_calls[-1][1])
+    assert "应急预案" in query and "应急响应流程" in query, f"检索词没用上本章信息: {query!r}"
+    assert "请按提纲与招标要求撰写" not in query, f"检索词是那句模板指令: {query!r}"

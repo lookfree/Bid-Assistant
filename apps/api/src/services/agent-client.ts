@@ -164,11 +164,13 @@ export async function rewriteChapter(opts: {
   chapterId: string
   instruction: string
   baseHtml?: string
+  chapterTitle?: string
   model?: AgentModelSelection
   userId?: string
 }): Promise<{ chapter_id: string; html: string }> {
   const body: Record<string, unknown> = { chapter_id: opts.chapterId, instruction: opts.instruction }
   if (opts.baseHtml !== undefined) body.base_html = opts.baseHtml
+  if (opts.chapterTitle) body.chapter_title = opts.chapterTitle
   if (opts.model) body.model = opts.model // 有配置才下发；无则 agent 用 env 默认（与 createRun 同法）
   if (opts.userId) body.user_id = opts.userId // spec316：改写检索同样按 user_id 隔离
   const r = await fetch(
@@ -177,7 +179,11 @@ export async function rewriteChapter(opts: {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120_000),
+      // 120s 是按「改一章已有正文」定的。**从零写一章是另一个量级**——逐章生成那条路给单章
+      // 留的是 4~8 分钟（_chapter_heartbeat）。补写复用本通道，按 120s 掐会把慢章掐死，
+      // 而客户端中断并不能让 agent 停下：它照样写完并把结果合进图状态，库里却没有，
+      // 两边就此分叉，下次再点会走「改写」分支而不是「补写」。
+      signal: AbortSignal.timeout(600_000),
     },
   )
   if (!r.ok) {
@@ -344,16 +350,26 @@ export type AgentClient = {
   getRun: typeof getRun
 }
 
-/** 单章改写失败的可展示原因。
+/** 单章改写/补写失败的可展示原因。
  *
- *  改写走的是同步路由，错误只有一条字符串（agent 侧 `{"error": "..."}` 原样回传）。
- *  这里做的是同一件事：**能看懂的说给用户，看不懂的不硬编故事**。
- *  2026-08-08：从未生成过的章被 agent 侧守卫直接拒掉（连模型都没调），而 App 把所有错误
- *  压成 agent_failed，用户只看到「改写失败，请稍后重试」，对着一件做不到的事反复重试。 */
+ *  **白名单，不是黑名单**：agent 侧的兜底是 `except Exception: {"error": str(e)}`，
+ *  裸传等于把上游响应体、base_url、模型名这些内部细节甩到浏览器里；
+ *  网络层失败还会变成「The operation timed out.」「fetch failed」这种对用户毫无意义的英文。
+ *  只放行我们自己为用户写的那几句话，其余一律回 undefined，由前端给通用文案。
+ *  2026-08-08：从未生成过的章被守卫拒掉，用户只看到「请稍后重试」，对着做不到的事反复重试——
+ *  要放行的正是「章节不存在」这类**可行动**的原因。 */
+const REWRITE_USER_FACING = [
+  /^章节不存在[:：]/,          // 章 id 不在提纲里（前端据此提示重新生成提纲）
+  /^上传的标书未能解析出/,      // 节点里为用户写的中文说明
+  /^招标文件的解析结果过大/,
+  /^rewrite_truncated[:：]/,   // 路由另有 422 分支，这里兜底
+]
+
 export function rewriteFailureDetail(e: unknown): string | undefined {
   const raw = e instanceof Error ? e.message : ""
-  if (!raw || raw.includes("Traceback")) return undefined
+  if (!raw) return undefined
   // 客户端封装的前缀（`agent rewriteChapter 404: …`）去掉，只留服务端那句话
   const msg = raw.replace(/^agent rewriteChapter \d+:\s*/, "").trim()
-  return msg ? msg.slice(0, 200) : undefined
+  if (!msg || !REWRITE_USER_FACING.some((re) => re.test(msg))) return undefined
+  return msg.slice(0, 200)
 }

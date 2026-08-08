@@ -136,7 +136,7 @@ def test_rewrite_route_threads_user_id_into_ctx(monkeypatch, submit_gateway):
     cp = _use_memory_cp(monkeypatch)
     captured = {}
 
-    async def fake_rewrite_chapter(ctx, chapter_id, instruction, state):
+    async def fake_rewrite_chapter(ctx, chapter_id, instruction, state, **kw):
         captured["user_id"] = ctx.user_id
         return _NEW_HTML
 
@@ -239,3 +239,32 @@ def test_chapter_id_outside_the_outline_is_still_rejected(monkeypatch, submit_ga
         return await rewrite("bidding_agent", "th-bad", RewriteBody(chapter_id="t99", instruction="写"))
 
     assert asyncio.run(go()).status_code == 404
+
+
+def test_outline_chapter_added_after_the_run_can_be_drafted(monkeypatch, submit_gateway):
+    """用户在提纲页**新增**的章也要能补写。
+
+    图状态里的 outline 只在跑 run 时刷新，新增章在它里面根本不存在——只认状态就等于
+    「提纲新增内容」这类章永远补不了，而空章提示语恰恰写着"该章节为提纲新增内容…建议补写"。
+    App 按库里的提纲校验后下发 chapter_title，据此放行。
+    """
+    cp = _use_memory_cp(monkeypatch)
+    monkeypatch.setattr(chapters_mod, "_make_gateway", lambda m: submit_gateway({}, reply=_NEW_HTML))
+    agent = get_agent("bidding_agent")
+    ctx = RunContext(run_id="r-new", agent_type="bidding_agent", thread_id="th-new",
+                     gateway=submit_gateway({"submit_read_result": _READ_ARGS}), checkpointer=cp)
+
+    async def go():
+        async for _ in agent.astream({"file_key": "k"}, ctx):
+            pass
+        g = build_bidding_workflow(ctx)
+        cfg = {"configurable": {"thread_id": "th-new"}}
+        await g.aupdate_state(cfg, {"outline": _OUTLINE})          # 状态里的提纲是旧的
+        await g.aupdate_state(cfg, {"chapters": {"t1": "<p>一</p>"}})
+        return await rewrite("bidding_agent", "th-new",
+                             RewriteBody(chapter_id="t99", instruction="写",
+                                         chapter_title="第九章 新增的章"))   # 提纲页新加的
+
+    res = asyncio.run(go())
+    assert not isinstance(res, JSONResponse), f"新增章被拒: {getattr(res, 'body', res)}"
+    assert res["chapter_id"] == "t99"

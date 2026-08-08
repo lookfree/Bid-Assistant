@@ -1033,6 +1033,15 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     if (!contentRow) return c.json({ error: "content_not_done" }, 409)
     // 改写底稿用 DB 现值（编辑过=编辑后），别让 agent 拿 state 里的旧稿改（编辑会被吃掉）
     const baseHtml = (contentRow.result as Record<string, unknown> | null)?.[chapterId]
+    // 章标题按**库里的提纲**取并下发：agent 图状态里的 outline 只在跑 run 时刷新，用户在提纲页
+    // 新增的章在它里面根本没有，而那正是「待生成」的主力。这里同时充当 id 校验——
+    // 既不在提纲、也没有正文的 id 一律拒，不把无效 id 送进 agent。
+    const outlineRow = await latestDoneStep(p.id, "outline")
+    const outlineChapters = ((outlineRow?.result as { chapters?: { id?: string; no?: string; title?: string }[] } | null)
+      ?.chapters ?? [])
+    const planned = outlineChapters.find((ch) => ch.id === chapterId)
+    if (!planned && typeof baseHtml !== "string") return c.json({ error: "chapter_not_found" }, 404)
+    const chapterTitle = planned ? `${planned.no ?? ""} ${planned.title ?? ""}`.trim() : undefined
     // 模型唯一来自运营后台配置：未配置直接报错（预扣前取，不占额度），绝不回退默认模型
     const model = await resolveModel()
     if (!model) return c.json({ error: "model_not_configured" }, 400)
@@ -1046,6 +1055,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         chapterId,
         instruction: parsed.data.instruction,
         baseHtml: typeof baseHtml === "string" ? baseHtml : undefined,
+        chapterTitle,
         model,
         userId,
       }))
