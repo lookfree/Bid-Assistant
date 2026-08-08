@@ -21,6 +21,7 @@ export function PackageSelector({
   onClone,
   cloning,
   cloneError,
+  purpose = "outline",
 }: {
   packages: PackageInfo[]
   takenIds: string[]
@@ -33,13 +34,17 @@ export function PackageSelector({
   onClone: (pkg: PackageInfo) => void
   cloning: boolean
   cloneError: string | null
+  /** 用途：outline=生成大纲前选包（原场景）；review=对照审查前选包。
+   *  审查项目里没有大纲、也没有"已被占用的包"，照抄大纲文案会说出一堆不成立的话
+   *  （"所有包件均已生成大纲，无可再投的包"）。 */
+  purpose?: "outline" | "review"
 }) {
   return (
     <section className="mt-5 rounded-2xl border border-border bg-card">
       <header className="flex items-center gap-2 border-b border-border px-5 py-3.5">
         <Boxes className="size-4 shrink-0 text-primary" />
         <span className="text-sm font-semibold text-foreground">选择投标包件</span>
-        <span className="ml-auto text-xs text-muted-foreground">多包件招标须先选包才能生成大纲，一次只能投一个包</span>
+        <span className="ml-auto text-xs text-muted-foreground">{purpose === "review" ? "多包件招标须先选包才能对照审查，一次只能审一个包" : "多包件招标须先选包才能生成大纲，一次只能投一个包"}</span>
       </header>
       <div className="flex flex-col gap-2 px-4 py-4">
         {packages.map((pkg) => {
@@ -87,6 +92,9 @@ export function PackageSelector({
         {message && <p className="text-xs font-medium text-success">{message}</p>}
         {error && <p className="text-xs font-medium text-destructive">{error}</p>}
       </div>
+      {/* 克隆区只在生成大纲的场景有意义：审查项目不产大纲，也没有"已被占用的包"，
+          渲染出来只会说"所有包件均已生成大纲，无可再投的包"这种不成立的话。 */}
+      {purpose === "outline" && (
       <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-3">
         <p className="text-xs text-muted-foreground">兼投多包件需分开制作投标文件——选要再投的包，新建一个项目：</p>
         {cloneCandidates.length === 0 ? (
@@ -105,6 +113,7 @@ export function PackageSelector({
           ))
         )}
       </div>
+      )}
       {cloneError && <p className="px-4 pb-3 text-xs font-medium text-destructive">{cloneError}</p>}
     </section>
   )

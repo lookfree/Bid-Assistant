@@ -18,11 +18,28 @@ import { Loader2, ShieldCheck } from "lucide-react"
 import { ApiError } from "@/lib/api-client"
 import type { PackageInfo } from "@/lib/bid-types"
 import { PackageSelector } from "@/components/tool/package-selector"
-import { nextContrastPhase } from "@/lib/contrast-flow"
-import { fetchStepResult, invalidateProjectCache, runStep, setProjectPackage } from "@/lib/project"
-import { stepErrorMessage } from "@/lib/use-step"
+import { needsRead, nextContrastPhase, shouldConverge } from "@/lib/contrast-flow"
+import {
+  StepFailedError, StreamIncompleteError,
+  fetchStepResult, invalidateProjectCache, runStep, setProjectPackage,
+  type StepName,
+} from "@/lib/project"
+import { pollStepResult, stepErrorMessage } from "@/lib/use-step"
 
 type Phase = "idle" | "reading" | "picking" | "reviewing"
+
+/** 失败文案：服务端给了可展示的原因就原样用。
+ *  笼统的"请重试"正是 2026-08-07 那次事故的成因——一份盖章扫描件被重试 21 次，
+ *  而每次重试都真金白银地重跑一遍读标。 */
+function failureText(e: unknown): string {
+  if (e instanceof StepFailedError && e.detail) return e.detail
+  if (e instanceof ApiError) {
+    if (e.code === "model_not_configured") return "系统尚未配置生成模型，请联系管理员在运营后台完成模型编排"
+    if (e.code === "feature_locked") return "当前会员档位未包含该功能权益，可在会员中心升级后重试"
+    return stepErrorMessage(e.status)
+  }
+  return "生成失败，请重试"
+}
 
 const PHASE_TEXT: Record<Exclude<Phase, "idle" | "picking">, string> = {
   reading: "正在解读招标文件，提取评分办法与废标红线…（约 2–5 分钟）",
@@ -34,12 +51,16 @@ export function ContrastReviewCta({
   projectName,
   readCost,
   reviewCost,
+  hasPackage,
   onDone,
 }: {
   projectId: string
   projectName: string
   readCost: number
   reviewCost: number
+  /** 项目已选定包件（取自项目详情，不是组件内存）：刷新/重进页面后仍要认得，
+   *  否则多包件项目会在读标已扣费之后卡在"没有入口"的死角。 */
+  hasPackage: boolean
   onDone: () => void
 }) {
   const [phase, setPhase] = useState<Phase>("idle")
@@ -47,16 +68,37 @@ export function ContrastReviewCta({
   const [error, setError] = useState("")
   const [saving, setSaving] = useState(false)
 
-  /** 读标结果里的包件；>1 时必须由人选。 */
-  async function readPackages(): Promise<PackageInfo[]> {
-    const read = await fetchStepResult<{ packages?: PackageInfo[] }>(projectId, "read")
-    return read?.packages ?? []
+  /** 跑一步，并按与 useStep 同一口径收敛。
+
+      **连接断了不等于失败**：读标要 2–5 分钟，代理/网络掐断 SSE 是常事，而 run 仍在服务端
+      跑或已跑完。照直报"生成失败"会让用户对着一次**已经扣过费**的成功重试，再点还会撞
+      409。所以断流与 409(already_running/already_done) 一律转轮询取结果。 */
+  async function runAndSettle<T>(step: StepName): Promise<T> {
+    try {
+      return await runStep<T>(projectId, step)
+    } catch (e) {
+      const kind = e instanceof StreamIncompleteError
+        ? "stream-incomplete" as const
+        : e instanceof ApiError && e.status === 409 && e.code === "step_already_running"
+          ? "already-running" as const
+          : e instanceof ApiError && e.status === 409 && e.code === "step_already_done"
+            ? "already-done" as const
+            : "other" as const
+      if (!shouldConverge(kind)) throw e
+      return await pollStepResult<T>(projectId, step)
+    } finally {
+      invalidateProjectCache(projectId)
+    }
+  }
+
+  /** 已经跑完的步不再重跑——重跑要么被 409 拒（out_of_order），要么再扣一次钱。 */
+  async function readResult(): Promise<{ packages?: PackageInfo[] } | null> {
+    return await fetchStepResult<{ packages?: PackageInfo[] }>(projectId, "read")
   }
 
   async function runReview() {
     setPhase("reviewing")
-    await runStep(projectId, "review")
-    invalidateProjectCache(projectId)
+    await runAndSettle("review")
     onDone()
   }
 
@@ -64,20 +106,24 @@ export function ContrastReviewCta({
     if (phase !== "idle") return
     setError("")
     try {
+      // 读标可能已经跑过（上一次审查失败后重来、或刷新过页面）：有结果就直接用，
+      // 再跑一遍不是多花 20 积分就是被步序闸 409 拒死。
       setPhase("reading")
-      await runStep(projectId, "read")
-      invalidateProjectCache(projectId)
-      const pkgs = await readPackages()
-      if (nextContrastPhase(pkgs.length) === "pick") {
+      let read = await readResult()
+      if (needsRead(!!read)) {
+        await runAndSettle("read")
+        read = await readResult()
+      }
+      if (nextContrastPhase(read?.packages?.length ?? 0) === "pick" && !hasPackage) {
         // 唯一的停顿：选包只能由人来做，选错等于拿别的包的要求判本包的标书
-        setPackages(pkgs)
+        setPackages(read?.packages ?? [])
         setPhase("picking")
         return
       }
       await runReview()
     } catch (e) {
       setPhase("idle")
-      setError(e instanceof ApiError ? stepErrorMessage(e.status) : "生成失败，请重试")
+      setError(failureText(e))
     }
   }
 
@@ -90,7 +136,12 @@ export function ContrastReviewCta({
       await runReview()
     } catch (e) {
       setPhase("picking")
-      setError(e instanceof ApiError ? stepErrorMessage(e.status) : "选择包件失败，请重试")
+      // 选包的 409 是 package_taken / package_locked，与"步骤顺序不符"毫无关系
+      setError(e instanceof ApiError && e.code === "package_taken"
+        ? "该包件已在其它项目生成过大纲，请选择其它包件"
+        : e instanceof ApiError && e.status === 409
+          ? "该包件已锁定，请选择其它包件"
+          : failureText(e))
     } finally {
       setSaving(false)
     }
@@ -115,6 +166,7 @@ export function ContrastReviewCta({
           onClone={() => {}}
           cloning={false}
           cloneError={null}
+          purpose="review"
         />
       </div>
     )

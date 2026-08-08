@@ -166,6 +166,7 @@ function RejectReview() {
             projectName={info.project.name ?? "我的标书"}
             readCost={readCost}
             reviewCost={reviewCost}
+            hasPackage={!!info.project.selectedPackage}
             onDone={() => window.location.reload()}
           />
         ) : gap ? (

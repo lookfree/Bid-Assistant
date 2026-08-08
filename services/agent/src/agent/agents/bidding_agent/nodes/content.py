@@ -358,6 +358,21 @@ async def _log_length_telemetry(ctx, run_input: dict, chapters: dict[str, str]) 
         logger.warning("length telemetry event write failed", exc_info=True)
 
 
+def _clause_source(read: dict, clause_ids: list | None) -> str:
+    """内部条款 id → **招标文件自己的章节标题**（读标产出的 doc_headings）。
+
+    这是"用人看得懂的引用替换内部键"的那一步：模型需要的是能写进偏离表、评委能对照的出处，
+    而 sec-19-c129 对评委毫无意义。取第一个 id 所在节的标题；找不到就不给这个字段——
+    宁可留空，也不要让模型对着一个空列去编条款号。"""
+    if not clause_ids:
+        return ""
+    sec = str(clause_ids[0]).rsplit("-c", 1)[0]
+    for h in read.get("doc_headings") or []:
+        if h.get("sec") == sec:
+            return str(h.get("title") or "")
+    return ""
+
+
 def _deviation_items_block(read: dict) -> str:
     """技术/商务/资格分类全量条目（title/value/clause_ids/star），供偏离表子写手逐条落表——
     不动 slim_read 本身，这里另起一段附加给规划轮（spec322）。"""
@@ -365,8 +380,11 @@ def _deviation_items_block(read: dict) -> str:
     for c in (read.get("categories") or []):
         if c.get("key") not in _DEVIATION_CATEGORY_KEYS:
             continue
-        # 不带 clause_ids：那是内部键，模型会照着提示词把它填进偏离表的"出处"列
-        items = [{"title": it.get("title"), "value": it.get("value"), "star": it.get("star", False)}
+        # 不给 clause_ids（内部键），改给它**指向的章节标题**——「招标要求出处」这一列要有
+        # 真东西可填，否则模型只能留空或**编一个条款号**，而编造的引用印在交给评委的偏离表里
+        # 比空格子更糟（2026-08-08 审查提出）。
+        items = [{"title": it.get("title"), "value": it.get("value"), "star": it.get("star", False),
+                  **({"source": src} if (src := _clause_source(read, it.get("clause_ids"))) else {})}
                  for it in c.get("items", [])]
         cats.append({"key": c.get("key"), "title": c.get("title"), "items": items})
     return (f"{DEVIATION_TABLE_GUIDE}\n"

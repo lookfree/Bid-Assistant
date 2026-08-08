@@ -91,6 +91,23 @@ class TestDeviationTable:
         assert not _ID.search(DEVIATION_TABLE_GUIDE), "提示词里出现了内部 id 的样例"
         assert "招标要求出处" in DEVIATION_TABLE_GUIDE      # 改成招标文件自己的编号
 
+    def test_the_source_column_has_real_data_behind_it(self):
+        """「招标要求出处」这一列必须有东西可填：给内部 id 指向的**章节标题**。
+        只是把 id 拿掉、留一个空列，模型会去编条款号——编造的引用印在交给评委的偏离表里
+        比空格子更糟。"""
+        from agent.agents.bidding_agent.nodes.content import _deviation_items_block
+
+        read = {**_READ, "doc_headings": [{"sec": "sec-19", "title": "第五章 技术规范书", "level": 1}]}
+        block = _deviation_items_block(read)
+        assert "第五章 技术规范书" in block, "出处列没有可填的数据，模型只能留空或编造"
+        assert not _ID.search(block)
+
+    def test_source_is_omitted_when_unknown(self):
+        """对不上章节标题时**不给这个字段**——宁可留空，也不要给模型一个半截线索去编。"""
+        from agent.agents.bidding_agent.nodes.content import _deviation_items_block
+
+        assert '"source"' not in _deviation_items_block(_READ)
+
     def test_items_fed_to_the_table_carry_no_ids(self):
         from agent.agents.bidding_agent.nodes.content import _deviation_items_block
 

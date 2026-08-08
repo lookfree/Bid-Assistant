@@ -19,8 +19,6 @@ import {
   Cpu,
   ClipboardList,
   Layers,
-  Boxes,
-  Check,
   type LucideIcon,
 } from "lucide-react"
 import type { AnalysisItem, PackageInfo, ScoringRow, StructureItem, StructureKind } from "@/lib/bid-types"

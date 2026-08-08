@@ -8,7 +8,7 @@
  * 别的包的要求全被误报成「未响应」。线上 53 个读过标的项目里 21 个是多包件（39%）。
  */
 import { describe, it, expect } from "bun:test"
-import { nextContrastPhase } from "@/lib/contrast-flow"
+import { needsRead, nextContrastPhase, shouldConverge } from "@/lib/contrast-flow"
 
 describe("nextContrastPhase", () => {
   it("单包：读完直接跑对照，不打断用户", () => {
@@ -24,5 +24,29 @@ describe("nextContrastPhase", () => {
   it("边界就在 1 和 2 之间——写成 >=1 会把单包也拦下来，写成 >2 会让两个包的标漏选", () => {
     expect(nextContrastPhase(1)).not.toBe("pick")
     expect(nextContrastPhase(2)).not.toBe("review")
+  })
+})
+
+describe("断流不等于失败", () => {
+  it("断流/已在跑/已跑完 → 转轮询取结果", () => {
+    // 读标 2–5 分钟，SSE 被代理掐断是常事；报失败会让用户对着一次已扣费的成功重试
+    expect(shouldConverge("stream-incomplete")).toBe(true)
+    expect(shouldConverge("already-running")).toBe(true)
+    expect(shouldConverge("already-done")).toBe(true)
+  })
+
+  it("真失败照常报出来", () => {
+    expect(shouldConverge("other")).toBe(false)
+  })
+})
+
+describe("读标不重跑", () => {
+  it("已有读标结果就直接用", () => {
+    // 重跑要么再扣 20 积分，要么被步序闸 409 拒死（读完 currentStep 已推进到 review）
+    expect(needsRead(true)).toBe(false)
+  })
+
+  it("没有才跑", () => {
+    expect(needsRead(false)).toBe(true)
   })
 })
