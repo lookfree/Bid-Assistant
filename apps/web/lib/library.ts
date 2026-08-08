@@ -10,7 +10,12 @@ export type LibraryCategoryId =
   | "presentation"
 
 /** 资料库附件：真实文件（上传后拿 fileId，点击经 download-url 下载） */
-export type LibraryAttachment = { fileId: string; name: string; sourceFileId?: string }
+export type LibraryAttachment = {
+  fileId: string
+  name: string
+  /** 页图附件指向其来源 PDF 的 fileId,spec 2026-08-08 */
+  sourceFileId?: string
+}
 
 // 可空字段与后端契约一致：后端返回 null 表示"无/已清空"（PUT 缺键=不改、null=清空）。
 export type LibraryItem = {
