@@ -170,6 +170,12 @@ def _params_override(params: dict) -> dict:
     max_tokens = params.get("max_tokens")
     if isinstance(max_tokens, int) and not isinstance(max_tokens, bool) and max_tokens > 0:
         out["model_max_tokens"] = max_tokens
+    # 上下文窗口（输入+输出总和）：必须大于输出配额，否则输入预算算出负数——这种配置本身是错的，
+    # 按"安全回退默认"语义丢弃，让 budget.py 用兜底窗口，而不是拿一个荒谬的数去算。
+    window = params.get("context_window")
+    if (isinstance(window, int) and not isinstance(window, bool)
+            and window > out.get("model_max_tokens", 0)):
+        out["model_context_window"] = window
     return out
 
 

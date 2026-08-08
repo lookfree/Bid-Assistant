@@ -4,7 +4,7 @@ import json
 from agent.framework.create_agent import run_submit_agent
 from agent.agents.bidding_agent.nodes.common import (
     slim_read, filter_read_by_package, parse_bid_chapters, publish_phase, html_to_review_text,
-    allocate_chapter_budget,
+    allocate_chapter_budget, chapters_budget, MIN_CHAPTER_CHARS,
 )
 from agent.agents.bidding_agent.nodes.classify import classify_from_chapters, empty_category
 from agent.agents.bidding_agent.schemas import RiskReport
@@ -12,15 +12,6 @@ from agent.agents.bidding_agent.prompts.review import REVIEW_SYSTEM_PROMPT
 from agent.agents.bidding_agent.prompts.categories import category_scope, industry_patches
 
 
-# 喂给审查模型的正文**总量**上限（字符）。原来是每章固定 4000，那个口径对线下标书是灾难：
-# 上传的标书常常整本解析成一章，2026-08-07 实测一份 75425 字的响应文件只有 1 章，
-# 模型因此只看到 4000 字（**5%**），剩下 95% 的内容一律被判成"缺失"——用户反馈的
-# 「识别出的风险实际在响应文件里都有」正是这么来的。
-# 按总量分配后：1 章的文档能整本进去，多章文档各章按需分配，总量仍然可控。
-# 8 万取自原口径的最坏情况（20 章 × 4000），不比从前更费；模型上下文 13 万 token，留足余量。
-_TOTAL_CAP = 80_000
-# 单章保底：再多的章也要让每章有点内容，否则等于没看
-_MIN_PER_CHAPTER = 1_000
 
 
 # 通用自查（未提供招标文件）的口径说明:必须明示局限,防用户把自查结果当成对照审查结论
@@ -74,29 +65,34 @@ def make_review_node(ctx):
         # 喂进去的字符有 **56% 是标签**，有一章正文才 5261 字、本可整章放下，却因表格标签把串撑到
         # 38431，模型只读到 561 字（10%）。表格结构保留成「单元格 | 单元格 / 换行」，
         # 因为审查要靠表格行判断★条款有没有逐条登进偏离表。
-        chapters = allocate_chapter_budget(
-            {cid: html_to_review_text(html) for cid, html in chapters_src.items()},
-            _TOTAL_CAP, _MIN_PER_CHAPTER)
+        texts = {cid: html_to_review_text(html) for cid, html in chapters_src.items()}
         # 分类判定（spec334）：**在审查之前**做，这一轮就能用上分类知识——放到审查之后的话，
         # 用户看到分类时报告已经出完，得再花一次钱重跑才生效。
         # 有读标结论的项目在读标步已判过，这里不重复判；用户确认过的值优先。
-        category, self_detected = await _resolve_category(ctx, run_input, read_state, chapters)
+        # 用未截断的 texts 判：分类只取每章开头若干字（_chapters_summary 自带上限），不吃预算。
+        category, self_detected = await _resolve_category(ctx, run_input, read_state, texts)
         payload = {"read": slim_read(read_state), "outline": state.get("outline") or {},
-                   "chapters": chapters}
+                   "chapters": {}}     # chapters 占位保住键序，额度算完再填
         structure = read_state.get("required_structure") or []
         if structure:
             payload["required_structure"] = structure
         mode_note = "" if read_state else _SELF_CHECK_NOTE
-        user = f"招标与投标材料：\n{json.dumps(payload, ensure_ascii=False)}{mode_note}\n请审查并提交体检报告。"
         # 分类必查项（spec334）：**主次类别都取**——查多了只多看一眼，漏一条是废标。
         # 行业资质补丁在读标条目（有招标文件）或标书正文（自查）上做字面匹配，不拿全文匹配：
         # 补丁词是资质类术语，只出现在需求与资格条款里，全文匹配只增噪声和成本。
-        user += category_scope(category.get("value"), "review")
         # 判据用 read_state 而不是 payload["read"]：slim_read({}) 回的是
         # {"project_meta": {}, "categories": [], ...}——**非空 dict 恒为真**，
-        # 写成 `payload["read"] or chapters` 就永远取不到 chapters，自查项目的资质补丁静默全失效。
-        patch_src = payload["read"] if read_state else chapters
-        user += industry_patches(json.dumps(patch_src, ensure_ascii=False))
+        # 写成 `payload["read"] or texts` 就永远取不到正文，自查项目的资质补丁静默全失效。
+        extra = category_scope(category.get("value"), "review")
+        extra += industry_patches(json.dumps(payload["read"] if read_state else texts,
+                                             ensure_ascii=False))
+        # 正文额度按剩余窗口算：固定部分（系统提示 + 读标结论 + 约束文字）先占，剩下的才是正文的。
+        # 写死常量的下场见 chapters_budget 的注释——砍不够是 400，砍过头是白丢内容。
+        fixed = REVIEW_SYSTEM_PROMPT + json.dumps(payload, ensure_ascii=False) + mode_note + extra
+        payload["chapters"] = allocate_chapter_budget(
+            texts, chapters_budget(ctx, fixed), MIN_CHAPTER_CHARS)
+        user = f"招标与投标材料：\n{json.dumps(payload, ensure_ascii=False)}{mode_note}\n请审查并提交体检报告。"
+        user += extra
         result = await run_submit_agent(
             ctx, REVIEW_SYSTEM_PROMPT, user,
             "submit_risk_report", RiskReport, "提交审查报告")

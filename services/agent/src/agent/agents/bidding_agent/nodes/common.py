@@ -5,6 +5,7 @@ import logging
 import re
 from html import unescape
 
+from agent.framework.budget import chapter_budget
 from agent.parsing import storage_read
 from agent.parsing.service import read_and_parse
 from agent.parsing.storage_read import storage      # spec106 MinIO 单例
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["publish_phase", "upload_artifact", "fetch_master_bytes", "package_scope",
            "filter_read_by_package", "slim_read", "parse_bid_chapters", "html_to_review_text",
-           "allocate_chapter_budget"]
+           "allocate_chapter_budget", "chapters_budget", "MIN_CHAPTER_CHARS"]
 
 
 def parse_bid_chapters(keys: str | list[str]) -> dict[str, str]:
@@ -127,6 +128,26 @@ def strip_inline_images(html: str | None) -> str:
         return f"［图片：{alt}］" if alt and alt.lower() not in _GENERIC_ALT else "［图片］"
 
     return _IMG_RE.sub(_sub, html)
+
+
+# 单章保底：再多的章也要让每章有点内容，否则等于没看
+MIN_CHAPTER_CHARS = 1_000
+
+
+def chapters_budget(ctx, fixed_text: str) -> int:
+    """本次调用留给正文的额度（字符），review / present 共用。
+
+    额度 = 模型窗口 − 输出配额 − fixed_text（系统提示 + 读标结论 + 各类约束）− schema − 余量。
+    **不写死常量**：读标结论的大小随招标文件浮动（实测中位 17810 tokens、最大 197002），
+    固定值要么砍不够照样 400，要么砍过头——中位项目本来放得下 4.7 万 tokens 的正文。
+
+    窗口取运营后台下发的 model_context_window；没配置时 budget 侧兜底 131072。
+    token 估算按中文 1 字 1 token（实测 0.87，留 15% 余量），故额度直接当字符数用。
+    """
+    s = getattr(ctx.gateway, "s", None)
+    return chapter_budget(fixed_text,
+                          context_window=getattr(s, "model_context_window", None),
+                          max_tokens=getattr(s, "model_max_tokens", None))
 
 
 def allocate_chapter_budget(texts: dict[str, str], total: int, floor: int) -> dict[str, str]:

@@ -366,3 +366,53 @@ def test_chart_only_content_page_does_not_trip_the_empty_deck_guard(monkeypatch,
                      gateway=submit_gateway({"submit_deck_draft": chart_draft, "submit_slide_notes": notes}))
     out = asyncio.run(make_present_node(ctx)({"chapters": {"t1": "<p>正文</p>"}, "read": {}}))
     assert out["artifacts"]["pptx"] == "artifacts/proj-1/present.pptx"
+
+
+def _run_present_with_chapters(monkeypatch, chapters: dict):
+    """跑一遍述标骨架段，返回喂给模型的用户消息。"""
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+    gw = _CapGateway(_DRAFT_ARGS)
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-1", gateway=gw)
+    asyncio.run(make_present_node(ctx)({"chapters": chapters, "read": {}, "run_input": {}}))
+    return gw.msgs[0][1].content
+
+
+def test_present_caps_the_bid_text_it_feeds_the_model(monkeypatch):
+    """述标此前完全没有长度上限，整本标书原样喂出去。
+
+    2026-08-08 生产实测：26.5 万字符的正文让输入涨到 98305 tokens，加上后台配的
+    max_tokens=32768，超出 131072 的窗口 **1 个 token** —— 400，整步失败退款，
+    用户什么都拿不到。大标书的述标是**必炸**而不是偶发。
+
+    断言的是真正的不变式：**整条输入 + 输出配额必须装得进窗口**，
+    而不是某个写死的字数——额度是按剩余窗口动态算的，写死数字的断言只会锁死实现。
+    """
+    from agent.framework.budget import (
+        DEFAULT_CONTEXT_WINDOW, _DEFAULT_OUTPUT_RESERVE, estimate_tokens)
+    from agent.agents.bidding_agent.prompts.present import PRESENT_SKELETON_PROMPT
+
+    huge = {f"sec-{i}": f"<p>{'投标内容' * 20000}</p>" for i in range(1, 9)}   # 约 64 万字
+    user = _run_present_with_chapters(monkeypatch, huge)
+    total = estimate_tokens(PRESENT_SKELETON_PROMPT + user) + _DEFAULT_OUTPUT_RESERVE
+    assert total < DEFAULT_CONTEXT_WINDOW, f"整条输入 {total} tokens，装不进窗口"
+
+
+def test_present_keeps_every_chapter_visible(monkeypatch):
+    """截断不能让某几章整个消失——短章按原样全给，长章才截。"""
+    chapters = {"sec-1": "<p>短章内容</p>", "sec-2": f"<p>{'长章' * 200000}</p>"}
+    user = _run_present_with_chapters(monkeypatch, chapters)
+    assert "短章内容" in user
+    assert "长章" in user
+    assert "（截断）" in user      # 长章被截了，且标记出来让模型知道后面还有
+
+
+def test_present_feeds_everything_when_it_fits(monkeypatch):
+    """放得下就一个字都不砍——写死上限的老毛病是把本来放得下的项目也砍掉一半。"""
+    chapters = {"sec-1": "<p>" + "正文" * 500 + "结尾标记</p>"}
+    user = _run_present_with_chapters(monkeypatch, chapters)
+    assert "结尾标记" in user
+    assert "（截断）" not in user

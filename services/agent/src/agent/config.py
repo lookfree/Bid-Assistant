@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     model_fallbacks: str = ""                   # "qwen:qwen-plus,glm:glm-4-flash"
     model_temperature: float | None = None     # None=用 provider 默认；由 App run override 下发
     model_max_tokens: int | None = None
+    # 模型上下文窗口（输入 + 输出的总和）。由运营后台模型配置下发；缺省时 budget.py 兜底 131072。
+    # 有了它，换模型或调大推理服务的 --max-model-len 之后改配置即可，不用改代码发版。
+    model_context_window: int | None = None
     model_top_p: float | None = None
     # 思考模式全局默认（取自运营后台主模型的思考开关，缺省关）：get_chat 未显式传 thinking 时的兜底，
     # 覆盖 content(deepagent)/make_agent_node 等不走链条项的调用。False=关闭思考（下发服务商关闭参）。

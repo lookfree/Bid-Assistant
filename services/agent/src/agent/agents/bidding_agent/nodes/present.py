@@ -6,6 +6,7 @@ import re
 from agent.framework.create_agent import run_submit_agent
 from agent.agents.bidding_agent.nodes.common import (
     slim_read, upload_artifact, fetch_master_bytes, filter_read_by_package, parse_bid_chapters, publish_phase,
+    allocate_chapter_budget, chapters_budget, MIN_CHAPTER_CHARS,
     strip_inline_images,
 )
 from agent.agents.bidding_agent.schemas import DeckDraft, DeckSpec, Slide, SlideNotes
@@ -110,15 +111,22 @@ def make_present_node(ctx):
             chapters_src = await asyncio.to_thread(parse_bid_chapters, bid_files)
             if not chapters_src:
                 raise RuntimeError("上传的标书未能解析出任何正文（扫描件/图片版暂不支持），请上传可复制文字的 docx/pdf 后重试")
-        chapters = {cid: _plain(html) for cid, html in chapters_src.items()}
+        # 述标此前**完全没有长度上限**，整本标书原样喂出去：2026-08-08 生产实测，26.5 万字符的
+        # 正文让输入涨到 98305 tokens，加上后台配的 max_tokens=32768 超出 131072 的窗口，
+        # 400 直接整步失败——大标书的述标是必炸而不是偶发。与审查同口径按剩余窗口注水分配。
+        texts = {cid: _plain(html) for cid, html in chapters_src.items()}
         # 选包时读标收窄到该包（spec324，与 review/outline 一致）：述标只按该包评分点组织，不把别包的
         # 评分/要求混进 PPT。未选包（单包/缺省/review-kind 独立线程无 read）→ 原样，行为不变。
         read_state = filter_read_by_package(state.get("read") or {}, run_input)
-        payload = {"chapters": chapters, "read": slim_read(read_state),
+        payload = {"chapters": {}, "read": slim_read(read_state),   # chapters 占位保住键序
                    "duration": duration}
+        tail = f"\n客户指定模板：{template}（template 字段必须用它）。" if template else ""
+        # 正文额度按剩余窗口算（与审查同一口径）：读标结论、系统提示、schema 先占，剩下的给正文。
+        fixed = PRESENT_SKELETON_PROMPT + json.dumps(payload, ensure_ascii=False) + tail
+        payload["chapters"] = allocate_chapter_budget(
+            texts, chapters_budget(ctx, fixed), MIN_CHAPTER_CHARS)
         user = f"标书与评分点：\n{json.dumps(payload, ensure_ascii=False)}\n时长 {duration} 分钟，请产 DeckDraft 骨架。"
-        if template:
-            user += f"\n客户指定模板：{template}（template 字段必须用它）。"
+        user += tail
         await publish_phase(ctx, "述标·基于标书与评分点搭建 PPT 骨架")
         # 骨架 schema 的约束最多（页数/分隔页/版式多样性/图表可比性/单位一致），3 轮实测会耗尽，
         # 整步失败退款、用户什么都拿不到——比多跑两轮糟得多，故这一步单独放宽到 5 轮。

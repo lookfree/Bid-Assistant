@@ -1,0 +1,80 @@
+"""输入预算：额度由窗口减出来，不是写死的常量。"""
+import pytest
+
+from agent.framework.budget import (
+    DEFAULT_CONTEXT_WINDOW, _DEFAULT_OUTPUT_RESERVE, MIN_CHAPTER_TOKENS,
+    chapter_budget, estimate_tokens)
+
+
+class TestEstimate:
+    def test_chinese_costs_about_one_token_per_char(self):
+        """标定：中文实测 1.15 字/token，我们按 1 字 1 token 保守算。"""
+        assert estimate_tokens("投标文件" * 100) == 400
+
+    def test_ascii_is_much_cheaper(self):
+        """英文 4 字符 1 token——读标结论那种带大量 ASCII 键名的 JSON，按中文口径估会高估三倍。"""
+        assert estimate_tokens("a" * 400) == 100
+
+    def test_empty(self):
+        assert estimate_tokens("") == 0
+
+
+class TestBudget:
+    def test_output_quota_is_subtracted(self):
+        """后台配的 max_tokens 是从窗口里扣的，不是额外的。"""
+        small = chapter_budget("", context_window=131072, max_tokens=32768)
+        large = chapter_budget("", context_window=131072, max_tokens=8192)
+        assert large - small == pytest.approx((32768 - 8192) * 0.9, abs=2)
+
+    def test_fixed_part_is_subtracted(self):
+        """读标结论越大，留给正文的越少——这正是写死常量做不到的。"""
+        bare = chapter_budget("", context_window=131072, max_tokens=8192)
+        with_read = chapter_budget("读标结论" * 5000, context_window=131072, max_tokens=8192)
+        assert bare - with_read == pytest.approx(20000 * 0.9, abs=2)
+
+    def test_bigger_window_gives_more_room(self):
+        """推理服务把 --max-model-len 调大后，改配置就该多喂——不用改代码。"""
+        assert (chapter_budget("", context_window=262144, max_tokens=32768)
+                > chapter_budget("", context_window=131072, max_tokens=32768))
+
+    def test_missing_config_falls_back_to_the_default_window(self):
+        assert (chapter_budget("", context_window=None, max_tokens=32768)
+                == chapter_budget("", context_window=DEFAULT_CONTEXT_WINDOW, max_tokens=32768))
+
+    def test_missing_max_tokens_still_reserves_output(self):
+        """没配 max_tokens 不等于不产出：预留 0 会把整个窗口当输入额度，输出一长又是 400。"""
+        assert (chapter_budget("", context_window=131072, max_tokens=None)
+                == chapter_budget("", context_window=131072, max_tokens=_DEFAULT_OUTPUT_RESERVE))
+
+    def test_never_returns_negative(self):
+        """固定部分本身就撑爆窗口时也要给个正数（下游据此截断），不能回负数。"""
+        assert chapter_budget("超长" * 100000, context_window=131072,
+                              max_tokens=32768) == MIN_CHAPTER_TOKENS
+
+
+class TestSettingsPlumbing:
+    """窗口要能从运营后台下发下来——否则调大 --max-model-len 之后还得改代码。"""
+
+    def test_context_window_reaches_settings(self):
+        from agent.models.gateway import model_override_to_settings
+
+        out = model_override_to_settings({"params": {"max_tokens": 32768, "context_window": 262144}})
+        assert out["model_context_window"] == 262144
+
+    def test_window_not_bigger_than_output_is_rejected(self):
+        """窗口 ≤ 输出配额是错配置，会算出负额度；按既有的"安全回退默认"语义丢弃。"""
+        from agent.models.gateway import model_override_to_settings
+
+        out = model_override_to_settings({"params": {"max_tokens": 32768, "context_window": 4096}})
+        assert "model_context_window" not in out
+
+    def test_node_reads_it_from_the_gateway(self):
+        from types import SimpleNamespace
+
+        from agent.agents.bidding_agent.nodes.common import chapters_budget
+
+        ctx = SimpleNamespace(gateway=SimpleNamespace(
+            s=SimpleNamespace(model_context_window=262144, model_max_tokens=32768)))
+        wide = chapters_budget(ctx, "")
+        ctx.gateway.s.model_context_window = 131072
+        assert wide > chapters_budget(ctx, "")

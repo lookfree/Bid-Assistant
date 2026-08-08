@@ -90,3 +90,32 @@ def test_review_node_with_tender_and_bid_file_uses_compare_mode(submit_gateway, 
     user_msg = gw.chats[-1].last_messages[-1].content
     assert "响应正文" in user_msg
     assert "通用自查模式" not in user_msg
+
+
+def test_review_caps_the_bid_text_it_feeds_the_model(submit_gateway):
+    """审查同样要受窗口约束——不然大标书一样是 400 整步失败。
+
+    断言真正的不变式：整条输入 + 输出配额装得进窗口。不断言具体字数，额度是动态算的。
+    """
+    from agent.framework.budget import (
+        DEFAULT_CONTEXT_WINDOW, _DEFAULT_OUTPUT_RESERVE, estimate_tokens)
+    from agent.agents.bidding_agent.prompts.review import REVIEW_SYSTEM_PROMPT
+
+    gw = submit_gateway({"submit_risk_report": _RISK_ARGS})
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
+    huge = {f"b{i}": f"<p>{'投标内容' * 20000}</p>" for i in range(1, 9)}   # 约 64 万字
+    asyncio.run(make_review_node(ctx)({"read": {"risk_summary": []}, "outline": {}, "chapters": huge}))
+    user_msg = gw.chats[-1].last_messages[1].content
+    total = estimate_tokens(REVIEW_SYSTEM_PROMPT + user_msg) + _DEFAULT_OUTPUT_RESERVE
+    assert total < DEFAULT_CONTEXT_WINDOW, f"整条输入 {total} tokens，装不进窗口"
+
+
+def test_review_feeds_everything_when_it_fits(submit_gateway):
+    """放得下就一个字都不砍。"""
+    gw = submit_gateway({"submit_risk_report": _RISK_ARGS})
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
+    asyncio.run(make_review_node(ctx)(
+        {"read": {"risk_summary": []}, "outline": {},
+         "chapters": {"b1": "<p>" + "正文" * 500 + "结尾标记</p>"}}))
+    user_msg = gw.chats[-1].last_messages[1].content
+    assert "结尾标记" in user_msg and "（截断）" not in user_msg
