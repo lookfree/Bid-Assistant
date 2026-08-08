@@ -247,24 +247,64 @@ class TestBrokenHistory:
         values = {"messages": [self._msg("could not be executed")] + [self._msg(f"第{i}章写完") for i in range(5)]}
         assert _history_is_broken(values) is False
 
-    def test_broken_history_starts_fresh_instead_of_resuming(self):
-        """**接线**：判出来坏了，就得真的从头跑，而不是照旧 ainvoke(None) 接上去。"""
+    def test_broken_history_switches_lineage_not_just_restarts(self):
+        """**接线**：判出坏历史后必须**换一条线**，不是在原线上重发指令。
+
+        第一版只做了"从头跑"却留在同一条 thread 上——langgraph 把新输入并进旧状态，
+        坏消息照样进请求，端点照样 400（2026-08-08 生产实证：关了流式重试仍 400，
+        因为病根是库里的坏历史）。换线的盐取坏检查点 id：同一份坏历史永远派生同一条新线，
+        新线写一半失败，下次重试还能找到它接着写。
+        """
         import asyncio
 
-        from agent.agents.bidding_agent.nodes.content import _resume_or_start
+        calls = []
 
         class _Deep:
-            called_with = None
-
             async def aget_state(self, config):
-                return SimpleNamespace(
-                    values={"files": {"/chapters/t1.html": {"content": "半截"}},
-                            "messages": [SimpleNamespace(content="write_todos could not be executed")]},
-                    next=("model",))
+                tid = config["configurable"]["thread_id"]
+                calls.append(tid)
+                if tid == "th":       # 主线：坏历史
+                    return SimpleNamespace(
+                        values={"messages": [SimpleNamespace(content="write_todos could not be executed")]},
+                        next=("model",),
+                        config={"configurable": {"checkpoint_id": "ckpt1234abcd"}})
+                return SimpleNamespace(values={}, next=(), config={})   # 新线：干净
 
             async def ainvoke(self, payload, config=None):
-                _Deep.called_with = "续跑" if payload is None else "从头"
+                calls.append(("invoke", "续跑" if payload is None else "从头",
+                              config["configurable"]["thread_id"]))
                 return {"files": {}}
 
-        asyncio.run(_resume_or_start(_Deep(), "th", "请逐章生成正文", {}))
-        assert _Deep.called_with == "从头", "继承了坏历史——用户点几次就失败几次"
+        asyncio.run(_resume_or_start(_Deep(), "th", "请逐章生成正文",
+                                     {"configurable": {"thread_id": "th"}}))
+        kind, mode, tid = calls[-1]
+        assert mode == "从头"
+        assert tid == "th-rckpt1234", f"没换线路（{tid}）——坏历史照样被并进请求"
+
+    def test_same_broken_history_always_derives_the_same_new_lineage(self):
+        """盐必须稳定：新线写了一半失败，重试要能找到同一条线接着写。"""
+        import asyncio
+
+        class _Deep:
+            def __init__(self):
+                self.seen = []
+
+            async def aget_state(self, config):
+                tid = config["configurable"]["thread_id"]
+                self.seen.append(tid)
+                if tid == "th":
+                    return SimpleNamespace(
+                        values={"messages": [SimpleNamespace(content="could not be executed")]},
+                        next=(), config={"configurable": {"checkpoint_id": "ckptAAAA1111"}})
+                # 新线上已有半截进度 → 应当续跑
+                return SimpleNamespace(values={"files": {"/chapters/t1.html": {"content": "x"}}},
+                                       next=("agent",), config={})
+
+            async def ainvoke(self, payload, config=None):
+                self.mode = "续跑" if payload is None else "从头"
+                return {"files": {}}
+
+        d = _Deep()
+        asyncio.run(_resume_or_start(d, "th", "写", {"configurable": {"thread_id": "th"}}))
+        assert d.seen[-1] == "th-rckptAAAA"
+        assert d.mode == "续跑", "换线后没接上新线里已写的章——盐不稳定就永远从零开始"

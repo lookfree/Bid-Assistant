@@ -57,12 +57,12 @@ class Settings(BaseSettings):
     # 思考模式全局默认（取自运营后台主模型的思考开关，缺省关）：get_chat 未显式传 thinking 时的兜底，
     # 覆盖 content(deepagent)/make_agent_node 等不走链条项的调用。False=关闭思考（下发服务商关闭参）。
     model_thinking: bool = False
-    # 正文（deepagent）是否走流式。流式能让空闲检测 30 秒发现挂死；但 2026-08-08 打开当天
-    # 正文三连败（write_todos 参数被拼坏 ×1、端点 400 "Expecting ',' delimiter" ×2），全部发生在
-    # 首次模型调用，而拿同一载荷重放四次均通——非确定性触发，疑与 vLLM deepseek_v4 流式工具
-    # 解析器对特定生成内容的解析有关，未钉死。按铁律做成配置而不是猜：默认关（回到当天上午
-    # 的稳定行为，仍有 20 分钟总时长盖 + 降级链护着）；端点侧修复/升级后置 true 即可启用，无需改代码。
-    model_content_streaming: bool = False
+    # 正文（deepagent）是否走流式。流式让空闲检测 30 秒发现挂死（非流式只能等 20 分钟总时长盖）。
+    # 2026-08-08 曾短暂默认关：当天 400 三连败一度归罪于流式，后查实病根是**坏工具参数存进
+    # 检查点历史后被反复回传**（端点渲染模板时 json.loads 失败），已由 SanitizeToolCallsMiddleware
+    # 在发送前无害化。坏参数本身流式非流式都出过（2026-08-06 非流式时代就有记录）。
+    # 保留开关：端点侧真查出流式解析器问题时可一键关闭，无需改代码。
+    model_content_streaming: bool = True
     # 流式空闲超时（大标书读标实测：单块生成慢而健康达数分钟，"总超时"会误杀——只在"连续无 token"时判挂死）。
     model_idle_timeout_s: int = 30              # 流式中连续 N 秒无新 token = 连接挂死 → 降级重试
     model_first_token_timeout_s: int = 120      # 首 token（含连接+大 prompt 预填）宽限，避免误杀慢启动

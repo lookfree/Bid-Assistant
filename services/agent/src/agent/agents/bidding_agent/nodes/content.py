@@ -13,6 +13,7 @@ from langchain_core.messages import HumanMessage
 from agent.models.usage import UsageCallback
 from agent.telemetry.tool_recorder import ToolCallRecorder
 from agent.framework.create_agent import build_create_agent
+from agent.framework.sanitize_tool_calls import SanitizeToolCallsMiddleware
 from agent.agents.bidding_agent.nodes.common import (
     slim_read, package_scope, filter_read_by_package, protect_images, restore_images,
     strip_clause_ids,
@@ -576,6 +577,10 @@ def make_content_node(ctx):
             subagents=[{"name": "chapter_writer", "description": "写指定一章的标书正文 HTML",
                         "system_prompt": writer_prompt}],
             checkpointer=getattr(ctx, "checkpointer", None),
+            # 喂模型前无害化历史里被拼坏的工具调用参数（create_agent 路线的同款防护）：
+            # 坏参数存进检查点后，每次回传都会让端点在渲染模板时 json.loads 失败——
+            # 400 的病根在这，不在流式（2026-08-08 生产实证）。
+            middleware=[SanitizeToolCallsMiddleware()],
         )
         # 读标依据走 slim_read（与 outline/review 一致）：read result 已并入全文分句 doc_sections
         # 与逐条 source_quote（token 大头），原样 dumps 会把整份招标原文灌进规划轮直接顶穿上下文。
@@ -837,15 +842,21 @@ async def _resume_or_start(deep, thread_id: str, user_msg: str, config: dict, *,
     续跑必须用 `None` 作输入：再传一次 messages 会往历史里**追加一条同样的指令**，
     模型看到两条"请逐章生成正文"，可能把已写好的章重写一遍——那正是续跑要省掉的开销。
     """
-    snap = await deep.aget_state({"configurable": {"thread_id": thread_id}})
-    if snap.values and _history_is_broken(snap.values):
-        # 坏历史绝不继承：2026-08-08 线上实测——某一轮的 write_todos 被拒（参数类型问题，
-        # 仓库里 2026-08-06 就记过这个老毛病），状态里留下一个"执行不了"的悬空工具调用；
-        # 用户点重试，新指令接在这份坏历史后面，于是**再失败一次**，点几次坏几次。
-        # 挂 checkpointer 本身没引入这个失败，但把一次偶发变成了持续——回滚前每轮新建
-        # namespace，坏历史随手丢掉，重试天然是干净的。续跑要保住那份干净。
-        logger.warning("正文检查点历史已损坏（有执行不了的工具调用），本轮从头跑，不继承")
-        return await deep.ainvoke({"messages": [HumanMessage(content=user_msg)]}, config=config)
+    # 坏历史绝不继承，而且**必须换线路**（2026-08-08 生产两连击）：
+    # ① 某轮 write_todos 的参数 JSON 被拼坏（malformed），带着坏参数的消息存进了检查点；
+    # ② 之后每次重试，历史原样发回端点，vLLM 渲染对话模板时 json.loads 那串坏参数，
+    #    在固定字符位炸出 400 "Expecting ',' delimiter"——流式非流式都一样，因为病根在库里。
+    # 第一版体检只做了"从头跑"却留在同一条 thread 上：langgraph 会把新输入**并进**旧状态，
+    # 坏消息照样进请求。所以坏历史 → 用坏检查点 id 做盐换一条线。盐是稳定的：
+    # 同一份坏历史永远派生同一条新线，新线写了一半再失败，下次重试仍能找到它接着写。
+    for _ in range(5):   # 防环：连环坏历史逐层换线，五层足够（每层盐都来自唯一的检查点 id）
+        snap = await deep.aget_state({"configurable": {"thread_id": thread_id}})
+        if not (snap.values and _history_is_broken(snap.values)):
+            break
+        ck = ((snap.config or {}).get("configurable") or {}).get("checkpoint_id", "x")
+        thread_id = f"{thread_id}-r{str(ck)[:8]}"
+        config = {**config, "configurable": {**(config.get("configurable") or {}), "thread_id": thread_id}}
+        logger.warning("正文检查点历史已损坏（工具调用参数被拼坏），换线路重跑：%s", thread_id[-24:])
     if snap.values and (snap.next or snap.values.get("files")):
         done = snap.values.get("files") or {}
         logger.info("正文续跑：已有检查点（待执行 %s，已写 %d 章）", snap.next, len(done))

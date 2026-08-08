@@ -436,13 +436,20 @@ def test_healthy_non_streaming_call_is_untouched(monkeypatch):
 # 由模型实例说了算（BaseChatModel._should_stream：streaming=True / stream= / 挂流式回调）。
 # 不改 deepagents 一行，打开 streaming 就能用上 30 秒空闲检测，而不是干等 20 分钟总时长盖。
 
-def test_content_streaming_follows_the_config():
-    """正文流式由配置开关决定，**默认关**。
+def test_content_streaming_defaults_on():
+    """流式**默认开**（30 秒空闲检测靠它；非流式挂死只能等 20 分钟总时长盖）。
 
-    2026-08-08：打开流式当天正文三连败（工具参数拼坏 ×1、端点 400 ×2），全在首次模型调用，
-    同一载荷重放四次均通——非确定性，疑为 vLLM 流式工具解析器问题。按铁律做成配置而不是猜：
-    默认回到稳定行为（20 分钟总时长盖 + 降级链仍在），端点修复后置 true 启用 30 秒空闲检测。
+    2026-08-08 曾短暂默认关：当天 400 三连败一度归罪流式，后查实病根是坏工具参数存进检查点
+    历史后被反复回传（端点渲染模板时 json.loads 失败），已由 SanitizeToolCallsMiddleware 在
+    发送前无害化——那之后没有理由再牺牲空闲检测。开关保留给端点真出问题时用。
     """
+    from agent.config import Settings
+
+    assert Settings(database_url="postgresql://x/x").model_content_streaming is True,         "默认又变回关了——挂死检测退回 20 分钟，下午的流式工作等于白做"
+
+
+def test_content_streaming_follows_the_config():
+    """开关必须两个方向都生效。"""
     from types import SimpleNamespace
 
     class _GW:
