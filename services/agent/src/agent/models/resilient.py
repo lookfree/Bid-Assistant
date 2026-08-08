@@ -194,13 +194,14 @@ def resilient_chat(gateway, **kw) -> Any:
     # 用主模型的构造参数重建成 ResilientChat：直接改 primary 的类不安全（pydantic 校验字段）
     data = {k: v for k, v in primary.__dict__.items() if not k.startswith("_")}
     try:
-        # **打开流式**：langgraph 的执行器调 ainvoke，而 ainvoke 只在
-        # `streaming=True`／显式 stream=／挂了流式回调时才转流式（见 BaseChatModel._should_stream）。
-        # 不开就是一次普通 HTTP 调用，没有 token 流可测——"30 秒不吐字判挂死"这条根本用不上，
-        # 只能干等 20 分钟的总时长盖（2026-08-08：一次挂死等了 36 分钟）。
-        # deepagents 并没有写死非流式，是我们造模型时没开。
-        # stream_usage 一并带上：流式下服务商要显式要求才回 usage，否则 token 用量静默丢失。
-        return ResilientChat(**{**data, "streaming": True, "stream_usage": True,
+        # 流式与否由配置决定（settings.model_content_streaming，默认关）：
+        # 开 = ainvoke 转流式（BaseChatModel._should_stream 认 streaming=True），空闲检测 30 秒发现挂死；
+        # 关 = 普通 HTTP 调用，靠 _capped 的 20 分钟总时长盖兜底。
+        # 默认关的原因（2026-08-08）：打开当天正文三连败（工具参数拼坏/端点 400），全在首次调用，
+        # 同载荷重放四次均通——非确定性，疑为 vLLM 流式工具解析器问题，未钉死前不赌。
+        # stream_usage 跟随流式开关：流式下服务商要显式要求才回 usage，否则 token 用量静默丢失。
+        stream = bool(getattr(getattr(gateway, "s", None), "model_content_streaming", False))
+        return ResilientChat(**{**data, "streaming": stream, "stream_usage": stream,
                                 "fallback": fallback, "fallback_is_self": len(items) < 2})
     except Exception:  # noqa: BLE001 构造失败绝不能连累正文生成——退回无降级的原模型
         logger.warning("构造带降级的模型失败，本次无降级", exc_info=True)

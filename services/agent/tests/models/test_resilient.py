@@ -436,10 +436,18 @@ def test_healthy_non_streaming_call_is_untouched(monkeypatch):
 # 由模型实例说了算（BaseChatModel._should_stream：streaming=True / stream= / 挂流式回调）。
 # 不改 deepagents 一行，打开 streaming 就能用上 30 秒空闲检测，而不是干等 20 分钟总时长盖。
 
-def test_content_model_has_streaming_on():
-    """正文用的模型必须开着流式——关着就没有 token 流，空闲检测形同虚设。"""
+def test_content_streaming_follows_the_config():
+    """正文流式由配置开关决定，**默认关**。
+
+    2026-08-08：打开流式当天正文三连败（工具参数拼坏 ×1、端点 400 ×2），全在首次模型调用，
+    同一载荷重放四次均通——非确定性，疑为 vLLM 流式工具解析器问题。按铁律做成配置而不是猜：
+    默认回到稳定行为（20 分钟总时长盖 + 降级链仍在），端点修复后置 true 启用 30 秒空闲检测。
+    """
+    from types import SimpleNamespace
+
     class _GW:
-        s = None
+        def __init__(self, on: bool):
+            self.s = SimpleNamespace(model_content_streaming=on)
 
         def chain(self):
             return [{"provider": "deepseek", "model": "m"}]
@@ -447,9 +455,11 @@ def test_content_model_has_streaming_on():
         def get_chat(self, **kw):
             return ResilientChat(model="m", api_key="k", base_url="http://x/v1")
 
-    c = resilient_chat(_GW())
-    assert getattr(c, "streaming", False) is True, "正文模型没开流式"
-    assert getattr(c, "stream_usage", False) is True, "流式下不要 usage 会让 token 用量静默丢失"
+    off = resilient_chat(_GW(False))
+    assert getattr(off, "streaming", None) is False, "默认该关——那天就是开着才三连败"
+    on = resilient_chat(_GW(True))
+    assert getattr(on, "streaming", None) is True
+    assert getattr(on, "stream_usage", None) is True, "流式下不要 usage 会让 token 用量静默丢失"
 
 
 def test_ainvoke_actually_reaches_the_timed_stream(monkeypatch):
