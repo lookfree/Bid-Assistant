@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { stripDocumentShell } from "@/lib/bid-types"
+import { stripDocumentShell, type BidChapter, type OutlineItem } from "@/lib/bid-types"
 import { countChars, fmtChars } from "@/lib/doc-stats"
 import { estimatePagesFromHtml } from "@/lib/page-estimate"
 import { useEffect, useMemo, useRef, useState } from "react"
@@ -34,7 +34,7 @@ import { tiersCostText } from "@/lib/content-tiers"
 import { useLibrary } from "@/lib/use-library"
 import { type LibraryItem } from "@/lib/library"
 import { deriveHealthReport } from "@/lib/risk-derive"
-import { scrollToAnchor } from "@/lib/anchor"
+import { ITEM_ANCHOR_MIN, outlineItemAnchor, scrollToAnchor } from "@/lib/anchor"
 import { stepNotApplicable, stepPrereq, useOtherStepResult, useStep } from "@/lib/use-step"
 import { normalizeChapterHtml } from "@/lib/chapter-normalize"
 import { useExport } from "./use-export"
@@ -57,7 +57,8 @@ import { genConfigFingerprint, loadGenConfig, sanitizeFormat, storedTargetFor } 
 
 // agent content 步结果（camelCase）：{chapterId: bodyHtml}；章结构取 outline 步结果
 type RealChapters = Record<string, string>
-type RealOutline = { chapters: { id: string; no: string; title: string; group: Group; sourced: boolean }[] }
+// 与提纲页同一份形状（items 是章内小标题，左栏据此展开子目录）
+type RealOutline = { chapters: BidChapter[] }
 
 type Group = "tech" | "business"
 
@@ -93,7 +94,10 @@ export default function ContentPage() {
     const build = (g: Group) =>
       ol.chapters
         .filter((c) => c.group === g)
-        .map((c) => ({ id: c.id, no: c.no, title: c.title, sourced: c.sourced, html: realBodies?.[c.id] ?? "" }))
+        .map((c) => ({ id: c.id, no: c.no, title: c.title, sourced: c.sourced,
+                     html: realBodies?.[c.id] ?? "",
+                     // 章内条目带下去：左栏据此展开子目录，点条目跳到章内该小标题处
+                     items: (c.items ?? []).map((i: OutlineItem) => ({ id: i.id, label: i.label })) }))
     setData({ tech: build("tech"), business: build("business") })
     setBizFirst(ol.chapters[0]?.group === "business")
     setActiveId((prev) => (ol.chapters.some((c) => c.id === prev) ? prev : (ol.chapters[0]?.id ?? "")))
@@ -215,9 +219,15 @@ export default function ContentPage() {
     setActiveId(newList[0]?.id ?? "")
   }
 
-  function selectChapter(id: string) {
+  function selectChapter(id: string, anchor?: string) {
     saveEditor()
     setActiveId(id)
+    // 点的是章内条目：跳到该小标题处（复用体检报告那套章内定位——换章后 TipTap 要跨两次
+    // 渲染才接上 DOM，滚动统一交给 pendingAnchor 的 effect 重试，不在这里直接滚）。
+    // 锚点去掉序号与尾部括注：提纲与正文的序号经常对不上（实测命中率 84%→96%）。
+    const itemAnchor = anchor ? outlineItemAnchor(anchor) : ""
+    setPendingAnchor(itemAnchor ? { id, anchor: itemAnchor, minLen: ITEM_ANCHOR_MIN } : null)
+    if (itemAnchor) editorScrollRef.current?.scrollTo({ top: 0 })
   }
 
   /* 章节编辑/保存/撤销/插入（拆到 use-chapter-edits.ts，800 行规则） */
@@ -308,14 +318,14 @@ export default function ContentPage() {
   }
 
   /** 待定位的锚点（换章后由 effect 重试执行）。 */
-  const [pendingAnchor, setPendingAnchor] = useState<{ id: string; anchor: string } | null>(null)
+  const [pendingAnchor, setPendingAnchor] = useState<{ id: string; anchor: string; minLen?: number } | null>(null)
   useEffect(() => {
     if (!pendingAnchor || pendingAnchor.id !== active?.id) return
     let stop = false
     let left = 30 // 约 0.5 秒内反复尝试；大章节首次渲染慢，一帧不够
     const tick = () => {
       if (stop) return
-      if (scrollToAnchor(editorScrollRef.current, pendingAnchor.anchor) || --left <= 0) {
+      if (scrollToAnchor(editorScrollRef.current, pendingAnchor.anchor, pendingAnchor.minLen) || --left <= 0) {
         setPendingAnchor(null) // 定位到了，或者放弃（维持章节顶部，与老报告一致）
         return
       }

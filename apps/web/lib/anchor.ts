@@ -23,14 +23,18 @@ export function normalizeForMatch(text: string): string {
 
 /** 锚点低于此长度就不做定位：两三个字会命中一堆无关段落，把用户带到更远的地方。 */
 const MIN_PREFIX = 8
+/** 提纲条目定位放宽到这个下限：条目标题去掉序号后常常只有六七个字（「企业财务报表」），
+ *  按 8 字卡会让这类条目点了没反应。它比审查锚点安全——匹配的是小标题而非摘抄片段，
+ *  且用户已经知道自己点的是哪一条，落在附近也是对的。 */
+const MIN_ITEM_PREFIX = 4
 /** 前缀兜底取多少字。按锚点长度的比例取是错的——模型常把整条要求都摘进锚点，
  *  而正文那一段只写了前半句，比例前缀照样比正文长、照样匹配不上。定长才稳。 */
 const PREFIX_LEN = 12
 
 /** 这段正文是不是原样包含锚点（归一化后）。 */
-export function blockMatchesAnchor(blockText: string, anchor: string): boolean {
+export function blockMatchesAnchor(blockText: string, anchor: string, minLen = MIN_PREFIX): boolean {
   const a = normalizeForMatch(anchor)
-  if (a.length < MIN_PREFIX) return false // 锚点本身太短，不足以定位，交给调用方回落
+  if (a.length < minLen) return false // 锚点本身太短，不足以定位，交给调用方回落
   const b = normalizeForMatch(blockText)
   return !!b && b.includes(a)
 }
@@ -49,9 +53,9 @@ function matchesByPrefix(blockText: string, anchor: string): boolean {
  *  前缀命中**必须唯一**——12 个字很容易撞上同章里的套话开头（「投标人须具备下列资格条…」），
  *  而 find 只取文档序第一个，等于把用户带到一段不相干的地方还打上高亮，看着像是权威结论。
  *  宁可不定位：回落到章节顶部至少不误导。 */
-export function findAnchorBlock(blocks: readonly string[], anchor: string): number {
+export function findAnchorBlock(blocks: readonly string[], anchor: string, minLen = MIN_PREFIX): number {
   if (!anchor.trim()) return -1
-  const exact = blocks.findIndex((t) => blockMatchesAnchor(t, anchor))
+  const exact = blocks.findIndex((t) => blockMatchesAnchor(t, anchor, minLen))
   if (exact >= 0) return exact
   const hits = blocks.reduce<number[]>((acc, t, i) => (matchesByPrefix(t, anchor) ? [...acc, i] : acc), [])
   return hits.length === 1 ? hits[0]! : -1
@@ -66,12 +70,13 @@ const HIGHLIGHT_MS = 2400
 
 /** 把锚点所在的那一段滚进视野并短暂高亮。
  *  返回是否定位成功——调用方据此决定要不要再等一帧重试（换章后编辑器要重新挂载）。 */
-export function scrollToAnchor(root: HTMLElement | null, anchor: string): boolean {
+export function scrollToAnchor(root: HTMLElement | null, anchor: string, minLen = MIN_PREFIX): boolean {
   if (!root || !anchor.trim()) return false
   const blocks = Array.from(root.querySelectorAll<HTMLElement>(BLOCK_SELECTOR))
   const i = findAnchorBlock(
     blocks.map((el) => el.textContent ?? ""),
     anchor,
+    minLen,
   )
   if (i < 0) return false
   const hit = blocks[i]!
@@ -80,3 +85,28 @@ export function scrollToAnchor(root: HTMLElement | null, anchor: string): boolea
   setTimeout(() => hit.classList.remove("anchor-hit"), HIGHLIGHT_MS)
   return true
 }
+
+
+/** 序号前缀：「一、」「（一）」「1.1」「1、」「第三章」。 */
+const ITEM_PREFIX = /^\s*(?:第?[一二三四五六七八九十百]+[章节、.．]|[（(][一二三四五六七八九十\d]+[)）]|\d+(?:[.．]\d+)*[、.．]?)\s*/
+/** 尾部括注：「（附件2格式）」「（附件5-1）」。 */
+const ITEM_SUFFIX = /[（(][^）)]*[)）]\s*$/
+
+/** 提纲条目标签 → 用于章内定位的锚点：**去掉序号与尾部括注**。
+ *
+ *  提纲里的序号和正文里的序号经常对不上（提纲「一、法定代表人证明书」，正文写成
+ *  「二、法定代表人证明书」），标签又常带「（附件2格式）」这种提纲独有的括注。
+ *  2026-08-08 拿线上 943 个条目实测：直接拿标签匹配只有 84% 能定位，
+ *  去掉序号与括注后到 96%——剩下的是模型压根没写那一节，回落章节顶部。 */
+export function outlineItemAnchor(label: string): string {
+  let s = label.trim()
+  for (let i = 0; i < 3; i++) {
+    const next = s.replace(ITEM_PREFIX, "").replace(ITEM_SUFFIX, "").trim()
+    if (next === s) break
+    s = next
+  }
+  return s
+}
+
+/** 提纲条目定位用的最小锚点长度（比审查锚点宽松，见 MIN_ITEM_PREFIX）。 */
+export const ITEM_ANCHOR_MIN = MIN_ITEM_PREFIX

@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useMemo, useRef } from "react"
-import { AlertTriangle, CheckCircle2 } from "lucide-react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { AlertTriangle, CheckCircle2, ChevronRight } from "lucide-react"
 import { countChars, fmtChars } from "@/lib/doc-stats"
 import { estimateChapterLines, pagesFromLines, type ChapterLines } from "@/lib/page-estimate"
 import { genConfigFingerprint, loadGenConfig, sanitizeFormat } from "@/lib/generation-config"
@@ -14,6 +14,9 @@ export type Chapter = {
   sourced: boolean
   /** 已生成的正文 HTML；空字符串表示尚未生成（缺失） */
   html: string
+  /** 提纲里的章内条目（小标题）。正文按**章**生成与保存，条目只是章内的标题——
+   *  列出来是为了能直接跳到"三、营业执照扫描件"这种位置插图，而不是让用户在整章里翻。 */
+  items?: { id: string; label: string }[]
 }
 
 /** 按章缓存字数：父组件每次渲染都会重建 groups 数组（useMemo 依赖失效），但未改动章节的
@@ -43,7 +46,8 @@ export function ChapterNav({
   activeId: string
   generatedCount: number
   total: number
-  onSelect: (id: string) => void
+  /** anchor 非空时跳到章内该小标题处（复用体检报告的章内定位） */
+  onSelect: (id: string, anchor?: string) => void
   /** 全文视图才计封面/目录/签章固定页——技术标/商务标分栏是局部视图,带上会凭空多 2+ 页（评审 F9） */
   fullDoc?: boolean
 }) {
@@ -91,7 +95,7 @@ export function ChapterNav({
               </div>
             )}
             {grp.items.map((ch) => (
-              <ChapterRow key={ch.id} ch={ch} chars={charsOf(ch)} isActive={ch.id === activeId} onSelect={onSelect} />
+                      <ChapterRow key={ch.id} ch={ch} chars={charsOf(ch)} isActive={ch.id === activeId} onSelect={onSelect} />
             ))}
           </div>
         ))}
@@ -110,7 +114,7 @@ function ChapterRow({
   ch: Chapter
   chars: number
   isActive: boolean
-  onSelect: (id: string) => void
+  onSelect: (id: string, anchor?: string) => void
 }) {
   const isMissing = !ch.html.trim()
   // 选中的章滚进可视范围。从体检报告「定位到本章修改」跳过来时，正文和选中态都对了，但目录
@@ -120,7 +124,12 @@ function ChapterRow({
   useEffect(() => {
     if (isActive) ref.current?.scrollIntoView({ block: "nearest" })
   }, [isActive])
+  // 展开态：选中的章默认展开——用户点进一章就是要在里面找位置。
+  const [open, setOpen] = useState(false)
+  const expanded = open || isActive
+  const sub = ch.items ?? []
   return (
+    <>
     <button
       ref={ref}
       onClick={() => onSelect(ch.id)}
@@ -150,6 +159,37 @@ function ChapterRow({
           )}
         </span>
       </span>
+      {sub.length > 0 && (
+        <span
+          role="button"
+          tabIndex={-1}
+          aria-label={expanded ? "收起子目录" : "展开子目录"}
+          onClick={(e) => {
+            e.stopPropagation()      // 只切换展开，不改变当前编辑的章
+            setOpen(!expanded)
+          }}
+          className="mt-0.5 shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted"
+        >
+          <ChevronRight className={`size-3.5 transition-transform ${expanded ? "rotate-90" : ""}`} />
+        </span>
+      )}
     </button>
+    {expanded && sub.length > 0 && (
+      <div className="mb-1 ml-7 border-l border-border pl-2">
+        {sub.map((it) => (
+          <button
+            key={it.id}
+            // 正文按章存，条目不是独立的存储单元——点它是**跳到该章正文里这个小标题处**，
+            // 让用户能直接在"三、营业执照扫描件"下面插图，而不必在整章里翻。
+            onClick={() => onSelect(ch.id, it.label)}
+            className="block w-full truncate rounded-lg px-2 py-1.5 text-left text-[12px] text-muted-foreground hover:bg-muted hover:text-foreground"
+            title={it.label}
+          >
+            {it.label}
+          </button>
+        ))}
+      </div>
+    )}
+    </>
   )
 }
