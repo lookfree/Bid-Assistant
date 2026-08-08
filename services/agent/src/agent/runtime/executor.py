@@ -116,6 +116,13 @@ async def process_run(run_id: str) -> None:
             # 单循环 agent 结果在 node.end.data.result；工作流每步结果在 step.done.data.result。
             if ev["type"] in ("node.end", "step.done") and isinstance(ev.get("data"), dict) and "result" in ev["data"]:
                 result = ev["data"]["result"]
+                # step.done 同时带 artifacts（该步产出的文件 key）。**此前这一段被整个丢掉**：
+                # 述标的 pptx 与逐页预览图 key 只存在于 artifacts 里，App 侧永远收不到——
+                # 2026-08-08 实测预览图确实渲好上传了 MinIO，但前端拿不到，只能回落 CSS 近似预览。
+                # 合进结果里带给 App（形状守卫只看主干字段，多几个键放行）。
+                arts = ev["data"].get("artifacts")
+                if arts and isinstance(result, dict) and result is not arts:
+                    result = {**result, "artifacts": arts}
             await _apublish(r, run_id, ev)  # 全部事件推 SSE
 
         # finish 先行：finish_run 成功后再落 Redis result，避免 finish 抛错时留下"结果在、状态却不是

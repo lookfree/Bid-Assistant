@@ -583,3 +583,71 @@ async def test_run_end_published_even_when_finish_run_raises(monkeypatch):
 
     ends = [e for e in events if e["type"] == "run.end"]
     assert len(ends) == 1 and ends[0]["data"]["status"] == "failed"
+
+
+class _ArtifactAgent:
+    """step.done 同时带 result 与 artifacts（工作流各步的真实形状）。"""
+
+    def __init__(self, result, artifacts):
+        self._r, self._a = result, artifacts
+
+    async def astream(self, input, ctx):
+        yield {"type": "step.done", "node": "present",
+               "data": {"result": self._r, "artifacts": self._a}}
+
+
+class _ResultRecorder:
+    def __init__(self):
+        self.result = None
+
+    def start_run(self, *a, **kw):
+        pass
+
+    def log_event(self, *a, **kw):
+        pass
+
+    def finish_run(self, run_id, **kw):
+        self.result = kw.get("result")
+
+    def usage_summary(self, run_id):
+        return {}
+
+
+async def _run_and_capture(monkeypatch, agent):
+    rec = _ResultRecorder()
+    fake_r = _FakeRedis()
+    fake_r.get = lambda key: '{"agent_type": "bidding_agent", "thread_id": "t"}'
+    monkeypatch.setattr(executor_mod, "get_redis", lambda: fake_r)
+    monkeypatch.setattr(executor_mod, "_rec", lambda: rec)
+    monkeypatch.setattr(executor_mod, "get_agent", lambda agent_type: agent)
+    monkeypatch.setattr(executor_mod.settings, "app_callback_url", None)
+    await process_run("run-artifacts")
+    return rec.result
+
+
+async def test_step_artifacts_reach_the_app(monkeypatch):
+    """**产物 key 必须跟着结果一起上报**。
+
+    2026-08-08 生产实测：述标的逐页预览图确实渲好、也上传了 MinIO，但 executor 只取
+    data["result"]、把 artifacts 整个丢掉，App 永远收不到那些 key——前端只能一直回落到
+    CSS 近似预览，用户看到的与下载的 PPT 对不上。两头都改了，中间这段没接。
+    """
+    result = await _run_and_capture(monkeypatch, _ArtifactAgent(
+        {"slides": [{"id": "s1"}]}, {"pptx": "artifacts/t/present.pptx",
+                                     "previews": ["artifacts/t/preview-01.png"]}))
+    assert result["artifacts"]["previews"] == ["artifacts/t/preview-01.png"]
+    assert result["artifacts"]["pptx"] == "artifacts/t/present.pptx"
+
+
+async def test_result_main_fields_survive_the_merge(monkeypatch):
+    """合并不能盖掉结果本身——App 侧的形状守卫只认主干字段（present 认 slides），
+    盖没了会被判成"这一步没成功"，全额退款、用户白等一场。"""
+    result = await _run_and_capture(monkeypatch, _ArtifactAgent(
+        {"slides": [{"id": "s1"}], "title": "述标"}, {"pptx": "k"}))
+    assert result["slides"] == [{"id": "s1"}] and result["title"] == "述标"
+
+
+async def test_no_artifacts_leaves_the_result_untouched(monkeypatch):
+    """没有产物的步（读标/提纲/审查）结果逐字节不变，不平白多一个空键。"""
+    result = await _run_and_capture(monkeypatch, _ArtifactAgent({"categories": []}, {}))
+    assert result == {"categories": []}
