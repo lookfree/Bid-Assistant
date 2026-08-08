@@ -24,7 +24,7 @@ class _FakeRedis:
     def set(self, k, v, ex=None):
         self.kv[k] = v
 
-    def xadd(self, key, fields):
+    def xadd(self, key, fields, maxlen=None, approximate=True):
         self.streams.append(fields)
 
     def pipeline(self):
@@ -314,3 +314,231 @@ def test_content_node_delegates_to_the_pipeline(monkeypatch):
         {"outline": {"chapters": [{"id": "t1", "no": "一", "title": "x", "group": "tech"}]},
          "read": {}}))
     assert called.get("ran") and out == {"chapters": {"t1": "<p>x</p>"}}
+
+
+class TestTruncationGuard:
+    """输出被长度上限截断（finish_reason=length）绝不当成品：不入库、不进缓存、重试一次。
+    评审 2026-08-08：半章一旦进 24h 缓存,之后每次重试都零成本复读同一个半章。"""
+
+    class _TruncChat(_FakeChat):
+        def __init__(self, trunc_forever=False):
+            super().__init__()
+            self.trunc_forever = trunc_forever
+            self.truncated_once = False
+
+        async def ainvoke(self, msgs, config=None):
+            out = await super().ainvoke(msgs, config)
+            tail = msgs[-1].content.split("请撰写本章")[-1]
+            if "章节1" in tail and (self.trunc_forever or not self.truncated_once):
+                self.truncated_once = True
+                out.response_metadata = {"finish_reason": "length"}
+            return out
+
+    def test_truncated_then_ok_recovers(self, monkeypatch):
+        chat = self._TruncChat()
+        out = _run(_state(2), chat, monkeypatch=monkeypatch)
+        assert "t1" in out and len(out) == 2, "截断一次后重试就该救回来"
+
+    def test_always_truncated_is_missing_and_never_cached(self, monkeypatch):
+        redis = _FakeRedis()
+        chat = self._TruncChat(trunc_forever=True)
+        out = _run(_state(2), chat, redis=redis, monkeypatch=monkeypatch)
+        assert "t1" not in out and "t2" in out
+        cached = [v for v in redis.kv.values() if v]
+        assert len(cached) == 1, "截断稿混进了缓存——之后每次重试都会复读半章"
+
+
+def test_deviation_reaches_structure_ref_marked_chapter(monkeypatch):
+    """靠 structure_ref 识别的偏离章（标题不含「偏离」）也必须拿到条目数据——
+    评审 2026-08-08：造数据认两条判定、发数据只认标题,这类章拿到零条目。"""
+    state = _state(2)
+    state["outline"]["chapters"][0]["title"] = "响应清单"
+    state["outline"]["chapters"][0]["structure_ref"] = "s2"
+    state["read"] = {"required_structure": [{"id": "s2", "title": "商务偏离表"}],
+                     "categories": [{"key": "commercial", "title": "商务", "items": [
+                         {"title": "交付周期", "value": "90天", "star": True, "clause_ids": ["sec-3-c1"]}]}]}
+    chat = _FakeChat()
+    _run(state, chat, monkeypatch=monkeypatch)
+    assert "偏离表指引" in _brief_of(chat, "响应清单")
+    assert "偏离表指引" not in _brief_of(chat, "章节2")
+
+
+def test_template_does_not_overmatch_by_title_substring(monkeypatch):
+    """散文章标题恰好出现在别章模板原文里,不得错收模板——评审 2026-08-08:旧的子串匹配
+    会让「服务承诺」章收到 30k 无关表单并当格式文书来写。"""
+    state = _state(2)
+    state["outline"]["chapters"][0].update({"title": "投标函格式", "structure_ref": "s1",
+                                            "items": [{"id": "i1", "label": "投标函", "clause_ids": ["sec-8-c1"]}]})
+    state["outline"]["chapters"][1]["title"] = "服务承诺"
+    state["read"] = {"required_structure": [{"id": "s1", "title": "投标函", "kind": "form",
+                                             "clause_ids": ["sec-8-c1"]}],
+                     "doc_sections": [{"id": "sec-8-c1", "text": "致招标人：我方郑重作出服务承诺并参加投标"}]}
+    chat = _FakeChat()
+    _run(state, chat, monkeypatch=monkeypatch)
+    assert "招标格式模板" in _brief_of(chat, "投标函格式")
+    assert "招标格式模板" not in _brief_of(chat, "服务承诺"), "标题子串误配——散文章收到了表单模板"
+
+
+def test_cache_survives_rag_reference_jitter(monkeypatch):
+    """检索段是易变的（资料库更新/召回抖动）,**不进缓存键**——否则重试时 20 章键全变,
+    "只补缺章"静默退化成全量重跑（评审 2026-08-08;旧引擎 resume 哈希刻意排除过它）。"""
+    from agent.agents.bidding_agent.nodes import content as content_mod
+
+    ref = {"v": "第一版参考资料"}
+
+    class _Rag:
+        @staticmethod
+        async def rag_enabled(user_id, run_input):
+            return True
+
+        @staticmethod
+        async def build_reference_block(user_id, queries, top_k, tender_thread_id=None):
+            return f"【参考资料】{ref['v']}"
+
+    monkeypatch.setattr(content_mod, "rag_retrieve", _Rag)
+    redis = _FakeRedis()
+    chat1 = _FakeChat()
+    _run(_state(3), chat1, redis=redis, monkeypatch=monkeypatch)
+    assert chat1.calls == 3
+    ref["v"] = "召回抖动后的第二版"
+    chat2 = _FakeChat()
+    out = _run(_state(3), chat2, redis=redis, monkeypatch=monkeypatch)
+    assert chat2.calls == 0, "检索段一抖缓存全失效——续跑等于没做"
+    assert len(out) == 3
+
+
+def test_one_chapter_bad_brief_does_not_kill_the_others(monkeypatch):
+    """单章简报构造抛错只废本章：gather 里一个未捕获异常会取消全部在飞章（评审 2026-08-08）。"""
+    from agent.agents.bidding_agent.nodes import content_pipeline as mod
+
+    orig = mod._chapter_brief
+
+    def _boom(state, ch, shared):
+        if ch.get("id") == "t2":
+            raise ValueError("脏提纲数据")
+        return orig(state, ch, shared)
+
+    monkeypatch.setattr(mod, "_chapter_brief", _boom)
+    out = _run(_state(3), _FakeChat(), monkeypatch=monkeypatch)
+    assert "t2" not in out and len(out) == 2, "一章的脏数据连累了其他章"
+
+
+def test_garbage_outline_items_survive_brief_building(monkeypatch):
+    """脏 items（裸字符串/自引用/数字 children）走类型钳制,照常成章——API 层对 items 零校验。"""
+    state = _state(2)
+    loop: dict = {"id": "x", "label": "自引用"}
+    loop["children"] = [loop]
+    state["outline"]["chapters"][0]["items"] = ["裸字符串", 5, loop, {"id": "a", "label": "1.1 总体", "children": 7}]
+    out = _run(state, _FakeChat(), monkeypatch=monkeypatch)
+    assert len(out) == 2
+
+
+def test_permanent_error_fails_fast_with_root_cause(monkeypatch):
+    """模型未配置/整链鉴权失败是永久性错误：整步立即失败并带出根因,
+    不做逐章 2N 次无意义重试、不给一句笼统的"全部章节生成失败"（评审 2026-08-08）。"""
+    from agent.models.gateway import ModelNotConfigured
+
+    class _DeadChat(_FakeChat):
+        async def ainvoke(self, msgs, config=None):
+            self.calls += 1
+            raise ModelNotConfigured("模型 provider 'x' 未配置 API Key——请在运营后台「模型管理」为该模型配置密钥")
+
+    chat = _DeadChat()
+    with pytest.raises(ModelNotConfigured, match="未配置 API Key"):
+        _run(_state(4), chat, monkeypatch=monkeypatch)
+    assert chat.calls <= 4, f"永久性错误仍被逐章重试了 {chat.calls} 次"
+
+
+class TestBriefRichness:
+    """删规划者时丢掉的"上下文搬运"职责必须补齐（评审 2026-08-08 批次 2）：
+    深层提纲/desc/项目信息/红线/★全量要求都要到写手手里。"""
+
+    def _rich_state(self):
+        state = _state(2)
+        state["outline"]["chapters"][0]["desc"] = "重点写涉密合规"
+        state["outline"]["chapters"][0]["items"] = [
+            {"id": "l2", "label": "一、总体", "children": [
+                {"id": "l3", "label": "1. 架构", "children": [
+                    {"id": "l4", "label": "（1）人员配置", "desc": "给出值班表", "clause_ids": ["sec-9-c3"]}]}]}]
+        state["read"] = {
+            "project_meta": {"purchaser": "海警医院", "project_no": "HF26-0236"},
+            "risk_summary": [{"title": "未按格式盖章将废标", "clause_ids": ["sec-2-c9"]}],
+            "categories": [{"key": "technical", "title": "技术", "items":
+                            [{"title": f"★要求{i}", "value": "必须满足", "star": True, "clause_ids": ["sec-9-c3"]}
+                             for i in range(15)] +
+                            [{"title": f"普通要求{i}", "value": "满足", "star": False, "clause_ids": ["sec-9-c3"]}
+                             for i in range(60)]}],
+        }
+        state["run_input"] = {"target_chars": 100000}
+        return state
+
+    def test_deep_outline_and_desc_reach_the_writer(self, monkeypatch):
+        chat = _FakeChat()
+        _run(self._rich_state(), chat, monkeypatch=monkeypatch)
+        brief = _brief_of(chat, "章节1")
+        assert "（1）人员配置" in brief, "四级子项没到写手——「拆到四级成品只有两级」复发通道"
+        assert "给出值班表" in brief and "重点写涉密合规" in brief, "用户手写 desc 丢了"
+
+    def test_all_star_requirements_survive_the_cap(self, monkeypatch):
+        chat = _FakeChat()
+        _run(self._rich_state(), chat, monkeypatch=monkeypatch)
+        brief = _brief_of(chat, "章节1")
+        assert all(f"★ ★要求{i}" in brief for i in range(15)), "★ 要求被上限静默丢弃"
+        assert "条普通要求未逐条列出" in brief, "普通条目截断必须如实注明"
+
+    def test_project_meta_risk_and_budget_reach_briefs(self, monkeypatch):
+        chat = _FakeChat()
+        _run(self._rich_state(), chat, monkeypatch=monkeypatch)
+        brief = _brief_of(chat, "章节1")
+        assert "海警医院" in brief, "表单章拿不到采购人,只能编或留空"
+        assert "废标" in brief, "读标红线从未影响任何章"
+        assert "本章目标约" in brief and "全书目标约" in brief
+        import re
+        assert not re.search(r"sec-\d+-c\d+", brief), "红线/要求块泄漏了内部条款 id"
+
+
+def test_na_chapter_one_sentence_is_accepted(monkeypatch):
+    """「（本项目不适用）」章按写手规则正文只有一句——不得被 120 字下限判残章再逼重写
+    （评审 2026-08-08：模型两次合规反被记缺章,白烧两次调用）。"""
+
+    class _NaChat(_FakeChat):
+        async def ainvoke(self, msgs, config=None):
+            tail = msgs[-1].content.split("请撰写本章")[-1]
+            if "不适用" in tail:
+                self.calls += 1
+                from langchain_core.messages import AIMessage as _AI
+                return _AI(content="<p>本项目不涉及涉外数据，故本项不适用。</p>")
+            return await super().ainvoke(msgs, config)
+
+    state = _state(2)
+    state["outline"]["chapters"][0]["title"] = "涉外数据合规（本项目不适用）"
+    chat = _NaChat()
+    out = _run(state, chat, monkeypatch=monkeypatch)
+    assert "t1" in out and "不适用" in out["t1"]
+
+
+def test_partial_delivery_tombstones_replace_stale_generation(monkeypatch):
+    """部分交付防混稿（评审 2026-08-08）：缺章写 None 墓碑,合并 reducer 覆掉上一代旧稿,
+    chapters_in_outline 统一滤掉——绝不交付一本新旧提纲混杂的"完整"书。"""
+    import asyncio as _aio
+    from types import SimpleNamespace
+
+    from agent.agents.bidding_agent.nodes import content as content_mod
+    from agent.agents.bidding_agent.nodes import content_pipeline as pmod
+    from agent.agents.bidding_agent.nodes.common import chapters_in_outline
+    from agent.agents.bidding_agent.state import _merge_dict
+
+    async def fake_pipeline(ctx, state):
+        return {"t1": "<p>新一代 t1</p>"}          # t2 两次尝试都失败
+
+    monkeypatch.setattr(pmod, "run_content_pipeline", fake_pipeline)
+    ctx = SimpleNamespace(thread_id="t", run_id="r", redis=None, gateway=None, recorder=None,
+                          agent_type="bidding_agent", user_id=None)
+    outline = {"chapters": [{"id": "t1", "no": "一", "title": "甲", "group": "tech"},
+                            {"id": "t2", "no": "二", "title": "乙", "group": "tech"}]}
+    node_out = _aio.run(content_mod.make_content_node(ctx)({"outline": outline, "read": {}}))
+    assert node_out["chapters"]["t2"] is None, "缺章没打墓碑"
+    merged = _merge_dict({"t1": "<p>旧 t1</p>", "t2": "<p>按旧提纲写的旧 t2</p>"}, node_out["chapters"])
+    assert chapters_in_outline(merged, outline) == {"t1": "<p>新一代 t1</p>"}, \
+        "上一代旧稿混进了本次交付"
+    assert chapters_in_outline({"t1": "x", "t2": None}, {}) == {"t1": "x"}  # 无提纲分支同样滤墓碑

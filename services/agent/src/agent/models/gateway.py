@@ -11,6 +11,11 @@ from agent.models.providers import PROVIDERS, KEY_FIELD, THINKING_DISABLE
 from agent.models.usage import record_llm_usage
 
 
+class ModelNotConfigured(RuntimeError):
+    """后台未配置模型/密钥（铁律：未配置就报错,严禁静默回退）。
+    类型化以便上层按类型识别永久性错误——逐章重试对它毫无意义（评审 2026-08-08）。"""
+
+
 class ModelGateway:
     def __init__(self, settings: Settings) -> None:
         self.s = settings
@@ -71,7 +76,7 @@ class ModelGateway:
         # 内置服务商（KEY_FIELD 名单）必须有显式 key；自建/未知 provider 用占位（端点自己不鉴权）。
         key = api_key or ("sk-noauth" if provider not in KEY_FIELD else None)
         if not key:
-            raise RuntimeError(f"模型 provider '{provider}' 未配置 API Key——请在运营后台「模型管理」为该模型配置密钥")
+            raise ModelNotConfigured(f"模型 provider '{provider}' 未配置 API Key——请在运营后台「模型管理」为该模型配置密钥")
         # max_tokens 与思考关闭参统一走 extra_body（原样透传）。显式 kw > settings；
         # 调用方自带 extra_body 时整体让路（不注入思考/上限，避免覆盖其自定义字段）。
         max_tokens = kw.pop("max_tokens", None)

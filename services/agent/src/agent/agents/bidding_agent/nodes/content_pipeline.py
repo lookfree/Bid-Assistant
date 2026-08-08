@@ -1,4 +1,4 @@
-"""正文代码编排引擎（任务 #84）：编排权从 deepagent 拿回代码，像分段读标那样。
+"""正文代码编排引擎（任务 #84/#85/#86）：编排权从 deepagent 拿回代码，像分段读标那样。
 
 2026-08-08 一个下午没能完整交付一份标书，全部事故同一个根：正文是全流程唯一把编排权
 交给模型的一步——一个长命规划者揣着 5 万 token 连跑几十分钟，20 章清单全凭它的记忆。
@@ -11,7 +11,10 @@
   · 并发用 Semaphore（上限走配置）——不会再自己打满端点；
   · 每章写完即落 Redis 断点（键含提示词版本哈希，改提示词自动失效）——重试只补缺章；
   · 模型调用走 resilient_chat——流式空闲检测/总时长盖/降级链全套白送；
-  · 每章只带自己的定位与要求（复用单章改写那套上下文构造）——不再整轮重发 5 万 token。
+  · 每章简报**只带本章相关**且按章精确投递（偏离表/格式模板/篇幅目标）——不再整轮重发 5 万 token。
+
+2026-08-08 晚评审补强（#86）：简报补齐深层提纲/desc/项目信息/红线/★全量要求（删规划者时
+丢过的搬运职责）；截断稿与永久性错误分而治之；缓存键刻意排除检索段；坏数据只废一章不连累全局。
 """
 from __future__ import annotations
 
@@ -22,19 +25,32 @@ import logging
 import time
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from openai import AuthenticationError
 
 from agent.config import settings
+from agent.models.gateway import ModelNotConfigured
 from agent.models.resilient import resilient_chat
 from agent.models.usage import UsageCallback
 from agent.runtime.progress import publish_event
 
 logger = logging.getLogger(__name__)
 
-# 提示词/上下文构造一变，旧缓存整体作废（与分段读标同一手法）
-_PROMPT_VER = "p1"
+# 提示词/上下文构造一变，旧缓存整体作废（与分段读标同一手法）。p2：#86 简报补强。
+_PROMPT_VER = "p2"
 _CACHE_TTL_S = 24 * 3600
-# 产出下限：短于此视为残章，重试一次；两次都残按缺章记，交给前端「补齐」按钮（免费）
+# 产出下限：短于此视为残章，重试一次；两次都残按缺章记，交给前端「补齐」按钮（免费）。
 _MIN_CHAPTER_CHARS = 120
+# 「（本项目不适用）」章的例外：写手规则明文要求正文只写一句——合规的 ~35 字不能被判残章
+# 再逼着重写（评审 2026-08-08：两次"合规"后反被记缺章,白烧两次调用）。
+_NA_MIN_CHARS = 10
+# 本章招标要求行：★ **全量保留绝不截**；非★ 截断并如实注明。免费改写那套 12 条上限是
+# 成本口径,付费首稿沿用等于静默丢弃第 13 条之后的所有要求含★（评审 2026-08-08）。
+_REQ_NONSTAR_MAX = 48
+_REQ_LINE_CHARS = 240
+
+# 永久性错误：后台未配置模型 / 整条降级链鉴权失败。逐章重试 2N 次毫无意义,还把根因
+# 埋进 warning——直接抛给整步,用户看到真实原因（评审 2026-08-08）。按类型识别,不猜文案。
+_PERMANENT_ERRORS = (ModelNotConfigured, AuthenticationError)
 
 
 def _cache_key(ctx, generation: int, brief: str) -> str:
@@ -80,7 +96,7 @@ async def _log_pg(ctx, event_type: str, data: dict, level: str = "info") -> None
 
 
 class _Progress:
-    """进度出口：与 deepagent 引擎同一事件形状，前端零改动。
+    """进度出口：与旧引擎同一事件形状，前端零改动。
     在代码编排下这些数字**不再靠回调猜**——写完就是写完，几路在写就是几路。"""
 
     def __init__(self, ctx, total: int, titles: dict[str, str]):
@@ -91,20 +107,25 @@ class _Progress:
 
     async def chapter_done(self, cid: str) -> None:
         self.done.append(cid)
+        count = len(self.done)   # 快照：两个 await 之间并发完成会把计数读串（评审 2026-08-08）
+        # 心跳计时口径=距上一章收稿：满载时 in_flight 的 0→1 永不再现,只在这里归零
+        # 才不会显示"本批已 37 分"被读成卡死（评审 2026-08-08,当晚用户问过的正是这个）。
+        self.batch_started = time.monotonic()
         ev = {"type": "progress", "data": {"kind": "chapter", "chapterId": cid,
-              "title": self.titles.get(cid, cid), "done": len(self.done), "total": self.total,
+              "title": self.titles.get(cid, cid), "done": count, "total": self.total,
               "doneIds": list(self.done)}}
         try:
             if self.ctx.redis and self.ctx.run_id:
                 from agent.runtime.channels import progress_stream
                 await asyncio.to_thread(self.ctx.redis.xadd, progress_stream(self.ctx.run_id),
-                                        {"event": json.dumps(ev, ensure_ascii=False)})
+                                        {"event": json.dumps(ev, ensure_ascii=False)},
+                                        maxlen=1000, approximate=True)  # 与 publish_event 同款裁剪
         except Exception:  # noqa: BLE001 进度 best-effort
             logger.warning("chapter progress publish failed", exc_info=True)
         # 同步落 agent_event_log：Redis 进度流 24h 过期，正文步跑了什么必须能事后查
-        # （2026-08-01 空转事故复盘时 PG 里只有一条 run.start——这条审计线删旧引擎时不能丢）。
+        # （2026-08-01 空转事故复盘时 PG 里只有一条 run.start——这条审计线不能丢）。
         await _log_pg(self.ctx, "chapter.done", {"chapterId": cid, "title": self.titles.get(cid, cid),
-                      "done": len(self.done), "total": self.total})
+                      "done": count, "total": self.total})
 
     async def heartbeat(self, interval_s: float = 5.0) -> None:
         from agent.agents.bidding_agent.nodes.content import _heartbeat_label
@@ -116,62 +137,174 @@ class _Progress:
                                 {"kind": "heartbeat", "label": label, "chars": 0})
 
 
-def _chapter_brief(state: dict, ch: dict, shared: dict) -> str:
-    """单章写作简报：定位/小节/相邻章/★要求（复用改写那套） + 按需的偏离表数据/格式模板/篇幅规划。
-    **只带本章相关的**：整轮重发全量上下文正是旧引擎 36:1 输入比的来源。"""
-    from agent.agents.bidding_agent.nodes.content import (
-        _DEVIATION_KEYWORD, _rewrite_context_block)
+def _subtree_lines(items: object, depth: int = 0) -> list[str]:
+    """本章子项整棵子树 → 逐级缩进行（含各级 desc）。提纲最深五级,**每一级都要到写手手里**：
+    删规划者时丢过一版只给顶层 label——"页面拆到四级、成品只有两级"事故的复发通道（评审）。
+    类型钳制+深度封顶：items 内部 API 层零校验,脏数据不炸付费步。"""
+    out: list[str] = []
+    if depth > 4 or not isinstance(items, list):
+        return out
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        label = str(it.get("label") or "").strip()
+        if label:
+            line = "  " * depth + f"- {label}"
+            d = it.get("desc")
+            if isinstance(d, str) and d.strip():
+                line += f"（本节写作要求：{d.strip()}）"
+            out.append(line)
+        out.extend(_subtree_lines(it.get("children"), depth + 1))
+    return out
 
-    parts = [_rewrite_context_block(state, ch.get("id") or "")]
-    if shared.get("length_plan"):
-        parts.append(shared["length_plan"])
-    title = ch.get("title") or ""
-    if shared.get("deviation") and _DEVIATION_KEYWORD in title:
-        parts.append(shared["deviation"])          # 偏离表全量条目只发给偏离表章
-    if shared.get("template") and (f"《{title}》" in shared["template"] or title in shared["template"]):
-        parts.append(shared["template"])           # 招标格式模板只发给被点名的格式章
-    if shared.get(f"ref:{ch.get('id')}"):
-        parts.append(shared[f"ref:{ch.get('id')}"])
-    parts.append(f"请撰写本章（{ch.get('no') or ''} {title}）的完整正文 HTML。")
-    return "\n\n".join(p for p in parts if p)
+
+def _requirements_lines(read: dict, clause_ids: set[str]) -> list[str]:
+    """本章须响应的招标要求：★ 全量在前绝不截,非★ 截断并注明条数。"""
+    if not clause_ids:
+        return []
+    hits: list[tuple[bool, str]] = []
+    for cat in read.get("categories") or []:
+        for it in cat.get("items") or []:
+            if not (set(it.get("clause_ids") or []) & clause_ids):
+                continue
+            star = bool(it.get("star"))
+            value = (it.get("value") or "").strip()
+            text = f"{'★ ' if star else ''}{(it.get('title') or '').strip()}{'：' + value if value else ''}"
+            hits.append((star, text[:_REQ_LINE_CHARS]))
+    stars = [t for s, t in hits if s]
+    rest = [t for s, t in hits if not s]
+    lines = [f"- {t}" for t in stars + rest[:_REQ_NONSTAR_MAX]]
+    if len(rest) > _REQ_NONSTAR_MAX:
+        lines.append(f"-（另有 {len(rest) - _REQ_NONSTAR_MAX} 条普通要求未逐条列出；★ 已全量列出）")
+    return lines
+
+
+def _pipeline_context(state: dict, ch: dict) -> str:
+    """本章写作上下文（付费首稿口径，区别于免费改写 _rewrite_context_block 的瘦身版）：
+    定位 / 章 desc / 整棵子项子树 / 相邻章 / 招标要求（★ 全量）。选包时读标先按包过滤。"""
+    from agent.agents.bidding_agent.nodes.common import filter_read_by_package
+    from agent.agents.bidding_agent.nodes.content import _collect_clause_ids
+
+    outline = state.get("outline") or {}
+    chapters = outline.get("chapters") or []
+    idx = next((i for i, c in enumerate(chapters) if c.get("id") == ch.get("id")), -1)
+    parts = [f"【本章定位】{ch.get('no') or ''} {ch.get('title') or ''}".strip()]
+    desc = ch.get("desc")
+    if isinstance(desc, str) and desc.strip():
+        parts.append(f"本章写作说明（用户填写，须遵循）：{desc.strip()}")
+    tree = _subtree_lines(ch.get("items"))
+    if tree:
+        parts.append("本章结构（逐级对应 <h3>/<h4>/<h5>/<h6>，标题用原文；带写作要求的按其要求写）：\n"
+                     + "\n".join(tree))
+    if idx >= 0:
+        neigh = [chapters[i].get("title") or "" for i in (idx - 1, idx + 1) if 0 <= i < len(chapters)]
+        if any(neigh):
+            parts.append("相邻章节（内容不要与它们重复）：" + "、".join(n for n in neigh if n))
+    read = filter_read_by_package(state.get("read") or {}, state.get("run_input"))
+    reqs = _requirements_lines(read, _collect_clause_ids(ch.get("items")))
+    if reqs:
+        parts.append("本章须响应的招标要求（★ 为不可偏离）：\n" + "\n".join(reqs))
+    return "\n".join(parts)
+
+
+def _chapter_brief(state: dict, ch: dict, shared: dict) -> tuple[str, str]:
+    """单章简报 → (稳定部分, 检索段)。**缓存键只盖稳定部分**：检索段每次跑都可能不一样
+    （资料库更新/召回抖动），进哈希会让"重试只补缺章"静默退化成全量重跑——旧引擎的
+    resume 哈希刻意排除过它,这个不变量删旧路时丢了（评审 2026-08-08）。
+    偏离表/格式模板/篇幅目标都**按章 id 精确投递**,不再靠标题子串猜。"""
+    cid = ch.get("id") or ""
+    parts = [_pipeline_context(state, ch)]
+    if shared.get("project"):
+        parts.append(shared["project"])
+    budgets = shared.get("budgets") or {}
+    if cid in budgets:
+        parts.append(f"【篇幅】本章目标约 {budgets[cid]} 字（硬约束,上限 +10%,表格/表单文字计入；"
+                     f"全书目标约 {shared.get('work_total')} 字——严禁凑字数注水,宁可略欠）。")
+    if shared.get("risk"):
+        parts.append(shared["risk"])
+    if shared.get("deviation") and cid in (shared.get("deviation_ids") or set()):
+        parts.append(shared["deviation"])          # 偏离表条目只发给偏离表章（按 id,含 structure_ref 识别的）
+    tpl = (shared.get("templates") or {}).get(cid)
+    if tpl:
+        parts.append(tpl)                          # 招标格式模板只发给它自己的那一章
+    parts.append(f"请撰写本章（{ch.get('no') or ''} {ch.get('title') or ''}）的完整正文 HTML。")
+    return "\n\n".join(p for p in parts if p), shared.get("ref") or ""
+
+
+def _text_of(out) -> str:
+    """模型输出正文。思考模式下 content 可能是内容块列表——直接当 str 会把 dict repr 当正文。"""
+    c = getattr(out, "content", "")
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in c)
+    return str(c or "")
+
+
+def _finish_reason(out) -> str | None:
+    return (getattr(out, "response_metadata", None) or {}).get("finish_reason")
+
+
+async def _attempt(ctx, chat, msgs: list, sem: asyncio.Semaphore, progress: _Progress):
+    """单次模型调用（限流+进度计数）。返回模型输出;永久性错误向上抛,其余抛给调用方按次记失败。"""
+    cfg = {"callbacks": [UsageCallback(ctx, "content")]}
+    async with sem:
+        progress.in_flight += 1
+        try:
+            return await chat.ainvoke(msgs, config=cfg)
+        finally:
+            progress.in_flight -= 1
 
 
 async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, shared: dict,
                      sem: asyncio.Semaphore, progress: _Progress, generation: int) -> tuple[str, str]:
-    """写一章：断点命中直接用；否则限流下调模型，产出清洗后落缓存。残章重试一次。"""
+    """写一章：断点命中直接用；否则限流下调模型，产出清洗后落缓存。
+    残章/截断稿重试一次（截断稿绝不入库——半章缓存 24h 等于把残稿钉死,评审 2026-08-08）；
+    两次失败 → 记缺章。简报构造/清洗抛错只废本章,绝不连累其他 19 章（gather 无隔离,评审）。"""
     from agent.agents.bidding_agent.render.sanitize import (
         clean_internal_ids, strip_chat_wrapper, strip_document_shell)
 
     cid = ch.get("id") or ""
-    brief = _chapter_brief(state, ch, shared)
-    key = _cache_key(ctx, generation, f"{system_prompt}\n--\n{brief}")
+    try:
+        stable, ref = _chapter_brief(state, ch, shared)
+    except Exception:  # noqa: BLE001 脏提纲数据只废本章
+        logger.exception("章 %s 简报构造失败，记缺章", cid)
+        return cid, ""
+    key = _cache_key(ctx, generation, f"{system_prompt}\n--\n{stable}")
     cached = await _cache_get(ctx, key)
     if cached:
         logger.info("章 %s 断点命中，跳过模型调用", cid)
         await progress.chapter_done(cid)
         return cid, cached
-    msgs = [SystemMessage(content=system_prompt), HumanMessage(content=brief)]
-    cfg = {"callbacks": [UsageCallback(ctx, "content")]}
+    user = stable + (f"\n\n{ref}" if ref else "")
+    msgs = [SystemMessage(content=system_prompt), HumanMessage(content=user)]
+    min_chars = _NA_MIN_CHARS if "不适用" in (ch.get("title") or "") else _MIN_CHAPTER_CHARS
     html = ""
     for attempt in (1, 2):
-        async with sem:
-            progress.in_flight += 1
-            if progress.in_flight == 1:
-                progress.batch_started = time.monotonic()
-            try:
-                out = await chat.ainvoke(msgs, config=cfg)
-            except Exception as e:  # noqa: BLE001 降级链都救不回来的才到这——记缺章，别连累别人
-                logger.warning("章 %s 第 %d 次生成失败：%s", cid, attempt, str(e)[:120])
-                continue
-            finally:
-                progress.in_flight -= 1
-        html = clean_internal_ids(strip_document_shell(strip_chat_wrapper(out.content or "")))
-        if len(html) >= _MIN_CHAPTER_CHARS and "<" in html:
+        try:
+            out = await _attempt(ctx, chat, msgs, sem, progress)
+        except _PERMANENT_ERRORS:
+            raise                    # 配置/鉴权类：整步失败并带出根因,逐章重试毫无意义
+        except Exception as e:  # noqa: BLE001 降级链都救不回来的瞬时失败：记一次,重试
+            logger.warning("章 %s 第 %d 次生成失败：%s", cid, attempt, str(e)[:200])
+            continue
+        if _finish_reason(out) == "length":
+            logger.warning("章 %s 第 %d 次输出被长度上限截断，重试（截断稿不入库）", cid, attempt)
+            msgs = [SystemMessage(content=system_prompt),
+                    HumanMessage(content=user + "\n\n上次输出因超长被截断：请压缩篇幅、确保本章完整收尾。")]
+            html = ""
+            continue
+        try:
+            html = clean_internal_ids(strip_document_shell(strip_chat_wrapper(_text_of(out))))
+        except Exception:  # noqa: BLE001 清洗抛错按残章处理
+            logger.exception("章 %s 产出清洗失败", cid)
+            html = ""
+        if len(html) >= min_chars and "<" in html:
             break
         logger.warning("章 %s 第 %d 次产出过短（%d 字符），重试", cid, attempt, len(html))
         msgs = [SystemMessage(content=system_prompt),
-                HumanMessage(content=brief + "\n\n上次产出过短或为空，请完整撰写本章正文 HTML。")]
-    if len(html) < _MIN_CHAPTER_CHARS or "<" not in html:
+                HumanMessage(content=user + "\n\n上次产出过短或为空，请完整撰写本章正文 HTML。")]
+    if len(html) < min_chars or "<" not in html:
         logger.error("章 %s 两次尝试仍无有效产出，记为缺章", cid)
         return cid, ""
     await _cache_set(ctx, key, html)
@@ -179,12 +312,39 @@ async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, share
     return cid, html
 
 
+def _shared_blocks(state: dict, read: dict, outline: dict, chapters: list[dict]) -> dict:
+    """整轮共享的简报素材（构建一次,按章精确投递）。全部先剥内部条款 id 再出门。"""
+    from agent.agents.bidding_agent.nodes.common import strip_clause_ids
+    from agent.agents.bidding_agent.nodes.content import (
+        _DEVIATION_KEYWORD, _chapter_budget_map, _deviation_items_block,
+        _deviation_structure_ids, _template_entries)
+
+    structure = read.get("required_structure") or []
+    dev_secs = _deviation_structure_ids(structure)
+    # 偏离表章识别与数据投递用**同一个**判定（标题 或 structure_ref）——旧版造数据认两条、
+    # 发数据只认标题,靠 structure_ref 标记的偏离章拿到零条目（评审 2026-08-08）。
+    dev_ids = {c.get("id") for c in chapters
+               if _DEVIATION_KEYWORD in (c.get("title") or "") or c.get("structure_ref") in dev_secs}
+    budgets, work = _chapter_budget_map(state.get("run_input") or {}, outline, read.get("scoring") or [])
+    meta = read.get("project_meta") or {}
+    risks = strip_clause_ids({"items": read.get("risk_summary") or []})["items"]
+    risk_txt = json.dumps(risks, ensure_ascii=False) if risks else ""
+    return {
+        "project": ("【项目信息】（响应函/表单/落款字段据此填写，未知处留（待补充：____））："
+                    + json.dumps(strip_clause_ids(meta), ensure_ascii=False)[:2000]) if meta else "",
+        "risk": ("【读标红线】（涉及本章内容时不得违背）："
+                 + (risk_txt[:3000] + "…（截断）" if len(risk_txt) > 3000 else risk_txt)) if risk_txt else "",
+        "deviation": _deviation_items_block(read) if dev_ids else "",
+        "deviation_ids": dev_ids,
+        "templates": _template_entries(read, outline),
+        "budgets": budgets, "work_total": work,
+    }
+
+
 async def run_content_pipeline(ctx, state: dict) -> dict[str, str]:
     """入口：提纲各章并发（限流）独立生成 → {章id: html}。缺章如实缺（前端有免费补齐）。"""
     from agent.agents.bidding_agent.nodes.common import filter_read_by_package
-    from agent.agents.bidding_agent.nodes.content import (
-        CHAPTER_DRAFT_PROMPT, _content_reference_block, _deviation_items_block,
-        _has_deviation_chapters, _length_plan_block, _template_block)
+    from agent.agents.bidding_agent.nodes.content import CHAPTER_DRAFT_PROMPT, _content_reference_block
     from agent.agents.bidding_agent.prompts.categories import category_scope
 
     outline = state.get("outline") or {}
@@ -196,18 +356,11 @@ async def run_content_pipeline(ctx, state: dict) -> dict[str, str]:
     generation = int(run_input.get("content_generation") or 0)
 
     cats = run_input.get("bid_category") or []
-    system_prompt = CHAPTER_DRAFT_PROMPT + category_scope(cats, "writing")
-    structure = read.get("required_structure") or []
-    shared: dict = {
-        "length_plan": _length_plan_block(run_input, outline, read.get("scoring") or []),
-        "deviation": _deviation_items_block(read) if _has_deviation_chapters(outline, structure) else "",
-        "template": _template_block(read, outline),
-    }
-    # RAG 参考资料整轮取一次（与旧引擎同口径），发给每章
-    ref = await _content_reference_block(ctx, state)
-    if ref:
-        for c in chapters:
-            shared[f"ref:{c['id']}"] = ref
+    # planning 用途的分类知识原挂在规划轮——规划者删除后并入落笔 system（否则零调用方,评审）
+    system_prompt = CHAPTER_DRAFT_PROMPT + category_scope(cats, "writing") + category_scope(cats, "planning")
+    shared = _shared_blocks(state, read, outline, chapters)
+    # RAG 参考资料整轮取一次发给每章；作为易变段**不进缓存键**（见 _chapter_brief）
+    shared["ref"] = await _content_reference_block(ctx, state) or ""
 
     chat = resilient_chat(ctx.gateway, provider=None) if ctx.gateway else None
     sem = asyncio.Semaphore(max(1, int(getattr(settings, "model_content_max_parallel", 5))))
@@ -217,14 +370,18 @@ async def run_content_pipeline(ctx, state: dict) -> dict[str, str]:
     try:
         results = await asyncio.gather(*[
             _write_one(ctx, chat, system_prompt, state, c, shared, sem, progress, generation)
-            for c in chapters])
+            for c in chapters], return_exceptions=True)
     finally:
         hb.cancel()
         await asyncio.gather(hb, return_exceptions=True)
-    out = {cid: html for cid, html in results if html}
+    fatal = next((r for r in results if isinstance(r, BaseException)), None)
+    if fatal is not None:
+        raise fatal                  # 永久性错误：带根因整步失败（失败步自动退款）
+    pairs = [r for r in results if isinstance(r, tuple)]
+    out = {cid: html for cid, html in pairs if html}
     if not out:
         raise RuntimeError("未产出任何章节草稿（全部章节生成失败）")
-    missing = [cid for cid, html in results if not html]
+    missing = [cid for cid, html in pairs if not html]
     if missing:
         logger.error("代码编排收尾仍缺 %d 章：%s（前端可免费补齐）", len(missing), missing)
         # 漏章落 observability 事件（与旧引擎同一事件名，复盘查询口径不变）

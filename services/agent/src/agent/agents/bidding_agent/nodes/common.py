@@ -331,9 +331,11 @@ def chapters_in_outline(chapters: dict, outline: dict) -> dict:
     会一直留在状态里。导出按提纲遍历取稿，天然忽略它们；但另外两处会当真：
       · 审查照单全收地喂给模型 → 对**不会交付的内容**做体检，报出用户在文档里找不到的风险；
       · 计费按结果里所有字符串的字数分档 → 已删掉的章仍计入，可能把用户顶到更高一档。
-    提纲为空（线下标书审查/述标这类没有提纲的项目）→ 原样返回，不做过滤。
+    提纲为空（线下标书审查/述标这类没有提纲的项目）→ 只滤墓碑,不按提纲过滤。
+    None 是缺章墓碑（content 部分交付时用它覆掉上一代旧稿,见 content_node）——
+    对外结果/审查/计费一律当"没有这一章"。
     """
     ids = {c.get("id") for c in (outline or {}).get("chapters", []) if c.get("id")}
     if not ids:
-        return chapters
-    return {k: v for k, v in (chapters or {}).items() if k in ids}
+        return {k: v for k, v in (chapters or {}).items() if v is not None}
+    return {k: v for k, v in (chapters or {}).items() if k in ids and v is not None}

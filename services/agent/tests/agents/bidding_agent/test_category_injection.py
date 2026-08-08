@@ -112,6 +112,8 @@ def test_writing_points_reach_the_chapter_system_prompt(knowledge, monkeypatch):
         "outline": {"chapters": [{"id": "t1", "no": "一", "title": "方案", "group": "tech", "items": []}]},
         "read": {}, "run_input": {"bid_category": ["goods"]}}))
     assert seen and "偏离表逐条对照不得概括" in seen[0]
+    # planning 用途的知识原挂在被删除的规划轮——现并入落笔 system,否则零调用方（评审 2026-08-08）
+    assert "技术参数逐条响应" in seen[0], "planning 用途的分类知识没接上,后台维护它毫无效果"
     assert "报价明细表须含产地与品牌两列" not in seen[0], "章节层面的要点不该塞给落笔层"
 
 

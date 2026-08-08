@@ -8,15 +8,10 @@ import asyncio
 from agent.runtime.registry import RunContext
 
 
-def _budgets_from_block(block: str) -> dict:
-    import re
-    return {m.group(1): int(m.group(2)) for m in re.finditer(r"- (\w+)「[^」]*」目标约 (\d+) 字", block)}
-
-
-def test_length_plan_block_scoring_weighted():
+def test_budget_map_scoring_weighted():
     """spec330 方案3：按招标评分分值加权——高分方案章拿大头，「投标报价」类评分排除（报价章只拿基线），
     无评分章拿基线。评分点经 chapter_id（或 clause_ids 回退）映射到章。"""
-    from agent.agents.bidding_agent.nodes.content import _length_plan_block
+    from agent.agents.bidding_agent.nodes.content import _chapter_budget_map
     outline = {"chapters": [
         {"id": "t1", "title": "项目理解", "group": "tech", "items": [{"clause_ids": ["c1"]}]},
         {"id": "t2", "title": "技术方案", "group": "tech", "items": [{"clause_ids": ["c2"]}]},
@@ -27,26 +22,24 @@ def test_length_plan_block_scoring_weighted():
         {"id": "s2", "category": "技术方案", "name": "理解", "score": 10, "clause_ids": ["c1"]},  # 无 chapter_id → clause 回退到 t1
         {"id": "s3", "category": "投标报价", "name": "报价", "score": 30, "chapter_id": "b1"},   # 报价类排除
     ]
-    budgets = _budgets_from_block(_length_plan_block({"target_chars": 100000}, outline, scoring))
+    budgets, work = _chapter_budget_map({"target_chars": 100000}, outline, scoring)
     assert budgets["t2"] > budgets["t1"] > budgets["b1"]        # 分越高字越多
-    assert budgets["b1"] < budgets["t1"]                        # 报价 30 分被排除,没把 b1 抬起来
     # 总量≈工作目标 71400（=100000÷1.4,独立字面量锚定——用实现公式回算会让系数改错也全绿）
+    assert work == 71400
     assert abs(sum(budgets.values()) - 71400) < 71400 * 0.05
 
 
-def test_length_plan_block_group_weighted_fallback_no_scoring():
+def test_budget_map_group_weighted_fallback_no_scoring():
     """无可用评分信号 → 回退组级加权：技术标组 ~80% / 商务标组 ~20%，组内按子项权重分。"""
-    from agent.agents.bidding_agent.nodes.content import _length_plan_block, _TECH_SHARE
+    from agent.agents.bidding_agent.nodes.content import _chapter_budget_map, _TECH_SHARE
     outline = {"chapters": [
         {"id": "t1", "title": "项目理解", "group": "tech", "items": [{}, {}, {}]},   # tech 权重 4
         {"id": "t2", "title": "实施方案", "group": "tech", "items": [{}] * 7},        # tech 权重 8
         {"id": "b1", "title": "报价说明", "group": "business", "items": []},          # biz 权重 1
         {"id": "b2", "title": "投标函",   "group": "business", "items": [{}]},        # biz 权重 2
     ]}
-    work = 92900  # =130000÷1.4 百字取整;独立字面量锚定校准方向与幅度
-    block = _length_plan_block({"target_chars": 130000}, outline)
-    assert f"全书目标约 {work} 字" in block
-    budgets = _budgets_from_block(block)
+    budgets, work = _chapter_budget_map({"target_chars": 130000}, outline)
+    assert work == 92900  # =130000÷1.4 百字取整;独立字面量锚定校准方向与幅度
     tech_sum, biz_sum = budgets["t1"] + budgets["t2"], budgets["b1"] + budgets["b2"]
     # 组级：技术标 ~80% / 商务标 ~20%（百字取整有小误差）
     assert abs(tech_sum - work * _TECH_SHARE) < work * 0.03
@@ -56,33 +49,30 @@ def test_length_plan_block_group_weighted_fallback_no_scoring():
     # 组内仍按子项权重：t2>t1、b2>b1
     assert budgets["t2"] > budgets["t1"] and budgets["b2"] > budgets["b1"]
     assert abs(sum(budgets.values()) - work) < work * 0.05
-    # 未配置/坏值 → 空串
-    assert _length_plan_block({}, outline) == ""
-    assert _length_plan_block({"target_chars": 0}, outline) == ""
-    assert _length_plan_block({"target_chars": "1万"}, outline) == ""
+    # 未配置/坏值 → 空表
+    assert _chapter_budget_map({}, outline) == ({}, 0)
+    assert _chapter_budget_map({"target_chars": 0}, outline) == ({}, 0)
+    assert _chapter_budget_map({"target_chars": "1万"}, outline) == ({}, 0)
 
 
-def test_length_plan_block_single_group_gets_full_budget():
+def test_budget_map_single_group_gets_full_budget():
     """只有技术标(或只有商务标)时，该组独占全部预算——独立审查等单组场景不被砍到 80%。"""
-    from agent.agents.bidding_agent.nodes.content import _length_plan_block
+    from agent.agents.bidding_agent.nodes.content import _chapter_budget_map
     outline = {"chapters": [
         {"id": "t1", "title": "方案", "group": "tech", "items": [{}, {}]},
         {"id": "t2", "title": "实施", "group": "tech", "items": [{}] * 5},
     ]}
-    budgets = _budgets_from_block(_length_plan_block({"target_chars": 100000}, outline))
+    budgets, _ = _chapter_budget_map({"target_chars": 100000}, outline)
     assert abs(sum(budgets.values()) - 71400) < 71400 * 0.05  # 单组独占全部(校准后口径,字面量锚定)
 
 
-def test_length_plan_block_calibration_configurable():
+def test_budget_map_calibration_configurable():
     """超写校准系数可经 run_input.overshoot_calibration 运营下发覆盖;非法值回落默认并夹域。"""
-    from agent.agents.bidding_agent.nodes.content import _length_plan_block
+    from agent.agents.bidding_agent.nodes.content import _chapter_budget_map
     outline = {"chapters": [{"id": "t1", "title": "方案", "group": "tech", "items": [{}, {}]}]}
-    assert "全书目标约 50000 字" in _length_plan_block(
-        {"target_chars": 100000, "overshoot_calibration": 2.0}, outline)
-    assert "全书目标约 71400 字" in _length_plan_block(
-        {"target_chars": 100000, "overshoot_calibration": "坏值"}, outline)   # 非法 → 默认 1.4
-    assert "全书目标约 33300 字" in _length_plan_block(
-        {"target_chars": 100000, "overshoot_calibration": 99}, outline)      # 越界 → 夹到 3.0
+    assert _chapter_budget_map({"target_chars": 100000, "overshoot_calibration": 2.0}, outline)[1] == 50000
+    assert _chapter_budget_map({"target_chars": 100000, "overshoot_calibration": "坏值"}, outline)[1] == 71400  # 非法 → 默认 1.4
+    assert _chapter_budget_map({"target_chars": 100000, "overshoot_calibration": 99}, outline)[1] == 33300     # 越界 → 夹到 3.0
 
 
 def test_length_telemetry_recorded(caplog):
@@ -189,14 +179,18 @@ def test_heartbeat_label_does_not_pretend_writing_is_sequential():
     assert "6 章同时撰写中" in label and "15 分 05 秒" in label
     assert "第 9/20 章" not in label, "又把并行写成了串行的章序"
     assert "本章已" not in label, "那个计时不是本章耗时，是距上一章完成的时长"
+    # 计时口径必须自我说明：满载时它是"距上一章收稿"——不注明会被读成"这批卡了 37 分"
+    # （评审 2026-08-08,当晚用户问的正是这个）
+    assert "距上一章收稿" in label
     # 计数交给前端拼：心跳再带一遍会显示成"已完成 3/20 章，正文·已完成 3/20 章"（用户截图）
     assert "已完成" not in label
 
-    # in_flight 归零 ≠ 没在干活——批间隙要说清，不然会被读成"没在并行"（用户看着横幅问了两回）
+    # in_flight 归零 ≠ 没在干活——间隙要说清，不然会被读成"没在并行"（用户看着横幅问了两回）。
+    # 但**不得再叙述已删除的规划者**（"规划章节与分派写手"已失实,评审 2026-08-08）
     gap = _heartbeat_label(8, 20, 65)
-    assert "1 分 05 秒" in gap and "第 9" not in gap and "已完成" not in gap
+    assert "1 分 05 秒" in gap and "第 9" not in gap and "已收稿 8 章" in gap
     planning = _heartbeat_label(0, 20, 30)
-    assert "规划" in planning and "分派" in planning
+    assert "简报" in planning and "分派写手" not in planning
 
 
 def test_draft_prompt_carries_length_discipline():
@@ -205,3 +199,17 @@ def test_draft_prompt_carries_length_discipline():
     from agent.agents.bidding_agent.prompts.content import CHAPTER_DRAFT_PROMPT
 
     assert "宁短勿爆" in CHAPTER_DRAFT_PROMPT
+
+
+def test_deviation_block_caps_size_but_never_drops_stars():
+    """偏离表条目段有字符预算（大标书几百条会把偏离章那次调用顶穿上下文）——
+    预算不够时砍普通条目并如实注明,★/▲ 绝不砍（评审 2026-08-08）。"""
+    from agent.agents.bidding_agent.nodes.content import _DEVIATION_BLOCK_CHARS, _deviation_items_block
+
+    read = {"categories": [{"key": "technical", "title": "技术", "items":
+                            [{"title": f"★关键要求{i}", "value": "必须满足" * 10, "star": True} for i in range(40)] +
+                            [{"title": f"普通要求{i}", "value": "满足即可" * 10, "star": False} for i in range(800)]}]}
+    block = _deviation_items_block(read)
+    assert len(block) < _DEVIATION_BLOCK_CHARS * 1.2, "条目段没有预算,超大标书必顶穿上下文"
+    assert all(f"★关键要求{i}" in block for i in range(40)), "★ 条目被预算截掉了"
+    assert "已省略" in block, "截断必须如实注明,不能静默"

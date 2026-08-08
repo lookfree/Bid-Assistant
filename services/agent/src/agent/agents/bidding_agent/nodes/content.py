@@ -64,7 +64,6 @@ def _has_deviation_chapters(outline: dict, structure: list[dict]) -> bool:
 # 招标自带格式章节识别关键词（响应函/投标函/声明函/证明/一览表/简历表/报价表/授权委托等格式类文书）
 _FORM_KEYWORDS = ("格式", "响应函", "投标函", "声明", "承诺函", "证明", "一览表", "简历表", "报价表", "授权", "委托")
 _TEMPLATE_CHAPTER_CHARS = 8000    # 单章模板原文上限（格式类文书通常很短，超限截断保上下文）
-_TEMPLATE_BLOCK_CHARS = 30000     # 整个【招标格式模板】段上限
 
 
 def _is_form_item(s: dict) -> bool:
@@ -77,23 +76,22 @@ def _sec_of(clause_id: str) -> str | None:
     return clause_id.rsplit("-c", 1)[0] if "-c" in clause_id else None
 
 
-def _template_block(read: dict, outline: dict) -> str:
-    """【招标格式模板】：招标文件自带格式（响应函/法代证明/报价一览表/资格声明函等）的章节，
-    从 doc_sections 抠出其原文（按条款所属节整节取），随规划轮下发——投标书必须沿用招标模板，
-    不得自创格式（用户实测反馈：生成的响应函没有用招标给定的格式）。
-    slim_read 裁掉了 doc_sections（防上下文顶穿），这里按需只取格式章节对应的节，篇幅可控。
-    无格式章节/无原文时返回空串（规划消息与今天逐字节一致）。"""
+def _template_entries(read: dict, outline: dict) -> dict[str, str]:
+    """【招标格式模板】按章精确抠取：招标自带格式（响应函/法代证明/报价一览表/声明函等）的章 →
+    其对应原文段（按条款所属节整节取）。返回 {chapter_id: 模板段}，**只发给对应的那一章**——
+    旧的整块下发靠标题子串匹配投递，散文章标题恰好出现在别章模板原文里就会错收几万字无关
+    模板并当成表单来写（评审 2026-08-08）。投标书必须沿用招标模板，不得自创格式。
+    无格式章节/无原文 → 空 dict。"""
     sections = read.get("doc_sections") or []
     if not sections or not outline:
-        return ""
+        return {}
     by_sec: dict[str, list[str]] = {}
     for c in sections:
         sec = _sec_of(c.get("id") or "")
         if sec:
             by_sec.setdefault(sec, []).append(c.get("text") or "")
     form_items = {s.get("id"): s for s in (read.get("required_structure") or []) if _is_form_item(s)}
-    parts: list[str] = []
-    total = 0
+    out: dict[str, str] = {}
     for chapter in outline.get("chapters", []):
         struct = form_items.get(chapter.get("structure_ref"))
         title = chapter.get("title") or ""
@@ -108,16 +106,10 @@ def _template_block(read: dict, outline: dict) -> str:
         if not text:
             continue
         if len(text) > _TEMPLATE_CHAPTER_CHARS:
+            logger.warning("template entry truncated at chapter %s", chapter.get("id"))
             text = text[:_TEMPLATE_CHAPTER_CHARS] + "…（超长截断）"
-        entry = f"— 章「{chapter.get('id')} {title}」对应的招标格式原文：\n{text}"
-        if total + len(entry) > _TEMPLATE_BLOCK_CHARS:
-            logger.warning("template block truncated at chapter %s", chapter.get("id"))
-            break
-        parts.append(entry)
-        total += len(entry)
-    if not parts:
-        return ""
-    return TEMPLATE_GUIDE + "\n" + "\n\n".join(parts)
+        out[chapter.get("id")] = f"{TEMPLATE_GUIDE}\n— 本章「{title}」对应的招标格式原文：\n{text}"
+    return out
 
 
 # 篇幅权重信号（spec330 方案3）：投标里最硬的「重要度」是招标评分办法——分在哪，字就该堆在哪。
@@ -196,13 +188,21 @@ def _group_weighted_budgets(chapters: list[dict], target: int) -> dict[str, int]
     return budgets
 
 
-def _chapter_budgets(chapters: list[dict], target: int, scoring: list[dict] | None) -> list[str]:
-    """各章字数「建议」预算：优先按评分分值加权（分在哪字在哪）；无可用评分信号回退组级+子项权重。
-    百字取整、单章下限 300，原章序输出。总量精确≈target,交主笔按各章实质内容量再微调。"""
+def _chapter_budget_map(run_input: dict, outline: dict,
+                        scoring: list[dict] | None = None) -> tuple[dict[str, int], int]:
+    """各章字数预算表（spec330 方案3,流水线口径）：用户目标 ÷ 超写校准 = 全书工作目标,
+    再按评分分值加权拆到章（「投标报价」类评分排除,无评分信号回退组级+子项权重）。
+    返回 ({chapter_id: 目标字数}, 全书工作目标)；未配置目标返回 ({}, 0)。
+    逐章简报只取**本章那一行**下发——整表下发会把内部章 id（t3/b2）漏给写手（评审 2026-08-08 提出）。"""
+    target = run_input.get("target_chars")
+    chapters = outline.get("chapters") or []
+    if not isinstance(target, int) or target <= 0 or not chapters:
+        return {}, 0
+    work = max(1000, round(target / _calibration(run_input) / 100) * 100)
     score_by_ch = _scores_per_chapter(chapters, scoring or [])
-    budgets = (_scoring_weighted_budgets(chapters, target, score_by_ch)
-               if sum(score_by_ch.values()) > 0 else _group_weighted_budgets(chapters, target))
-    return [f"- {c.get('id')}「{c.get('title', '')}」目标约 {budgets.get(c.get('id'), 300)} 字" for c in chapters]
+    budgets = (_scoring_weighted_budgets(chapters, work, score_by_ch)
+               if sum(score_by_ch.values()) > 0 else _group_weighted_budgets(chapters, work))
+    return budgets, work
 
 
 # 篇幅超写校准（2026-07-28 生产实测):写手对"目标 N 字"系统性超写 ~40%（目标 5.6 万,生成完成时
@@ -221,23 +221,6 @@ def _calibration(run_input: dict) -> float:
     except (TypeError, ValueError):
         return _OVERSHOOT_CALIBRATION
     return min(3.0, max(1.0, v))
-
-
-def _length_plan_block(run_input: dict, outline: dict, scoring: list[dict] | None = None) -> str:
-    """【篇幅规划】（spec330 方案3）：用户选了目标总字数 → 先按超写校准折成工作目标，再按评分分值
-    加权给各章「建议」预算，随规划轮下发；主笔把工作目标视作硬目标。未配置返回空串（行为不变）。"""
-    target = run_input.get("target_chars")
-    chapters = outline.get("chapters") or []
-    if not isinstance(target, int) or target <= 0 or not chapters:
-        return ""
-    work = max(1000, round(target / _calibration(run_input) / 100) * 100)
-    lines = _chapter_budgets(chapters, work, scoring)
-    return ("【篇幅规划】全书目标约 " + f"{work} 字（硬目标,超过 10% 视为不合格）。"
-            "下列各章目标是**按招标评分分值加权的建议**（评分高的方案章多、概述/表单/报价章少）：\n"
-            + "\n".join(lines)
-            + "\n主笔：以此为起点,再结合各章**实质内容量**上下微调（能写实的方案章可加、概述/程序性章减），"
-            "保持各章之和≈全书目标,并把每章目标字数写进子写手指令；写手以目标为准写实写透,"
-            "超过一成必须精简——内容优先,严禁为凑字数堆套话/复读/注水（宁可略欠,绝不掺水）。")
 
 
 def _visible_len(html: str) -> int:
@@ -291,22 +274,36 @@ def _clause_source(read: dict, clause_ids: list | None) -> str:
     return ""
 
 
+# 偏离表条目段字符预算：大标书几百条会把偏离章那一次调用顶穿上下文（评审 2026-08-08——
+# content 是唯一没有 run_with_shrink 保护的调模型节点,400 后重试同一报文必然再 400）。
+_DEVIATION_BLOCK_CHARS = 30000
+
+
 def _deviation_items_block(read: dict) -> str:
-    """技术/商务/资格分类全量条目（title/value/clause_ids/star），供偏离表子写手逐条落表——
-    不动 slim_read 本身，这里另起一段附加给规划轮（spec322）。"""
-    cats = []
+    """技术/商务/资格分类条目（title/value/star/出处），供偏离表章逐条落表（spec322）。
+    条目 ★ 优先排序后按字符预算截断：偏离表最不能丢的是不可偏离项——预算不够时砍普通条目
+    并如实注明,★/▲ 绝不砍。不给 clause_ids（内部键），「出处」给它指向的章节标题——
+    否则模型只能留空或编一个条款号,编造的引用印在偏离表里比空格子更糟。"""
+    cats, total, dropped = [], 0, 0
     for c in (read.get("categories") or []):
         if c.get("key") not in _DEVIATION_CATEGORY_KEYS:
             continue
-        # 不给 clause_ids（内部键），改给它**指向的章节标题**——「招标要求出处」这一列要有
-        # 真东西可填，否则模型只能留空或**编一个条款号**，而编造的引用印在交给评委的偏离表里
-        # 比空格子更糟（2026-08-08 审查提出）。
-        items = [{"title": it.get("title"), "value": it.get("value"), "star": it.get("star", False),
-                  **({"source": src} if (src := _clause_source(read, it.get("clause_ids"))) else {})}
-                 for it in c.get("items", [])]
+        items = []
+        for it in sorted(c.get("items", []), key=lambda x: not x.get("star")):
+            entry = {"title": it.get("title"), "value": it.get("value"), "star": it.get("star", False),
+                     **({"source": src} if (src := _clause_source(read, it.get("clause_ids"))) else {})}
+            size = len(json.dumps(entry, ensure_ascii=False))
+            if total + size > _DEVIATION_BLOCK_CHARS and not entry["star"]:
+                dropped += 1
+                continue
+            total += size
+            items.append(entry)
         cats.append({"key": c.get("key"), "title": c.get("title"), "items": items})
+    if dropped:
+        logger.warning("deviation block dropped %d non-star items over budget", dropped)
+    note = f"（普通条目超出篇幅已省略 {dropped} 条,★/▲ 条目已全量保留）" if dropped else ""
     return (f"{DEVIATION_TABLE_GUIDE}\n"
-            f"技术/商务/资格全量条目（供偏离表逐条落表，不得遗漏 ★/▲）：\n"
+            f"技术/商务/资格条目（供偏离表逐条落表，不得遗漏 ★/▲）{note}：\n"
             f"{json.dumps(cats, ensure_ascii=False)}")
 
 
@@ -336,12 +333,14 @@ def _heartbeat_label(done: int, total: int, elapsed_s: float, in_flight: int = 0
     # 就显示成"已完成 3/20 章，正文·已完成 3/20 章，撰写中"（2026-08-08 用户截图）。
     # done/total 参数保留：前端拿不到 progress 时（首个 chapter.progress 事件之前）作兜底。
     if in_flight > 0:
-        return f"{in_flight} 章同时撰写中（本批已 {m} 分 {s:02d} 秒）"
-    # in_flight 归零 ≠ 没在干活：批与批之间规划者在验收上一批、派下一批。
-    # 干巴巴一句"撰写中"会被读成"没在并行"（2026-08-08 用户看着横幅问了两回），把状态说清。
+        # 计时口径：距上一章收稿多久（chapter_done 时归零）——不是全程累计。
+        # 全程累计会显示"本批已 37 分"被读成卡死（评审 2026-08-08,正是用户当晚问过的那种）。
+        return f"{in_flight} 章同时撰写中（距上一章收稿 {m} 分 {s:02d} 秒）"
+    # in_flight 归零 ≠ 没在干活：断点核对/残章重试的间隙。旧文案"规划章节与分派写手"
+    # 描述的是已删除的规划者,叙事失实（评审 2026-08-08）。
     if done == 0:
-        return f"正在规划章节与分派写手（已 {m} 分 {s:02d} 秒）"
-    return f"上一批已收稿，正在安排下一批（已 {m} 分 {s:02d} 秒）"
+        return f"正在准备各章写作简报（已 {m} 分 {s:02d} 秒）"
+    return f"已收稿 {done} 章，正在核对与收尾（已 {m} 分 {s:02d} 秒）"
 
 
 def make_content_node(ctx):
@@ -352,7 +351,11 @@ def make_content_node(ctx):
         await publish_phase(ctx, "逐章撰写投标正文（代码编排）")
         chapters = await run_content_pipeline(ctx, state)
         await _log_length_telemetry(ctx, state.get("run_input") or {}, chapters)  # 超写系数的校准数据源（评审 F2）
-        return {"chapters": chapters}
+        # 部分交付防混稿（评审 2026-08-08）：缺章写 None 墓碑,让合并 reducer 覆掉上一代旧稿。
+        # 否则重新生成时若 3 章失败,状态里还留着按**旧提纲**写的旧章,交付出一本新旧混杂的
+        # "完整"书且照常计费——墓碑在 chapters_in_outline 统一滤掉,对外就是"缺这一章"。
+        ids = [c.get("id") for c in (state.get("outline") or {}).get("chapters", []) if c.get("id")]
+        return {"chapters": {**{cid: None for cid in ids if cid not in chapters}, **chapters}}
     return content_node
 
 
@@ -372,16 +375,23 @@ _REWRITE_CTX_CAP = 2000   # 上下文块上限：改写是免费功能，不能�
 _REWRITE_REQ_MAX = 12     # 最多列几条招标要求，★ 优先
 
 
-def _collect_clause_ids(nodes: list[dict] | None) -> set[str]:
+def _collect_clause_ids(nodes: object, _depth: int = 0) -> set[str]:
     """递归收集提纲子树上的条款 id。
 
     提纲是五级（节→小节→细分→明细），**每一级都带 clause_ids**；只遍历两层会把四、五级
     的招标依据整片丢掉，而恰恰是拆得最细的那些节点才有明确条款。
-    章本身没有 clause_ids 字段（见 schemas.OutlineChapter），所以只从 items 往下走。"""
+    章本身没有 clause_ids 字段（见 schemas.OutlineChapter），所以只从 items 往下走。
+    类型钳制 + 深度封顶与 _iter_items 同款：items 内部在 API 层零校验，脏 children
+    （裸字符串/自引用）不得把付费 content 步炸在简报构造（评审 2026-08-08 提出）。"""
     out: set[str] = set()
-    for n in nodes or []:
-        out |= set(n.get("clause_ids") or [])
-        out |= _collect_clause_ids(n.get("children"))
+    if _depth > 8 or not isinstance(nodes, list):
+        return out
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        ids = n.get("clause_ids")
+        out |= set(ids) if isinstance(ids, list) else set()
+        out |= _collect_clause_ids(n.get("children"), _depth + 1)
     return out
 
 
