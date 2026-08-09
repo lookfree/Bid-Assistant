@@ -70,6 +70,7 @@ _PERFORMANCE_RE = re.compile(r"业绩|案例|经验|项目经历")
 _LIBRARY_REF_BLOCK_CHARS = 3000
 
 
+
 def _cache_key(ctx, generation: int, brief: str) -> str:
     digest = hashlib.sha256(brief.encode("utf-8")).hexdigest()[:16]
     return f"{settings.redis_prefix}chapter:{ctx.thread_id}:g{generation}:{_PROMPT_VER}:{digest}"
@@ -291,8 +292,13 @@ def _chapter_brief(state: dict, ch: dict, shared: dict) -> tuple[str, str]:
         parts.append(shared["project"])
     budgets = shared.get("budgets") or {}
     if cid in budgets:
-        parts.append(f"【篇幅】本章目标约 {budgets[cid]} 字（硬约束,上限 +10%,表格/表单文字计入；"
-                     f"全书目标约 {shared.get('work_total')} 字——严禁凑字数注水,宁可略欠）。")
+        # 双边带（2026-08-09 实测)：只给上限 +「宁可略欠」，写手实测 produced/work=0.675——
+        # 那句措辞被当成了减产许可。下限必须和上限一样硬，同时把"怎么补足"写死成实质内容,
+        # 否则补篇幅会变成灌套话（反套话规则在 system 里，这里只给方向）。
+        parts.append(f"【篇幅】本章目标约 {budgets[cid]} 字（硬约束**双边带**：产出不得低于目标的 90%、"
+                     f"也不得高于目标的 +10%,表格/表单文字计入字数；全书目标约 {shared.get('work_total')} 字）。"
+                     "篇幅不足时用实质内容补足——方案细化/实施步骤/质量与安全措施/具体参数与数据；"
+                     "严禁堆套话、复读已写段落或注水凑字数。")
     if shared.get("risk"):
         parts.append(shared["risk"])
     if shared.get("deviation") and cid in (shared.get("deviation_ids") or set()):

@@ -205,13 +205,16 @@ def _chapter_budget_map(run_input: dict, outline: dict,
     return budgets, work
 
 
-# 篇幅超写校准（2026-07-28 生产实测):写手对"目标 N 字"系统性超写 ~40%（目标 5.6 万,生成完成时
-# 产出 ~7.9 万;完整校准记录见 apps/web/lib/page-estimate.ts 文件头)。下发的工作目标 = 用户目标 ÷
-# 本系数,超写回弹后恰落在用户目标附近。注意（评审提示):1.4 是在旧"±20% 写足"提示词下量的,本次
-# 同时把写手上限收紧到 +10%——若新提示词真管住超写会变成系统性偏欠,盯导出 pdf_pages 回报双向调。
+# 篇幅超写校准:下发的工作目标 = 用户目标 ÷ 本系数。
+# 1.4 是 2026-07-28 在**旧引擎 + 旧"±20% 写足"提示词**下量的（那时写手系统性超写 ~40%,
+# 目标 5.6 万实际产出 ~7.9 万;记录见 apps/web/lib/page-estimate.ts 文件头）。
+# 2026-08-09 生产实测（230 遥测):新流水线提示词已把写手钉在「上限 +10%」,超写整个消失,
+# produced/work≈0.68~1.0——÷1.4 于是从"抵消超写"退化成纯打折,与写手自身的偏欠相乘,
+# 用户选 5.1 万字只拿到 48%。本次同时把【篇幅】行改成**双边带**（下限 90%/上限 +10%）
+# 并给短章加了一轮扩写兜底,校准就该回归中性,不再替提示词背书。
 # 运营可经 run_input.overshoot_calibration 覆盖（App 从 billing_configs 的
-# generation.overshoot_calibration 读出下发),不必发版;本常量只是未配置时的默认。
-_OVERSHOOT_CALIBRATION = 1.4
+# generation.overshoot_calibration 读出下发),不必发版——该通道原样保留;本常量只是未配置时的默认。
+_OVERSHOOT_CALIBRATION = 1.0
 
 
 def _calibration(run_input: dict) -> float:

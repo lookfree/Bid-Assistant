@@ -24,9 +24,11 @@ def test_budget_map_scoring_weighted():
     ]
     budgets, work = _chapter_budget_map({"target_chars": 100000}, outline, scoring)
     assert budgets["t2"] > budgets["t1"] > budgets["b1"]        # 分越高字越多
-    # 总量≈工作目标 71400（=100000÷1.4,独立字面量锚定——用实现公式回算会让系数改错也全绿）
-    assert work == 71400
-    assert abs(sum(budgets.values()) - 71400) < 71400 * 0.05
+    # 总量≈工作目标 100000（校准 1.0 后工作目标就是用户目标；独立字面量锚定——用实现公式
+    # 回算会让系数改错也全绿。1.4 是旧引擎旧提示词的超写校准，2026-08-09 实测超写已不存在，
+    # ÷1.4 变成纯打折：用户选 5.1 万字只拿到 48%）
+    assert work == 100000
+    assert abs(sum(budgets.values()) - 100000) < 100000 * 0.05
 
 
 def test_budget_map_group_weighted_fallback_no_scoring():
@@ -39,7 +41,7 @@ def test_budget_map_group_weighted_fallback_no_scoring():
         {"id": "b2", "title": "投标函",   "group": "business", "items": [{}]},        # biz 权重 2
     ]}
     budgets, work = _chapter_budget_map({"target_chars": 130000}, outline)
-    assert work == 92900  # =130000÷1.4 百字取整;独立字面量锚定校准方向与幅度
+    assert work == 130000  # 校准 1.0：工作目标=用户目标;独立字面量锚定校准方向与幅度
     tech_sum, biz_sum = budgets["t1"] + budgets["t2"], budgets["b1"] + budgets["b2"]
     # 组级：技术标 ~80% / 商务标 ~20%（百字取整有小误差）
     assert abs(tech_sum - work * _TECH_SHARE) < work * 0.03
@@ -63,7 +65,7 @@ def test_budget_map_single_group_gets_full_budget():
         {"id": "t2", "title": "实施", "group": "tech", "items": [{}] * 5},
     ]}
     budgets, _ = _chapter_budget_map({"target_chars": 100000}, outline)
-    assert abs(sum(budgets.values()) - 71400) < 71400 * 0.05  # 单组独占全部(校准后口径,字面量锚定)
+    assert abs(sum(budgets.values()) - 100000) < 100000 * 0.05  # 单组独占全部(校准后口径,字面量锚定)
 
 
 def test_budget_map_calibration_configurable():
@@ -71,8 +73,8 @@ def test_budget_map_calibration_configurable():
     from agent.agents.bidding_agent.nodes.content import _chapter_budget_map
     outline = {"chapters": [{"id": "t1", "title": "方案", "group": "tech", "items": [{}, {}]}]}
     assert _chapter_budget_map({"target_chars": 100000, "overshoot_calibration": 2.0}, outline)[1] == 50000
-    assert _chapter_budget_map({"target_chars": 100000, "overshoot_calibration": "坏值"}, outline)[1] == 71400  # 非法 → 默认 1.4
-    assert _chapter_budget_map({"target_chars": 100000, "overshoot_calibration": 99}, outline)[1] == 33300     # 越界 → 夹到 3.0
+    assert _chapter_budget_map({"target_chars": 100000, "overshoot_calibration": "坏值"}, outline)[1] == 100000  # 非法 → 默认 1.0
+    assert _chapter_budget_map({"target_chars": 100000, "overshoot_calibration": 99}, outline)[1] == 33300      # 越界 → 夹到 3.0
 
 
 def test_length_telemetry_recorded(caplog):
@@ -95,10 +97,10 @@ def test_length_telemetry_recorded(caplog):
     asyncio.run(_log_length_telemetry(ctx, {"target_chars": 100000}, chapters))
     assert len(ctx.recorder.events) == 1
     run_id, event_type, data = ctx.recorder.events[0]
-    # target=100000 work=71400(÷1.4) produced=71400 → produced/work=1.00
+    # target=100000 work=100000(校准 1.0) produced=71400 → produced/work=0.714
     assert (run_id, event_type) == ("r1", "length_telemetry")
-    assert data == {"target": 100000, "work": 71400, "produced": 71400,
-                    "produced_over_work": 1.0, "produced_over_target": 0.714}
+    assert data == {"target": 100000, "work": 100000, "produced": 71400,
+                    "produced_over_work": 0.714, "produced_over_target": 0.714}
     asyncio.run(_log_length_telemetry(ctx, {}, chapters))  # 未配置目标 → 静默
     assert len(ctx.recorder.events) == 1
 
@@ -195,10 +197,16 @@ def test_heartbeat_label_does_not_pretend_writing_is_sequential():
 
 def test_draft_prompt_carries_length_discipline():
     """字数纪律必须写进落笔层提示词（实测：一章写爆 32768 上限被截断，返工后只剩几百字残稿）。
-    流水线引擎的落笔提示词就是 CHAPTER_DRAFT_PROMPT——它丢了「宁短勿爆」，写爆就会复发。"""
+    流水线引擎的落笔提示词就是 CHAPTER_DRAFT_PROMPT——它丢了「宁短勿爆」，写爆就会复发。
+
+    但纪律是**双边**的（2026-08-09 实测）：这份 system 提示词原来写着「宁可略欠」，
+    与简报里的下限自相矛盾，写手照它减产（produced/work=0.675，用户选 5.1 万字只拿到 48%）。
+    上限（宁短勿爆，防截断）与下限（不得低于 90%）必须同时在场。"""
     from agent.agents.bidding_agent.prompts.content import CHAPTER_DRAFT_PROMPT
 
     assert "宁短勿爆" in CHAPTER_DRAFT_PROMPT
+    assert "不得低于目标的 90%" in CHAPTER_DRAFT_PROMPT, "只有上限没有下限——写手照旧欠三成"
+    assert "宁可略欠" not in CHAPTER_DRAFT_PROMPT, "减产许可还在 system 里，简报的下限被它顶掉"
 
 
 def test_deviation_block_caps_size_but_never_drops_stars():
