@@ -374,6 +374,37 @@ async function resultForUser(step: string, result: unknown, _userId: string): Pr
   return resultToClient(step, result)
 }
 
+/** 各分册最近一次成功导出的时刻（终审 C1：下载区过期判定的数据源）。
+ *  为什么不能只看「result 是否含某册的 docx 键」：agent 侧 artifacts 通道是跨 run 合并 reducer
+ *  （present 的 pptx 与 export 的 docx 并存不覆盖，见 nodes/export.py），docx/docx_tech/docx_biz
+ *  一旦产出，键值永远不变（MinIO key 按 thread_id 确定性命名、原地覆盖，不同册各自导出互不清空
+ *  对方的键）——先导全量、改稿、再单独导技术册，技术册那行 result 里全量的 docx 键依然原样健在，
+ *  按「键是否存在」找「最近一行」会把技术册那次的时间戳错记成全量的导出时刻，过期判定形同虚设
+ *  （复现了本要修的 bug）。exported_at{_tech/_biz} 是每次本册真渲染才刷新的字段，未改动的册原样
+ *  带着旧值——只需最新一行（合并语义下已含所有历史键的最新值，无需回溯多行）。
+ *  老数据（本次修复上线前的导出行）没有该标记：退化为按 docx 键是否存在、用这一行自己的 createdAt
+ *  记账——项目升级后第一次新导出即被精确值覆盖，只有过渡期一次性的近似窗口。
+ *  result 列可达 MB 级：只投影计算表达式（存在性/取值），不选整列。 */
+async function exportVolumes(projectId: string): Promise<{ full: string | null; tech: string | null; biz: string | null }> {
+  const [row] = await getDb()
+    .select({
+      createdAt: projectSteps.createdAt,
+      fullAt: sql<string | null>`${projectSteps.result} ->> 'exported_at'`,
+      techAt: sql<string | null>`${projectSteps.result} ->> 'exported_at_tech'`,
+      bizAt: sql<string | null>`${projectSteps.result} ->> 'exported_at_biz'`,
+      hasFull: sql<boolean>`${projectSteps.result} -> 'docx' is not null`,
+      hasTech: sql<boolean>`${projectSteps.result} -> 'docx_tech' is not null`,
+      hasBiz: sql<boolean>`${projectSteps.result} -> 'docx_biz' is not null`,
+    })
+    .from(projectSteps)
+    .where(and(eq(projectSteps.projectId, projectId), eq(projectSteps.step, "export"), eq(projectSteps.status, "done")))
+    .orderBy(desc(projectSteps.createdAt))
+    .limit(1)
+  if (!row) return { full: null, tech: null, biz: null }
+  const at = (marker: string | null, has: boolean) => marker ?? (has ? row.createdAt.toISOString() : null)
+  return { full: at(row.fullAt, row.hasFull), tech: at(row.techAt, row.hasTech), biz: at(row.bizAt, row.hasBiz) }
+}
+
 export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
   const preDeduct = deps.preDeduct ?? billing.preDeduct
   const settle = deps.settle ?? billing.settle
@@ -1206,7 +1237,11 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const p = await ownedProject(id, c.get("user").id)
     if (!p) return c.json({ error: "not_found" }, 404)
     const credentials = (await credentialsRunInput(c.get("user").id)) ?? []
-    return c.json({ credentials: credentials.map((x) => ({ title: x.title, imageCount: x.images.length })) })
+    return c.json({
+      credentials: credentials.map((x) => ({ title: x.title, imageCount: x.images.length })),
+      volumes: await exportVolumes(p.id),
+      content_changed_at: p.contentChangedAt ? p.contentChangedAt.toISOString() : null,
+    })
   })
 
   // 产物下载：present/export 步的 result.artifacts[kind]（spec201 step.done 带 artifacts 合并快照），
