@@ -15,15 +15,52 @@ const inputCls =
 type EditorForm = { title: string; meta: string; expiry: string; body: string; tags: string }
 
 /**
+ * 人员/业绩类的预置字段标签（用户反馈：占位提示"张三 · 项目经理"逼用户把多项信息塞一个框，
+ * 应该一项一个输入框）。键与 fields[].label 一一对应；其余类目不适用，维持现状零变化。
+ */
+const PRESET_FIELD_LABELS: Partial<Record<LibraryCategoryId, string[]>> = {
+  personnel: ["职称", "从业年限", "持有证书", "拟任岗位"],
+  performance: ["业主单位", "合同金额", "完成时间", "项目角色"],
+}
+
+/** 标题框标签随类目切换：人员类填的是姓名，业绩类填的是项目名称；其余类目维持通用的"名称"。 */
+const TITLE_LABELS: Partial<Record<LibraryCategoryId, string>> = {
+  personnel: "姓名",
+  performance: "项目名称",
+}
+
+/** 预置字段输入态：{ 标签: 输入值 }，值为空即视为未填。 */
+type PresetFieldValues = Record<string, string>
+
+/**
+ * 预置输入框的值 → fields[]（label/value 空值不存）；历史 fields 里不属于本类目预置标签的
+ * 条目原样保留在预置字段之后，不因为本次改动而丢失（用户可能经由别的渠道写过这些标签）。
+ */
+function buildPresetFields(
+  labels: string[],
+  values: PresetFieldValues,
+  existing: { label: string; value: string }[],
+): { label: string; value: string }[] {
+  const preset = labels
+    .map((label) => ({ label, value: (values[label] ?? "").trim() }))
+    .filter((f) => f.value)
+  const other = existing.filter((f) => !labels.includes(f.label))
+  return [...preset, ...other]
+}
+
+/**
  * 表单 → 保存入参序列化。
  * 编辑（PUT）契约为「缺键=不改，null=清空」：可空字段一律显式发值或 null，绝不发 undefined 丢键
- * （否则清空不生效）；新建（POST）保持只发有值字段。fields 编辑器不维护，编辑时原样回传。
+ * （否则清空不生效）；新建（POST）保持只发有值字段。
+ * fields：人员/业绩类由预置输入框维护（见 PRESET_FIELD_LABELS）；其余类目没有 fields 编辑器，
+ * 编辑时原样回传、新建时不带该键——契约不变。
  */
-function buildEntryInput(
+export function buildEntryInput(
   catId: LibraryCategoryId,
   item: LibraryEntry | null,
   form: EditorForm,
   attachments: LibraryAttachment[],
+  presetFields: PresetFieldValues,
 ): LibraryEntryInput {
   const title = form.title.trim()
   const meta = form.meta.trim()
@@ -33,6 +70,8 @@ function buildEntryInput(
     .split(/[、,，]/)
     .map((t) => t.trim())
     .filter(Boolean)
+  const presetLabels = PRESET_FIELD_LABELS[catId]
+  const fields = presetLabels ? buildPresetFields(presetLabels, presetFields, item?.fields ?? []) : null
   if (!item) {
     return {
       category: catId,
@@ -42,6 +81,7 @@ function buildEntryInput(
       ...(body ? { body } : {}),
       ...(tags.length ? { tags } : {}),
       ...(attachments.length ? { attachments } : {}),
+      ...(fields && fields.length ? { fields } : {}),
     }
   }
   return {
@@ -52,7 +92,7 @@ function buildEntryInput(
     body: body || null,
     tags: tags.length ? tags : null,
     attachments: attachments.length ? attachments : null,
-    fields: item.fields ?? null,
+    fields: presetLabels ? (fields && fields.length ? fields : null) : (item.fields ?? null),
   }
 }
 
@@ -77,6 +117,16 @@ export function ItemEditor({
     body: item?.body ?? "",
     tags: (item?.tags ?? []).join("、"),
   })
+  // 预置字段（人员/业绩类）：已存 fields 里命中预置标签的值回填到对应输入框
+  const [presetFields, setPresetFields] = useState<PresetFieldValues>(() => {
+    const labels = PRESET_FIELD_LABELS[catId]
+    if (!labels) return {}
+    const values: PresetFieldValues = {}
+    for (const f of item?.fields ?? []) {
+      if (labels.includes(f.label)) values[f.label] = f.value
+    }
+    return values
+  })
   const [attachments, setAttachments] = useState<LibraryAttachment[]>(item?.attachments ?? [])
   const [uploading, setUploading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -88,7 +138,7 @@ export function ItemEditor({
     setSaving(true)
     setError(null)
     try {
-      await onSave(buildEntryInput(catId, item, form, attachments), item?.id)
+      await onSave(buildEntryInput(catId, item, form, attachments, presetFields), item?.id)
     } catch {
       setError("保存失败，请重试")
       setSaving(false)
@@ -107,7 +157,7 @@ export function ItemEditor({
         </div>
 
         <div className="flex-1 overflow-y-auto p-5">
-          <EditorFields catId={catId} form={form} setField={setField} />
+          <EditorFields catId={catId} form={form} setField={setField} presetFields={presetFields} setPresetFields={setPresetFields} />
           <label className="mt-4 block text-xs font-medium text-foreground">附件</label>
           <AttachmentsField
             attachments={attachments}
@@ -136,30 +186,55 @@ export function ItemEditor({
   )
 }
 
-/* 分类各自的输入提示（用户反馈：全分类共用资质示例,在案例/人员里非常突兀混乱） */
+/* 分类各自的输入提示（用户反馈：全分类共用资质示例,在案例/人员里非常突兀混乱）。
+   meta 占位文案统一带上"将写入标书"：这里填的不是无关备注，是会被读进生成结果的内容
+   （人员/业绩类经结构化通道直发 agent；其余类目随条目参与检索与人工插入）。
+   personnel/performance 的 meta 示例已改：职称/从业年限/持证书/合同金额等挪去下方预置输入框，
+   不再让 meta 和预置字段抢同一份信息。 */
 const FIELD_HINTS: Record<LibraryCategoryId, { title: string; meta: string; tags: string }> = {
-  qualification: { title: "如：ISO27001 信息安全管理体系认证", meta: "如：认证机构、证书编号", tags: "如：信息安全、体系认证" },
-  performance: { title: "如：某市政务云运维服务项目（2025）", meta: "如：客户名称、合同金额、验收时间", tags: "如：政务、千万级" },
-  personnel: { title: "如：张三 · 项目经理", meta: "如：职称、从业年限、持有证书", tags: "如：PMP、高级工程师" },
-  finance: { title: "如：2025 年度审计报告", meta: "如：出具机构、覆盖年度", tags: "如：审计、纳税" },
-  text: { title: "如：公司简介（标准版）", meta: "如：适用场景、更新时间", tags: "如：简介、售后承诺" },
-  presentation: { title: "如：企业介绍 PPT 母版", meta: "如：适用场景、页数", tags: "如：述标、母版" },
+  qualification: { title: "如：ISO27001 信息安全管理体系认证", meta: "如：认证机构、证书编号（将写入标书）", tags: "如：信息安全、体系认证" },
+  performance: { title: "如：某市政务云运维服务项目（2025）", meta: "如：项目简介、亮点（将写入标书）", tags: "如：政务、千万级" },
+  personnel: { title: "如：张三", meta: "如：其他补充说明（将写入标书）", tags: "如：PMP、高级工程师" },
+  finance: { title: "如：2025 年度审计报告", meta: "如：出具机构、覆盖年度（将写入标书）", tags: "如：审计、纳税" },
+  text: { title: "如：公司简介（标准版）", meta: "如：适用场景、更新时间（将写入标书）", tags: "如：简介、售后承诺" },
+  presentation: { title: "如：企业介绍 PPT 母版", meta: "如：适用场景、页数（将写入标书）", tags: "如：述标、母版" },
 }
 
-/* 文本字段区：名称 / 说明 / 有效期（资质类）/ 模板正文（文本类）/ 标签 */
+/* 文本字段区：名称（人员/业绩类换成姓名/项目名称）/ 预置字段（人员/业绩类）/ 说明 / 有效期
+   （资质类）/ 模板正文（文本类）/ 标签 */
 function EditorFields({
   catId,
   form,
   setField,
+  presetFields,
+  setPresetFields,
 }: {
   catId: LibraryCategoryId
   form: EditorForm
   setField: (key: keyof EditorForm) => (value: string) => void
+  presetFields: PresetFieldValues
+  setPresetFields: React.Dispatch<React.SetStateAction<PresetFieldValues>>
 }) {
+  const presetLabels = PRESET_FIELD_LABELS[catId]
   return (
     <>
-      <label className="block text-xs font-medium text-foreground">名称</label>
+      <label className="block text-xs font-medium text-foreground">{TITLE_LABELS[catId] ?? "名称"}</label>
       <input value={form.title} onChange={(e) => setField("title")(e.target.value)} placeholder={FIELD_HINTS[catId].title} className={inputCls} />
+
+      {presetLabels && (
+        <div className="mt-4 grid grid-cols-2 gap-3">
+          {presetLabels.map((label) => (
+            <div key={label}>
+              <label className="block text-xs font-medium text-foreground">{label}</label>
+              <input
+                value={presetFields[label] ?? ""}
+                onChange={(e) => setPresetFields((f) => ({ ...f, [label]: e.target.value }))}
+                className={inputCls}
+              />
+            </div>
+          ))}
+        </div>
+      )}
 
       <label className="mt-4 block text-xs font-medium text-foreground">说明 / 副信息</label>
       <input value={form.meta} onChange={(e) => setField("meta")(e.target.value)} placeholder={FIELD_HINTS[catId].meta} className={inputCls} />
