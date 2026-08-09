@@ -9,9 +9,11 @@ import { uniquePhone, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB
 
-// Task 3：export 步 run_input.export_scope 透传（scope==="tech" 时数据层不下发 credentials，
-// 暗标风险——技术册不带资质附录）+ GET /:id/export-preview 预告接口（资质条目 title+imageCount，
-// 他人项目 404）。上游 agent 侧 export_scope 消费见 Task 2；这里只测 App API 这一层的组装与预告。
+// Task 3：export 步 run_input.export_scope 透传 + GET /:id/export-preview 预告接口
+// （资质条目 title+imageCount，他人项目 404）。上游 agent 侧 export_scope 消费见 Task 2；
+// 这里只测 App API 这一层的组装与预告。
+// 2026-08-09 附录系统章节 Task 1：credentials 下发时机从 export 步改到 content 步——
+// export 步 run_input 不再带 credentials 键（与 scope 取值无关），相关断言随之退役。
 
 let tokenA = ""
 let userA = ""
@@ -62,9 +64,6 @@ app.route("/api/projects", projectRoutes(mockDeps))
 
 const auth = (token: string) => ({ Authorization: `Bearer ${token}`, "content-type": "application/json" })
 
-// 资质条目挂的图片 key（title → key），export-preview 与 run_input.credentials 断言都要对上实际值。
-const credentialKeys: Record<string, string> = {}
-
 beforeAll(async () => {
   const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
   tokenA = a.token
@@ -92,7 +91,6 @@ beforeAll(async () => {
         status: "uploaded",
       })
       .returning()
-    credentialKeys[title] = file!.key
     await getDb()
       .insert(libraryItems)
       .values({ userId: userA, category: "qualification", title, attachments: [{ fileId: file!.id, name: `${title}.png` }] })
@@ -124,11 +122,6 @@ const runExport = async (body: Record<string, unknown>) => {
   await res.text()
 }
 
-// 按 title 排序后断言：credentialsRunInput 无 ORDER BY，DB 侧返回顺序不保证，排序后比较才是写实断言。
-function sortedCredentials(v: unknown): { title: string; images: string[] }[] {
-  return (v as { title: string; images: string[] }[]).slice().sort((x, y) => x.title.localeCompare(y.title))
-}
-
 describe("export_scope 透传（Task 3）", () => {
   it('scope="tech"：run_input.export_scope==="tech"，且不下发 credentials 键', async () => {
     await runExport({ export_scope: "tech" })
@@ -136,22 +129,16 @@ describe("export_scope 透传（Task 3）", () => {
     expect(lastRunInput.credentials).toBeUndefined()
   })
 
-  it("scope 缺省：run_input 无 export_scope 键，credentials 照旧下发（资质条目齐全）", async () => {
+  it("scope 缺省：run_input 无 export_scope 键，credentials 键不下发（Task 1 已改为 content 步下发）", async () => {
     await runExport({})
     expect(lastRunInput.export_scope).toBeUndefined()
-    expect(sortedCredentials(lastRunInput.credentials)).toEqual([
-      { title: "安全生产许可证", images: [credentialKeys["安全生产许可证"]!] },
-      { title: "营业执照", images: [credentialKeys["营业执照"]!] },
-    ])
+    expect(lastRunInput.credentials).toBeUndefined()
   })
 
-  it('scope="full"：与缺省同（run_input 无 export_scope 键），credentials 照旧下发', async () => {
+  it('scope="full"：与缺省同（run_input 无 export_scope 键），credentials 键不下发', async () => {
     await runExport({ export_scope: "full" })
     expect(lastRunInput.export_scope).toBeUndefined()
-    expect(sortedCredentials(lastRunInput.credentials)).toEqual([
-      { title: "安全生产许可证", images: [credentialKeys["安全生产许可证"]!] },
-      { title: "营业执照", images: [credentialKeys["营业执照"]!] },
-    ])
+    expect(lastRunInput.credentials).toBeUndefined()
   })
 })
 

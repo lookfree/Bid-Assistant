@@ -2,18 +2,21 @@ import { and, eq, inArray } from "drizzle-orm"
 import { getDb } from "../db/client"
 import { libraryItems, projectFiles } from "../db/schema"
 
-// export 步渲染附录仅认图片扩展（docx 无法内嵌 pdf，见 spec325 Global Constraints）
+// 附录渲染仅认图片扩展（docx 无法内嵌 pdf，见 spec325 Global Constraints）
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg"])
 
 function extOf(key: string): string {
   return key.split(".").pop()?.toLowerCase() ?? ""
 }
 
-export type CredentialInput = { title: string; images: string[] }
+// images 从 string[] 改对象数组（2026-08-09 附录系统章节）：agent 拿 fileId 拼占位图
+// data-file-id（编辑器/导出各自解析取字节），key/name 供展示与后续渲染使用。
+export type CredentialInput = { title: string; images: { fileId: string; key: string; name: string }[] }
 
-// export 步 run_input.credentials 下发（spec325）：取该用户「资质」类资料库条目挂的图片附件 key，
-// 交 agent 导出时追加「资格证明文件」附录（agent 自行用 key 取字节，展示名取 key basename）。
-// 无资质条目/条目无图片附件 → 返回 undefined（调用方不设该键，导出行为与今天一致）。
+// content 步 run_input.credentials 下发（2026-08-09 起，原 spec325 的 export 步下发已退役）：
+// 取该用户「资质」类资料库条目挂的图片附件，交 agent 在正文收尾时确定性构建「资格证明文件」
+// 系统章节（占位图，无字节）。GET export-preview 复用本函数做资质预告，取 images.length 计数。
+// 无资质条目/条目无图片附件 → 返回 undefined（调用方不设该键，行为与无资质时一致）。
 export async function credentialsRunInput(userId: string): Promise<CredentialInput[] | undefined> {
   const items = await getDb()
     .select({ title: libraryItems.title, attachments: libraryItems.attachments })
@@ -34,8 +37,11 @@ export async function credentialsRunInput(userId: string): Promise<CredentialInp
     .map((item) => ({
       title: item.title,
       images: (item.attachments ?? [])
-        .map((a) => keyById.get(a.fileId))
-        .filter((k): k is string => !!k && IMAGE_EXTS.has(extOf(k))),
+        .map((a) => {
+          const key = keyById.get(a.fileId)
+          return key && IMAGE_EXTS.has(extOf(key)) ? { fileId: a.fileId, key, name: a.name } : null
+        })
+        .filter((x): x is { fileId: string; key: string; name: string } => x !== null),
     }))
     .filter((c) => c.images.length > 0)
 

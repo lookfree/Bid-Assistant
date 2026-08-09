@@ -285,9 +285,9 @@ async function buildFilesInput(project: typeof bidProjects.$inferSelect): Promis
   return keys.map((k) => ({ key: k, name: nameByKey.get(k) ?? k.split("/").pop() ?? k }))
 }
 
-/** export 步 run_input.credentials（spec325）：查该用户资质类资料库条目的图片附件，
- *  无则返回空对象（调用方不带该键，导出行为与今天一致）。 */
-async function exportCredentials(userId: string): Promise<{ credentials?: CredentialInput[] }> {
+/** content 步 run_input.credentials（2026-08-09 附录系统章节，原 spec325 的 export 步下发已退役）：
+ *  查该用户资质类资料库条目的图片附件，无则返回空对象（调用方不带该键，正文生成不建附录章）。 */
+async function contentCredentials(userId: string): Promise<{ credentials?: CredentialInput[] }> {
   const credentials = await credentialsRunInput(userId)
   return credentials ? { credentials } : {}
 }
@@ -826,18 +826,14 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       // rag（spec316）并入 run_input：present 的 duration/template 等既有键不丢；
       // package（spec324）：已选包且非 read 步才带（read 面向全文，不分包；未选包=今天行为不变）；
       // export_scope（导出分册）：非 full 时透传给 agent，缺省/full 不带该键（today 行为不变）；
-      // credentials（spec325）：仅 export 步查询下发，用户无资质图片附件则不带该键——
-      // scope==="tech" 时数据层直接不下发（暗标风险，技术册不带资质附录），渲染层无需感知该规则。
+      // credentials（2026-08-09 附录系统章节，原 spec325 的 export 步下发已退役）：仅 content 步
+      // 查询下发，用户无资质图片附件则不带该键——agent 正文收尾时用它确定性构建「资格证明文件」
+      // 系统章节，随 group:"business" 分册规则自然随商务册走，export 步无需再感知它。
       run_input: {
         ...runInput,
         rag: await ragRunInput(),
         ...(step !== "read" && p.selectedPackage ? { package: p.selectedPackage } : {}),
-        ...(step === "export"
-          ? {
-              ...(gen.export_scope && gen.export_scope !== "full" ? { export_scope: gen.export_scope } : {}),
-              ...(gen.export_scope === "tech" ? {} : await exportCredentials(userId)),
-            }
-          : {}),
+        ...(step === "export" && gen.export_scope && gen.export_scope !== "full" ? { export_scope: gen.export_scope } : {}),
         // spec328：线下标书审查/述标——review/present 节点用该 key 确定性解析出 chapters（无 LLM 不计费）
         ...((step === "review" || step === "present") && p.bidFileKey
           ? { bid_file_key: p.bidFileKey, bid_file_keys: p.bidFileKeys ?? [p.bidFileKey] }
@@ -846,6 +842,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         // 超写校准系数（运营可调,billing_configs generation.*）随 content 步一并下发
         ...(step === "content" && gen.targetChars ? { target_chars: gen.targetChars } : {}),
         ...(step === "content" ? await generationRunInput() : {}),
+        ...(step === "content" ? await contentCredentials(userId) : {}),
         // 正文断点续跑：下发**已成功完成过几次正文**。agent 据此选检查点线路——
         // 重试时这个数不变（接上刚写了一半的那条），重新生成时 +1（换一条干净的线）。
         // 不用布尔"是不是重新生成"：那个推断在"重新生成失败后重试"时会翻转，
