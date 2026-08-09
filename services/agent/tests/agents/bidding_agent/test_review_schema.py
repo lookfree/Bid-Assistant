@@ -7,7 +7,8 @@ _SAMPLE = {
     "score": 78, "high": 1, "mid": 2, "passed": 9,
     "items": [{"level": "高风险", "tone": "destructive", "title": "缺少 ISO27001 认证",
                "chapter_title": "企业资质与信誉证明", "tender_ref": "对应：第二章 资格要求（★不可偏离）",
-               "advice": "补 ISO27001 证书并附商务标第四章，否则废标", "target_tab": "business", "target_id": "b4", "anchor_text": "ISO27001 认证证书复印件"}],
+               "advice": "补 ISO27001 证书并附商务标第四章，否则废标", "target_tab": "business", "target_id": "b4",
+               "anchor_text": "ISO27001 认证证书复印件", "clause_ids": ["sec-2-c1"]}],
     "passed_items": ["投标报价未超最高限价", "投标函格式与签章合规"],
 }
 
@@ -54,7 +55,8 @@ def test_findings_and_passed_items_are_required_in_the_tool_schema():
 # _forced_submit 会把校验错误喂回模型重试 3 轮，正是为这种情况准备的。
 def _item(**over):
     base = {"level": "高风险", "tone": "destructive", "title": "缺少 ISO27001",
-            "advice": "补证书并附商务标第四章", "target_tab": "business", "target_id": "b4", "anchor_text": "ISO27001 认证证书复印件"}
+            "advice": "补证书并附商务标第四章", "target_tab": "business", "target_id": "b4",
+            "anchor_text": "ISO27001 认证证书复印件", "clause_ids": []}
     return {**base, **over}
 
 
@@ -130,7 +132,7 @@ def test_anchor_text_is_required_but_may_be_empty():
     from agent.agents.bidding_agent.schemas import RiskFinding
 
     base = dict(level="高风险", tone="destructive", title="缺 ISO27001",
-                advice="补证书", target_tab="business", target_id="b4")
+                advice="补证书", target_tab="business", target_id="b4", clause_ids=[])
     try:
         RiskFinding(**base)
     except ValidationError:
@@ -140,3 +142,30 @@ def test_anchor_text_is_required_but_may_be_empty():
 
     assert RiskFinding(**base, anchor_text="").anchor_text == ""
     assert RiskFinding(**base, anchor_text="采购需求偏离表（附件5-1）").anchor_text == "采购需求偏离表（附件5-1）"
+
+
+def test_clause_ids_is_required_but_may_be_empty_in_the_tool_schema():
+    """clause_ids 进了去重键（见 test_items_with_different_clause_ids_are_not_collapsed）：
+    弱模型对可选且无描述的字段整个省略（2026-08-01 教训）——一旦省略，全部发现的 clause_ids
+    都落回 []，去重键退化成 (title, advice)，同类问题在不同★条款上各出现一次会被误判重复
+    塌缩掉，漏报剩下的条款。字段必须进 required（可空数组，不强求非空）。"""
+    from pydantic import ValidationError
+    from agent.agents.bidding_agent.schemas import RiskFinding
+
+    tool, _ = make_submit_tool("submit_risk_report", RiskReport, "提交审查报告")
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+    params = convert_to_openai_tool(tool)["function"]["parameters"]
+    item = params["properties"]["items"]["items"]   # RiskFinding 被内联在数组项里
+    assert "clause_ids" in item["required"], "clause_ids 不是必填，模型可以整个省掉 → 去重键退化"
+    assert item["properties"]["clause_ids"].get("description")
+
+    base = dict(level="高风险", tone="destructive", title="缺 ISO27001", advice="补证书",
+                target_tab="business", target_id="b4", anchor_text="")
+    try:
+        RiskFinding(**base)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("clause_ids 缺席竟然通过了校验——弱模型会直接省略它")
+
+    assert RiskFinding(**base, clause_ids=[]).clause_ids == []

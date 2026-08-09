@@ -499,13 +499,23 @@ async def _retry_missing(ctx, chat, system_prompt: str, state: dict, chapters: l
                          out: dict[str, str], missing: list[str]) -> dict[str, str]:
     """缺章补写轮：主 gather 收尾仍有缺章时，等一下（短暂故障有机会自愈）再对每章各补一次
     _write_one——老引擎"漏了就补"的语义，删旧引擎时连同规划者一起丢了，缺章直接变墓碑。
-    补写沿用同一 generation/缓存键：上一轮失败没写过缓存，这里只是让它有机会真正跑成。"""
+    补写沿用同一 generation/缓存键：上一轮失败没写过缓存，这里只是让它有机会真正跑成。
+
+    心跳必须覆盖这一整轮（评审 2026-08-09）：主 gather 的 finally 在补写轮开始前就把心跳
+    取消了，90s 等待 + 补写调用期间如果不重开一个心跳任务，前端进度会静默——用户看到的
+    像是卡死，而不是"正在等短暂故障自愈"。复用同一个 _Progress.heartbeat（label 语义不变，
+    仍按 done/total/in_flight 现算），与主 gather 同一套 create_task + finally 取消手法。"""
     logger.warning("代码编排收尾缺 %d 章，等 %ds 后各补一次：%s", len(missing), _MISSING_RETRY_DELAY_S, missing)
-    await asyncio.sleep(_MISSING_RETRY_DELAY_S)
-    by_id = {c["id"]: c for c in chapters}
-    retried = await asyncio.gather(*[
-        _write_one(ctx, chat, system_prompt, state, by_id[cid], shared, sem, progress, generation)
-        for cid in missing if cid in by_id], return_exceptions=True)
+    hb = asyncio.create_task(progress.heartbeat())
+    try:
+        await asyncio.sleep(_MISSING_RETRY_DELAY_S)
+        by_id = {c["id"]: c for c in chapters}
+        retried = await asyncio.gather(*[
+            _write_one(ctx, chat, system_prompt, state, by_id[cid], shared, sem, progress, generation)
+            for cid in missing if cid in by_id], return_exceptions=True)
+    finally:
+        hb.cancel()
+        await asyncio.gather(hb, return_exceptions=True)
     result = dict(out)
     for r in retried:
         if isinstance(r, BaseException):

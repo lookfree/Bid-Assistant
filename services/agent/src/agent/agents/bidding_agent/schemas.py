@@ -234,7 +234,12 @@ class RiskFinding(BaseModel):
     )
     # 去重键要用它区分"标题/建议撞车但引用条款不同"的两条发现（同类问题在多条★条款上
     # 各出现一次，是不同的发现，不能被去重塌缩成一条）。字段本身是内部键，不清洗、不展示。
-    clause_ids: list[str] = Field(default_factory=list, description=_CLAUSE_IDS_DESC)
+    # required（不是 default_factory）：字段进了去重键（见 RiskReport._derive_counts），
+    # 弱模型对"可选且无描述"的字段整个省略（2026-08-01 教训）——一旦省略，全部发现的
+    # clause_ids 都落回 []，去重键退化成 (title, advice)，不同条款上的同类问题会被误判重复
+    # 塌缩成一条，漏报剩下的条款。与 advice/anchor_text 同一模式：required 但允许空数组。
+    clause_ids: list[str] = Field(
+        ..., description="该发现对应的招标条款内部 id 列表，可为空数组但必须提供")
 
     @model_validator(mode="after")
     def _strip_blank(self):

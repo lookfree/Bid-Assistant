@@ -173,6 +173,47 @@ class TestPipeline:
         assert set(out) == {"t1", "t2", "t3"}, "短暂故障的缺章该在补写轮里补上，不该直接变墓碑"
         assert chat.calls_by_chapter["章节3"] == 3
 
+    def test_makeup_pass_keeps_publishing_heartbeats_while_it_runs(self, monkeypatch):
+        """主 gather 的 finally 在补写轮开始前就取消了心跳（评审 2026-08-09）：90s 等待 +
+        补写调用期间如果不重开一个心跳任务，前端进度会静默，看起来像卡死。打桩验证：
+        补写轮自己起的心跳任务在这段时间里仍周期性调用 publish_event。
+
+        直接调 `_retry_missing`（不经完整 run_content_pipeline）：这样测出的心跳事件只可能
+        来自补写轮自己开的心跳任务，不会与主 gather 的心跳（cancel 之前）混在一起，
+        修复前这里必然是零事件——不修复就没有任何来源能产生心跳。"""
+        from agent.agents.bidding_agent.nodes import content_pipeline as mod
+
+        real_sleep = mod.asyncio.sleep
+
+        async def _fake_sleep(s):
+            # 只真正让出控制权（不真等），道理同 test_makeup_pass_waits_before_retrying：
+            # 心跳协程内部也是 `while True: await asyncio.sleep(...)`，桩必须让它有机会转起来。
+            await real_sleep(0)
+
+        monkeypatch.setattr(mod.asyncio, "sleep", _fake_sleep)
+
+        published: list[dict] = []
+
+        async def _fake_publish(redis, run_id, data):
+            published.append(data)
+
+        monkeypatch.setattr(mod, "publish_event", _fake_publish)
+
+        state = _state(2)
+        chapters = state["outline"]["chapters"]
+        titles = {c["id"]: c["title"] for c in chapters}
+        ctx = _ctx()
+        progress = mod._Progress(ctx, len(chapters), titles)
+        chat = _FakeChat()
+
+        result = asyncio.run(mod._retry_missing(
+            ctx, chat, "system", state, chapters, {}, asyncio.Semaphore(2),
+            progress, 0, {}, [c["id"] for c in chapters]))
+
+        heartbeats = [d for d in published if d.get("kind") == "heartbeat"]
+        assert heartbeats, "补写轮期间一条心跳事件都没发——前端进度会静默"
+        assert set(result) == {c["id"] for c in chapters}
+
     def test_makeup_pass_waits_before_retrying(self, monkeypatch):
         """补写轮必须先等一下（给短暂故障机会自愈），不是立刻重打。
 
