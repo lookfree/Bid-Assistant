@@ -338,8 +338,10 @@ export async function getRun(
  *  自己为用户写的话，可行动、无内部细节。其它异常（ValueError/TypeError…）是代码 bug，
  *  原文（如 `invalid literal for int() with base 10: 'wer'`）对用户毫无意义，还可能带出内部结构。 */
 /** 除 RuntimeError 外也放行的异常类：它们同样自带面向用户的中文文案。
- *  ModelIdleTimeout = 模型长时间无响应（2026-08-08：用户跑了 57 分钟失败，界面上没有任何原因）。 */
-const USER_FACING_ERROR_TYPES = new Set(["RuntimeError", "ModelIdleTimeout"])
+ *  ModelIdleTimeout = 模型长时间无响应（2026-08-08：用户跑了 57 分钟失败，界面上没有任何原因）。
+ *  ModelNotConfigured = 模型唯一来自运营后台配置、未配置时我们自己抛出的带根因错误（终审
+ *  wave2：此前不在白名单里，被过滤回通用「生成失败，请重试」，用户对着永远不会成功的配置缺失反复重试）。 */
+const USER_FACING_ERROR_TYPES = new Set(["RuntimeError", "ModelIdleTimeout", "ModelNotConfigured"])
 
 export function userFacingRunError(e: { error?: string | null; errorType?: string | null }): string | null {
   const msg = (e.error ?? "").trim()

@@ -18,6 +18,13 @@ describe("userFacingRunError", () => {
     expect(userFacingRunError({ error: msg, errorType: "RuntimeError" })).toBe(msg)
   })
 
+  it("ModelNotConfigured（终审 wave2）：我们自己抛出的带根因错误 → 原样放行，不被过滤回通用文案", () => {
+    // 模型唯一来自运营后台配置，未配置时 gateway.py 抛 ModelNotConfigured 带出根因；此前不在
+    // 白名单，被压成「生成失败，请重试」，用户对着永远不会成功的配置缺失反复重试。
+    const msg = "模型 provider 'deepseek' 未配置 API Key——请在运营后台配置后重试"
+    expect(userFacingRunError({ error: msg, errorType: "ModelNotConfigured" })).toBe(msg)
+  })
+
   it("代码 bug 的原始异常 → 不外露", () => {
     // 线上真实出现过这条
     expect(userFacingRunError({ error: "invalid literal for int() with base 10: 'wer'", errorType: "ValueError" })).toBeNull()
