@@ -22,6 +22,7 @@ import { detectedCategory, effectiveCategory, logCategoryCorrection } from "../s
 import { markExportDirty, shouldChargeExport } from "../services/export-dirty"
 import { getConfig } from "../services/config"
 import { credentialsRunInput, type CredentialInput } from "../services/credentials"
+import { buildCredentialsChapterHtml, syncCredentialsOutline, SYS_CREDS_ID } from "../services/credentials-chapter"
 import { toCamel, toSnake } from "../lib/case"
 import { parsePagination, pagedBody, pagedResult } from "../lib/pagination"
 import { presignGet, deleteObject } from "../storage/s3"
@@ -1160,6 +1161,47 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     return c.json({ chapterId, html, cost: 0 })
   })
 
+  // 附录刷新（2026-08-09 附录系统章节 Task 4）：资料库资质条目改过之后,「资格证明文件」章仍是
+  // 上一次 content 收尾时的旧快照（重建语义只在 content 收尾时触发）——这里给用户一个不必重新
+  // 生成整本正文就能把附录刷到资料库最新状态的入口。免费（确定性拼 HTML,无 LLM 调用）,
+  // 但内容确实变了要给下次导出置脏,故与单章改写走同一条「事务内 FOR UPDATE 重读 merge + 事务外
+  // markExportDirty」路径,不绕过置脏。
+  r.post("/:id/refresh-credentials-appendix", async (c) => {
+    const id = c.req.param("id")
+    if (!isUuid(id)) return c.json({ error: "not_found" }, 404) // 非 uuid 直接 404，避免 PG 22P02 → 500
+    const userId = c.get("user").id
+    const p = await ownedProject(id, userId)
+    if (!p) return c.json({ error: "not_found" }, 404)
+
+    const credentials = await credentialsRunInput(userId)
+    if (!credentials || credentials.length === 0) return c.json({ error: "no_credentials" }, 409)
+    const html = buildCredentialsChapterHtml(credentials)
+
+    // 附录章依附在 content 步 result 里，该步没跑完就没有可 merge 的目标（理论边角：资料库
+    // 有资质但用户还没生成过正文）——与单章改写同一守卫、同一错误码。
+    const contentRow = await latestDoneStep(p.id, "content")
+    if (!contentRow) return c.json({ error: "content_not_done" }, 409)
+
+    // 与单章改写同一并发手法：事务内 FOR UPDATE 重读最新 result 再 merge，不整份覆盖，
+    // 避免与同期发生的其它章节编辑互相踩踏。
+    await getDb().transaction(async (tx) => {
+      const [fresh] = await tx.select().from(projectSteps).where(eq(projectSteps.id, contentRow.id)).for("update")
+      const chapters = { ...((fresh?.result as Record<string, unknown>) ?? {}), [SYS_CREDS_ID]: html }
+      await tx.update(projectSteps).set({ result: chapters }).where(eq(projectSteps.id, contentRow.id))
+    })
+    // outline 无 sys-creds 时补章（幂等；已存在则不动）——覆盖「resultShapeOk 判 content 步失败过
+    // 一次、这一次刷新是第一次成功写进 sys-creds」之类的边角，让附录章在编辑器提纲里也看得见。
+    await syncCredentialsOutline(p.id, { [SYS_CREDS_ID]: html })
+
+    try {
+      await markExportDirty(p.id) // 刷新本身不收费，但正文变了，下次导出要收费
+    } catch {
+      console.warn(`[export-dirty] 刷新附录后置脏失败 project=${p.id}`)
+    }
+
+    return c.json({ html })
+  })
+
   // 查项目 + 各步结果（前端各页渲染；result 转 camelCase，content 步键为章 id 原样透传）
   r.get("/:id", async (c) => {
     const id = c.req.param("id")
@@ -1236,6 +1278,9 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const credentials = (await credentialsRunInput(c.get("user").id)) ?? []
     return c.json({
       credentials: credentials.map((x) => ({ title: x.title, imageCount: x.images.length })),
+      // 2026-08-09 附录系统章节 Task 5 依赖：全部资质图片附件的 fileId 平铺——web 侧拿它与附录
+      // 章占位图的 data-file-id 集合比对，判断资料库有没有增删而附录章尚未跟着刷新（过期提示）。
+      credential_file_ids: credentials.flatMap((x) => x.images.map((img) => img.fileId)),
       volumes: await exportVolumes(p.id),
       content_changed_at: p.contentChangedAt ? p.contentChangedAt.toISOString() : null,
     })

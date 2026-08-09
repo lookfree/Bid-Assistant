@@ -4,6 +4,7 @@ import { markExportDirty, clearExportDirty } from "./export-dirty"
 import { bidProjects, creditTransactions, projectSteps } from "../db/schema"
 import * as billing from "./billing-stub"
 import { failStepAndRefund, STUCK_STEP_MAX_AGE_MS } from "./stuck-steps"
+import { syncCredentialsOutline } from "./credentials-chapter"
 
 // 步进收尾核心（spec327 janitor 加固）：SSE 请求路径、409 惰性自愈、对账 Cron 三处共用同一
 // 收尾函数——生产顽疾是「run 已成功而 App 收尾被发版/断连打断」，旧自愈只会判死退款,把
@@ -114,6 +115,15 @@ export async function finalizeStepSuccess(opts: {
     // 顺手带出来比事后再查一次省一趟往返。
     .returning({ id: projectSteps.id, createdAt: projectSteps.createdAt })
   if (flipped.length === 0) return null
+  // 附录系统章节同步钩子（2026-08-09）：content 步产出带 sys-creds 键时,把系统章追加进库里
+  // outline result——编辑器/审查/导出页读的是这份库存,不追加就只有 agent 图内 state 知道这
+  // 章存在。本函数是 SSE 收尾与对账 Cron recover 路径唯一的共同入口,放这里两条路都生效
+  // （无需在 reconcileStuckStep 里再补一遍）。失败只记日志、不挡结算与推进：宁可这次附录
+  // 没同步上,也不能让已交付的正文结果卡在半收尾（与「失败必退、成功必交付」同一方向性）。
+  if (opts.step === "content") {
+    await syncCredentialsOutline(opts.projectId, opts.result).catch((e) =>
+      console.error(`[credentials-chapter] outline 同步失败 project=${opts.projectId}:`, e))
+  }
   return await settleAndAdvance({
     stepId: opts.stepId, projectId: opts.projectId, step: opts.step, result: opts.result,
     hold: opts.holdId ? { holdId: opts.holdId, heldAmount: opts.heldAmount } : null,
