@@ -206,6 +206,9 @@ function AttachmentsField({
 }) {
   const fileRef = useRef<HTMLInputElement>(null)
   const [converting, setConverting] = useState<string | null>(null) // 正在转换的 fileId
+  // 刚上传的 PDF:弹醒目提示条引导「转为图片」(用户实测反馈:按钮+悬停提示不明显,
+  // 触屏更是看不到 title)。用户可选「暂不」保留 PDF 原样,之后仍可随时点附件旁按钮。
+  const [pdfPrompt, setPdfPrompt] = useState<LibraryAttachment | null>(null)
 
   /** 「转为图片」:调转换端点,页图追加为普通附件(带 sourceFileId)。
    *  显式动作不静默:失败按错误码给短提示(pdfPagesErrorMessage)。 */
@@ -233,6 +236,7 @@ function AttachmentsField({
     try {
       const uploaded = await uploadFile(file)
       setAttachments((arr) => [...arr, uploaded])
+      if (/\.pdf$/i.test(uploaded.name)) setPdfPrompt(uploaded) // 引导条:转不转由用户当场定
     } catch (e) {
       onError(uploadErrorMessage(e, "附件上传失败，请重试")) // 类型/大小被拒给具体原因，别让用户拿坏文件反复重试
     } finally {
@@ -243,6 +247,24 @@ function AttachmentsField({
 
   return (
     <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+      {/* PDF 上传后的引导条(用户实测反馈:仅靠按钮不明显)。「暂不」即关,PDF 原样保留 */}
+      {pdfPrompt && !hasDerivedPages(pdfPrompt, attachments) && (
+        <div className="w-full rounded-md border border-primary/30 bg-primary/5 px-2.5 py-2 text-[11px] text-foreground">
+          「{pdfPrompt.name}」已上传。若要作为插图直接插入标书正文,需先转为图片;仅作资料存档可不转。
+          <span className="ml-2 inline-flex gap-2">
+            <button
+              onClick={() => { const att = pdfPrompt; setPdfPrompt(null); void onConvertPdf(att) }}
+              disabled={converting !== null}
+              className="font-medium text-primary hover:underline disabled:opacity-50"
+            >
+              立即转为图片
+            </button>
+            <button onClick={() => setPdfPrompt(null)} className="text-muted-foreground hover:underline">
+              暂不,保留 PDF
+            </button>
+          </span>
+        </div>
+      )}
       {attachments.map((a, i) => (
         <span key={`${a.fileId}-${i}`} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground">
           <Paperclip className="size-3" />
