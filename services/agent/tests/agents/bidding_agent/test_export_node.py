@@ -46,6 +46,38 @@ def test_export_node_pdf_conversion_failure_keeps_docx_only(monkeypatch):
     assert "artifacts/proj-9/bid.pdf" not in saved
 
 
+def test_exported_at_is_stamped_at_node_entry_not_after_rendering(monkeypatch):
+    """2026-08-09 复现：exported_at 必须是「run 开始」的时间戳，不是渲染完成才打点——
+    否则导出运行期间（render_docx/docx_to_pdf 能跑到几十秒）发生的编辑，会落在
+    「编辑时刻 < exported_at」，前端据此误判"这次导出已经覆盖了那次编辑"，
+    而渲染读到的其实是编辑前的旧正文。用一个人为拖慢的 render_docx 验证：
+    exported_at 必须早于渲染完成时刻至少这段拖慢时长。"""
+    import time
+    from datetime import datetime, timezone
+
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+
+    def _slow_render_docx(*a, **kw):
+        time.sleep(0.2)
+        return b"<docx/>"
+
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+    monkeypatch.setattr(export_mod, "render_docx", _slow_render_docx)
+    monkeypatch.setattr(export_mod, "docx_to_pdf", lambda data: None)
+    node = make_export_node(RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-entry"))
+    out = asyncio.run(node({
+        "outline": {"chapters": [{"id": "t1", "no": "第一章", "title": "项目理解", "group": "tech"}]},
+        "chapters": {"t1": "<p>正文</p>"},
+        "read": {"project_meta": {"name": "投标文件"}},
+    }))
+    exported_at = datetime.fromisoformat(out["artifacts"]["exported_at"])
+    finished_at = datetime.now(timezone.utc)
+    assert (finished_at - exported_at).total_seconds() >= 0.2, \
+        "exported_at 在渲染完成之后才打点——运行期间的编辑会被误判为已被这次导出覆盖"
+
+
 def test_export_node_pdf_conversion_success_adds_pdf_key(monkeypatch):
     """docx_to_pdf 返回字节 → 上传 bid.pdf，artifacts 携带 pdf key。"""
     saved = {}

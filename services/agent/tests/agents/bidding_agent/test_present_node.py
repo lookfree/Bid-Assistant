@@ -65,6 +65,45 @@ def test_present_node_produces_deck_and_pptx_key(monkeypatch, submit_gateway):
     assert saved["key"] == "artifacts/proj-1/present.pptx" and saved["len"] > 0   # 真渲染了 .pptx 字节
 
 
+def test_present_preview_failure_tombstones_instead_of_omitting(monkeypatch, submit_gateway):
+    """2026-08-09 复现：预览渲染/上传失败时以前直接不写 previews 键——state.artifacts 是跨 run
+    的 merge reducer，键缺席会让上一版的 previews 混进这次结果，用户看到的是旧一版的述标
+    预览图。必须显式置 None（与 export 的 pdf/pdf_pages 同款墓碑），压过 reducer 里的旧值。"""
+    from agent.agents.bidding_agent.nodes import present as present_mod
+
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+    monkeypatch.setattr(present_mod, "render_deck_previews", lambda pptx_bytes: (_ for _ in ()).throw(
+        RuntimeError("soffice 缺失")))
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-tomb",
+                     gateway=submit_gateway({"submit_deck_draft": _DRAFT_ARGS,
+                                             "submit_slide_notes": _NOTES_ARGS}))
+    out = asyncio.run(make_present_node(ctx)({"chapters": {"t3": "<h3>SLA</h3>"}, "read": {}}))
+    assert "previews" in out["artifacts"], "previews 键缺席——merge reducer 会带出上一版的旧预览"
+    assert out["artifacts"]["previews"] is None
+
+
+def test_present_preview_success_still_carries_the_keys(monkeypatch, submit_gateway):
+    """成功路径不受影响：previews 仍是真实的 key 列表，不是墓碑 None。"""
+    from agent.agents.bidding_agent.nodes import present as present_mod
+
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+    monkeypatch.setattr(present_mod, "render_deck_previews", lambda pptx_bytes: [b"a", b"b"])
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-ok",
+                     gateway=submit_gateway({"submit_deck_draft": _DRAFT_ARGS,
+                                             "submit_slide_notes": _NOTES_ARGS}))
+    out = asyncio.run(make_present_node(ctx)({"chapters": {"t3": "<h3>SLA</h3>"}, "read": {}}))
+    assert out["artifacts"]["previews"] == ["artifacts/proj-ok/preview-01.png",
+                                            "artifacts/proj-ok/preview-02.png"]
+
+
 def test_present_merges_notes_by_slide_id(monkeypatch, submit_gateway):
     """两段合并正确：draft 2 页 + notes 覆盖两页 → notes 来自 notes 段、qa/template 来自 draft 段。"""
     class _Storage:

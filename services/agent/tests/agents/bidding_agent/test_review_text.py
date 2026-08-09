@@ -24,8 +24,13 @@ class TestStructure:
         assert "★国密SM3" in lines[1] and "★防拆自毁" in lines[2]
 
     def test_cells_stay_separated(self):
-        """要求与响应之间要有分隔，否则「★国密SM3完全响应」读起来像一整句。"""
-        assert "★国密SM3 | 完全响应" in html_to_review_text(TABLE)
+        """要求与响应之间要有分隔，否则「★国密SM3完全响应」读起来像一整句。
+
+        分隔符必须是空格，不能是 " | "：前端把发现定位到章内原文时，比对锚点原文与正文用的
+        归一化会吞空格、不吞竖线——真源头是表格行的发现会因为这根竖线永远比对不上（2026-08-09）。
+        """
+        assert "★国密SM3 完全响应" in html_to_review_text(TABLE)
+        assert "|" not in html_to_review_text(TABLE)
 
     def test_paragraphs_separate(self):
         assert html_to_review_text("<p>甲</p><p>乙</p>").split("\n") == ["甲", "乙"]

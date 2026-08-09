@@ -75,6 +75,13 @@ def make_export_node(ctx):
     是这行 result 里唯一「只随本册变化」的字段，供 App 的 export-preview 接口据此判断各册
     是否在最近一次内容变更之后重新导出过。"""
     async def export_node(state):
+        # 节点入口就打点（run 开始语义），不是渲染完成才打点：render_docx/docx_to_pdf 加起来能跑
+        # 到几十秒，若在那之后才取时间戳，导出运行期间发生的编辑会落在「编辑时刻 < exported_at」——
+        # 前端 clearExportDirty 按 runStartedAt 口径判断"是否已在这次编辑之后重新导出过"会误判
+        # 这次导出已经覆盖了那次编辑，而实际渲染读到的是编辑前的旧正文（评审 2026-08-09）。
+        # 终审 C1：本册渲染时刻——毫秒精度 + 数字时区偏移（timespec="milliseconds"，非默认的
+        # 微秒精度），逐字节可被 JS `new Date()` 解析，App 侧拿它与 content_changed_at 比较新旧。
+        rendered_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         meta = (state.get("read") or {}).get("project_meta", {})
         run_input = state.get("run_input") or {}
         package = run_input.get("package")
@@ -98,9 +105,6 @@ def make_export_node(ctx):
         key = await upload_artifact(
             ctx, f"bid{sfx}.docx", data,
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-        # 终审 C1：本册真实渲染时刻——毫秒精度 + 数字时区偏移（timespec="milliseconds"，非默认的
-        # 微秒精度），逐字节可被 JS `new Date()` 解析，App 侧拿它与 content_changed_at 比较新旧。
-        rendered_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         artifacts = {f"docx{sfx}": key, f"exported_at{sfx}": rendered_at}
         # soffice 子进程最长 120s：丢线程池，别把单进程事件循环整体卡死（终审 Important 项）
         pdf_bytes = await asyncio.to_thread(docx_to_pdf, data)

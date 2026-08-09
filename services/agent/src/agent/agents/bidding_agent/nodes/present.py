@@ -185,6 +185,9 @@ def make_present_node(ctx):
             ctx, "present.pptx", data,
             "application/vnd.openxmlformats-officedocument.presentationml.presentation")
         previews = await _upload_previews(ctx, data)
+        # 本次渲染/上传失败：显式置空，且只置这一个键（与 export 的 pdf/pdf_pages 同款）。
+        # state.artifacts 是跨 run 的 merge reducer——留空不写，reducer 会把上一版的 previews
+        # 混进这次结果，用户看到的是旧一版的述标预览图，而不是"这次没有预览、回落 CSS"。
         return {"deck": deck.model_dump(),
-                "artifacts": {"pptx": key, **({"previews": previews} if previews else {})}}
+                "artifacts": {"pptx": key, "previews": previews if previews else None}}
     return present_node
