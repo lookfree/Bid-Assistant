@@ -22,6 +22,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -51,6 +52,14 @@ _REQ_LINE_CHARS = 240
 # 永久性错误：后台未配置模型 / 整条降级链鉴权失败。逐章重试 2N 次毫无意义,还把根因
 # 埋进 warning——直接抛给整步,用户看到真实原因（评审 2026-08-08）。按类型识别,不猜文案。
 _PERMANENT_ERRORS = (ModelNotConfigured, AuthenticationError)
+
+# 人员/业绩定向注入（Task 3,2026-08-09 计划④）：章标题/子项 label 命中关键词即注入对应资料库
+# 条目块——不再赌 RAG 召回率覆盖长尾。词表字面量按 Global Constraints,agent 侧独立判定。
+_PERSONNEL_RE = re.compile(r"人员|团队|组织|配置|简历")
+_PERFORMANCE_RE = re.compile(r"业绩|案例|经验|项目经历")
+# 每类注入块字符预算：与偏离表条目预算（_DEVIATION_BLOCK_CHARS）同手法——App 侧单条字段无字符
+# 上限,这是唯一防线;超限截断并如实注明未列出条数,不静默丢弃也不放任顶穿上下文（评审 2026-08-09）。
+_LIBRARY_REF_BLOCK_CHARS = 3000
 
 
 def _cache_key(ctx, generation: int, brief: str) -> str:
@@ -207,6 +216,56 @@ def _pipeline_context(state: dict, ch: dict) -> str:
     return "\n".join(parts)
 
 
+def _library_ref_line(it: dict) -> str:
+    """单条人员/业绩资料库条目 → 简报行：`title|meta|label:value;…|body`（格式按计划 Task 3）。"""
+    title = str(it.get("title") or "").strip()
+    meta = str(it.get("meta") or "").strip()
+    fields = ";".join(f"{f.get('label', '')}:{f.get('value', '')}"
+                       for f in (it.get("fields") or []) if isinstance(f, dict))
+    body = str(it.get("body") or "").strip()
+    return f"- {title}|{meta}|{fields}|{body}"
+
+
+def _library_ref_block(items: list, label: str) -> str:
+    """人员/业绩资料库条目 → 简报文本块。条目数无字符上限（App 侧只按数量截前 20 条），
+    这里是唯一的字符防线：累计逐条拼接,一超 `_LIBRARY_REF_BLOCK_CHARS` 立即停并如实注明
+    未列出条数——宁可少列,不放任一次调用被顶穿。零条目返回空串（无 library_refs 时逐字节不变）。"""
+    if not items:
+        return ""
+    header = f"【资料库·{label}】(供本章化用,不得整段照抄):"
+    lines = [_library_ref_line(it) for it in items if isinstance(it, dict)]
+    kept: list[str] = []
+    dropped = 0
+    for i, line in enumerate(lines):
+        candidate = header + "\n" + "\n".join(kept + [line])
+        if len(candidate) > _LIBRARY_REF_BLOCK_CHARS:
+            dropped = len(lines) - i
+            break
+        kept.append(line)
+    block = header + "\n" + "\n".join(kept)
+    if dropped:
+        block += f"\n(另有 {dropped} 条未列出)"
+    return block
+
+
+def _chapter_keyword_text(ch: dict) -> str:
+    """章标题 + 各级子项 label 拼串，仅供人员/业绩关键词命中判定用（不含 desc/正文）——
+    深度封顶+类型钳制与 `_subtree_lines` 同手法，脏 items 不炸命中判定。"""
+    def _labels(items: object, depth: int = 0) -> list[str]:
+        out: list[str] = []
+        if depth > 4 or not isinstance(items, list):
+            return out
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            label = str(it.get("label") or "").strip()
+            if label:
+                out.append(label)
+            out.extend(_labels(it.get("children"), depth + 1))
+        return out
+    return " ".join([str(ch.get("title") or "")] + _labels(ch.get("items")))
+
+
 def _chapter_brief(state: dict, ch: dict, shared: dict) -> tuple[str, str]:
     """单章简报 → (稳定部分, 检索段)。**缓存键只盖稳定部分**：检索段每次跑都可能不一样
     （资料库更新/召回抖动），进哈希会让"重试只补缺章"静默退化成全量重跑——旧引擎的
@@ -227,6 +286,13 @@ def _chapter_brief(state: dict, ch: dict, shared: dict) -> tuple[str, str]:
     tpl = (shared.get("templates") or {}).get(cid)
     if tpl:
         parts.append(tpl)                          # 招标格式模板只发给它自己的那一章
+    # 人员/业绩定向注入（Task 3）：进 stable 部分而非检索段——库存变化即让命中章缓存键跟着
+    # 变、无关章不受影响，语义与偏离表/模板一致（评审 2026-08-09）。
+    text = _chapter_keyword_text(ch)
+    if shared.get("personnel") and _PERSONNEL_RE.search(text):
+        parts.append(shared["personnel"])
+    if shared.get("performance") and _PERFORMANCE_RE.search(text):
+        parts.append(shared["performance"])
     parts.append(f"请撰写本章（{ch.get('no') or ''} {ch.get('title') or ''}）的完整正文 HTML。")
     return "\n\n".join(p for p in parts if p), shared.get("ref") or ""
 
@@ -329,6 +395,9 @@ def _shared_blocks(state: dict, read: dict, outline: dict, chapters: list[dict])
     meta = read.get("project_meta") or {}
     risks = strip_clause_ids({"items": read.get("risk_summary") or []})["items"]
     risk_txt = json.dumps(risks, ensure_ascii=False) if risks else ""
+    # library_refs（Task 3）：App content 步下发，两类都空则键缺省——`or {}` 兜底后 .get 拿到 []，
+    # `_library_ref_block` 对空列表返回空串，无 library_refs 的老行为逐字节不变。
+    refs = (state.get("run_input") or {}).get("library_refs") or {}
     return {
         "project": ("【项目信息】（响应函/表单/落款字段据此填写，未知处留（待补充：____））："
                     + json.dumps(strip_clause_ids(meta), ensure_ascii=False)[:2000]) if meta else "",
@@ -337,6 +406,8 @@ def _shared_blocks(state: dict, read: dict, outline: dict, chapters: list[dict])
         "deviation": _deviation_items_block(read) if dev_ids else "",
         "deviation_ids": dev_ids,
         "templates": _template_entries(read, outline),
+        "personnel": _library_ref_block(refs.get("personnel") or [], "人员"),
+        "performance": _library_ref_block(refs.get("performance") or [], "业绩"),
         "budgets": budgets, "work_total": work,
     }
 

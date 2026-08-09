@@ -575,3 +575,84 @@ def test_partial_delivery_tombstones_replace_stale_generation(monkeypatch):
     assert chapters_in_outline(merged, outline) == {"t1": "<p>新一代 t1</p>"}, \
         "上一代旧稿混进了本次交付"
     assert chapters_in_outline({"t1": "x", "t2": None}, {}) == {"t1": "x"}  # 无提纲分支同样滤墓碑
+
+
+class TestLibraryRefsInjection:
+    """资料库人员/业绩定向注入（2026-08-09 计划 Task 3）：章标题/子项 label 命中关键词即
+    确定性拼进简报——不再赌 RAG 召回率覆盖长尾（人员信息/项目业绩这类结构化条目）。"""
+
+    def _refs(self, n_personnel=1, n_performance=1):
+        return {
+            "personnel": [{"title": f"人员{i}", "meta": "项目经理", "body": "十年同类项目经验",
+                          "fields": [{"label": "职称", "value": "高级工程师"}]}
+                         for i in range(n_personnel)],
+            "performance": [{"title": f"业绩{i}", "meta": "2024 年", "body": "按期顺利交付",
+                             "fields": [{"label": "合同额", "value": "500 万元"}]}
+                            for i in range(n_performance)],
+        }
+
+    def _state(self):
+        state = _state(3)
+        state["outline"]["chapters"][0]["title"] = "项目团队与人员配置"
+        state["outline"]["chapters"][1]["title"] = "公司业绩"
+        state["outline"]["chapters"][2]["title"] = "技术方案"
+        return state
+
+    def test_matching_chapters_get_their_block_unrelated_chapter_gets_neither(self, monkeypatch):
+        state = self._state()
+        state["run_input"] = {"library_refs": self._refs()}
+        chat = _FakeChat()
+        _run(state, chat, monkeypatch=monkeypatch)
+        personnel_brief = _brief_of(chat, "项目团队与人员配置")
+        performance_brief = _brief_of(chat, "公司业绩")
+        tech_brief = _brief_of(chat, "技术方案")
+        assert "【资料库·人员】" in personnel_brief and "人员0" in personnel_brief
+        assert "【资料库·业绩】" not in personnel_brief
+        assert "【资料库·业绩】" in performance_brief and "业绩0" in performance_brief
+        assert "【资料库·人员】" not in performance_brief
+        assert "【资料库·人员】" not in tech_brief and "【资料库·业绩】" not in tech_brief
+
+    def test_budget_truncation_caps_the_block_and_notes_dropped_count(self, monkeypatch):
+        """30 条长条目顶穿预算——块必须截断在 `_LIBRARY_REF_BLOCK_CHARS` 内并如实注明
+        未列出条数（评审：App 侧单条字段无字符上限，这是唯一防线）。"""
+        from agent.agents.bidding_agent.nodes.content_pipeline import _LIBRARY_REF_BLOCK_CHARS
+
+        state = self._state()
+        long_body = "详" * 500
+        state["run_input"] = {"library_refs": {
+            "personnel": [{"title": f"人员{i}", "body": long_body} for i in range(30)],
+            "performance": [],
+        }}
+        chat = _FakeChat()
+        _run(state, chat, monkeypatch=monkeypatch)
+        brief = _brief_of(chat, "项目团队与人员配置")
+        block = brief.split("【资料库·人员】")[1]
+        assert "(另有" in block and "条未列出)" in block
+        block_before_note = "【资料库·人员】" + block.split("(另有")[0]
+        assert len(block_before_note) <= _LIBRARY_REF_BLOCK_CHARS, "预算截断没生效，30 条长条目全塞进了简报"
+
+    def test_no_library_refs_leaves_every_brief_untouched(self, monkeypatch):
+        """无 library_refs 时今天的行为逐字节不变——哪怕章标题命中关键词也不该多出任何块
+        （回归硬承诺：`shared["personnel"]`/`shared["performance"]` 缺省时必须是空串）。"""
+        chat = _FakeChat()
+        _run(self._state(), chat, monkeypatch=monkeypatch)
+        for _, user in chat.seen:
+            assert "【资料库·人员】" not in user and "【资料库·业绩】" not in user
+
+    def test_library_stock_change_invalidates_cache_only_for_the_matching_chapter(self, monkeypatch):
+        """注入进 stable 部分：库存变化让命中章的缓存键跟着变（重新生成），无关章
+        （标题不含人员/业绩关键词）与内容未变的章一律缓存命中，不白烧调用。"""
+        redis = _FakeRedis()
+        state = self._state()
+        state["run_input"] = {"library_refs": self._refs()}
+        chat1 = _FakeChat()
+        _run(state, chat1, redis=redis, monkeypatch=monkeypatch)
+        assert chat1.calls == 3
+
+        state2 = self._state()
+        state2["run_input"] = {"library_refs": self._refs(n_personnel=2)}  # 只有人员库存变了
+        chat2 = _FakeChat()
+        _run(state2, chat2, redis=redis, monkeypatch=monkeypatch)
+        assert chat2.calls == 1, f"库存变化应只让命中章缓存失效，其余命中缓存；实际重写了 {chat2.calls} 章"
+        assert any("项目团队与人员配置" in u.split("请撰写本章")[-1] for _, u in chat2.seen), \
+            "库存变化的正是人员章，它却没有重写"
