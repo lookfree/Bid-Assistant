@@ -106,6 +106,9 @@ export default function PresentPage() {
     // 选择器与后端已存 deck 对齐（保存/下次生成据此透传）
     if (DURATIONS.includes(realDeck.duration as Duration)) setDuration(realDeck.duration as Duration)
     if (slideStyles.some((s) => s.id === realDeck.template)) setStyleId(realDeck.template as StyleId)
+    // 重跑述标（realDeck 换了新结果）：新渲染图正随下面那个 effect 一起取，"预览为上次生成的
+    // 效果"角标必须跟着清掉——此前没人复位它，改完内容重新生成后角标仍挂在最新的图上（语言#4）。
+    setDeckDirty(false)
   }, [realDeck])
 
   /* deck 就绪 = present 步已有真实结果（编辑/保存/导出入口只在此后出现） */

@@ -18,7 +18,7 @@ import { Loader2, ShieldCheck } from "lucide-react"
 import { ApiError } from "@/lib/api-client"
 import type { PackageInfo } from "@/lib/bid-types"
 import { PackageSelector } from "@/components/tool/package-selector"
-import { needsRead, nextContrastPhase, shouldConverge } from "@/lib/contrast-flow"
+import { contrastReviewCost, needsRead, nextContrastPhase, shouldConverge } from "@/lib/contrast-flow"
 import {
   StepFailedError, StreamIncompleteError,
   fetchStepResult, invalidateProjectCache, runStep, setProjectPackage,
@@ -52,6 +52,7 @@ export function ContrastReviewCta({
   readCost,
   reviewCost,
   hasPackage,
+  readDone,
   onDone,
 }: {
   projectId: string
@@ -61,6 +62,10 @@ export function ContrastReviewCta({
   /** 项目已选定包件（取自项目详情，不是组件内存）：刷新/重进页面后仍要认得，
    *  否则多包件项目会在读标已扣费之后卡在"没有入口"的死角。 */
   hasPackage: boolean
+  /** 读标是否已有结果（取自项目详情的步骤状态，不额外发请求）：报价必须与 start() 内部
+   *  needsRead() 同一口径——否则读标已完成、只欠审查的重试路径会被显示成"含读标+审查"的高价
+   *  （逐行#7：实际只扣 reviewCost，报价却恒是 readCost+reviewCost）。 */
+  readDone: boolean
   onDone: () => void
 }) {
   const [phase, setPhase] = useState<Phase>("idle")
@@ -196,9 +201,12 @@ export function ContrastReviewCta({
           <ShieldCheck className="size-4" />
           开始对照审查
         </button>
-        {/* 费用**逐项写清**：这一步内部含招标文件解读，只写 60 会让用户对不上账 */}
+        {/* 费用**逐项写清**：这一步内部含招标文件解读，只写 60 会让用户对不上账；
+            读标已完成（重试路径）时 start() 会跳过它，报价须同口径只算 reviewCost（逐行#7）。 */}
         <span className="text-xs text-muted-foreground">
-          消耗 {readCost + reviewCost} 积分（含招标文件解读 {readCost} + 废标体检 {reviewCost}）
+          {readDone
+            ? `消耗 ${contrastReviewCost(true, readCost, reviewCost)} 积分（废标体检）`
+            : `消耗 ${contrastReviewCost(false, readCost, reviewCost)} 积分（含招标文件解读 ${readCost} + 废标体检 ${reviewCost}）`}
         </span>
       </div>
     </div>

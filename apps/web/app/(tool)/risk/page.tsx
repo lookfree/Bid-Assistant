@@ -140,6 +140,12 @@ function RejectReview() {
   //   不该逼用户把已有的东西重传一遍（六步流水线的正常下一步，丢了就断链）。
   if (!real) {
     const gap = stepPrereq(info, "review")
+    // review-kind 项目（对照审查）读标一旦跑完，currentStep 就推进到 review，gap 随即变 null——
+    // 但审查步本身还没跑。CTA 此前挂在 `gap &&` 后面，这一刻会连着「还差一步」提示条一起消失，
+    // 只剩下面的重传面板，用户以为要重新上传（主#15：只留一条 4 跳的「从我的标书选择」迂回路）。
+    // 显不显示 CTA 只该看"是不是对照审查项目"，不该再掺 gap。
+    const contrastReady = info.project.kind === "review" && !!info.project.tenderFileKey
+    const readDone = info.steps.some((s) => s.step === "read" && s.status === "done")
     return (
       <div className="flex flex-col gap-3">
         {/* 分类卡必须在**第一次付费审查之前**就能改：审查节点是先分类再审查、当轮即用，
@@ -159,14 +165,14 @@ function RejectReview() {
         {/* 上传了招标文件与投标文件的独立审查项目：**不再把用户支去招标解读**。
             读标是对照审查的必需输入（要求清单从那儿来），但它是内部步骤，这里一并跑掉。
             其它形态（库内项目缺正文等）保留原来的"前往上一步"引导。 */}
-        {gap && // review-kind 建项目时就强制带投标文件（bidFileKey 必填），故只需判有没有招标文件
-            info.project.kind === "review" && !!info.project.tenderFileKey ? (
+        {contrastReady ? (
           <ContrastReviewCta
             projectId={projectId}
             projectName={info.project.name ?? "我的标书"}
             readCost={readCost}
             reviewCost={reviewCost}
             hasPackage={!!info.project.selectedPackage}
+            readDone={readDone}
             onDone={() => window.location.reload()}
           />
         ) : gap ? (
@@ -183,7 +189,7 @@ function RejectReview() {
             默认落地页不摆它：用户口径「不要有审查当前项目，统一走从我的标书选择」——
             默认页只有上传面板 + 一个去列表的入口，路径唯一，不会一进来就对着一个不知是哪份标书的
             60 积分按钮。 */}
-        {!gap && viewParam === "project" && (
+        {!gap && !contrastReady && viewParam === "project" && (
           <div className="rounded-2xl border border-border bg-card">
             <StepRunCta
               title={`审查「${info?.project.name ?? "当前项目"}」`}

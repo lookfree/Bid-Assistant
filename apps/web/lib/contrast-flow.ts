@@ -20,3 +20,9 @@ export function shouldConverge(kind: "stream-incomplete" | "already-running" | "
 export function needsRead(hasReadResult: boolean): boolean {
   return !hasReadResult
 }
+
+/** CTA 报价（逐行#7）：与 start() 内部 needsRead() 用同一个"读标是否已完成"判断，口径必须一致——
+ *  否则重试路径（读标已完成、只欠审查）会被报成"含读标+审查"的高价，跟实际只扣审查费对不上账。 */
+export function contrastReviewCost(hasReadResult: boolean, readCost: number, reviewCost: number): number {
+  return needsRead(hasReadResult) ? readCost + reviewCost : reviewCost
+}

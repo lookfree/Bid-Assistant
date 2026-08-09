@@ -8,7 +8,7 @@
  * 别的包的要求全被误报成「未响应」。线上 53 个读过标的项目里 21 个是多包件（39%）。
  */
 import { describe, it, expect } from "bun:test"
-import { needsRead, nextContrastPhase, shouldConverge } from "@/lib/contrast-flow"
+import { contrastReviewCost, needsRead, nextContrastPhase, shouldConverge } from "@/lib/contrast-flow"
 
 describe("nextContrastPhase", () => {
   it("单包：读完直接跑对照，不打断用户", () => {
@@ -48,5 +48,15 @@ describe("读标不重跑", () => {
 
   it("没有才跑", () => {
     expect(needsRead(false)).toBe(true)
+  })
+})
+
+describe("contrastReviewCost（CTA 报价，逐行#7：重试路径不能多报价）", () => {
+  it("读标已完成——只收审查费，跟 start() 内部 needsRead() 同口径", () => {
+    expect(contrastReviewCost(true, 20, 60)).toBe(60)
+  })
+
+  it("读标未完成——含读标+审查总价", () => {
+    expect(contrastReviewCost(false, 20, 60)).toBe(80)
   })
 })
