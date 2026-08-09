@@ -15,7 +15,7 @@
 - 系统章字面量:`{id: "sys-creds", no: "附录", title: "资格证明文件", group: "business", system: true, sourced: false, items: []}`——App/agent 两处必须同形
 - 占位图形态:`<img data-file-id="<fileId>" data-object-key="<key>" alt="<条目标题>" />`,**无 src 无字节**
 - 章 HTML 形状:每条目 `<h3>标题</h3>` + 逐图占位;整章包在若干 `<p>` 里与既有章节 HTML 风格一致
-- 重建语义:重新生成(content_generation+1)重建;失败重试(同代)不动已存在的 sys-creds;编辑期删除保持删除
+- 重建语义(评审修正 2026-08-09):**每次 content 成功收尾都确定性重建附录章**(免费,始终最新);流水线对 `system` 章**结构性跳过**——不发模型调用、不进进度计数、不分字数预算、不打墓碑(state_overrides 每次回灌提纲步库结果,outline 带 sys-creds 是常态而非例外——评审实证);编辑期删除保持删除(下次 content 运行前有效)
 - 计费红线:零新增计费分支;附录刷新免费;`shouldChargeExport`/`preDeduct` 等一行不碰(刷新走既有 PATCH 置脏路径即可)
 - 提交规范:Conventional Commits、英文、作者 `lookfree <etwuman@126.com>`、无 Claude 字样;函数 ≤80 行;中文关键注释
 
@@ -92,7 +92,7 @@
 **Interfaces:**
 - Produces:
   - `buildCredentialsChapterHtml(credentials: CredentialInput[]): string`(与 agent 侧 HTML 同形——占位图三属性同名)
-  - content 收尾钩子:chapters 含 `sys-creds` 且库里 outline result 无该 id → outline result 原子追加系统章字面量(幂等,条件更新)
+  - content 收尾钩子:chapters 含 `sys-creds` 且库里 outline result 无该 id → outline result 原子追加系统章字面量(幂等,条件更新)。**注意(评审约束)**:库里 outline 带 sys-creds 后,后续每次 content 触发都会经 state_overrides 回灌——agent 侧靠"system 章跳过+恒重建"消化,本钩子无需感知代数
   - `POST /projects/:id/refresh-credentials-appendix`:归属校验 → 现查 credentialsRunInput → 重建 HTML → 更新 content result 的 `sys-creds` 键(走既有 PATCH content 同路径含置脏)+ outline 无则补章;无资质条目时 `409 {error:"no_credentials"}`;返回 `{html}` 供前端就地更新
 - Consumes: Task 1 的 CredentialInput;现有 content result PATCH/置脏机制(读它的实现照抄同路径,不绕过 markExportDirty)
 
