@@ -139,7 +139,30 @@ describe("backfillAttachmentOcr", () => {
     expect(atts[0]?.ocrText).toBeUndefined()
   })
 
-  it("⑤zod 往返：带 ocrText 的附件经真实路由保存查回仍在（防 attachmentSchema 静默剥字段）", async () => {
+  it("⑤竞态：识别耗时期间用户又保存了一次（附件已变）→ backfill 放弃整列覆写，用户改动完好无损，不抛异常", async () => {
+    const fileId = await insertImageFile("racer.png")
+    const itemId = await insertItem([{ fileId, name: "racer.png" }])
+
+    // 模拟「用户在识别进行中又保存了一次」：往 attachments 里加一个附件，列值因此变了。
+    // 用 ocrBehavior 的副作用在读快照之后、写回之前插入这次并发更新——正是竞态窗口本身。
+    const raceFileId = await insertNonImageFile("added-during-race.pdf")
+    const userChange: Attachment[] = [
+      { fileId, name: "racer.png" },
+      { fileId: raceFileId, name: "added-during-race.pdf" },
+    ]
+    ocrBehavior = async () => {
+      await getDb().update(libraryItems).set({ attachments: userChange }).where(eq(libraryItems.id, itemId))
+      return "识别文字（应被放弃，不该写回）"
+    }
+
+    await expect(backfillAttachmentOcr(itemId, userId)).resolves.toBeUndefined() // 竞态不该抛异常
+
+    const atts = await loadAttachments(itemId)
+    expect(atts).toEqual(userChange) // 用户的并发改动原封不动，没被旧快照的整列覆写吞掉
+    expect(atts.some((a) => a.ocrText)).toBe(false) // OCR 结果确实被放弃了，没有半路混进最终结果
+  })
+
+  it("⑥zod 往返：带 ocrText 的附件经真实路由保存查回仍在（防 attachmentSchema 静默剥字段）", async () => {
     const { libraryRoutes } = await import("../src/routes/library")
     const app = new Hono()
     app.route("/api/library", libraryRoutes())

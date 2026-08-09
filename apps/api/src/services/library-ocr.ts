@@ -64,11 +64,21 @@ export async function backfillAttachmentOcr(itemId: string, userId: string): Pro
     }
     if (!changed) return
 
-    // 整列 jsonb 条件更新，带 userId 归属——与 attachmentsValid/cleanupAttachments 同样的属主校验手法
+    // 整列 jsonb 条件更新，带 userId 归属——与 attachmentsValid/cleanupAttachments 同样的属主校验手法。
+    // WHERE 再带上「attachments 仍等于识别开始前读到的快照」这道乐观锁：识别是秒级的慢操作，
+    // 这期间用户完全可能又保存了一次（增删附件）——不带这道比较会用旧快照整列覆写，
+    // 把用户刚做的改动静默吞掉（新附件消失/已删附件复活）。比对不上 = 有人抢先改过，
+    // 按 best-effort 哲学放弃本次回填，不重试不报错：下次保存会重新触发一轮 OCR。
     await getDb()
       .update(libraryItems)
       .set({ attachments: next })
-      .where(and(eq(libraryItems.id, itemId), eq(libraryItems.userId, userId)))
+      .where(
+        and(
+          eq(libraryItems.id, itemId),
+          eq(libraryItems.userId, userId),
+          eq(libraryItems.attachments, attachments),
+        ),
+      )
   } catch {
     // 全程不抛：调用方是 fire-and-forget，任何环节故障都只静默放弃这次回填
   }
