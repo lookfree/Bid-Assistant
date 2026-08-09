@@ -395,7 +395,8 @@ describe("/api/projects 按步编排", () => {
   it("content 步：state_overrides.outline 回灌已存提纲；SSE step.done 的章 id 键不做大小写转换", async () => {
     const { input, sse } = await runStepAndGetInput("content") // 上一测未留残行，这里正常推进
     expect(input.state_overrides).toEqual({ outline: STEP_RESULTS.outline })
-    expect(input.run_input).toEqual({ rag: { enabled: true, top_k: 3 } })
+    // content_generation=已完成正文步数(首次为 0):正文步断点缓存的代数基准(2026-08-08 新引擎)
+    expect(input.run_input).toEqual({ rag: { enabled: true, top_k: 3 }, content_generation: 0 })
     expect(sse).toContain('"ch_1"') // 章 id 是 LLM 自由字符串，toCamel 会把 ch_1 转坏成 ch1
     expect(sse).not.toContain('"ch1"')
   })
