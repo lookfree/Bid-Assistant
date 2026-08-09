@@ -20,11 +20,11 @@ function mimeOf(ext: string): string {
 
 // 单附件识别：下载字节 → 拼 data URL → 调 OCR；下载或识别任一环节失败按「未识别到文字」处理，
 // 不向上抛——失败是这一个附件的事，不该拖累同条目里的其它附件。
-async function recognize(key: string, ext: string): Promise<string> {
+async function recognize(key: string, ext: string, ocr: typeof ocrImage): Promise<string> {
   try {
     const bytes = await getObjectBytes(key)
     const base64 = Buffer.from(bytes).toString("base64")
-    const text = await ocrImage(`data:image/${mimeOf(ext)};base64,${base64}`)
+    const text = await ocr(`data:image/${mimeOf(ext)};base64,${base64}`)
     // 纵深防御（终审 I-2）：与 routes/library.ts 的 zod ocrText max(500) 对齐——OCR 容器不受
     // 我们控制，一旦哪次识别失约返回超长文本，写库时不截断的话，这条 ocrText 从此每次保存
     // （包括用户压根没碰这个字段的整条更新）都会撞 zod 400，把条目锁死在无法保存的状态。
@@ -40,8 +40,16 @@ async function recognize(key: string, ext: string): Promise<string> {
  * 给该条目里「图片扩展 + 尚无 ocrText」的附件逐个识别，结果整列写回 attachments（jsonb），
  * 带 userId 归属条件。已有 ocrText 的附件不重复识别；非图片扩展的附件跳过。
  * 全程不抛：DB/S3/OCR 任一环节故障都只放弃这次回填，调用方无需 catch。
+ *
+ * ocr 可注入（默认真实 ocrImage，与 services/files.ts convertPdfToPages 的 callAgent 同一手法）：
+ * 测试注入假实现，不用 mock.module 全局替换模块——那种手法在同进程全量跑测试时会泄漏给同一个
+ * services/ocr 模块的其它测试文件（test/services/ocr.test.ts、routes/files.ts 的 /files/ocr）。
  */
-export async function backfillAttachmentOcr(itemId: string, userId: string): Promise<void> {
+export async function backfillAttachmentOcr(
+  itemId: string,
+  userId: string,
+  ocr: typeof ocrImage = ocrImage,
+): Promise<void> {
   try {
     const [item] = await getDb()
       .select({ attachments: libraryItems.attachments })
@@ -66,7 +74,7 @@ export async function backfillAttachmentOcr(itemId: string, userId: string): Pro
         next.push(a)
         continue
       }
-      const text = await recognize(key, ext)
+      const text = await recognize(key, ext, ocr)
       if (text) {
         changed = true
         next.push({ ...a, ocrText: text })

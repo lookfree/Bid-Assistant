@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout, mock } from "bun:test"
+import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bun:test"
 import { and, eq, inArray } from "drizzle-orm"
 import { Hono } from "hono"
-import type { ProjectDeps } from "../src/routes/projects"
+import { projectRoutes, type ProjectDeps } from "../src/routes/projects"
 import { loginWithPhone } from "../src/services/auth"
 import { getDb, closeDb } from "../src/db/client"
 import { users, projectFiles, libraryItems, projectSteps } from "../src/db/schema"
@@ -14,23 +14,10 @@ setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB
 // 这一步——它只是锦上添花，outline 没同步上，下一次 content 收尾钩子也会补上。绝不该让它的瞬时
 // 失败（DB 抖动等）把已经成功的正文更新变成一个非契约的失败响应，诱导用户误以为要重试。
 //
-// 用 mock.module 把 syncCredentialsOutline 换成必抛错的实现，钉住「抛错也 200 {html}、content
-// 已更新，但 outline 因为补章没跑成而不含 sys-creds」——outline 是否含 sys-creds 是判断 mock
-// 真的生效了（而不是巧合地正常跑通）的关键信号，比单纯断言 200 更有说服力。
-//
-// 必须放独立文件：mock.module 要在本文件第一次 import routes/projects.ts 之前完成替换
-// （ESM 静态 import 先于其它语句求值），与已经在文件顶部静态 import 过 projectRoutes 的
-// credentials-chapter.test.ts 没法共用同一个模块图。
-mock.module("../src/services/credentials-chapter", () => ({
-  SYS_CREDS_ID: "sys-creds",
-  buildCredentialsChapterHtml: (credentials: { title: string }[]) =>
-    credentials.length ? credentials.map((c) => `<h3>${c.title}</h3>`).join("\n") : "",
-  syncCredentialsOutline: async () => {
-    throw new Error("模拟 DB 抖动：outline 补章瞬时失败")
-  },
-}))
-
-const { projectRoutes } = await import("../src/routes/projects")
+// syncCredentialsOutline 换成必抛错的实现走 ProjectDeps 注入（与 preDeduct/createRun 等同一套
+// 手法，见 routes/projects.ts），不用 mock.module：mock.module 是进程级全局替换，会泄漏给同批
+// 全量跑的其它测试文件（同一 services/credentials-chapter 模块还有 credentials-chapter.test.ts
+// 在测真实现），钉住 mock 生效的证据只需注入端能观察到调用发生即可。
 
 let token = ""
 let userId = ""
@@ -64,6 +51,12 @@ const mockDeps: Partial<ProjectDeps> = {
     params: { temperature: 0.7, max_tokens: 8192, top_p: 1 },
     chain: [{ provider: "deepseek", model: "deepseek-chat" }],
   }),
+  // 钉住「抛错也 200 {html}、content 已更新，但 outline 因为补章没跑成而不含 sys-creds」——
+  // outline 是否含 sys-creds 是判断注入真的生效了（而不是巧合地正常跑通）的关键信号，
+  // 比单纯断言 200 更有说服力。buildCredentialsChapterHtml 用真实现即可，无需另造假的。
+  syncCredentialsOutline: async () => {
+    throw new Error("模拟 DB 抖动：outline 补章瞬时失败")
+  },
 }
 
 const app = new Hono()

@@ -5,38 +5,36 @@
  * routes/library.ts 的 POST/PUT 是否真的触发它属于接线，用最后一条 zod 往返测试顺带盖到
  * （经真实路由保存一次，确认 attachmentSchema 没把 ocrText 剥掉——sourceFileId 被剥的教训）。
  */
-import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout, mock } from "bun:test"
+import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bun:test"
 import { eq } from "drizzle-orm"
 import { Hono } from "hono"
 import { getDb, closeDb } from "../src/db/client"
 import { users, projectFiles, libraryItems } from "../src/db/schema"
 import { loginWithPhone } from "../src/services/auth"
 import { putObject } from "../src/storage/s3"
+import { backfillAttachmentOcr } from "../src/services/library-ocr"
+import { libraryRoutes } from "../src/routes/library"
 import { uniquePhone, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连真库 + 真 MinIO
 
+// ocr 走 backfillAttachmentOcr 的第三参注入（默认真实 ocrImage，与 services/files.ts
+// convertPdfToPages 的 callAgent 同一手法）——不用 mock.module：那是进程级全局替换模块表，
+// 同进程全量跑时会泄漏给同一个 services/ocr 模块的其它测试文件（test/services/ocr.test.ts、
+// routes/files.ts 的 /files/ocr 路由），此前正是这样把它们拖挂的。
 let ocrCalls = 0
 let ocrBehavior: (dataUrl: string) => Promise<string> = async () => ""
-
-// mock.module 必须在 services/library-ocr.ts 被首次 import 之前完成替换（ESM 静态 import
-// 先于其它语句求值）——本文件因此对 library-ocr（及依赖它的 routes/library）一律用动态 import，
-// 手法同 refresh-credentials-appendix-resilience.test.ts。
-mock.module("../src/services/ocr", () => ({
-  ocrImage: async (dataUrl: string) => {
-    ocrCalls++
-    return ocrBehavior(dataUrl)
-  },
-}))
-
-const { backfillAttachmentOcr } = await import("../src/services/library-ocr")
+const ocrStub = async (dataUrl: string) => {
+  ocrCalls++
+  return ocrBehavior(dataUrl)
+}
 
 type Attachment = { fileId: string; name: string; sourceFileId?: string; ocrText?: string }
 
 let userId = ""
 let token = ""
 
-// 真实写一个 MinIO 对象（内容随意，OCR 走 mock 不关心字节）+ 对应 project_files 行
+// 真实写一个 MinIO 对象（内容随意，OCR 走 stub 不关心字节）+ 对应 project_files 行
 async function insertImageFile(filename: string): Promise<string> {
   const key = `library-ocr-test/${userId}/${crypto.randomUUID()}/${filename}`
   await putObject(key, new TextEncoder().encode("fake-image-bytes"), "image/png")
@@ -94,7 +92,7 @@ describe("backfillAttachmentOcr", () => {
     const fileId = await insertImageFile("license.png")
     const itemId = await insertItem([{ fileId, name: "license.png" }])
 
-    await backfillAttachmentOcr(itemId, userId)
+    await backfillAttachmentOcr(itemId, userId, ocrStub)
 
     const atts = await loadAttachments(itemId)
     expect(atts[0]?.ocrText).toBe("统一社会信用代码91xx")
@@ -106,7 +104,7 @@ describe("backfillAttachmentOcr", () => {
     const itemId = await insertItem([{ fileId, name: "license-existing.png", ocrText: "已存在的识别文字" }])
 
     const before = ocrCalls
-    await backfillAttachmentOcr(itemId, userId)
+    await backfillAttachmentOcr(itemId, userId, ocrStub)
     expect(ocrCalls).toBe(before)
 
     const atts = await loadAttachments(itemId)
@@ -119,7 +117,7 @@ describe("backfillAttachmentOcr", () => {
     const itemId = await insertItem([{ fileId, name: "contract.pdf" }])
 
     const before = ocrCalls
-    await backfillAttachmentOcr(itemId, userId)
+    await backfillAttachmentOcr(itemId, userId, ocrStub)
     expect(ocrCalls).toBe(before)
 
     const atts = await loadAttachments(itemId)
@@ -133,7 +131,7 @@ describe("backfillAttachmentOcr", () => {
     const fileId = await insertImageFile("broken.png")
     const itemId = await insertItem([{ fileId, name: "broken.png" }])
 
-    await expect(backfillAttachmentOcr(itemId, userId)).resolves.toBeUndefined()
+    await expect(backfillAttachmentOcr(itemId, userId, ocrStub)).resolves.toBeUndefined()
 
     const atts = await loadAttachments(itemId)
     expect(atts[0]?.ocrText).toBeUndefined()
@@ -155,7 +153,7 @@ describe("backfillAttachmentOcr", () => {
       return "识别文字（应被放弃，不该写回）"
     }
 
-    await expect(backfillAttachmentOcr(itemId, userId)).resolves.toBeUndefined() // 竞态不该抛异常
+    await expect(backfillAttachmentOcr(itemId, userId, ocrStub)).resolves.toBeUndefined() // 竞态不该抛异常
 
     const atts = await loadAttachments(itemId)
     expect(atts).toEqual(userChange) // 用户的并发改动原封不动，没被旧快照的整列覆写吞掉
@@ -167,7 +165,7 @@ describe("backfillAttachmentOcr", () => {
     const fileId = await insertImageFile("overlong.png")
     const itemId = await insertItem([{ fileId, name: "overlong.png" }])
 
-    await backfillAttachmentOcr(itemId, userId)
+    await backfillAttachmentOcr(itemId, userId, ocrStub)
 
     const atts = await loadAttachments(itemId)
     expect(atts[0]?.ocrText?.length).toBeLessThanOrEqual(500)
@@ -182,7 +180,7 @@ describe("backfillAttachmentOcr", () => {
     const fileId = await insertImageFile("license.jpg")
     const itemId = await insertItem([{ fileId, name: "license.jpg" }])
 
-    await backfillAttachmentOcr(itemId, userId)
+    await backfillAttachmentOcr(itemId, userId, ocrStub)
 
     expect(capturedUrl.startsWith("data:image/jpeg;base64,")).toBe(true)
     const atts = await loadAttachments(itemId)
@@ -196,7 +194,7 @@ describe("backfillAttachmentOcr", () => {
     const fileId = await insertImageFile("emoji-boundary.png")
     const itemId = await insertItem([{ fileId, name: "emoji-boundary.png" }])
 
-    await backfillAttachmentOcr(itemId, userId)
+    await backfillAttachmentOcr(itemId, userId, ocrStub)
 
     const atts = await loadAttachments(itemId)
     const text = atts[0]?.ocrText ?? ""
@@ -206,7 +204,6 @@ describe("backfillAttachmentOcr", () => {
   })
 
   it("⑦zod 往返：带 ocrText 的附件经真实路由保存查回仍在（防 attachmentSchema 静默剥字段）", async () => {
-    const { libraryRoutes } = await import("../src/routes/library")
     const app = new Hono()
     app.route("/api/library", libraryRoutes())
     const headers = { Authorization: `Bearer ${token}`, "content-type": "application/json" }
@@ -225,7 +222,9 @@ describe("backfillAttachmentOcr", () => {
     const row = (await created.json()) as { id: string; attachments: Attachment[] }
     expect(row.attachments[0]?.ocrText).toBe("预置识别文字") // POST 响应即应保留
 
-    // 查回（真正落库后重读，而非只信任 insert().returning() 的回显）
+    // 查回（真正落库后重读，而非只信任 insert().returning() 的回显）。这条走的是路由层
+    // fire-and-forget 默认的真实 ocrImage，但附件已带 ocrText，backfill 一开始就跳过它，
+    // 不会真的打 OCR 服务。
     const reloaded = await loadAttachments(row.id)
     expect(reloaded[0]?.ocrText).toBe("预置识别文字")
   })

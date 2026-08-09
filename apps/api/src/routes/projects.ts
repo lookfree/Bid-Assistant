@@ -22,7 +22,8 @@ import { detectedCategory, effectiveCategory, logCategoryCorrection } from "../s
 import { markExportDirty, shouldChargeExport } from "../services/export-dirty"
 import { getConfig } from "../services/config"
 import { credentialsRunInput, libraryRefsRunInput, type CredentialInput } from "../services/credentials"
-import { buildCredentialsChapterHtml, syncCredentialsOutline, SYS_CREDS_ID } from "../services/credentials-chapter"
+import { SYS_CREDS_ID } from "../services/credentials-chapter"
+import * as credentialsChapter from "../services/credentials-chapter"
 import { toCamel, toSnake } from "../lib/case"
 import { parsePagination, pagedBody, pagedResult } from "../lib/pagination"
 import { presignGet, deleteObject, listObjectKeys } from "../storage/s3"
@@ -266,6 +267,8 @@ export type ProjectDeps = {
   renderDeck: typeof client.renderDeck
   deleteObject: typeof deleteObject
   listObjectKeys: typeof listObjectKeys
+  buildCredentialsChapterHtml: typeof credentialsChapter.buildCredentialsChapterHtml
+  syncCredentialsOutline: typeof credentialsChapter.syncCredentialsOutline
 }
 
 /** 属主校验取项目行：只见自己的，查不到与越权同语义（undefined → 404）。 */
@@ -415,6 +418,8 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
   const settleFailed = deps.settleFailed ?? billing.settleFailed
   const resolveStepHoldAmount = deps.resolveStepHoldAmount ?? billing.resolveStepHoldAmount
   const stateOverrides = deps.buildStateOverrides ?? buildStateOverrides
+  const buildCredentialsChapterHtml = deps.buildCredentialsChapterHtml ?? credentialsChapter.buildCredentialsChapterHtml
+  const syncCredentialsOutline = deps.syncCredentialsOutline ?? credentialsChapter.syncCredentialsOutline
 
   /** 回灌 state 前的权益守卫（评审二轮 F8）：落库 deck 里的企业模板 key 是「专业版时期设置」的
    *  持久物,export/present 重渲会原样复用——档位已不含 pptTemplate 时在此剥除（导出照跑,
