@@ -26,11 +26,19 @@
 
 导出入口从单按钮改为三选一(默认"全量标书",一次点击一册):选择 → 渲染 → 下载。三种产物**并存**:导完技术标再导商务标,两个下载按钮都在,互不覆盖。
 
+**导出预告区(方案 A,2026-08-09 用户确认)**:弹窗内明白列出本次导出将自动附加的内容,消除"导出的文件里凭空多出东西"的意外(所见即所得原则):
+- 恒定项:封面、目录、投标人承诺与签章页、AI 生成说明页
+- 资质附录(仅全量/商务册):现查资料库资质类条目,列出"资质证照附录 N 项:营业执照、检测证书×2…";无资质条目时该行不显示
+- 技术册预告中**没有**资质附录行(暗标风险,见分册规则表)
+- 预告数据:新增轻量接口 `GET /projects/:id/export-preview` 返回 `{credentials: [{title, imageCount}]}`(复用 credentialsRunInput,只取标题与计数,不取字节)
+
 ## 实现要点
 
 - `run_input.export_scope`: `"full" | "tech" | "business"`(缺省 full,老调用方行为不变)
 - agent 导出节点:按 scope 过滤 outline 章节后调渲染;`render_docx` 加 `scope` 参数管标题后缀/组尾巴/附录取舍;docx→pdf 链同 scope
-- 产物键:artifacts 合并通道天然支持并存——`docx`/`pdf`(全量,键名不变保持兼容)、`docx_tech`/`pdf_tech`、`docx_biz`/`pdf_biz`;`pdf_pages` 按最近一次渲染回报(前端逐产物显示)
+- 产物键:artifacts 合并通道天然支持并存——`docx`/`pdf`(全量,键名不变保持兼容)、`docx_tech`/`pdf_tech`、`docx_biz`/`pdf_biz`;`pdf_pages`/`pdf_pages_tech`/`pdf_pages_biz` 逐册回报
+- **None 显式覆写语义随键走**(既有铁律):某册 docx→pdf 失败时,只显式置空**该册**的 pdf/pdf_pages 键,不碰其他册——merge reducer 只增不删,漏置空会把上一版混进新结果
+- 技术册导出时 App API **不下发 credentials**(附录取舍在数据层就干净,渲染层无需感知)
 - 前端:导出按钮 → 三选一;下载区按存在的产物键逐个出按钮
 - 脏标记逻辑不动(scope 与 dirty 无关)
 
