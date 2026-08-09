@@ -154,6 +154,30 @@ describe("buildCredentialsChapterHtml", () => {
     expect(html).not.toContain(long) // 完整 200 字版本不该出现
   })
 
+  // 2026-08-09 review campaign 尾批修复：孤代理经附录章 alt→审查步 html_to_review_text→
+  // 模型请求，复现 UnicodeEncodeError 全灭。裸 code-unit slice(0,120) 若切点落在代理对
+  // 中间会切穿 emoji；须按码点截断，且与 agent 侧 Python `ocr[:120]`（按码点索引）逐字同形。
+  it("ocrText 第 120 个码点恰好是一个 emoji（代理对）→ 按码点截断，不产生孤立代理", () => {
+    const ocr = "字".repeat(119) + "😀" + "字".repeat(10)
+    const expected = Array.from(ocr).slice(0, 120).join("")
+    expect(expected).toBe("字".repeat(119) + "😀") // 预期：119 个「字」+ 完整 emoji，emoji 不被切穿
+
+    const html = buildCredentialsChapterHtml([
+      { title: "资质证书", images: [{ fileId: "f1", key: "k1", name: "n1", ocrText: ocr }] },
+    ])
+    expect(html).toContain(`alt="资质证书|${expected}"`)
+
+    const altValue = html.match(/alt="([^"]*)"/)![1]!
+    for (let i = 0; i < altValue.length; i++) {
+      const code = altValue.charCodeAt(i)
+      if (code >= 0xd800 && code <= 0xdbff) {
+        // 高位代理必须紧跟一个低位代理，不能落单（孤代理）
+        expect(altValue.charCodeAt(i + 1)).toBeGreaterThanOrEqual(0xdc00)
+        expect(altValue.charCodeAt(i + 1)).toBeLessThanOrEqual(0xdfff)
+      }
+    }
+  })
+
   it("无 ocrText → alt 退化为纯标题（与既有行为一致）", () => {
     const html = buildCredentialsChapterHtml([
       { title: "营业执照", images: [{ fileId: "f1", key: "k1", name: "n1" }] },

@@ -36,10 +36,18 @@ const OCR_ALT_CHARS = 120
 /** 占位图 alt：`标题|ocrText 截前 120 字`（无 ocrText 则纯标题）,整串统一转义一次——与 agent 侧
  *  credentials_chapter.py `_image_alt` 逐字节同形（终审 I-4：此前只有章内证照 post-pass 的
  *  占位图带 OCR 摘要,附录章占位图仍是纯标题,两处占位图 alt 语义不该不一致）。传入 rawTitle
- *  必须是未转义的原始标题,与 ocrText 拼接后一并转义,避免先转义再拼接导致的二次转义。 */
+ *  必须是未转义的原始标题,与 ocrText 拼接后一并转义,避免先转义再拼接导致的二次转义。
+ *
+ *  截断必须按**码点**（不是 sliceAtCodePoint 的码元语义,那个只保证不切穿代理对,计数仍按
+ *  UTF-16 code unit）——Python 侧 `ocr[:120]` 按码点索引。emoji 若恰好落在第 120 个码点上,
+ *  两端用不同语义截会产出不同字符串;若用裸 code-unit slice 更会切穿代理对,产出孤立代理,
+ *  该串经 JSON 传给 agent 服务后 httpx 编码请求体抛 UnicodeEncodeError,拖垮同请求里的
+ *  全部模型调用（2026-08-09 review campaign 复现）。`Array.from` 按码点遍历字符串,
+ *  与 Python 索引语义一致,两端 alt 逐字相同（Plan A 双端同形铁律）。 */
 function imageAlt(rawTitle: string, ocrText: string | undefined): string {
   const ocr = (ocrText ?? "").trim()
-  const label = ocr ? `${rawTitle}|${ocr.slice(0, OCR_ALT_CHARS)}` : rawTitle
+  const truncated = Array.from(ocr).slice(0, OCR_ALT_CHARS).join("")
+  const label = ocr ? `${rawTitle}|${truncated}` : rawTitle
   return esc(label)
 }
 
