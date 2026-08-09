@@ -57,24 +57,30 @@ def _has_sys_creds(outline: dict | None) -> bool:
 
 
 def append_credentials_chapter(state: dict, chapters: dict) -> dict | None:
-    """content_node 收尾触发点。三查全过才动手:run_input 有 credentials、图内 outline 无
-    sys-creds、本轮 chapters 无 sys-creds——否则原样返回 None,调用方不覆盖任何既有状态。
+    """content_node 收尾触发点。run_input 有 credentials 就**无条件重建**这一章的 HTML——
+    评审 2026-08-09 用代码路径实证：App 侧 state_overrides 每次触发 content 都会把库里
+    outline result 回灌进图内状态，outline 带着上一次追加的 sys-creds 是**常态**而非重试
+    专属的边角场景。旧版"outline/chapters 已有 sys-creds 就不动"的三查会让编辑器/审查/
+    导出永远停在第一次生成时的那份旧图，用户在资料库里增删证照也追不上。
 
-    这三查天然实现了设计文档①的重建语义:同代重试时 outline/chapters 已经带着上一次追加的
-    结果,三查其一命中即跳过,不重建不覆盖用户可能已经编辑/删除的内容;重新生成
-    （content_generation+1）会先拿到一份不含 sys-creds 的新 outline,三查全过,照常重建。
+    outline 追加仍要去重（不能每次 content 收尾都在提纲里堆一条新的 sys-creds）；
+    chapters[SYS_CREDS_ID] 则每次都用最新的确定性 HTML 覆盖，与用户在编辑器里删单图/
+    删整章的操作无关——那些操作发生在**下一次** content 运行之前一直有效，一旦正文
+    重新收尾，附录就以资料库当前状态为准（设计文档①的"重建语义"）。
+    无 credentials（键缺省/空列表）→ 不动，返回 None。
     """
     credentials = (state.get("run_input") or {}).get("credentials") or []
     if not credentials:
         return None
-    outline = state.get("outline") or {}
-    if _has_sys_creds(outline) or SYS_CREDS_ID in chapters:
-        return None
     html = build_credentials_chapter(credentials)
     if not html:
         return None
-    # deepcopy:章字面量是模块级常量,浅拷贝会让多个 run 共享同一个 items 列表对象——
-    # 任何一处下游误改都会串到别的 run。
-    new_chapter = copy.deepcopy(SYS_CREDS_CHAPTER)
-    new_outline = {**outline, "chapters": [*outline.get("chapters", []), new_chapter]}
+    outline = state.get("outline") or {}
+    if _has_sys_creds(outline):
+        new_outline = outline                    # 已在提纲里，不重复追加
+    else:
+        # deepcopy:章字面量是模块级常量,浅拷贝会让多个 run 共享同一个 items 列表对象——
+        # 任何一处下游误改都会串到别的 run。
+        new_chapter = copy.deepcopy(SYS_CREDS_CHAPTER)
+        new_outline = {**outline, "chapters": [*outline.get("chapters", []), new_chapter]}
     return {"outline": new_outline, "chapters": {**chapters, SYS_CREDS_ID: html}}

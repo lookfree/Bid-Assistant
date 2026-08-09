@@ -154,6 +154,25 @@ class TestPipeline:
         assert [d["done"] for d in dones] == [1, 2, 3]
         assert dones[-1]["total"] == 3
 
+    def test_system_chapters_are_structurally_skipped(self, monkeypatch):
+        """系统章（如 sys-creds）结构性跳过（评审 2026-08-09 实证：App 侧 state_overrides
+        每次 content 触发都会把库里 outline result 回灌，outline 带着系统章是常态而非例外）——
+        流水线绝不能把它当普通章发模型调用：不进章清单、不进进度 total、不入 titles、
+        也不该作为"相邻章节"字样泄漏进任何一份简报（偏离/预算判定同源于这份净化后的 outline）。"""
+        state = _state(3)
+        state["outline"]["chapters"].append(
+            {"id": "sys-creds", "no": "附录", "title": "资格证明文件", "group": "business",
+             "system": True, "sourced": False, "items": []})
+        redis = _FakeRedis()
+        chat = _FakeChat()
+        out = _run(state, chat, redis=redis, monkeypatch=monkeypatch)
+        assert "sys-creds" not in out
+        assert chat.calls == 3, "系统章不该占一次模型调用"
+        assert all("资格证明文件" not in u for _, u in chat.seen), "系统章标题泄漏进了某份简报"
+        import json as _json
+        dones = [_json.loads(f["event"])["data"] for f in redis.streams if "chapter" in str(f.get("event"))]
+        assert {d["total"] for d in dones} == {3}, "进度 total 混进了系统章"
+
 
 class TestBriefTargeting:
     """按需注入：偏离表条目只发给偏离表章、招标格式模板只发给被点名的格式章——

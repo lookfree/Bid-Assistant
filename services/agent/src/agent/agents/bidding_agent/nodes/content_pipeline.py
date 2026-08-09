@@ -347,10 +347,16 @@ async def run_content_pipeline(ctx, state: dict) -> dict[str, str]:
     from agent.agents.bidding_agent.nodes.content import CHAPTER_DRAFT_PROMPT, _content_reference_block
     from agent.agents.bidding_agent.prompts.categories import category_scope
 
-    outline = state.get("outline") or {}
-    chapters = [c for c in outline.get("chapters", []) if c.get("id")]
+    outline_raw = state.get("outline") or {}
+    # 系统章（如 sys-creds）结构性跳过（评审 2026-08-09 实证）：App 侧 state_overrides 每次触发
+    # content 都会把库里 outline result 回灌进图内状态，outline 带着系统章是常态而非重试专属
+    # 的边角场景——净化一次、往下游一路传净化后的 outline/state，不发模型调用、不进进度计数、
+    # 不分字数预算、不进偏离表判定，比在每个消费点各自补一次 system 判断更不容易漏。
+    chapters = [c for c in outline_raw.get("chapters", []) if c.get("id") and not c.get("system")]
     if not chapters:
         raise RuntimeError("提纲为空，无章可写")
+    outline = {**outline_raw, "chapters": chapters}
+    state = {**state, "outline": outline}
     read = filter_read_by_package(state.get("read") or {}, state.get("run_input"))
     run_input = state.get("run_input") or {}
     generation = int(run_input.get("content_generation") or 0)
