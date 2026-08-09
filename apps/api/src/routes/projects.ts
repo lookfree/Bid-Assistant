@@ -188,6 +188,9 @@ const generationConfigSchema = z
       })
       .strict()
       .optional(),
+    // 导出分册：full（默认全套，缺省同义）| tech（技术册）| business（商务册）；export 步下发见下方
+    // run_input 组装处，agent 侧消费见 Task 2。
+    export_scope: z.enum(["full", "tech", "business"]).optional(),
   })
   .strict()
 
@@ -781,12 +784,19 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       step,
       // rag（spec316）并入 run_input：present 的 duration/template 等既有键不丢；
       // package（spec324）：已选包且非 read 步才带（read 面向全文，不分包；未选包=今天行为不变）；
-      // credentials（spec325）：仅 export 步查询下发，用户无资质图片附件则不带该键。
+      // export_scope（导出分册）：非 full 时透传给 agent，缺省/full 不带该键（today 行为不变）；
+      // credentials（spec325）：仅 export 步查询下发，用户无资质图片附件则不带该键——
+      // scope==="tech" 时数据层直接不下发（暗标风险，技术册不带资质附录），渲染层无需感知该规则。
       run_input: {
         ...runInput,
         rag: await ragRunInput(),
         ...(step !== "read" && p.selectedPackage ? { package: p.selectedPackage } : {}),
-        ...(step === "export" ? await exportCredentials(userId) : {}),
+        ...(step === "export"
+          ? {
+              ...(gen.export_scope && gen.export_scope !== "full" ? { export_scope: gen.export_scope } : {}),
+              ...(gen.export_scope === "tech" ? {} : await exportCredentials(userId)),
+            }
+          : {}),
         // spec328：线下标书审查/述标——review/present 节点用该 key 确定性解析出 chapters（无 LLM 不计费）
         ...((step === "review" || step === "present") && p.bidFileKey
           ? { bid_file_key: p.bidFileKey, bid_file_keys: p.bidFileKeys ?? [p.bidFileKey] }
@@ -1176,6 +1186,17 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const row = await latestDoneStep(p.id, step)
     if (!row) return c.json({ error: "not_found" }, 404)
     return c.json({ result: await resultForUser(step, row.result, c.get("user").id) })
+  })
+
+  // 导出分册预告（Task 3）：告诉前端「全套导出会带上哪些资质附录」，不改变任何计费/生成行为，
+  // 只读 credentialsRunInput 的现值。无资质条目回空数组（不是 404——那是「没有」这一正常态）。
+  r.get("/:id/export-preview", async (c) => {
+    const id = c.req.param("id")
+    if (!isUuid(id)) return c.json({ error: "not_found" }, 404) // 非 uuid 直接 404，避免 PG 22P02 → 500
+    const p = await ownedProject(id, c.get("user").id)
+    if (!p) return c.json({ error: "not_found" }, 404)
+    const credentials = (await credentialsRunInput(c.get("user").id)) ?? []
+    return c.json({ credentials: credentials.map((x) => ({ title: x.title, imageCount: x.images.length })) })
   })
 
   // 产物下载：present/export 步的 result.artifacts[kind]（spec201 step.done 带 artifacts 合并快照），
