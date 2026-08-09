@@ -27,8 +27,9 @@ import { stepNotApplicable, useStep } from "@/lib/use-step"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import { clauseLocationIn, groupDocSections, type DocHeading, type DocSentence } from "@/lib/doc-sections"
-import { cloneProject, setProjectPackage, triggerDownload } from "@/lib/project"
+import { cloneProject, exportPreview, setProjectPackage, triggerDownload } from "@/lib/project"
 import { exportReadReport } from "@/lib/risk-api"
+import { missingCerts } from "@/lib/cert-keywords"
 
 // 分类解读类目 icon（agent 结果只带 key，不产 UI 组件），未知 key 兜底 FileText
 const CATEGORY_ICONS: Record<string, LucideIcon> = {
@@ -208,6 +209,21 @@ export default function ReadPage() {
   const foundCount = allItems.filter((i) => i.status === "found").length
   const missingCount = allItems.filter((i) => i.status === "missing").length
 
+  // 缺证预警（2026-08-09 资料库定向注入设计,计划⑤）：读标完成后取一次导出预告，只为读它
+  // 已有的 credentials[].title（资料库库存），不为导出功能本身。失败静默——取不到 preview
+  // 就不显示预警条，不阻塞读标页其余内容（与 use-export.ts 的 exportPreview 调用同一容错口径）。
+  const [certPreview, setCertPreview] = useState<{ credentials: { title: string }[] } | null>(null)
+  useEffect(() => {
+    if (!projectId || !real) return
+    let alive = true
+    exportPreview(projectId).then((r) => { if (alive) setCertPreview(r) }).catch(() => {})
+    return () => { alive = false }
+  }, [projectId, real])
+  const missingCertList = useMemo(
+    () => (certPreview ? missingCerts(categories, certPreview.credentials.map((c) => c.title)) : []),
+    [categories, certPreview],
+  )
+
   function handleItemClick(clauseIds: string[] | undefined, key: string) {
     if (!clauseIds || clauseIds.length === 0) return
     setActiveClauses(clauseIds)
@@ -367,6 +383,21 @@ export default function ReadPage() {
             ))}
           </ul>
           <p className="ml-7 text-xs text-muted-foreground">处理后重新新建标书上传,可让解读覆盖这些文件。</p>
+        </div>
+      )}
+
+      {/* 缺证预警（2026-08-09 资料库定向注入设计,计划⑤）：读标完成即提醒,别等到正文里的
+          证照占位处才看到"待补充"。取不到 export-preview 时 missingCertList 恒空,静默不显示。 */}
+      {real && missingCertList.length > 0 && (
+        <div className="mt-5 flex items-center gap-2.5 rounded-2xl border border-warning/40 bg-warning/10 p-4">
+          <AlertTriangle className="size-5 shrink-0 text-warning-foreground" />
+          <p className="text-sm text-foreground">
+            招标要求提供：{missingCertList.join("、")}——资料库未见，建议先到
+            <Link href="/library" className="mx-1 font-semibold text-primary hover:underline">
+              资料库
+            </Link>
+            上传
+          </p>
         </div>
       )}
 
