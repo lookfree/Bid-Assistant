@@ -136,7 +136,7 @@ export default function ContentPage() {
     const build = (g: Group) =>
       ol.chapters
         .filter((c) => c.group === g)
-        .map((c) => ({ id: c.id, no: c.no, title: c.title, sourced: c.sourced,
+        .map((c) => ({ id: c.id, no: c.no, title: c.title, sourced: c.sourced, system: c.system,
                      html: realBodies?.[c.id] ?? "",
                      // 章内条目带下去：左栏据此展开子目录，点条目跳到章内该小标题处
                      items: (c.items ?? []).map((i: OutlineItem) => ({ id: i.id, label: i.label })) }))
@@ -269,8 +269,10 @@ export default function ContentPage() {
      生成入口，跑出部分结果后入口就消失，用户只剩右侧小助手一条路——而那条路当时还打不通。
      补写走的是单章通道（不消耗积分），只补空的那几章，绝不重写已写好的：那是用户付过钱的成果。 */
   const DRAFT_INSTRUCTION = "本章尚无正文，请按提纲与招标要求撰写本章正文初稿"
+  // 系统章（如附录 sys-creds）排除在外：它的空章态不是"没写"，是资料库无资质/被清空，
+  // 一键补写会把确定性拼接的附录送进 LLM 幻写（终审 I1）。
   const missingChapters = useMemo(
-    () => [...data.tech, ...data.business].filter((c) => !c.html.trim()),
+    () => [...data.tech, ...data.business].filter((c) => !c.html.trim() && !c.system),
     [data],
   )
   const [filling, setFilling] = useState<{ done: number; total: number } | null>(null)
@@ -659,9 +661,18 @@ export default function ContentPage() {
             <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => void onImageChosen(e)} />
           </div>
 
-          {/* 附录过期提示条：只在查看「资格证明文件」章且资料库资质图片集合已跟这一章脱节时出现 */}
-          {credAppendix.stale && (
-            <CredentialsAppendixBanner refreshing={credAppendix.refreshing} onRefresh={() => void credAppendix.refreshAppendix()} />
+          {/* 附录提示条：no_credentials 一次性提示优先于"过期"——那种失败重试也解决不了，
+              继续显示"点击刷新"会把用户晾在死循环里（终审 I1）。 */}
+          {credAppendix.noCredentialsNotice ? (
+            <CredentialsAppendixBanner variant="no-credentials" onDismiss={credAppendix.dismissNoCredentialsNotice} />
+          ) : (
+            credAppendix.stale && (
+              <CredentialsAppendixBanner
+                variant="stale"
+                refreshing={credAppendix.refreshing}
+                onRefresh={() => void credAppendix.refreshAppendix()}
+              />
+            )
           )}
 
           {active.html.trim() ? (
@@ -693,13 +704,19 @@ export default function ContentPage() {
               <div className="flex size-12 items-center justify-center rounded-2xl bg-primary/10">
                 <Sparkles className="size-6 text-primary" />
               </div>
-              <p className="mt-4 text-sm font-medium text-foreground">本章节正文尚未生成</p>
-              <p className="mt-1 max-w-xs text-xs text-muted-foreground">
-                {active.sourced
-                  ? "该章节对应招标文件要求，点击下方按钮由 AI 生成初稿后即可编辑。"
-                  : "该章节为提纲新增内容，招标文件中无直接对应，建议结合自身情况补写。"}
+              <p className="mt-4 text-sm font-medium text-foreground">
+                {active.system ? "本章节尚无内容" : "本章节正文尚未生成"}
               </p>
-              {isReal ? (
+              <p className="mt-1 max-w-xs text-xs text-muted-foreground">
+                {active.system
+                  ? "资料库无资质或本章已清空，可点击刷新附录或删除本章"
+                  : active.sourced
+                    ? "该章节对应招标文件要求，点击下方按钮由 AI 生成初稿后即可编辑。"
+                    : "该章节为提纲新增内容，招标文件中无直接对应，建议结合自身情况补写。"}
+              </p>
+              {/* 系统章（如附录 sys-creds）不给「生成本章正文」：内容纯代码拼接，一键送 LLM
+                  会把它改写成模型幻觉（终审 I1）——空态只提示刷新附录/删除本章两条真实出路。 */}
+              {active.system ? null : isReal ? (
                 /* 正文已生成但本章为空：直接补写本章（走单章通道，不消耗积分）。
                    此前这里只写一句"去右侧 AI 助手输入指令"，而那条路当时对**从未生成过的章**
                    根本不通——请求在调模型之前就被拒了，用户只看到「改写失败，请稍后重试」。 */

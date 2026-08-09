@@ -12,6 +12,9 @@ export type Chapter = {
   title: string
   /** 是否能在招标文件中索引到来源；false 表示提纲新增、正文缺失需补写 */
   sourced: boolean
+  /** 系统生成章标记（如资格证明文件附录 sys-creds）：空章补写 CTA 必须跳过它——直接送 LLM
+   *  会把确定性拼接的附录改写成模型幻觉内容（终审 I1）。 */
+  system?: boolean
   /** 已生成的正文 HTML；空字符串表示尚未生成（缺失） */
   html: string
   /** 提纲里的章内条目（小标题）。正文按**章**生成与保存，条目只是章内的标题——
