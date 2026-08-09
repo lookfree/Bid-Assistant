@@ -17,9 +17,9 @@ logger = logging.getLogger(__name__)
 def _fetch_object(key: str) -> bytes | None:
     """render_docx 附录占位图取字节回调（2026-08-09 资质附录系统章节 Plan A①）：附录已在
     content 步前置成生成期系统章节，chapters 里的占位图只带 MinIO key，字节留到渲染这一刻
-    才取。渲染整体本就同步跑在事件循环里（现状未变，未额外丢线程池），这里原样转发
-    storage_read.read_bytes；取不到时向上抛的异常由 render_docx 捕获落「图片加载失败」占位行，
-    这里不吞异常。"""
+    才取。这里保持同步实现——调用方 export_node 已把整个 render_docx 调用（含本回调触发的
+    MinIO 网络 I/O）经 asyncio.to_thread 整体丢进线程池，回调本身无需再包一层；取不到时向上
+    抛的异常由 render_docx 捕获落「图片加载失败」占位行，这里不吞异常。"""
     return storage_read.read_bytes(key)
 
 
@@ -92,9 +92,9 @@ def make_export_node(ctx):
                 raise RuntimeError("该册没有章节，无法导出")
             outline = {**outline, "chapters": wanted}
         sfx = {"tech": "_tech", "business": "_biz"}.get(scope, "")
-        data = render_docx(outline, state.get("chapters") or {},
-                            meta=meta, package=package, fetch_object=_fetch_object,
-                            fmt=run_input.get("format"), scope=scope)  # spec330 输出格式（缺省 None=现行样式）
+        data = await asyncio.to_thread(render_docx, outline, state.get("chapters") or {},  # 同步 MinIO I/O（fetch_object）+ CPU 渲染一并丢线程池，不裸跑事件循环卡住同进程所有在途 run（与下面 docx_to_pdf 同理）
+                                        meta=meta, package=package, fetch_object=_fetch_object,
+                                        fmt=run_input.get("format"), scope=scope)  # spec330 输出格式（缺省 None=现行样式）
         key = await upload_artifact(
             ctx, f"bid{sfx}.docx", data,
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document")

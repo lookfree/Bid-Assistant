@@ -123,6 +123,33 @@ def test_export_node_adds_package_cover_line_when_run_input_package_present(monk
     assert "包件：《实网攻防》" in texts
 
 
+def test_export_node_renders_docx_via_to_thread(monkeypatch):
+    """审查修正（2026-08-09）：render_docx 现在经 fetch_object 做同步 MinIO 网络 I/O（多张证照
+    =多次串行阻塞取字节），叠加它本身 CPU 密集的 docx 组装——裸跑在事件循环上会卡住同进程
+    所有在途 run。钉住 export_node 是经 asyncio.to_thread 调用 render_docx，而不是直接同步调用
+    （monkeypatch asyncio.to_thread 捕获目标函数）。"""
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+    monkeypatch.setattr(export_mod, "docx_to_pdf", lambda data: None)
+    calls = []
+    real_to_thread = asyncio.to_thread
+
+    async def _capturing_to_thread(func, *args, **kwargs):
+        calls.append(func)
+        return await real_to_thread(func, *args, **kwargs)
+    monkeypatch.setattr(asyncio, "to_thread", _capturing_to_thread)
+    node = make_export_node(RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-40"))
+    asyncio.run(node({
+        "outline": {"chapters": [{"id": "t1", "no": "第一章", "title": "项目理解", "group": "tech"}]},
+        "chapters": {"t1": "<p>正文</p>"},
+        "read": {"project_meta": {"name": "投标文件"}},
+    }))
+    assert export_mod.render_docx in calls
+
+
 def test_export_node_does_not_pass_credentials_to_render_docx(monkeypatch):
     """2026-08-09 附录退役（Plan A①）：附录已前置到 content 步的 chapters 里（sys-creds 系统章），
     export 步不再单独下发/预取 credentials——render_docx 调用参数不含 credentials 键，改传
