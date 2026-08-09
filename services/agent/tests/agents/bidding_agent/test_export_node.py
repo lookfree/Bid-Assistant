@@ -340,6 +340,136 @@ def test_artifacts_reducer_keeps_pptx_and_docx():
     assert merged == {"pptx": "artifacts/p/present.pptx", "docx": "artifacts/p/bid.docx"}
 
 
+def test_scope_tech_filters_chapters_and_writes_suffixed_keys(monkeypatch):
+    """技术册：只渲 group=tech 章；产物键 docx_tech/pdf_tech/pdf_pages_tech，
+    render_docx 收到 scope='tech'。"""
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+    monkeypatch.setattr(export_mod, "docx_to_pdf", lambda data: b"%PDF-1.4 fake")
+    captured = {}
+    real_render_docx = export_mod.render_docx
+
+    def _capturing_render_docx(*args, **kwargs):
+        data = real_render_docx(*args, **kwargs)
+        captured["outline"] = args[0]
+        captured["kwargs"] = kwargs
+        return data
+    monkeypatch.setattr(export_mod, "render_docx", _capturing_render_docx)
+    node = make_export_node(RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-30"))
+    out = asyncio.run(node({
+        "outline": {"chapters": [
+            {"id": "t1", "no": "第一章", "title": "项目理解", "group": "tech"},
+            {"id": "b1", "no": "第二章", "title": "商务报价", "group": "business"},
+        ]},
+        "chapters": {"t1": "<p>技术正文</p>", "b1": "<p>商务正文</p>"},
+        "read": {"project_meta": {"name": "投标文件"}},
+        "run_input": {"export_scope": "tech"},
+    }))
+    assert [c["id"] for c in captured["outline"]["chapters"]] == ["t1"]
+    assert captured["kwargs"]["scope"] == "tech"
+    assert set(out["artifacts"].keys()) == {"docx_tech", "pdf_tech", "pdf_pages_tech"}
+    assert out["artifacts"]["docx_tech"] == "artifacts/proj-30/bid_tech.docx"
+    assert out["artifacts"]["pdf_tech"] == "artifacts/proj-30/bid_tech.pdf"
+
+
+def test_scope_business_takes_untagged_chapters(monkeypatch):
+    """未标组章节归商务册（与预算口径一致）。run_input export_scope='business'，
+    outline 含 group='tech' 与无 group 字段各一章 → 渲染只收无组那章；键带 _biz。"""
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+    monkeypatch.setattr(export_mod, "docx_to_pdf", lambda data: None)
+    captured = {}
+    real_render_docx = export_mod.render_docx
+
+    def _capturing_render_docx(*args, **kwargs):
+        data = real_render_docx(*args, **kwargs)
+        captured["outline"] = args[0]
+        captured["kwargs"] = kwargs
+        return data
+    monkeypatch.setattr(export_mod, "render_docx", _capturing_render_docx)
+    node = make_export_node(RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-31"))
+    out = asyncio.run(node({
+        "outline": {"chapters": [
+            {"id": "t1", "no": "第一章", "title": "项目理解", "group": "tech"},
+            {"id": "u1", "no": "第二章", "title": "商务条款"},  # 未标组
+        ]},
+        "chapters": {"t1": "<p>技术正文</p>", "u1": "<p>商务正文</p>"},
+        "read": {"project_meta": {"name": "投标文件"}},
+        "run_input": {"export_scope": "business"},
+    }))
+    assert [c["id"] for c in captured["outline"]["chapters"]] == ["u1"]
+    assert captured["kwargs"]["scope"] == "business"
+    assert out["artifacts"] == {
+        "docx_biz": "artifacts/proj-31/bid_biz.docx",
+        "pdf_biz": None,
+        "pdf_pages_biz": None,
+    }
+
+
+def test_scope_default_full_unchanged(monkeypatch):
+    """缺省无 export_scope：行为与今天逐字节一致——键集合 {"docx","pdf","pdf_pages"}，
+    render_docx 收到 scope='full'、章节未过滤。既有全量测试同时守护此项。"""
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+    monkeypatch.setattr(export_mod, "docx_to_pdf", lambda data: None)
+    captured = {}
+    real_render_docx = export_mod.render_docx
+
+    def _capturing_render_docx(*args, **kwargs):
+        data = real_render_docx(*args, **kwargs)
+        captured["outline"] = args[0]
+        captured["kwargs"] = kwargs
+        return data
+    monkeypatch.setattr(export_mod, "render_docx", _capturing_render_docx)
+    node = make_export_node(RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-32"))
+    out = asyncio.run(node({
+        "outline": {"chapters": [
+            {"id": "t1", "no": "第一章", "title": "项目理解", "group": "tech"},
+            {"id": "b1", "no": "第二章", "title": "商务报价", "group": "business"},
+        ]},
+        "chapters": {"t1": "<p>技术正文</p>", "b1": "<p>商务正文</p>"},
+        "read": {"project_meta": {"name": "投标文件"}},
+    }))
+    assert [c["id"] for c in captured["outline"]["chapters"]] == ["t1", "b1"]
+    assert captured["kwargs"]["scope"] == "full"
+    assert out["artifacts"] == {
+        "docx": "artifacts/proj-32/bid.docx",
+        "pdf": None,
+        "pdf_pages": None,
+    }
+
+
+def test_scope_with_no_matching_chapters_raises(monkeypatch):
+    """全部章节同组时另一册为空 → RuntimeError（防御；前端本已置灰不该到这）。"""
+    import pytest
+
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+    monkeypatch.setattr(export_mod, "docx_to_pdf", lambda data: None)
+    node = make_export_node(RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-33"))
+    with pytest.raises(RuntimeError, match="该册没有章节"):
+        asyncio.run(node({
+            "outline": {"chapters": [
+                {"id": "t1", "no": "第一章", "title": "项目理解", "group": "tech"},
+            ]},
+            "chapters": {"t1": "<p>技术正文</p>"},
+            "read": {"project_meta": {"name": "投标文件"}},
+            "run_input": {"export_scope": "business"},
+        }))
+
+
 def test_export_node_reports_real_pdf_pages(monkeypatch):
     """真实页数回报（篇幅控制地面真值）：可解析的 PDF → artifacts 带 pdf_pages；
     解析不了（上一用例的假字节）则静默缺省,绝不影响导出。"""

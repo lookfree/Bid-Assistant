@@ -66,7 +66,11 @@ def make_export_node(ctx):
     企业母版：deck.enterprise_template_id 若给出（present 阶段已落库的 MinIO key），重渲时
     重新预取母版字节传给 render_pptx，保持编辑后重导出仍套用同一份企业母版；取不到静默回退
     空白设计，不影响 pptx 重渲。
-    spec326：渲染前先跑一次敏感词扫描（_scan_and_flag，record-only，见其文档串）。"""
+    spec326：渲染前先跑一次敏感词扫描（_scan_and_flag，record-only，见其文档串）。
+    2026-08-08 导出分册：run_input.export_scope 为 "tech"/"business" 时按 group 过滤章节
+    （分组口径与预算一致：tech 组进技术册，其余含未标组归商务册），产物键与文件名带
+    _tech/_biz 后缀，与全量键互不覆盖；过滤后空册抛 RuntimeError（防御，前端本已置灰）。
+    缺省/未知 scope 一律按 full 处理，键与调用与今天逐字节一致；pptx 分支不受 scope 影响。"""
     async def export_node(state):
         meta = (state.get("read") or {}).get("project_meta", {})
         run_input = state.get("run_input") or {}
@@ -75,25 +79,37 @@ def make_export_node(ctx):
         credentials = (await _fetch_credentials(credentials_input)
                        if credentials_input else None)
         await _scan_and_flag(ctx, state)
-        data = render_docx(state.get("outline") or {}, state.get("chapters") or {},
+        # spec 2026-08-08 导出分册：export_scope 缺省/未知值一律按 full 处理，逐字节兼容旧调用
+        scope = run_input.get("export_scope") or "full"
+        outline = state.get("outline") or {}
+        if scope in ("tech", "business"):
+            # 分组口径与预算一致：tech 组进技术册，其余（含未标组）归商务册
+            wanted = [c for c in outline.get("chapters", [])
+                      if (c.get("group") == "tech") == (scope == "tech")]
+            if not wanted:
+                raise RuntimeError("该册没有章节，无法导出")
+            outline = {**outline, "chapters": wanted}
+        sfx = {"tech": "_tech", "business": "_biz"}.get(scope, "")
+        data = render_docx(outline, state.get("chapters") or {},
                             meta=meta, package=package, credentials=credentials,
-                            fmt=run_input.get("format"))  # spec330 输出格式（缺省 None=现行样式）
+                            fmt=run_input.get("format"), scope=scope)  # spec330 输出格式（缺省 None=现行样式）
         key = await upload_artifact(
-            ctx, "bid.docx", data,
+            ctx, f"bid{sfx}.docx", data,
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-        artifacts = {"docx": key}
+        artifacts = {f"docx{sfx}": key}
         # soffice 子进程最长 120s：丢线程池，别把单进程事件循环整体卡死（终审 Important 项）
         pdf_bytes = await asyncio.to_thread(docx_to_pdf, data)
         if pdf_bytes is not None:
-            artifacts["pdf"] = await upload_artifact(ctx, "bid.pdf", pdf_bytes, "application/pdf")
+            artifacts[f"pdf{sfx}"] = await upload_artifact(ctx, f"bid{sfx}.pdf", pdf_bytes, "application/pdf")
             # 真实页数回报（篇幅控制地面真值）：前端展示"实际 N 页",也是后续密度/超写校准的数据源。
             # 解析不出也写 None——state.artifacts 是 merge reducer,不显式覆写会把上一版页数带给新文档
-            artifacts["pdf_pages"] = pdf_page_count(pdf_bytes)
+            artifacts[f"pdf_pages{sfx}"] = pdf_page_count(pdf_bytes)
         else:
-            # 本次 docx→pdf 失败:显式置空。否则 merge reducer 让上一版的 pdf/pdf_pages 混进新结果——
-            # 用户会下载到旧版式 PDF、看到旧文档的"实际 N 页"（评审 F1,重导出改格式场景实翻）
-            artifacts["pdf"] = None
-            artifacts["pdf_pages"] = None
+            # 本次 docx→pdf 失败:显式置空,且只置本册键。否则 merge reducer 让上一版的
+            # pdf/pdf_pages 混进新结果——用户会下载到旧版式 PDF、看到旧文档的"实际 N 页"
+            # （评审 F1,重导出改格式场景实翻）
+            artifacts[f"pdf{sfx}"] = None
+            artifacts[f"pdf_pages{sfx}"] = None
         deck = state.get("deck")
         if deck:   # 编辑后 deck 的导出由此生效（overrides 已在续跑前灌入 state）
             master_bytes = await fetch_master_bytes(deck.get("enterprise_template_id"))
