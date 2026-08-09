@@ -72,6 +72,36 @@ class TestCleaner:
         assert clean_internal_ids("所有★关键条款（sec-54-c1、sec-58-c1）均完全满足") == "所有★关键条款均完全满足"
         assert clean_internal_ids("<td>sec-37-c36, sec-37-c39</td>") == "<td></td>"
 
+    def test_id_regex_has_left_boundary(self):
+        """2026-08-09 复现：_ID 正则没有左边界，「IPsec-3DES」里的「sec-3」被当成内部 id
+        抹掉，变成「IPDES」——这是要交付的技术方案原文，不是我们编的条款号。"""
+        assert clean_internal_ids("支持 IPsec-3DES 加密") == "支持 IPsec-3DES 加密"
+        assert clean_internal_ids("采用 IPsec-2 隧道") == "采用 IPsec-2 隧道"
+
+    def test_empty_checkbox_parens_survive(self):
+        """2026-08-09 复现：旧版无条件删除"只剩空白/分隔符"的括号，把投标响应模板里
+        天生就是空的勾选框「是（ ）否（ ）」也删了——这种括号从来没装过内部 id。"""
+        assert clean_internal_ids("是（ ）否（ ）") == "是（ ）否（ ）"
+        assert clean_internal_ids("（　）同意 （　）不同意") == "（　）同意 （　）不同意"
+
+    def test_punctuation_next_to_inline_tag_survives(self):
+        """2026-08-09 复现：旧版清理"编号残留标点"时把 `<`/`>` 当成任意标签的边界，
+        连用户内容里紧挨着 <strong>/<img> 的顿号、逗号也吃掉——这些标点旁边根本没有 id。"""
+        assert (clean_internal_ids("<p>质保期三年，<strong>终身免费维护</strong>，随叫随到。</p>")
+                == "<p>质保期三年，<strong>终身免费维护</strong>，随叫随到。</p>")
+        assert (clean_internal_ids("<p>核心指标包括<strong>可用性</strong>、<strong>响应时间</strong>、"
+                                    "<strong>恢复时间</strong>。</p>")
+                == "<p>核心指标包括<strong>可用性</strong>、<strong>响应时间</strong>、<strong>恢复时间</strong>。</p>")
+        assert (clean_internal_ids('<p>详见下图，<img src="x.png" alt="图"/></p>')
+                == '<p>详见下图，<img src="x.png" alt="图"/></p>')
+
+    def test_id_bearing_table_cell_becomes_empty_not_deleted(self):
+        """2026-08-09 复现：偏离表一行四列，第三列内容全是内部 id，旧版把整个 <td>
+        连元素删掉，后面的列全部左移错位——必须清空单元格内容，保留 <td></td> 占位。"""
+        row = "<tr><td>1</td><td>★国密</td><td>对应条款：sec-6-c1。</td><td>无偏离</td></tr>"
+        assert (clean_internal_ids(row)
+                == "<tr><td>1</td><td>★国密</td><td></td><td>无偏离</td></tr>")
+
 
 class TestAppliedEverywhere:
     """光有函数不够——四处都必须真的调用它。"""

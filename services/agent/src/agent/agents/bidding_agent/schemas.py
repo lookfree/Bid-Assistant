@@ -232,6 +232,9 @@ class RiskFinding(BaseModel):
             "必须是正文里真实出现的文字，不可改写、不可自己编；实在没有可摘的就给空字符串。"
         ),
     )
+    # 去重键要用它区分"标题/建议撞车但引用条款不同"的两条发现（同类问题在多条★条款上
+    # 各出现一次，是不同的发现，不能被去重塌缩成一条）。字段本身是内部键，不清洗、不展示。
+    clause_ids: list[str] = Field(default_factory=list, description=_CLAUSE_IDS_DESC)
 
     @model_validator(mode="after")
     def _strip_blank(self):
@@ -267,10 +270,18 @@ class RiskReport(BaseModel):
         # 「响应函已提供，含90天有效期承诺…（sec-8-c10）」）。风险项在 RiskFinding 里已清，
         # 这个平级列表当时漏了。
         self.passed_items = [clean_internal_ids(p) for p in self.passed_items]
-        seen: set[tuple[str, str]] = set()
+        seen: set[tuple[str, str, tuple[str, ...]]] = set()
         uniq = []
         for i in self.items:
-            key = (i.title.strip(), i.advice.strip())
+            # 标题清洗前非空、清洗后变空——说明整个标题就是个内部 id/字段名（如「sec-8-c95」），
+            # 不是真发现。min_length 挡的是清洗前的原值，挡不住这种；丢弃这一条，不拖累整份报告。
+            if not i.title.strip():
+                logger.warning("risk finding dropped: title became empty after id cleanup (advice=%r)",
+                               i.advice[:40])
+                continue
+            # 引用条款不同的两条发现，标题/建议文字可能撞车（同类问题分别命中不同★条款）——
+            # 去重键要能分得开，否则会把它们错误地塌缩成一条，漏报剩下的条款。
+            key = (i.title.strip(), i.advice.strip(), tuple(sorted(set(i.clause_ids))))
             if key in seen:
                 continue
             seen.add(key)

@@ -86,6 +86,29 @@ def test_different_items_are_kept():
     assert len(r.items) == 2
 
 
+def test_items_with_different_clause_ids_are_not_collapsed():
+    """标题/建议撞车，但引用的是不同★条款——是两条不同的发现（同类问题在多个条款上
+    各出现一次），去重键不带 clause_ids 会把它们错误地塌缩成一条，漏报剩下的条款。"""
+    r = RiskReport(score=80, items=[
+        _item(clause_ids=["sec-8-c95"]), _item(clause_ids=["sec-9-c12"])], passed_items=[])
+    assert len(r.items) == 2
+
+
+def test_identical_items_with_same_clause_ids_still_collapse():
+    """引用条款也一样才是真重复——去重不能因为加了 clause_ids 就失效。"""
+    r = RiskReport(score=80, items=[
+        _item(clause_ids=["sec-8-c95"]), _item(clause_ids=["sec-8-c95"])], passed_items=[])
+    assert len(r.items) == 1
+
+
+def test_title_emptied_by_cleanup_is_dropped_not_shipped():
+    """标题清洗前非空、清洗后变空——整个标题就是个内部 id，不是真发现。
+    min_length 只挡清洗前的原值，挡不住这种；必须丢弃这一条，不能连累整份报告失败。"""
+    r = RiskReport(score=80, items=[_item(title="（sec-8-c95）"), _item()], passed_items=[])
+    assert len(r.items) == 1
+    assert r.items[0].title == "缺少 ISO27001"
+
+
 def test_advice_is_required_in_the_tool_schema():
     """工具 schema 里必须标成 required——弱模型只读 schema，不读提示词散文。"""
     tool, _ = make_submit_tool("submit_risk", RiskReport, "提交审查结果")

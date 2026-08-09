@@ -183,39 +183,54 @@ def strip_chat_wrapper(text: str) -> str:
 # 字段说明里已明写禁止，但那是"请模型配合"；确定性清洗才是能保证的那一半。
 # 区间右端两种写法都有：缩写的「sec-37-c36~c37」和写全的「sec-55-c11~sec-55-c20」。
 # 只认缩写那种的话，写全的会被当成两个独立 id 分别抹掉，留下「（~）」这个更难看的残骸。
-_ID = r"sec-\d+(?:-c\d+(?:\s*[~～-]\s*(?:sec-\d+-)?c?\d+)?)?"
-# 整组括号里全是编号（含顿号/逗号分隔的多个）→ 连括号一起去掉
-_ID_GROUP = re.compile(rf"[（(]\s*(?:clause_ids\s*[:：]\s*)?{_ID}(?:\s*[、,，;；]\s*{_ID})*\s*[)）]")
+# 左边界 (?<![A-Za-z]) 必须有：没有它「IPsec-3DES」里的「sec-3」会被当成 id 抹掉，
+# 变成「IPDES」——这是要交付的技术方案原文，不是我们编的号。
+_ID = r"(?<![A-Za-z])sec-\d+(?:-c\d+(?:\s*[~～-]\s*(?:sec-\d+-)?c?\d+)?)?"
 _ID_BARE = re.compile(_ID)
 _FIELD_NAMES = re.compile(r"\b(?:required_structure|clause_ids|target_id|target_tab|chapter_id)\b")
-_EMPTY_PARENS = re.compile(r"[（(]\s*[、,，;；\s]*\s*[)）]")
+
+# 哨兵替换架构：先把每个 id 换成一个正文不可能出现的私用区字符，后面每一步清理都
+# 只处理"紧贴着哨兵"的括号/分隔符/空白——清理天生只会碰到"因删 id 而残"的位置，
+# 不会误伤本来就存在的顿号/逗号（哪怕它紧挨着 <strong> 这类行内标签）、
+# 也不会误删"是（ ）否（ ）"这种从一开始就合法的空括号。
+_SENTINEL = ""
+_SEP = "、,，;；"
+# 整组括号只剩哨兵（含字段名被删后遗留的冒号）→ 连括号一起去掉
+_SENTINEL_GROUP = re.compile(rf"[（(]\s*[:：]?\s*{_SENTINEL}(?:\s*[{_SEP}]\s*{_SENTINEL})*\s*[)）]")
+# 三个以上编号连写抹成的哨兵串，先并成一个，再交给下面的悬挂规则收尾
+_SENTINEL_CHAIN = re.compile(rf"{_SENTINEL}(?:\s*[{_SEP}]\s*{_SENTINEL})+")
+# 只清哨兵**右边**紧跟的分隔符（id 消失后，它成了后面内容开头的悬空标点，一定是残渣）。
+# 哨兵**左边**的分隔符不能同样清——它常是前一句真实内容自己的收尾标点（「响应；sec-58-c1 …」
+# 里的分号是「响应」这句的句读，不是编号列表的胶水，一并抹掉会连用户内容的标点都吃掉）。
+_SENTINEL_TAIL_SEP = re.compile(rf"{_SENTINEL}\s*[{_SEP}]")
+_SENTINEL_WS = re.compile(rf"\s*{_SENTINEL}\s*")
+# 整段只剩一个空壳标签（「<p>对应招标文件条款：。</p>」——内容全是编号，抹完什么都不剩）：
+# p/li 连段一起去掉；**td/th 只清空内容、保留 <td></td> 占位**——删掉整个单元格元素
+# 会让同一行后面的列全部错位（偏离表这类表格，评委看到的是错位后的判定）。
+# 冒号后必须紧跟句末标点才算空壳，「<p>说明：</p>」这类领起下文的标签不受影响。
+_EMPTY_SHELL = re.compile(r"<(p|li|td|th)\b[^>]*>\s*[^<>]{0,40}[：:]\s*[。；;]\s*</\1>")
+
+
+def _empty_shell_repl(m: "re.Match[str]") -> str:
+    tag = m.group(1)
+    return f"<{tag}></{tag}>" if tag in ("td", "th") else ""
 
 
 def clean_internal_ids(text: str) -> str:
-    """抹掉内部条款 id 与字段名，并收拾抹完留下的括号/标点/空白残迹。"""
+    """抹掉内部条款 id 与字段名，并收拾抹完留下的括号/标点/空白残迹（哨兵替换架构，见上）。"""
     if not text:
         return text
-    out = _ID_GROUP.sub("", text)
-    out = _ID_BARE.sub("", out)
+    out = _ID_BARE.sub(_SENTINEL, text)
     out = _FIELD_NAMES.sub("", out)
-    out = _EMPTY_PARENS.sub("", out)
+    out = _SENTINEL_GROUP.sub("", out)
+    out = _SENTINEL_CHAIN.sub(_SENTINEL, out)
+    out = _SENTINEL_TAIL_SEP.sub(_SENTINEL, out)
+    out = _SENTINEL_WS.sub(_SENTINEL, out)
+    out = out.replace(_SENTINEL, "")
     out = re.sub(r"\s{2,}", " ", out)
     out = re.sub(r"(——|—)\s+", r"\1", out)                      # 抹掉字段名后破折号后面留下的空格
     out = re.sub(r"(?:——|—|-{2,})\s*(?=[，。；、]|$)", "", out)   # 「xxx——」后面全空了，破折号也别留
-    # 三个以上编号连写（「条款：sec-6-c1, sec-6-c2, sec-6-c3。」）抹完会剩一串分隔符，
-    # 只收末尾那个不够——先并成一个，再交给下面的悬挂规则
-    # 分号也是模型写编号列表用的分隔符（_ID_GROUP 里已认它），并成一个时保留原样式
-    out = re.sub(r"([、,，；;])(?:\s*[、,，；;])+", r"\1", out)
-    # 紧跟冒号/左括号/**标签右尖括号**的分隔符：编号列表起头于单元格或段首时留在最前面
-    out = re.sub(r"(?:(?<=[：:（(>])|^)\s*[、,，；;]\s*", "", out)
-    # 抹掉编号后遗留的悬挂顿号/逗号：句末、右括号前，以及**标签边界前**
-    # （正文里编号出现在表格单元格中，清完会留下 <td>, </td> 这样的残渣）
-    out = re.sub(r"[、,，]\s*(?=[）)。；<]|$)", "", out)
-    out = re.sub(r"\s+[、,，]\s+", " ", out)      # 句中连续编号被抹后留下的孤立顿号
     # 中文标点后不该有空格：述标评分行「sec-54-c1 ★A；sec-58-c1 ★B」抹完会留下「★A； ★B」
     out = re.sub(r"(?<=[，。；、：])[ 　]+", "", out)
-    # 整段只剩一个空壳标签（「<p>对应招标文件条款：。</p>」——内容全是编号，抹完什么都不剩），
-    # 连段一起去掉：这段要印在交给评委的标书里。冒号后必须紧跟句末标点才算空壳，
-    # 「<p>说明：</p>」这类领起下文的标签不受影响。
-    out = re.sub(r"<(p|li|td|th)\b[^>]*>\s*[^<>]{0,40}[：:]\s*[。；;]\s*</\1>", "", out)
+    out = _EMPTY_SHELL.sub(_empty_shell_repl, out)
     return out.strip(" 　·、，,")
