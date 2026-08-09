@@ -48,7 +48,7 @@ const schema = z.object({
   MINIO_SECRET_KEY: z.string(),
   MINIO_BUCKET: z.string().default("bidsaas"),
   MINIO_REGION: z.string().default("us-east-1"),
-  FILE_MAX_SIZE_MB: z.coerce.number().int().positive().default(50),
+  FILE_MAX_SIZE_MB: z.coerce.number().int().positive().default(500),
   FILE_PRESIGN_TTL_SECONDS: z.coerce.number().int().positive().default(600),
 
   // —— 人机验证（滑块）：默认开启；AK/Secret 复用短信 AK 需给该 RAM 用户授 AliyunYundunCaptchaFullAccess ——

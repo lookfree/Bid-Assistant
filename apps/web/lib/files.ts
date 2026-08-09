@@ -9,11 +9,11 @@ export type UploadedFile = { fileId: string; key: string; name: string }
 /* ==================== 全系统上传口径（唯一真相） ====================
  * 大小上限与可选格式一律从这里取，各入口不要再各自写死——查重页曾标「≤ 100 MB」而
  * 服务端 50MB 直接拒（用户传完才被 400，白等一场），模板入口曾放行 .ppt 而服务端白名单
- * 只认 .pptx/.potx。服务端权威：apps/api 的 FILE_MAX_SIZE_MB（默认 50）与
+ * 只认 .pptx/.potx。服务端权威：apps/api 的 FILE_MAX_SIZE_MB（默认 500）与
  * services/files.ts 的 SUPPORTED_EXTS；这里是**展示口径**，改服务端时同步改这里。 */
 
 /** 单文件大小上限（MB），与 API 的 FILE_MAX_SIZE_MB 默认值一致。 */
-export const UPLOAD_MAX_MB = 50
+export const UPLOAD_MAX_MB = 500
 
 /** 投标文件/标书：正文类文档。 */
 export const ACCEPT_BID = ".pdf,.docx,.doc"
@@ -30,7 +30,7 @@ const EXT_FAMILY: Record<string, string> = {
   pptx: "PPT", potx: "PPT", png: "图片", jpg: "图片", jpeg: "图片",
 }
 
-/** 上传提示文案（全系统统一句式）：「支持 PDF、Word、Excel · 单文件最大 50MB」。
+/** 上传提示文案（全系统统一句式）：「支持 PDF、Word、Excel · 单文件最大 500MB」。
  *  multiple=true 时追加「· 可一次选择多个文件」。 */
 export function uploadHint(accept: string, opts: { multiple?: boolean } = {}): string {
   const families: string[] = []
