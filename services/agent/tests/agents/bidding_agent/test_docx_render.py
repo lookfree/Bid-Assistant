@@ -7,13 +7,6 @@ from agent.agents.bidding_agent.render.docx import render_docx
 _TINY_PNG = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06"
              b"\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01"
              b"\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
-# 1x1 红/绿 PNG：与 _TINY_PNG 内容不同，用于验证 python-docx 按内容去重时仍各自入 media
-_TINY_PNG_RED = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02"
-                 b"\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\xcf\xc0\x00\x00\x03\x01"
-                 b"\x01\x00\xc9\xfe\x92\xef\x00\x00\x00\x00IEND\xaeB`\x82")
-_TINY_PNG_GREEN = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02"
-                   b"\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc`\xf8\xcf\x00\x00\x02\x02"
-                   b"\x01\x00{\t\x81x\x00\x00\x00\x00IEND\xaeB`\x82")
 
 
 def _doc_text(data: bytes) -> str:
@@ -93,47 +86,74 @@ def test_render_docx_with_package_adds_cover_line():
     assert texts.index("包件：《实网攻防》") < texts.index("采购人：某局")  # 位于项目名之下、其它信息之上
 
 
-def test_render_docx_without_credentials_byte_identical():
-    """spec325：不传 credentials（缺省 None）→ 输出与今天逐字节一致。"""
-    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]}
-    without_kw = render_docx(outline, {"t1": "<p>正文</p>"})
-    without_default = render_docx(outline, {"t1": "<p>正文</p>"}, credentials=None)
-    assert without_kw == without_default
+def test_render_docx_placeholder_image_fetches_bytes_via_fetch_object():
+    """2026-08-09 资质附录系统章节 Plan A①：附录已前置为普通系统章（sys-creds），章内占位图
+    `<img data-object-key>` 无 src 无字节 → fetch_object 按 key 取回 PNG 字节 → docx 含图
+    （word/media/ 计数与占位图数一致，沿用该文件既有断言手法）。"""
+    outline = {"chapters": [
+        {"id": "sys-creds", "no": "附录", "title": "资格证明文件", "group": "business", "system": True},
+    ]}
+    chapters = {"sys-creds": "<h3>营业执照</h3>"
+                             '<p><img data-file-id="f1" data-object-key="library/u1/license.png" alt="营业执照" /></p>'}
+    fetched_keys = []
 
+    def _fake_fetch(key):
+        fetched_keys.append(key)
+        return _TINY_PNG
 
-def test_render_docx_with_credentials_adds_appendix_and_media():
-    """spec325：credentials 非空 → 追加「资格证明文件」附录（一级标题+条目二级标题），
-    图片以 media 形式内嵌（word/media/ 计数与图片数一致）。"""
-    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]}
-    credentials = [{"title": "营业执照", "images": [
-        {"name": "license.png", "data": _TINY_PNG_RED},
-        {"name": "license2.png", "data": _TINY_PNG_GREEN},
-    ]}]
-    data = render_docx(outline, {"t1": "<p>正文</p>"}, credentials=credentials)
-    doc = Document(io.BytesIO(data))
-    texts = [p.text for p in doc.paragraphs]
-    assert "资格证明文件" in texts
-    assert "营业执照" in texts
-    zf = zipfile.ZipFile(io.BytesIO(data))
-    media = [n for n in zf.namelist() if n.startswith("word/media/")]
-    assert len(media) == 2
-
-
-def test_render_docx_credential_image_fetch_failure_placeholder():
-    """spec325：某图 data=None（取图失败）→ 该图占位一行「（图片加载失败：name）」，不崩，
-    不影响其余图片正常内嵌。"""
-    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]}
-    credentials = [{"title": "营业执照", "images": [
-        {"name": "missing.png", "data": None},
-        {"name": "license.png", "data": _TINY_PNG},
-    ]}]
-    data = render_docx(outline, {"t1": "<p>正文</p>"}, credentials=credentials)
+    data = render_docx(outline, chapters, fetch_object=_fake_fetch)
+    assert fetched_keys == ["library/u1/license.png"]
     doc = Document(io.BytesIO(data))
     texts = "\n".join(p.text for p in doc.paragraphs)
-    assert "（图片加载失败：missing.png）" in texts
+    assert "资格证明文件" in texts and "营业执照" in texts
     zf = zipfile.ZipFile(io.BytesIO(data))
     media = [n for n in zf.namelist() if n.startswith("word/media/")]
     assert len(media) == 1
+
+
+def test_render_docx_placeholder_image_fetch_none_falls_back_to_placeholder():
+    """fetch_object 回 None（取图失败/对象不存在）→ 占位一行「（图片加载失败：alt）」，不崩，
+    与既有 data: 坏图分支同语义。"""
+    outline = {"chapters": [
+        {"id": "sys-creds", "no": "附录", "title": "资格证明文件", "group": "business", "system": True},
+    ]}
+    chapters = {"sys-creds": '<p><img data-file-id="f1" data-object-key="library/u1/missing.png" alt="营业执照" /></p>'}
+    data = render_docx(outline, chapters, fetch_object=lambda key: None)
+    doc = Document(io.BytesIO(data))
+    texts = "\n".join(p.text for p in doc.paragraphs)
+    assert "（图片加载失败：营业执照）" in texts
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    media = [n for n in zf.namelist() if n.startswith("word/media/")]
+    assert len(media) == 0
+
+
+def test_render_docx_placeholder_image_fetch_object_raises_falls_back_to_placeholder():
+    """fetch_object 抛错（MinIO 404/网络抖动，storage_read.read_bytes 不吞异常）→ 同样落占位行，
+    不让异常炸穿整本渲染。"""
+    outline = {"chapters": [
+        {"id": "sys-creds", "no": "附录", "title": "资格证明文件", "group": "business", "system": True},
+    ]}
+    chapters = {"sys-creds": '<p><img data-file-id="f1" data-object-key="library/u1/missing.png" alt="资质证书" /></p>'}
+
+    def _raising_fetch(key):
+        raise RuntimeError("object not found")
+
+    data = render_docx(outline, chapters, fetch_object=_raising_fetch)
+    doc = Document(io.BytesIO(data))
+    texts = "\n".join(p.text for p in doc.paragraphs)
+    assert "（图片加载失败：资质证书）" in texts
+
+
+def test_render_docx_placeholder_image_corrupt_bytes_falls_back_to_placeholder():
+    """fetch_object 取到坏字节（add_picture 解码失败）→ 占位行，不崩，不影响导出整体。"""
+    outline = {"chapters": [
+        {"id": "sys-creds", "no": "附录", "title": "资格证明文件", "group": "business", "system": True},
+    ]}
+    chapters = {"sys-creds": '<p><img data-file-id="f1" data-object-key="library/u1/bad.png" alt="资质证书" /></p>'}
+    data = render_docx(outline, chapters, fetch_object=lambda key: b"not a real image")
+    doc = Document(io.BytesIO(data))
+    texts = "\n".join(p.text for p in doc.paragraphs)
+    assert "（图片加载失败：资质证书）" in texts
 
 
 def test_render_docx_applies_bid_convention_styles():
@@ -162,18 +182,6 @@ def test_render_docx_appends_ai_generated_notice():
     texts = "\n".join(p.text for p in doc.paragraphs)
     assert ("本内容由智启元投标助手生成合成类算法辅助生成，"
             "仅供投标文件编制参考，请结合招标文件原文和企业实际情况复核确认后使用。") in texts
-
-
-def test_render_docx_credential_corrupt_image_placeholder():
-    """spec325：图片字节损坏（add_picture 抛错）→ 占位一行，不崩，不影响导出。"""
-    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]}
-    credentials = [{"title": "资质证书", "images": [
-        {"name": "bad.png", "data": b"not a real image"},
-    ]}]
-    data = render_docx(outline, {"t1": "<p>正文</p>"}, credentials=credentials)
-    doc = Document(io.BytesIO(data))
-    texts = "\n".join(p.text for p in doc.paragraphs)
-    assert "（图片加载失败：bad.png）" in texts
 
 
 def test_render_docx_embeds_inline_data_url_images():

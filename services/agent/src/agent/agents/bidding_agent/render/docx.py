@@ -1,6 +1,7 @@
 from __future__ import annotations
 import base64
 import io
+from typing import Callable
 from bs4 import BeautifulSoup
 from docx import Document
 from agent.agents.bidding_agent.render.sanitize import normalize_chapter_html, strip_document_shell
@@ -39,9 +40,32 @@ def _apply_bid_styles(doc: Document) -> None:
         style.element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
 
 
-def _emit_el(doc: Document, el) -> None:
+def _emit_placeholder_image(doc: Document, el, fetch_object: Callable[[str], bytes | None] | None) -> None:
+    """附录占位图取字节落图（2026-08-09 资质附录系统章节 Plan A①）：`<img data-object-key>`
+    无 src 无字节，经 fetch_object 按 key 现取；fetch_object 缺省/取不到/取字节抛错（MinIO
+    404/网络抖动）/取到但 add_picture 解码失败——统一落「（图片加载失败：alt）」占位行，
+    best-effort，与既有 data: 坏图分支同语义，不中断整本渲染。"""
+    key = el.get("data-object-key", "")
+    alt = el.get("alt") or key
+    data = None
+    if fetch_object is not None:
+        try:
+            data = fetch_object(key)
+        except Exception:  # noqa: BLE001 取字节失败——占位保文
+            data = None
+    if data is None:
+        doc.add_paragraph(f"（图片加载失败：{alt}）")
+        return
+    try:
+        doc.add_picture(io.BytesIO(data), width=Inches(6))
+    except Exception:  # noqa: BLE001 坏字节/非受支持图片格式
+        doc.add_paragraph(f"（图片加载失败：{alt}）")
+
+
+def _emit_el(doc: Document, el, fetch_object: Callable[[str], bytes | None] | None = None) -> None:
     """单个 HTML 元素 → docx：h1/h2→Heading2、h3/h4→Heading3、p→段落、ul/li→项目符号、
-    table→表格；容器标签（div 等）递归展开，防止整块被 get_text 压扁成一段。"""
+    table→表格；容器标签（div 等）递归展开，防止整块被 get_text 压扁成一段。
+    fetch_object：附录占位图取字节回调，随递归原样透传给子节点。"""
     name = getattr(el, "name", None)
     if name in ("h1", "h2", "h3", "h4", "h5", "h6"):
         # 章内层级绝对映射（评审二轮:相对归一会让同一 <h4> 在不同章落不同 Word 级）。
@@ -56,7 +80,7 @@ def _emit_el(doc: Document, el) -> None:
     elif name == "p":
         doc.add_paragraph(el.get_text(strip=True))
         for img in el.find_all("img"):  # 光标处插图常嵌在段落里，只取文字会把图整个丢掉
-            _emit_el(doc, img)
+            _emit_el(doc, img, fetch_object)
     elif name == "ul":
         for li in el.find_all("li", recursive=False):
             doc.add_paragraph(li.get_text(strip=True), style="List Bullet")
@@ -74,9 +98,11 @@ def _emit_el(doc: Document, el) -> None:
                 doc.add_picture(io.BytesIO(base64.b64decode(src.split(",", 1)[1])), width=Inches(5.5))
             except Exception:  # noqa: BLE001 base64 破损/格式不支持——丢图保文
                 pass
+        elif el.get("data-object-key"):  # 附录占位图（无 data: src，只带 MinIO key）
+            _emit_placeholder_image(doc, el, fetch_object)
     elif name in _CONTAINERS:
         for child in el.children:
-            _emit_el(doc, child)
+            _emit_el(doc, child, fetch_object)
     elif text := el.get_text(strip=True):
         doc.add_paragraph(text)
 
@@ -153,11 +179,11 @@ def _emit_table(doc: Document, el) -> None:
                 t.cell(ar, ac).merge(t.cell(ri, ci))
 
 
-def _emit_html(doc: Document, html: str) -> None:
+def _emit_html(doc: Document, html: str, fetch_object: Callable[[str], bytes | None] | None = None) -> None:
     """HTML 最小映射到 docx。复杂样式（行内富文本等）为后续加固项。"""
     soup = BeautifulSoup(html or "", "html.parser")
     for el in soup.children:
-        _emit_el(doc, el)
+        _emit_el(doc, el, fetch_object)
 
 
 def _cover_line(doc: Document, text: str, size: int) -> None:
@@ -247,26 +273,6 @@ def _add_page_number_footer(doc: Document, project_name: str) -> None:
     _add_field(footer_p, "PAGE")
 
 
-def _append_credentials(doc: Document, credentials: list[dict]) -> None:
-    """资格证明文件附录（spec325）：分页 + 一级标题 + 逐条目二级标题 title + 逐图插入。
-    单图 data=None（取图失败）或 add_picture 抛错（坏图）→ 占位一行「（图片加载失败：name）」，
-    不影响同条目其余图片，也不影响导出整体（best-effort）。"""
-    doc.add_page_break()
-    doc.add_heading("资格证明文件", level=1)
-    for cred in credentials:
-        doc.add_heading(cred.get("title", ""), level=2)
-        for img in cred.get("images", []):
-            name = img.get("name", "")
-            data = img.get("data")
-            if data is None:
-                doc.add_paragraph(f"（图片加载失败：{name}）")
-                continue
-            try:
-                doc.add_picture(io.BytesIO(data), width=Inches(6))
-            except Exception:
-                doc.add_paragraph(f"（图片加载失败：{name}）")
-
-
 def _add_ai_notice(doc: Document) -> None:
     """文档末尾生成说明：备案要求的显式标识，导出环节自动写入（用户定稿时可自行删除）。"""
     doc.add_paragraph()
@@ -328,15 +334,18 @@ def _apply_custom_format(doc: Document, fmt: dict) -> None:
 
 def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
                  package: dict | None = None,
-                 credentials: list[dict] | None = None,
+                 fetch_object: Callable[[str], bytes | None] | None = None,
                  fmt: dict | None = None, scope: str = "full") -> bytes:
-    """完整标书 .docx：封面 + 真目录域页 + 按 outline 顺序各章正文 + 资格证明文件附录（可选）
-    + 签章页 + AI 生成提示（spec326 算法备案，恒定追加，见 _add_ai_notice）。确定性，无 LLM。
-    package（选包，spec324）存在时封面项目名下加一行包件名。
-    credentials（资质证照，spec325）非空时在签章页之前追加附录；缺省 None 时输出与今天一致。
+    """完整标书 .docx：封面 + 真目录域页 + 按 outline 顺序各章正文（含「资格证明文件」附录，
+    2026-08-09 起前置为生成期系统章节，随 outline/chapters 与其余章节一并渲染，不再是独立
+    追加步骤）+ 签章页 + AI 生成提示（spec326 算法备案，恒定追加，见 _add_ai_notice）。
+    确定性，无 LLM。package（选包，spec324）存在时封面项目名下加一行包件名。
+    fetch_object（2026-08-09 Plan A①）：章节 HTML 里 `<img data-object-key>` 占位图（无 src
+    无字节）经它按 key 现取字节落图；取不到/未传/取到坏字节 → 占位行「（图片加载失败：…）」，
+    与既有 data: 坏图分支同语义，best-effort，不阻断整本渲染。
     scope（分册，spec 2026-08-08-export-scope）："full"（默认，逐字节兼容旧调用）/"tech"/"business"：
     封面项目名与页脚文档名追加「·技术标部分」/「·商务标部分」，章标题不再带（技术标）/（商务标）
-    尾巴——整册同组，逐章带尾巴是噪音。章节过滤与 credentials 取舍是调用方职责，渲染器只管拿到的数据。"""
+    尾巴——整册同组，逐章带尾巴是噪音。章节过滤是调用方职责，渲染器只管拿到的数据。"""
     meta = _norm_meta(meta or {})
     _SCOPE_SUFFIX = {"tech": "·技术标部分", "business": "·商务标部分"}
     suffix = _SCOPE_SUFFIX.get(scope, "")
@@ -362,11 +371,9 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
         body = strip_document_shell(chapters.get(ch.get("id", ""), ""))
         body = normalize_chapter_html(body, ch.get("no", ""), ch.get("title", ""), ch.get("id", ""))
         if body:
-            _emit_html(doc, body)
+            _emit_html(doc, body, fetch_object)
         else:
             doc.add_paragraph("（本章正文待生成）")
-    if credentials:
-        _append_credentials(doc, credentials)
     # 签章页
     doc.add_page_break()
     doc.add_heading("投标人承诺与签章", level=1)

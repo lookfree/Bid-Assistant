@@ -14,25 +14,13 @@ from agent.parsing import storage_read
 logger = logging.getLogger(__name__)
 
 
-async def _fetch_credential_image(key: str) -> dict:
-    """单张证照图片按 MinIO key 预取字节；取图失败（网络抖动/坏 key）→ data=None，
-    交渲染层落一行占位文字，绝不中断导出（spec325 best-effort）。"""
-    name = key.rsplit("/", 1)[-1]
-    try:
-        data = await asyncio.to_thread(storage_read.read_bytes, key)
-    except Exception:
-        data = None
-    return {"name": name, "data": data}
-
-
-async def _fetch_credentials(credentials: list[dict]) -> list[dict]:
-    """逐条目逐图预取字节：render_docx 保持纯同步渲染，取图（唯一的 I/O）放在节点层。"""
-    result = []
-    for cred in credentials:
-        images = await asyncio.gather(
-            *(_fetch_credential_image(key) for key in cred.get("images", [])))
-        result.append({"title": cred.get("title", ""), "images": list(images)})
-    return result
+def _fetch_object(key: str) -> bytes | None:
+    """render_docx 附录占位图取字节回调（2026-08-09 资质附录系统章节 Plan A①）：附录已在
+    content 步前置成生成期系统章节，chapters 里的占位图只带 MinIO key，字节留到渲染这一刻
+    才取。渲染整体本就同步跑在事件循环里（现状未变，未额外丢线程池），这里原样转发
+    storage_read.read_bytes；取不到时向上抛的异常由 render_docx 捕获落「图片加载失败」占位行，
+    这里不吞异常。"""
+    return storage_read.read_bytes(key)
 
 
 async def _scan_and_flag(ctx, state: dict) -> None:
@@ -62,8 +50,10 @@ def make_export_node(ctx):
     spec315a：state 有 deck（含 App 编辑回灌的）则同时重渲 .pptx，merge 覆盖旧 pptx key 同名对象。
     spec323：docx 落库后 best-effort 转 .pdf；转换失败不写 artifacts['pdf']，不影响 docx 产出。
     spec324：run_input.package 存在时封面带包件名。
-    spec325：run_input.credentials 非空时预取图片字节，渲染追加「资格证明文件」附录；
-    缺省不带 credentials 键时渲染调用与今天一致。
+    2026-08-09 资质附录系统章节 Plan A①：附录不再是导出步独有的逻辑——它在 content 步收尾就
+    已前置为 chapters 里的普通系统章（sys-creds），随其余章节一起走 outline 顺序渲染；
+    这里只需把取字节回调 fetch_object 传给 render_docx，章内 `<img data-object-key>` 占位图
+    由渲染层统一解析（取不到落占位行），导出步不再单独下发/预取 credentials。
     企业母版：deck.enterprise_template_id 若给出（present 阶段已落库的 MinIO key），重渲时
     重新预取母版字节传给 render_pptx，保持编辑后重导出仍套用同一份企业母版；取不到静默回退
     空白设计，不影响 pptx 重渲。
@@ -88,9 +78,6 @@ def make_export_node(ctx):
         meta = (state.get("read") or {}).get("project_meta", {})
         run_input = state.get("run_input") or {}
         package = run_input.get("package")
-        credentials_input = run_input.get("credentials")
-        credentials = (await _fetch_credentials(credentials_input)
-                       if credentials_input else None)
         await _scan_and_flag(ctx, state)
         # spec 2026-08-08 导出分册：export_scope 缺省/未知值一律按 full 处理，逐字节兼容旧调用
         scope = run_input.get("export_scope") or "full"
@@ -106,7 +93,7 @@ def make_export_node(ctx):
             outline = {**outline, "chapters": wanted}
         sfx = {"tech": "_tech", "business": "_biz"}.get(scope, "")
         data = render_docx(outline, state.get("chapters") or {},
-                            meta=meta, package=package, credentials=credentials,
+                            meta=meta, package=package, fetch_object=_fetch_object,
                             fmt=run_input.get("format"), scope=scope)  # spec330 输出格式（缺省 None=现行样式）
         key = await upload_artifact(
             ctx, f"bid{sfx}.docx", data,

@@ -123,12 +123,10 @@ def test_export_node_adds_package_cover_line_when_run_input_package_present(monk
     assert "包件：《实网攻防》" in texts
 
 
-def test_export_node_without_credentials_render_call_identical(monkeypatch):
-    """spec325：run_input 无 credentials 键 → render_docx 调用不带 credentials（或为 None），
-    产出字节与今天一致（回归：不因新增功能改变现有导出结果）。"""
-    from docx import Document
-    import io as io_mod
-
+def test_export_node_does_not_pass_credentials_to_render_docx(monkeypatch):
+    """2026-08-09 附录退役（Plan A①）：附录已前置到 content 步的 chapters 里（sys-creds 系统章），
+    export 步不再单独下发/预取 credentials——render_docx 调用参数不含 credentials 键，改传
+    fetch_object 回调。"""
     class _Storage:
         async def put_bytes(self, key, data, content_type=None):
             pass
@@ -140,7 +138,6 @@ def test_export_node_without_credentials_render_call_identical(monkeypatch):
 
     def _capturing_render_docx(*args, **kwargs):
         data = real_render_docx(*args, **kwargs)
-        captured["data"] = data
         captured["kwargs"] = kwargs
         return data
     monkeypatch.setattr(export_mod, "render_docx", _capturing_render_docx)
@@ -150,15 +147,20 @@ def test_export_node_without_credentials_render_call_identical(monkeypatch):
         "chapters": {"t1": "<p>正文</p>"},
         "read": {"project_meta": {"name": "投标文件"}},
     }))
-    assert captured["kwargs"].get("credentials") is None
-    doc = Document(io_mod.BytesIO(captured["data"]))
-    texts = "\n".join(p.text for p in doc.paragraphs)
-    assert "资格证明文件" not in texts
+    assert "credentials" not in captured["kwargs"]
+    assert captured["kwargs"]["fetch_object"] is export_mod._fetch_object
 
 
-def test_export_node_prefetches_credential_images(monkeypatch):
-    """spec325：run_input.credentials 非空 → 节点按 key 预取字节（storage_read.read_bytes），
-    渲染出的 docx 含附录标题与图片 media。"""
+def test_export_node_fetch_credentials_helper_removed():
+    """_fetch_credentials/_fetch_credential_image 随附录退役一并删除——取图逻辑现在完全在
+    render_docx 内（经 fetch_object 回调按需取字节），export 节点不再自己拼装 credentials 列表。"""
+    assert not hasattr(export_mod, "_fetch_credentials")
+    assert not hasattr(export_mod, "_fetch_credential_image")
+
+
+def test_export_node_resolves_placeholder_images_via_fetch_object(monkeypatch):
+    """chapters 里的附录占位图（`<img data-object-key>`，2026-08-09 系统章节前置生成）经 export
+    节点传给 render_docx 的 fetch_object 现取字节，docx 含图（沿用 spec325 既有断言手法）。"""
     from agent.parsing import storage_read as storage_read_mod
 
     class _Storage:
@@ -179,19 +181,26 @@ def test_export_node_prefetches_credential_images(monkeypatch):
     monkeypatch.setattr(storage_read_mod, "read_bytes", _fake_read_bytes)
     node = make_export_node(RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-13"))
     out = asyncio.run(node({
-        "outline": {"chapters": [{"id": "t1", "no": "第一章", "title": "项目理解", "group": "tech"}]},
-        "chapters": {"t1": "<p>正文</p>"},
+        "outline": {
+            "chapters": [
+                {"id": "t1", "no": "第一章", "title": "项目理解", "group": "tech"},
+                {"id": "sys-creds", "no": "附录", "title": "资格证明文件", "group": "business", "system": True},
+            ]
+        },
+        "chapters": {
+            "t1": "<p>正文</p>",
+            "sys-creds": ('<h3>营业执照</h3>'
+                          '<p><img data-file-id="f1" data-object-key="library/user1/license.png" '
+                          'alt="营业执照" /></p>'),
+        },
         "read": {"project_meta": {"name": "投标文件"}},
-        "run_input": {"credentials": [
-            {"title": "营业执照", "images": ["library/user1/license.png"]},
-        ]},
     }))
     assert out["artifacts"]["docx"] == "artifacts/proj-13/bid.docx"
     assert fetched_keys == ["library/user1/license.png"]
 
 
-def test_export_node_credential_fetch_failure_no_crash(monkeypatch):
-    """spec325：图片 key 取图抛错（MinIO 404/网络）→ 节点不崩，占位段落进入 docx。"""
+def test_export_node_survives_placeholder_image_fetch_failure(monkeypatch):
+    """占位图渲染时取字节失败（MinIO 404/网络抖动）→ export 节点不崩，占位段落进入 docx。"""
     from docx import Document
     import io as io_mod
     from agent.parsing import storage_read as storage_read_mod
@@ -216,17 +225,20 @@ def test_export_node_credential_fetch_failure_no_crash(monkeypatch):
     monkeypatch.setattr(export_mod, "render_docx", _capturing_render_docx)
     node = make_export_node(RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-14"))
     out = asyncio.run(node({
-        "outline": {"chapters": [{"id": "t1", "no": "第一章", "title": "项目理解", "group": "tech"}]},
-        "chapters": {"t1": "<p>正文</p>"},
+        "outline": {
+            "chapters": [
+                {"id": "sys-creds", "no": "附录", "title": "资格证明文件", "group": "business", "system": True},
+            ]
+        },
+        "chapters": {
+            "sys-creds": '<p><img data-file-id="f1" data-object-key="library/user1/missing.png" alt="营业执照" /></p>',
+        },
         "read": {"project_meta": {"name": "投标文件"}},
-        "run_input": {"credentials": [
-            {"title": "营业执照", "images": ["library/user1/missing.png"]},
-        ]},
     }))
     assert out["artifacts"]["docx"] == "artifacts/proj-14/bid.docx"
     doc = Document(io_mod.BytesIO(captured["data"]))
     texts = "\n".join(p.text for p in doc.paragraphs)
-    assert "（图片加载失败：missing.png）" in texts
+    assert "（图片加载失败：营业执照）" in texts
 
 
 def test_export_node_rerender_fetches_master_from_deck_enterprise_template_id(monkeypatch):
