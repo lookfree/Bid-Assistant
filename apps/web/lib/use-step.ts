@@ -342,8 +342,16 @@ export function useStep<T>(step: StepName) {
 
 /** 跨步结果按需拉取（slim 首屏配套）：本页需要引用**其他步骤**的结果时用
  *  （提纲页的原文栏引用 read 结果、正文页的章节树引用 outline 结果）。
- *  该步无 done 行 → 不发请求、loading 恒 false（没数据的页面绝不显示加载）。 */
-export function useOtherStepResult<T>(projectId: string | null, info: ProjectInfo | null, step: StepName) {
+ *  该步无 done 行 → 不发请求、loading 恒 false（没数据的页面绝不显示加载）。
+ *  refetchToken：该步一直是 done、不会再翻转（如反复重导出的 export 步），effect 靠 done 变化
+ *  重取的默认口径接不住"内容没变但产物换了一版"——调用方自增这个计数器即可强制重取一次
+ *  （主#14：导出成功后要让下载区立刻看到刚产出的这版，不必等下次 done 翻转或整页刷新）。 */
+export function useOtherStepResult<T>(
+  projectId: string | null,
+  info: ProjectInfo | null,
+  step: StepName,
+  refetchToken?: number,
+) {
   const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState(false)
   // 拉取失败 ≠ 数据不存在:调用方须区分展示（否则「提纲已完成但拉取瞬断」会被误说成"先完成提纲"）
@@ -367,7 +375,7 @@ export function useOtherStepResult<T>(projectId: string | null, info: ProjectInf
     return () => {
       alive = false
     }
-  }, [projectId, step, done])
+  }, [projectId, step, done, refetchToken])
   return { data, loading, error }
 }
 

@@ -83,7 +83,11 @@ export function useExport(opts: {
   // （agent best-effort），PDF 选项置灰。2026-08-09 分册起 pdf 键随 scope 走，不能再固定读 pdf——
   // 否则技术册转换失败时会被商务册仍在的 pdf 键误判成"可用"。终审 I1：必须先看 docx 键是否存在——
   // 该 scope 从未导出过时 docx/pdf 键都没有，此前只看"pdf 键不存在"会把它也一并置灰，堵死首次导出。
-  const { data: exportedResult } = useOtherStepResult<ExportArtifacts>(projectId, info, "export")
+  // exportRefetchToken（主#14）：export 步一直是 done、useOtherStepResult 靠 done 翻转重取的
+  // 默认口径接不住"同一个 done 步又跑出新产物"——本会话内每导出成功一次自增一次，强制重取
+  // 最新快照，下载区/PDF 置灰判断才跟得上刚产出的这版，不必等整页刷新。
+  const [exportRefetchToken, setExportRefetchToken] = useState(0)
+  const { data: exportedResult } = useOtherStepResult<ExportArtifacts>(projectId, info, "export", exportRefetchToken)
   const pdfUnavailable = pdfUnavailableFor(exportedResult, exportScope)
   // 已知不可用时把停留在 pdf 的选择拨回 word，避免「已禁用但仍被选中」的怪状态
   useEffect(() => {
@@ -107,6 +111,16 @@ export function useExport(opts: {
   function flashExportStatus(text: string) {
     setExportStatus(text)
     setTimeout(() => setExportStatus(""), 3000)
+  }
+
+  /** 导出成功后刷新「过期门」的两侧依据（主#14 双向修的后半——导出侧）：重取 export-preview
+   *  换新 volumes/content_changed_at，并推 exportRefetchToken 逼 exportedResult 重取最新产物
+   *  快照。刚导完的册不能再被下载区判成"内容已修改"而置灰——那正是过期门要拦的场景，不能
+   *  连自己刚产出的这版也拦。失败静默：不影响本次已经在 doExport 里处理过的下载/提示。 */
+  function refreshAfterExport() {
+    if (!projectId) return
+    setExportRefetchToken((t) => t + 1)
+    exportPreview(projectId).then((r) => setPreview(r)).catch(() => {})
   }
 
   /** 真实页数后缀（agent 导出时用 PDF 数出的地面真值,artifacts.pdfPages，分册键随 scope 走）。
@@ -146,9 +160,15 @@ export function useExport(opts: {
     return { text: "导出前需完成：标书正文生成", href: "/content", label: "前往正文页" }
   }
 
-  /** 正文/提纲发生实际变更：下次导出重新按「要收费」显示（服务端已同步置脏）。 */
+  /** 正文/提纲发生实际变更：下次导出重新按「要收费」显示（服务端已同步置脏）。
+   *  主#14 双向修的前半——保存/改写侧：下载区的过期门单独读 preview.content_changed_at，
+   *  它只在 [projectId, exportOpen] 变化时重取；这一刻不开关导出弹窗的话，这个字段会停在
+   *  上一次生成/导出那一刻，下载区就不知道内容又变了，过期的册反而显示"可直下"。本地把它
+   *  推进到"现在"比等一次网络往返更可靠，也不因请求失败而错过（page.tsx:819 的铁律：过期的
+   *  册禁用直下——绝不悄悄发旧文件）。 */
   function markContentChanged() {
     setLocalClean(false)
+    setPreview((p) => (p ? { ...p, content_changed_at: new Date().toISOString() } : p))
   }
 
   /* 付费用户在导出菜单点「确认导出」：体检未跑不再静默触发，先显式确认计费；再按风险弱拦截 */
@@ -216,6 +236,7 @@ export function useExport(opts: {
         triggerDownload(dl.url)
         setExportStatus(`已开始下载《${dl.filename}》${pagesSuffix(exportRes, exportScope)}，可在浏览器「下载」列表查看`)
         setLocalClean(true)
+        refreshAfterExport()
       } catch (e) {
         // 连接中途断开 / 双发撞 running / 撞上对账刚收尾（step_already_done）：run 在服务端照常
         // 跑或已完成——转收敛轮询等真实结果,绝不把切页断流误报成「导出失败」诱导重跑重扣。
@@ -231,6 +252,7 @@ export function useExport(opts: {
             triggerDownload(dl.url)
             setExportStatus(`已开始下载《${dl.filename}》${pagesSuffix(converged, exportScope)}，可在浏览器「下载」列表查看`)
             setLocalClean(true)
+            refreshAfterExport()
             return
           } catch (e2) {
             // 收敛成功但 pdf 产物缺失（该次 docx→pdf 转换失败）:导出步其实成功了,给准确文案
@@ -275,6 +297,7 @@ export function useExport(opts: {
       try {
         await pollStepResult(projectId, "export")
         notifyCreditsChanged()
+        refreshAfterExport()
         setExportStatus("导出已完成，点击「导出」下载文件")
       } catch {
         setExportStatus("")

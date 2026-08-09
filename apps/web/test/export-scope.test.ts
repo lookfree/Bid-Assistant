@@ -45,4 +45,9 @@ describe("volumeStale（终审 C1：下载区过期判定）", () => {
     expect(volumeStale("2026-08-01T00:00:00.000000+00:00", "2026-08-09T00:00:00.000Z", true)).toBe(true)
     expect(volumeStale("2026-08-09T01:00:00.000000+00:00", "2026-08-09T00:00:00.000Z", true)).toBe(false)
   })
+  test("时间戳解析不出来（NaN）一律按过期处理——NaN < x 恒为 false，裸比较会把坏数据读成'未过期'", () => {
+    expect(volumeStale("不是时间戳", "2026-08-09T00:00:00.000Z", true)).toBe(true)
+    expect(volumeStale("2026-08-01T00:00:00.000Z", "不是时间戳", true)).toBe(true)
+    expect(volumeStale("不是时间戳", "也不是", true)).toBe(true)
+  })
 })

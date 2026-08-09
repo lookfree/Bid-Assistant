@@ -24,5 +24,10 @@ export function artifactKeys(scope: ExportScope): { docx: string; pdf: string; p
 export function volumeStale(exportedAt: string | null, contentChangedAt: string | null, hasKey: boolean): boolean {
   if (!hasKey || !contentChangedAt) return false
   if (!exportedAt) return true
-  return new Date(exportedAt).getTime() < new Date(contentChangedAt).getTime()
+  const exportedMs = new Date(exportedAt).getTime()
+  const changedMs = new Date(contentChangedAt).getTime()
+  // 解析不出来（脏数据/未识别格式）→ NaN，NaN < x 恒为 false，会把坏数据读成"未过期"，
+  // 与本函数"宁可多一次确认，不可悄悄发旧文件"的保守方向正相反——一律按过期处理。
+  if (Number.isNaN(exportedMs) || Number.isNaN(changedMs)) return true
+  return exportedMs < changedMs
 }
