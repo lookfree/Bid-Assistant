@@ -33,3 +33,10 @@ export function appendixStale(chapterFileIds: string[], libraryFileIds: string[]
   for (const id of a) if (!b.has(id)) return true
   return false
 }
+
+/** 刷新遇 409 no_credentials 的一次性提示是否该显示：notice 状态本身不知道当前在看哪一章，
+ *  必须叠加"当前就是 sys-creds 章"才能显示——否则会挂到切走后的任意无关章顶上（终审复审
+ *  实证：hook 里那个 state 与当前章 id 完全脱钩，渲染条件又没有 isSysCreds 守卫）。 */
+export function noCredentialsNoticeVisible(notice: boolean, isSysCreds: boolean): boolean {
+  return notice && isSysCreds
+}

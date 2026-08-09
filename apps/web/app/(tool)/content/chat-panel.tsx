@@ -28,7 +28,7 @@ export function ChatPanel({
   refreshBalance,
   onOpenLibrary,
 }: {
-  chapters: { id: string; no: string; title: string }[]
+  chapters: { id: string; no: string; title: string; system?: boolean }[]
   activeId: string
   projectId: string | null
   /** content 步已完成（真实改写通道可用；未完成后端会 409） */
@@ -76,6 +76,12 @@ function previewOf(html: string): string {
     }
     if (!contentReady) {
       push({ role: "ai", text: "正文尚未生成完成，请先完成本步生成后再改写。" })
+      return
+    }
+    // 系统章（如附录 sys-creds）不接受对话改写（终审 I1 第三道门）：内容纯代码拼接，
+    // 送进这条通道等于让模型幻写掉一份确定性资料——就地拦下，引导去用「刷新附录」。
+    if (target.system) {
+      push({ role: "ai", text: "附录章由系统维护，请使用「刷新附录」按钮更新，这里不支持对它下改写指令。" })
       return
     }
     setSending(true)

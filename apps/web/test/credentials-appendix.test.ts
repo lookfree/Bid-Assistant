@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { appendixStale, placeholderFileIds, SYS_CREDS_ID } from "../lib/credentials-appendix"
+import { appendixStale, noCredentialsNoticeVisible, placeholderFileIds, SYS_CREDS_ID } from "../lib/credentials-appendix"
 
 describe("placeholderFileIds", () => {
   test("逐个抠占位图的 data-file-id（Task 2/4 两端同形的自闭合 <img> 形态）", () => {
@@ -52,4 +52,22 @@ describe("appendixStale", () => {
 
 test("SYS_CREDS_ID 与 App/agent 两端字面量同形", () => {
   expect(SYS_CREDS_ID).toBe("sys-creds")
+})
+
+describe("noCredentialsNoticeVisible", () => {
+  test("已触发 + 当前正看着附录章 → 显示", () => {
+    expect(noCredentialsNoticeVisible(true, true)).toBe(true)
+  })
+
+  test("已触发但已切到别的章 → 不显示（复审实证：此前会挂到无关章顶上）", () => {
+    expect(noCredentialsNoticeVisible(true, false)).toBe(false)
+  })
+
+  test("没触发过，就算正看着附录章也不显示", () => {
+    expect(noCredentialsNoticeVisible(false, true)).toBe(false)
+  })
+
+  test("两者都不满足", () => {
+    expect(noCredentialsNoticeVisible(false, false)).toBe(false)
+  })
 })

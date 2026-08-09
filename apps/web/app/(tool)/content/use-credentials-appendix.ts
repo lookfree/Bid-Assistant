@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { fileDownloadUrl } from "@/lib/files"
-import { placeholderFileIds, appendixStale, SYS_CREDS_ID } from "@/lib/credentials-appendix"
+import { placeholderFileIds, appendixStale, noCredentialsNoticeVisible, SYS_CREDS_ID } from "@/lib/credentials-appendix"
 import { refreshCredentialsAppendix, type ExportPreview } from "@/lib/project"
 import { ApiError } from "@/lib/api-client"
 import type { Chapter } from "./chapter-nav"
@@ -84,6 +84,12 @@ export function useCredentialsAppendix(opts: {
   // 「刷新」解决不了，重试只会再 409——过期横条继续说"过期，点击刷新"会把用户晾在死循环里。
   // 换成一次性提示 + 手动删附录章的引导；下一次刷新前先清掉，不让陈旧提示挂着不走。
   const [noCredentialsNotice, setNoCredentialsNotice] = useState(false)
+  // 切章即失效（终审复审实证）：这个 state 此前跟 active.id 完全脱钩——409 提示会挂到切走
+  // 后的任意无关章顶上，且切回附录章也不消失（不再是"一次性"）。active.id 一变就清空；
+  // 是否显示再叠加 isSysCreds 守卫（见 noCredentialsNoticeVisible），两道一起堵。
+  useEffect(() => {
+    setNoCredentialsNotice(false)
+  }, [active.id])
   /** 点「刷新附录」：调 Task 4 的免费重建端点，成功就地替换该章 HTML；409 content_not_done/
    *  404 静默收起（点一下解决不了，不值得弹窗打断）；409 no_credentials 转成一次性提示。 */
   async function refreshAppendix() {
@@ -111,7 +117,7 @@ export function useCredentialsAppendix(opts: {
     withResolvedSrc,
     stale,
     refreshing,
-    noCredentialsNotice,
+    noCredentialsNotice: noCredentialsNoticeVisible(noCredentialsNotice, isSysCreds),
     dismissNoCredentialsNotice: () => setNoCredentialsNotice(false),
     refreshAppendix,
   }

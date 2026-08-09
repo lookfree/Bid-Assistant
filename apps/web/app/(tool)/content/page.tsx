@@ -769,7 +769,7 @@ export default function ContentPage() {
         {/* 右：AI 对话（真实项目走单章改写通道） */}
         {chatOpen && (
           <ChatPanel
-            chapters={fullList().map((c) => ({ id: c.id, no: c.no, title: c.title }))}
+            chapters={fullList().map((c) => ({ id: c.id, no: c.no, title: c.title, system: c.system }))}
             activeId={active.id}
             projectId={projectId}
             contentReady={isReal}
