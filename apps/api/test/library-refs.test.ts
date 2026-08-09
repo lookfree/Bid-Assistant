@@ -220,6 +220,25 @@ describe("credentials 附件透传 ocrText", () => {
   })
 })
 
+describe("libraryRefsRunInput body 超预算截断（Task 2 遗留，终审顺手条）", () => {
+  it("⑥body 超 3000 字 → 传输前先截断——agent 侧 _LIBRARY_REF_BLOCK_CHARS 反正要按同一预算砍，别把注定被砍的字节传一遍", async () => {
+    const longBody = "详".repeat(4000)
+    const [p] = await getDb()
+      .insert(libraryItems)
+      .values({ userId: userA, category: "personnel", title: "王五", body: longBody })
+      .returning()
+
+    try {
+      const result = await libraryRefsRunInput(userA)
+      const body = result.library_refs?.personnel.find((x) => x.title === "王五")?.body
+      expect(body?.length).toBe(3000)
+      expect(body).toBe(longBody.slice(0, 3000))
+    } finally {
+      await getDb().delete(libraryItems).where(eq(libraryItems.id, p!.id))
+    }
+  })
+})
+
 describe("下发时机：content 步下发 library_refs，export 步不下发", () => {
   it("⑤有人员/业绩条目 → content 步 run_input.library_refs 非空；export 步 run_input 无该键", async () => {
     const [p] = await getDb()

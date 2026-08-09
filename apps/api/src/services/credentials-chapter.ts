@@ -31,17 +31,30 @@ function esc(text: unknown): string {
     .replace(/"/g, "&quot;")
 }
 
+const OCR_ALT_CHARS = 120
+
+/** 占位图 alt：`标题|ocrText 截前 120 字`（无 ocrText 则纯标题）,整串统一转义一次——与 agent 侧
+ *  credentials_chapter.py `_image_alt` 逐字节同形（终审 I-4：此前只有章内证照 post-pass 的
+ *  占位图带 OCR 摘要,附录章占位图仍是纯标题,两处占位图 alt 语义不该不一致）。传入 rawTitle
+ *  必须是未转义的原始标题,与 ocrText 拼接后一并转义,避免先转义再拼接导致的二次转义。 */
+function imageAlt(rawTitle: string, ocrText: string | undefined): string {
+  const ocr = (ocrText ?? "").trim()
+  const label = ocr ? `${rawTitle}|${ocr.slice(0, OCR_ALT_CHARS)}` : rawTitle
+  return esc(label)
+}
+
 /** 资格证明文件章 HTML——每个条目一个 <h3>标题</h3>,逐图一个占位 <img>（三属性:
  *  data-file-id/data-object-key/alt,**无 src 无字节**),包在 <p> 里,与既有章节 HTML 风格一致。
- *  空数组（资料库无资质条目）返回空串,调用方据此判断是否需要构建/追加系统章。 */
+ *  alt 带 OCR 摘要（终审 I-4,与章内证照 post-pass 同形）。空数组（资料库无资质条目）返回
+ *  空串,调用方据此判断是否需要构建/追加系统章。 */
 export function buildCredentialsChapterHtml(credentials: CredentialInput[]): string {
   if (!credentials.length) return ""
   const parts: string[] = []
   for (const entry of credentials) {
-    const title = esc(entry.title)
-    parts.push(`<h3>${title}</h3>`)
+    parts.push(`<h3>${esc(entry.title)}</h3>`)
     for (const img of entry.images) {
-      parts.push(`<p><img data-file-id="${esc(img.fileId)}" data-object-key="${esc(img.key)}" alt="${title}" /></p>`)
+      const alt = imageAlt(entry.title, img.ocrText)
+      parts.push(`<p><img data-file-id="${esc(img.fileId)}" data-object-key="${esc(img.key)}" alt="${alt}" /></p>`)
     }
   }
   return parts.join("\n")

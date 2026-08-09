@@ -17,7 +17,11 @@ async function recognize(key: string, ext: string): Promise<string> {
   try {
     const bytes = await getObjectBytes(key)
     const base64 = Buffer.from(bytes).toString("base64")
-    return await ocrImage(`data:image/${ext};base64,${base64}`)
+    const text = await ocrImage(`data:image/${ext};base64,${base64}`)
+    // 纵深防御（终审 I-2）：与 routes/library.ts 的 zod ocrText max(500) 对齐——OCR 容器不受
+    // 我们控制，一旦哪次识别失约返回超长文本，写库时不截断的话，这条 ocrText 从此每次保存
+    // （包括用户压根没碰这个字段的整条更新）都会撞 zod 400，把条目锁死在无法保存的状态。
+    return text.slice(0, 500)
   } catch {
     return ""
   }

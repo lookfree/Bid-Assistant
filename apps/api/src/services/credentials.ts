@@ -70,6 +70,11 @@ export async function libraryRefsRunInput(
   return { library_refs: { personnel, performance } }
 }
 
+// body 无 zod 字符上限（UI 侧 personnel/performance 表单目前没有 body 输入口，现实风险低），
+// 但 agent 侧 _LIBRARY_REF_BLOCK_CHARS（Task 3）反正要按 3000 字预算截断整块——传超长 body
+// 只是白占带宽，这里先按同一预算裁一刀，别把注定被砍的字节传一遍（终审 Task 2 遗留 + 顺手）。
+const LIBRARY_REF_BODY_CHARS = 3000
+
 async function fetchLibraryRefs(userId: string, category: "personnel" | "performance"): Promise<LibraryRefItem[]> {
   const rows = await getDb()
     .select({ title: libraryItems.title, meta: libraryItems.meta, fields: libraryItems.fields, body: libraryItems.body })
@@ -82,6 +87,6 @@ async function fetchLibraryRefs(userId: string, category: "personnel" | "perform
     title: r.title,
     ...(r.meta ? { meta: r.meta } : {}),
     ...(r.fields && r.fields.length > 0 ? { fields: r.fields } : {}),
-    ...(r.body ? { body: r.body } : {}),
+    ...(r.body ? { body: r.body.slice(0, LIBRARY_REF_BODY_CHARS) } : {}),
   }))
 }

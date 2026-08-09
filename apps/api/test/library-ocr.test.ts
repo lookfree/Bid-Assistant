@@ -162,7 +162,18 @@ describe("backfillAttachmentOcr", () => {
     expect(atts.some((a) => a.ocrText)).toBe(false) // OCR 结果确实被放弃了，没有半路混进最终结果
   })
 
-  it("⑥zod 往返：带 ocrText 的附件经真实路由保存查回仍在（防 attachmentSchema 静默剥字段）", async () => {
+  it("⑥容器返回超长文本（800 字）→ 落库前钳制到 ≤500（与 zod max(500) 对齐，终审 I-2）", async () => {
+    ocrBehavior = async () => "字".repeat(800)
+    const fileId = await insertImageFile("overlong.png")
+    const itemId = await insertItem([{ fileId, name: "overlong.png" }])
+
+    await backfillAttachmentOcr(itemId, userId)
+
+    const atts = await loadAttachments(itemId)
+    expect(atts[0]?.ocrText?.length).toBeLessThanOrEqual(500)
+  })
+
+  it("⑦zod 往返：带 ocrText 的附件经真实路由保存查回仍在（防 attachmentSchema 静默剥字段）", async () => {
     const { libraryRoutes } = await import("../src/routes/library")
     const app = new Hono()
     app.route("/api/library", libraryRoutes())

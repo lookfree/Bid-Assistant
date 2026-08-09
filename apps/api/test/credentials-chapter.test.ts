@@ -135,6 +135,39 @@ describe("buildCredentialsChapterHtml", () => {
   it("空数组返回空串", () => {
     expect(buildCredentialsChapterHtml([])).toBe("")
   })
+
+  // 终审 I-4：附录占位图 alt 从纯标题改为「标题|ocrText 截前 120 字」，与章内证照 post-pass
+  // （services/cert-placement 等价的 agent 侧实现）同一套格式——两处占位图 alt 语义不该不一致。
+  it("附件带 ocrText → alt 为「标题|ocrText 截前 120 字」", () => {
+    const html = buildCredentialsChapterHtml([
+      { title: "营业执照", images: [{ fileId: "f1", key: "k1", name: "n1", ocrText: "统一社会信用代码91xx" }] },
+    ])
+    expect(html).toContain('alt="营业执照|统一社会信用代码91xx"')
+  })
+
+  it("ocrText 超过 120 字 → 截断", () => {
+    const long = "字".repeat(200)
+    const html = buildCredentialsChapterHtml([
+      { title: "资质证书", images: [{ fileId: "f1", key: "k1", name: "n1", ocrText: long }] },
+    ])
+    expect(html).toContain(`alt="资质证书|${long.slice(0, 120)}"`)
+    expect(html).not.toContain(long) // 完整 200 字版本不该出现
+  })
+
+  it("无 ocrText → alt 退化为纯标题（与既有行为一致）", () => {
+    const html = buildCredentialsChapterHtml([
+      { title: "营业执照", images: [{ fileId: "f1", key: "k1", name: "n1" }] },
+    ])
+    expect(html).toContain('alt="营业执照"')
+  })
+
+  it("标题与 ocrText 都含需转义字符时，拼接后整串只转义一次（不产生二次转义）", () => {
+    const html = buildCredentialsChapterHtml([
+      { title: "A&B", images: [{ fileId: "f1", key: "k1", name: "n1", ocrText: 'C<D>' }] },
+    ])
+    expect(html).toContain('alt="A&amp;B|C&lt;D&gt;"')
+    expect(html).not.toContain("&amp;amp;") // 二次转义的信号
+  })
 })
 
 // ---- Part 2：content 收尾钩子（finalizeStepSuccess → outline 系统章同步） ----
