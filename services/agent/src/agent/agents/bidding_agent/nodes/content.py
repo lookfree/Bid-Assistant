@@ -348,14 +348,26 @@ def make_content_node(ctx):
     并发受限、每章落 Redis 断点。编排细节见 content_pipeline.run_content_pipeline。"""
     async def content_node(state):
         from agent.agents.bidding_agent.nodes.content_pipeline import run_content_pipeline
+        from agent.agents.bidding_agent.nodes.credentials_chapter import append_credentials_chapter
         await publish_phase(ctx, "逐章撰写投标正文（代码编排）")
         chapters = await run_content_pipeline(ctx, state)
         await _log_length_telemetry(ctx, state.get("run_input") or {}, chapters)  # 超写系数的校准数据源（评审 F2）
+        # 资格证明文件附录章（2026-08-09 附录系统章节设计,Plan A①）：命中条件时代码确定性拼出该章并追加进提纲，
+        # 零字进模型、不占本轮任何一次模型调用；不命中原样返回 None，outline/chapters 都不动。
+        appended = append_credentials_chapter(state, chapters)
+        if appended:
+            chapters = appended["chapters"]
+        outline = appended["outline"] if appended else (state.get("outline") or {})
         # 部分交付防混稿（评审 2026-08-08）：缺章写 None 墓碑,让合并 reducer 覆掉上一代旧稿。
         # 否则重新生成时若 3 章失败,状态里还留着按**旧提纲**写的旧章,交付出一本新旧混杂的
         # "完整"书且照常计费——墓碑在 chapters_in_outline 统一滤掉,对外就是"缺这一章"。
-        ids = [c.get("id") for c in (state.get("outline") or {}).get("chapters", []) if c.get("id")]
-        return {"chapters": {**{cid: None for cid in ids if cid not in chapters}, **chapters}}
+        # 墓碑口径用**追加后**的提纲 ids：sys-creds 刚追加进 outline，必须和它的 html 落在
+        # 同一批 ids 里核对，否则会被误判"提纲有此章、chapters 没内容"而错打 None 墓碑。
+        ids = [c.get("id") for c in outline.get("chapters", []) if c.get("id")]
+        result = {"chapters": {**{cid: None for cid in ids if cid not in chapters}, **chapters}}
+        if appended:
+            result["outline"] = outline
+        return result
     return content_node
 
 
