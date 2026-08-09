@@ -329,12 +329,19 @@ def _apply_custom_format(doc: Document, fmt: dict) -> None:
 def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
                  package: dict | None = None,
                  credentials: list[dict] | None = None,
-                 fmt: dict | None = None) -> bytes:
+                 fmt: dict | None = None, scope: str = "full") -> bytes:
     """完整标书 .docx：封面 + 真目录域页 + 按 outline 顺序各章正文 + 资格证明文件附录（可选）
     + 签章页 + AI 生成提示（spec326 算法备案，恒定追加，见 _add_ai_notice）。确定性，无 LLM。
     package（选包，spec324）存在时封面项目名下加一行包件名。
-    credentials（资质证照，spec325）非空时在签章页之前追加附录；缺省 None 时输出与今天一致。"""
+    credentials（资质证照，spec325）非空时在签章页之前追加附录；缺省 None 时输出与今天一致。
+    scope（分册，spec 2026-08-08-export-scope）："full"（默认，逐字节兼容旧调用）/"tech"/"business"：
+    封面项目名与页脚文档名追加「·技术标部分」/「·商务标部分」，章标题不再带（技术标）/（商务标）
+    尾巴——整册同组，逐章带尾巴是噪音。章节过滤与 credentials 取舍是调用方职责，渲染器只管拿到的数据。"""
     meta = _norm_meta(meta or {})
+    _SCOPE_SUFFIX = {"tech": "·技术标部分", "business": "·商务标部分"}
+    suffix = _SCOPE_SUFFIX.get(scope, "")
+    if suffix:
+        meta = {**meta, "name": f"{meta.get('name', '投标文件')}{suffix}"}
     doc = Document()
     _apply_bid_styles(doc)
     if fmt is not None:  # spec330 输出格式：显式配置才覆盖,缺省与既有导出一致
@@ -348,7 +355,8 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
         group = "技术标" if ch.get("group") == "tech" else "商务标"
         if i:
             doc.add_page_break()
-        doc.add_heading(f"{ch.get('no', '')} {ch.get('title', '')}（{group}）", level=1)
+        tag = f"（{group}）" if scope == "full" else ""
+        doc.add_heading(f"{ch.get('no', '')} {ch.get('title', '')}{tag}", level=1)
         # 防御清洗：库存章节可能带完整文档壳（<head><style>...），不剥会把样式文本吐进正文；
         # 再与提纲对齐（剥内嵌旧章标题 + 小节编号跟随当前章号）——标书必须按用户设置后的提纲出
         body = strip_document_shell(chapters.get(ch.get("id", ""), ""))

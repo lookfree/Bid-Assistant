@@ -16,6 +16,11 @@ _TINY_PNG_GREEN = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00
                    b"\x01\x00{\t\x81x\x00\x00\x00\x00IEND\xaeB`\x82")
 
 
+def _doc_text(data: bytes) -> str:
+    """docx 字节 → 全部段落文本拼接（该文件既有手法，抽成局部帮助函数供 scope 测试复用）。"""
+    return "\n".join(p.text for p in Document(io.BytesIO(data)).paragraphs)
+
+
 def test_render_docx_assembles_chapters():
     outline = {"chapters": [
         {"id": "t1", "no": "第一章", "title": "项目理解", "group": "tech"},
@@ -346,3 +351,34 @@ def test_render_docx_caps_absurd_rowspan():
     data = render_docx(outline, chapters)
     doc = Document(io.BytesIO(data))
     assert len(doc.tables[0].rows) == 2            # 只有两行 tr，就该是两行
+
+
+def test_scope_tech_adds_volume_suffix_and_drops_group_tags():
+    """分册(spec 2026-08-08-export-scope):技术册封面/页脚带「·技术标部分」,
+    章标题不再带「（技术标）」尾巴——整册同组,逐章带尾巴是噪音。"""
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "技术方案", "group": "tech"}]}
+    data = render_docx(outline, {"t1": "<p>正文</p>"},
+                       meta={"name": "XX项目投标文件"}, scope="tech")
+    text = _doc_text(data)
+    assert "XX项目投标文件·技术标部分" in text
+    assert "（技术标）" not in text
+    assert "投标人承诺与签章" in text          # 签章页每册都要(已拍板:独立提交物)
+
+
+def test_scope_business_suffix_and_signature_kept():
+    outline = {"chapters": [{"id": "b1", "no": "第一章", "title": "报价说明", "group": "business"}]}
+    data = render_docx(outline, {"b1": "<p>正文</p>"},
+                       meta={"name": "XX项目投标文件"}, scope="business")
+    text = _doc_text(data)
+    assert "·商务标部分" in text and "（商务标）" not in text
+    assert "投标人承诺与签章" in text
+
+
+def test_scope_full_output_is_byte_identical_to_today():
+    """缺省/显式 full 与改动前逐字节一致——老调用方零感知(Global Constraints)。"""
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "技术方案", "group": "tech"}]}
+    chapters = {"t1": "<p>正文</p>"}
+    meta = {"name": "XX项目投标文件"}
+    assert render_docx(outline, chapters, meta=meta) == render_docx(outline, chapters, meta=meta, scope="full")
+    text = _doc_text(render_docx(outline, chapters, meta=meta, scope="full"))
+    assert "（技术标）" in text and "·技术标部分" not in text
