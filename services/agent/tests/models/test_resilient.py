@@ -178,6 +178,47 @@ def test_two_model_chain_wires_the_second_as_fallback():
     assert any(c.get("model") == "m2" for c in g.calls), "降级模型没有按链里的第二项构造"
 
 
+def test_fallback_gets_the_same_stream_usage_flag_as_the_primary():
+    """2026-08-09 复现：降级模型是单独 gateway.get_chat(...) 造的原始 ChatOpenAI，此前没有
+    带上 stream_usage——降级那一跳走的是 self.fallback._astream，用它自己的开关，
+    默认关会让换模型接着写的那部分 token 用量静默记成 0。"""
+    class _GW:
+        def __init__(self):
+            self.s = type("S", (), {"model_content_streaming": True})()
+
+        def chain(self):
+            return [{"provider": "p1", "model": "m1"}, {"provider": "p2", "model": "m2"}]
+
+        def get_chat(self, **kw):
+            return ResilientChat(model=kw.get("model") or "m", api_key="k", base_url="http://x/v1",
+                                 streaming=kw.get("streaming", False),
+                                 stream_usage=kw.get("stream_usage", False))
+
+    out = resilient_chat(_GW(), provider=None)
+    assert out.streaming is True and out.stream_usage is True
+    assert out.fallback.streaming is True and out.fallback.stream_usage is True, \
+        "降级模型没有跟主模型一样开 stream_usage——换模型那部分用量会记成 0"
+
+
+def test_bad_second_chain_item_downgrades_to_self_retry_instead_of_crashing():
+    """链路第二项配置有问题（比如没配 key）：建模型这一步不能连累正文——退化成对主模型
+    自我重试并记 warning，绝不让一整段付费生成死在"建模型"这一步。"""
+    from agent.models.gateway import ModelNotConfigured
+
+    class _GatewayBadSecond:
+        def chain(self):
+            return [{"provider": "p1", "model": "m1"}, {"provider": "p2", "model": "m2"}]
+
+        def get_chat(self, **kw):
+            if kw.get("provider") == "p2":
+                raise ModelNotConfigured("p2 未配置 API Key")
+            return ResilientChat(model=kw.get("model") or "m", api_key="k", base_url="http://x/v1")
+
+    out = resilient_chat(_GatewayBadSecond(), provider=None)
+    assert isinstance(out, ResilientChat), "第二跳建模型失败，正文本该照常拿到一个可用的模型"
+    assert out.fallback is not None and out.fallback_is_self is True, "该退化成自我重试"
+
+
 def test_real_gateway_call_signature(monkeypatch):
     """按正文节点的真实调用方式跑一遍：resilient_chat(gateway, provider=None)。
 
@@ -353,6 +394,69 @@ class _HungPrimary(ResilientChat):
         yield first
         async for c in it:
             yield c
+
+
+class _StallingPrimary(ResilientChat):
+    """主模型吐了一块之后中途失速（不是首块前就挂，是已经开始吐字后半路断了）。"""
+
+    async def _primary_stream(self, messages, stop=None, run_manager=None, **kwargs):
+        yield AIMessageChunk(content="开头")
+        await asyncio.sleep(3600)
+        yield  # pragma: no cover
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        """复刻真实 _astream 的结构（含中途失速分支），只把 super()._astream 换成会
+        中途挂死的桩——与 _HungPrimary 同一手法。"""
+        deadline = time.monotonic() + settings.model_round_timeout_s
+        it = self._timed(self._primary_stream(messages, stop=stop, run_manager=run_manager, **kwargs), deadline)
+        try:
+            first = await it.__anext__()
+        except StopAsyncIteration:
+            return
+        except Exception as e:  # noqa: BLE001
+            if not self._should_fallback(e):
+                raise
+            async for c in self._timed(
+                    self.fallback._astream(messages, stop=stop, run_manager=run_manager, **kwargs), deadline):
+                yield c
+            return
+        yield first
+        try:
+            async for c in it:
+                yield c
+        except Exception as e:  # noqa: BLE001
+            if not self._should_fallback(e):
+                raise
+            async for c in self._timed(
+                    self.fallback._astream(messages, stop=stop, run_manager=run_manager, **kwargs), deadline):
+                yield c
+
+
+def test_mid_stream_stall_switches_to_the_fallback(monkeypatch):
+    """中途失速（已经吐出内容后才挂）也要换模型重来，而不是让一个跑了大半的付费步直接失败。
+
+    2026-08-09 复现：以前只在首块之前才允许降级——写到第 20/20 章、已经吐了不少内容后
+    半路挂死，反而没有任何保护，眼睁睁看着一整段生成作废。
+    """
+    monkeypatch.setattr(settings, "model_first_token_timeout_s", 5)
+    monkeypatch.setattr(settings, "model_idle_timeout_s", 0.05)
+    monkeypatch.setattr(settings, "model_round_timeout_s", 60)
+
+    fb = _Fallback()
+
+    async def fb_stream(messages, stop=None, run_manager=None, **kw):
+        fb.calls += 1
+        yield AIMessageChunk(content="降级模型接手")
+
+    object.__setattr__(fb, "_astream", fb_stream)
+    c = _StallingPrimary(model="m", api_key="k", base_url="http://x/v1", fallback=fb)
+
+    async def go():
+        return [x.content async for x in c._astream([HumanMessage(content="写")])]
+
+    out = asyncio.run(asyncio.wait_for(go(), timeout=5))
+    assert out == ["开头", "降级模型接手"], f"中途失速没有换模型重来：{out}"
+    assert fb.calls == 1
 
 
 def test_hung_primary_switches_to_the_fallback(monkeypatch):

@@ -179,9 +179,13 @@ def _params_override(params: dict) -> dict:
     # 上下文窗口（输入+输出总和）：必须大于输出配额，否则输入预算算出负数——这种配置本身是错的，
     # 按"安全回退默认"语义丢弃，让 budget.py 用兜底窗口，而不是拿一个荒谬的数去算。
     # 与**生效的**输出配额比：本次 params 没带 max_tokens 时，settings 里可能还有一个（env 下发），
-    # 只跟本份比会让 context_window=4096 这种荒谬值蒙混过关，最终算出负额度。
+    # 只跟本份比会让 context_window=4096 这种荒谬值蒙混过关，最终算出负额度——之前这里只看
+    # out.get("model_max_tokens", 0)，本次没带 max_tokens 时直接读成 0，env 里配的那个白配。
+    from agent.config import settings as _settings
+
     window = params.get("context_window")
-    floor = max(out.get("model_max_tokens", 0), _DEFAULT_OUTPUT_RESERVE)
+    effective_max_tokens = out.get("model_max_tokens") or _settings.model_max_tokens or 0
+    floor = max(effective_max_tokens, _DEFAULT_OUTPUT_RESERVE)
     if isinstance(window, int) and not isinstance(window, bool) and window > floor:
         out["model_context_window"] = window
     return out

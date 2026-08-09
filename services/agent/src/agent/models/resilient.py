@@ -93,14 +93,18 @@ class ResilientChat(ChatOpenAI):
             raise ModelIdleTimeout() from e
 
     async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
-        """流式路径：**只在第一块之前**才允许降级。
-        已经吐出内容再切模型会把两次生成拼在一起，产出四不像——宁可让本次失败。
+        """流式路径：首块之前失败、以及**已经吐出内容后中途失速**，都换降级模型重新生成整段。
 
         三层保护缺一不可（本仓生产铁律）：流式 + 空闲超时 + 单轮总时长盖 + 降级链。
         2026-08-08 生产实测：正文写到第 20/20 章挂死 **26 分钟、一个字都没吐**，而这条路
         当时只有降级链——没有任何超时，挂死了就一直挂着，用户干等、积分冻着。
         空闲超时杀"挂死"，总时长盖杀"慢而不死"（限流下每 20s 吐一个 token 能骗过空闲检测），
-        两者都当作可降级错误，交给上面的降级分支换模型重来。
+        两者都当作可降级错误，交给下面的降级分支换模型重来。
+
+        中途失速以前刻意不降级（怕两次生成拼在一起产出四不像），代价是写到最后几章才挂的
+        长活直接判死——已经烧掉的十几分钟连同即将到手的产出一起作废。降级分支是整段重新
+        生成（不是接着写），两跳仍共用同一个 deadline；拼接风险由 `_write_one` 的最短字数/
+        结束原因判断兜底，好过让一个跑了大半的付费步直接失败（评审 2026-08-09）。
         """
         # 两跳共用一个截止时刻：各算各的会让"单轮 20 分钟"实际变成 40 分钟
         deadline = time.monotonic() + settings.model_round_timeout_s
@@ -120,8 +124,18 @@ class ResilientChat(ChatOpenAI):
                 yield c
             return
         yield first
-        async for c in it:
-            yield c
+        try:
+            async for c in it:
+                yield c
+        except Exception as e:  # noqa: BLE001
+            if not self._should_fallback(e):
+                raise
+            logger.warning("主模型流式中途失速（%s），改用降级模型重新生成：%s", type(e).__name__, str(e)[:120])
+            await self._wait_before_self_retry()
+            async for c in self._timed(
+                    self.fallback._astream(messages, stop=stop, run_manager=run_manager, **kwargs),
+                    deadline):
+                yield c
 
     async def _timed(self, stream, deadline: float):
         """给一条流套上首 token 宽限、token 间隔空闲超时、总时长盖（deadline 由调用方给）。
@@ -177,32 +191,42 @@ def resilient_chat(gateway, **kw) -> Any:
     primary = gateway.get_chat(**kw)
     if not items:
         return primary                      # 连链都取不到（桩装配）：保持原样，不臆造
-    if len(items) > 1:
-        fb = items[1]
-        # 合并而不是并列传参：调用方的 kw 里本就可能有 provider（正文传的就是 provider=None），
-        # 再显式写一次会 TypeError，整个正文节点当场崩——链里的取值优先。
-        fallback = gateway.get_chat(**{**kw, "provider": fb.get("provider"), "model": fb.get("model"),
-                                       "thinking": fb.get("thinking"), "base_url": fb.get("base_url"),
-                                       "api_key": fb.get("api_key")})
-    else:
-        # 第二跳就是主模型自己：**必须用与主模型完全相同的构造参数**，不能拿链里那项去重建。
-        # get_chat(provider=None) 的"沿用链首"分支只抄 provider/model/base_url/api_key，
-        # **不抄 thinking**，主模型因而用的是全局默认（通常关）。若照链里那项带上 thinking=True，
-        # 重试这一跳就成了"另一个模型"：延迟与成本都不同，而且本仓记录过
-        # 「思考 + 流式强制 tool_choice = 400」——那会把一次可恢复的瞬断变成必挂的 400。
-        fallback = gateway.get_chat(**kw)
+    # 流式与否由配置决定（settings.model_content_streaming，默认关）：
+    # 开 = ainvoke 转流式（BaseChatModel._should_stream 认 streaming=True），空闲检测 30 秒发现挂死；
+    # 关 = 普通 HTTP 调用，靠 _capped 的 20 分钟总时长盖兜底。
+    # 默认关的原因（2026-08-08）：打开当天正文三连败（工具参数拼坏/端点 400），全在首次调用，
+    # 同载荷重放四次均通——非确定性，疑为 vLLM 流式工具解析器问题，未钉死前不赌。
+    # stream_usage 跟随流式开关：流式下服务商要显式要求才回 usage，否则 token 用量静默丢失——
+    # **降级模型也要带上同一个开关**，不然换模型接着写的那部分 token 用量会静默记成 0
+    # （_astream 的降级分支直接调 self.fallback._astream，走的是 fallback 自己的开关，评审 2026-08-09）。
+    stream = bool(getattr(getattr(gateway, "s", None), "model_content_streaming", False))
+    stream_kw = {"streaming": stream, "stream_usage": stream}
+    fallback_is_self = len(items) < 2
+    try:
+        if not fallback_is_self:
+            fb = items[1]
+            # 合并而不是并列传参：调用方的 kw 里本就可能有 provider（正文传的就是 provider=None），
+            # 再显式写一次会 TypeError，整个正文节点当场崩——链里的取值优先。
+            fallback = gateway.get_chat(**{**kw, "provider": fb.get("provider"), "model": fb.get("model"),
+                                           "thinking": fb.get("thinking"), "base_url": fb.get("base_url"),
+                                           "api_key": fb.get("api_key"), **stream_kw})
+        else:
+            # 第二跳就是主模型自己：**必须用与主模型完全相同的构造参数**，不能拿链里那项去重建。
+            # get_chat(provider=None) 的"沿用链首"分支只抄 provider/model/base_url/api_key，
+            # **不抄 thinking**，主模型因而用的是全局默认（通常关）。若照链里那项带上 thinking=True，
+            # 重试这一跳就成了"另一个模型"：延迟与成本都不同，而且本仓记录过
+            # 「思考 + 流式强制 tool_choice = 400」——那会把一次可恢复的瞬断变成必挂的 400。
+            fallback = gateway.get_chat(**{**kw, **stream_kw})
+    except Exception:  # noqa: BLE001 链路第二项构造本身失败（如没配 key）不能连累正文——
+        # 退化成对主模型自我重试，绝不让一整段付费生成死在"建模型"这一步（评审 2026-08-09）。
+        logger.warning("按链路第二项构造降级模型失败，改为对主模型自我重试", exc_info=True)
+        fallback = gateway.get_chat(**{**kw, **stream_kw})
+        fallback_is_self = True
     # 用主模型的构造参数重建成 ResilientChat：直接改 primary 的类不安全（pydantic 校验字段）
     data = {k: v for k, v in primary.__dict__.items() if not k.startswith("_")}
     try:
-        # 流式与否由配置决定（settings.model_content_streaming，默认关）：
-        # 开 = ainvoke 转流式（BaseChatModel._should_stream 认 streaming=True），空闲检测 30 秒发现挂死；
-        # 关 = 普通 HTTP 调用，靠 _capped 的 20 分钟总时长盖兜底。
-        # 默认关的原因（2026-08-08）：打开当天正文三连败（工具参数拼坏/端点 400），全在首次调用，
-        # 同载荷重放四次均通——非确定性，疑为 vLLM 流式工具解析器问题，未钉死前不赌。
-        # stream_usage 跟随流式开关：流式下服务商要显式要求才回 usage，否则 token 用量静默丢失。
-        stream = bool(getattr(getattr(gateway, "s", None), "model_content_streaming", False))
-        return ResilientChat(**{**data, "streaming": stream, "stream_usage": stream,
-                                "fallback": fallback, "fallback_is_self": len(items) < 2})
+        return ResilientChat(**{**data, **stream_kw,
+                                "fallback": fallback, "fallback_is_self": fallback_is_self})
     except Exception:  # noqa: BLE001 构造失败绝不能连累正文生成——退回无降级的原模型
         logger.warning("构造带降级的模型失败，本次无降级", exc_info=True)
         return primary

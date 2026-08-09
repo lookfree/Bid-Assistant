@@ -82,6 +82,18 @@ class TestSettingsPlumbing:
         out = model_override_to_settings({"params": {"context_window": 4096}})
         assert "model_context_window" not in out
 
+    def test_window_rejected_against_the_effective_env_max_tokens(self, monkeypatch):
+        """2026-08-09 复现：上面那个用例窗口给的是 4096——本就小于 _DEFAULT_OUTPUT_RESERVE(8192)，
+        不管 floor 算没算对都会被拒，测不出真 bug。这里窗口给 16384（大于 8192、小于 env 的
+        32768），旧代码 floor 只看本份 params（没带 max_tokens 时读成 0），16384 > 8192 蒙混过关；
+        必须与**生效的** max_tokens（env 下发的 32768）比，16384 < 32768 才应被拒。"""
+        from agent.config import settings
+        from agent.models.gateway import model_override_to_settings
+
+        monkeypatch.setattr(settings, "model_max_tokens", 32768)
+        out = model_override_to_settings({"params": {"context_window": 16384}})
+        assert "model_context_window" not in out
+
     def test_node_reads_it_from_the_gateway(self):
         from types import SimpleNamespace
 
