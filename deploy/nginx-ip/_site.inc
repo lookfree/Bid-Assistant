@@ -18,7 +18,7 @@ include /etc/nginx/conf.d/_sec-site.inc;
 location /s3/ {
   proxy_pass http://192.168.106.231:9000/;
   proxy_set_header Host "192.168.106.231:9000";
-  client_max_body_size 200m;
+  client_max_body_size 512m;
   proxy_request_buffering off;
 }
 
