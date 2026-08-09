@@ -123,6 +123,13 @@ export async function getObjectHead(key: string, bytes: number): Promise<Uint8Ar
   return await r.Body!.transformToByteArray()
 }
 
+// 读整个对象的字节（无 Range）：供 OCR 前置回填等需要完整文件内容的场景；
+// 大文件（PDF 等）不适用本函数，调用方须自行只对图片走这条路径。
+export async function getObjectBytes(key: string): Promise<Uint8Array> {
+  const r = await getS3().send(new GetObjectCommand({ Bucket: bucket(), Key: key }))
+  return await r.Body!.transformToByteArray()
+}
+
 // 删除对象（超限回收、清理用）。
 export async function deleteObject(key: string): Promise<void> {
   await getS3().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }))

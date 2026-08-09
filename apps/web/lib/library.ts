@@ -15,6 +15,8 @@ export type LibraryAttachment = {
   name: string
   /** 页图附件指向其来源 PDF 的 fileId,spec 2026-08-08 */
   sourceFileId?: string
+  /** 图片附件的前置 OCR 识别文字,后台回填,spec 2026-08-09 */
+  ocrText?: string
 }
 
 // 可空字段与后端契约一致：后端返回 null 表示"无/已清空"（PUT 缺键=不改、null=清空）。

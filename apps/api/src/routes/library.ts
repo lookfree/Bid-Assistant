@@ -8,6 +8,7 @@ import { authMiddleware } from "../middleware/auth"
 import { getUserId } from "../lib/auth-user"
 import { isUuid } from "../lib/uuid"
 import { deleteObject } from "../storage/s3"
+import { backfillAttachmentOcr } from "../services/library-ocr"
 import * as client from "../services/agent-client"
 
 // CRUD 钩子可注入（测试 mock agent-client，断言被调 + best-effort 不阻塞响应），默认真实 agent-client。
@@ -21,10 +22,13 @@ export type LibraryDeps = {
 const fieldSchema = z.object({ label: z.string(), value: z.string() })
 // sourceFileId：页图附件指向其来源 PDF 的 fileId（spec 2026-08-08）；zod 默认 strip 未声明键，
 // 漏写会导致该字段静默丢失（保存后 hasDerivedPages 恒 false，「转为图片」按钮重现、PDF 被重复列出）。
+// ocrText：图片附件的前置 OCR 识别文字（spec 2026-08-09 基建）；同 sourceFileId 的教训，
+// 漏写会导致该字段静默丢失（回填写回后再保存一次就把已识别的文字冲掉）。
 const attachmentSchema = z.object({
   fileId: z.string().uuid(),
   name: z.string(),
   sourceFileId: z.string().uuid().optional(),
+  ocrText: z.string().max(500).optional(),
 })
 const itemSchema = z.object({
   category: z.enum(LIBRARY_CATEGORIES),
@@ -131,6 +135,7 @@ export function libraryRoutes(deps: Partial<LibraryDeps> = {}) {
       .returning()
     if (!row) return c.json({ error: "insert_failed" }, 500)
     void bestEffortIndex(ragIndex, userId, row) // fire-and-forget：agent 慢/挂也不阻塞响应（30s 超时不拖住用户）
+    void backfillAttachmentOcr(row.id, userId) // fire-and-forget：图片附件 OCR 前置存储，不阻塞保存响应
     return c.json(row, 201)
   })
 
@@ -154,6 +159,7 @@ export function libraryRoutes(deps: Partial<LibraryDeps> = {}) {
       .returning()
     if (!row) return c.json({ error: "not_found" }, 404)
     void bestEffortIndex(ragIndex, userId, row) // fire-and-forget 重建该条向量：agent 慢/挂不阻塞响应
+    void backfillAttachmentOcr(row.id, userId) // fire-and-forget：图片附件 OCR 前置存储，不阻塞保存响应
     return c.json(row)
   })
 
