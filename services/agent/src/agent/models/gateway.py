@@ -165,7 +165,9 @@ _OVERRIDE_MAP = {
 
 def _params_override(params: dict) -> dict:
     """把 run 携带的采样参数 {temperature,max_tokens,top_p} 映射为 Settings 字段；
-    越界/非数值 → 丢弃该项（不抛，与 unknown-provider 一致的"安全回退默认"语义）。"""
+    越界/非数值 → 丢弃该项（不抛，与 unknown-provider 一致的"安全回退默认"语义）。
+    注意：context_window 不在这里处理——它要跟降级链每跳自己的窗口取 min 之后才能定案，
+    见 model_override_to_settings() 收尾处的 _effective_context_window()。"""
     out: dict = {}
     temperature = params.get("temperature")
     if isinstance(temperature, (int, float)) and not isinstance(temperature, bool) and 0 <= temperature <= 2:
@@ -176,24 +178,15 @@ def _params_override(params: dict) -> dict:
     max_tokens = params.get("max_tokens")
     if isinstance(max_tokens, int) and not isinstance(max_tokens, bool) and max_tokens > 0:
         out["model_max_tokens"] = max_tokens
-    # 上下文窗口（输入+输出总和）：必须大于输出配额，否则输入预算算出负数——这种配置本身是错的，
-    # 按"安全回退默认"语义丢弃，让 budget.py 用兜底窗口，而不是拿一个荒谬的数去算。
-    # 与**生效的**输出配额比：本次 params 没带 max_tokens 时，settings 里可能还有一个（env 下发），
-    # 只跟本份比会让 context_window=4096 这种荒谬值蒙混过关，最终算出负额度——之前这里只看
-    # out.get("model_max_tokens", 0)，本次没带 max_tokens 时直接读成 0，env 里配的那个白配。
-    from agent.config import settings as _settings
-
-    window = params.get("context_window")
-    effective_max_tokens = out.get("model_max_tokens") or _settings.model_max_tokens or 0
-    floor = max(effective_max_tokens, _DEFAULT_OUTPUT_RESERVE)
-    if isinstance(window, int) and not isinstance(window, bool) and window > floor:
-        out["model_context_window"] = window
     return out
 
 
 def _clean_chain_item(item: Any) -> dict | None:
     """校验/清洗单个结构化链条目：model 非空；有 base_url 则须 http/https；否则丢弃整项。
-    不校验 provider 白名单（自建端点 provider 是自由标签）。"""
+    不校验 provider 白名单（自建端点 provider 是自由标签）。
+    context_window（该跳自己的窗口，正整数）：非法只丢这一个键，不牵连整项——次要字段传坏了
+    不该让整条链路条目失效（2026-08-09 wave4b：此前这里连同其它未知 key 一起被剥掉，
+    降级链带的窗口到不了运行时，混主 128K/降级 32K 的链只会按主模型窗口算预算）。"""
     if not isinstance(item, dict):
         return None
     model = item.get("model")
@@ -202,13 +195,17 @@ def _clean_chain_item(item: Any) -> dict | None:
     base_url = item.get("base_url")
     if base_url and not (isinstance(base_url, str) and base_url.startswith(("http://", "https://"))):
         return None
-    return {
+    out = {
         "provider": item.get("provider"),
         "model": model,
         "base_url": base_url or None,
         "api_key": item.get("api_key") or None,
         "thinking": item.get("thinking") is True,   # 每模型思考开关（默认关）
     }
+    window = item.get("context_window")
+    if isinstance(window, int) and not isinstance(window, bool) and window > 0:
+        out["context_window"] = window
+    return out
 
 
 def _chain_override(chain: Any) -> list[dict]:
@@ -218,17 +215,50 @@ def _chain_override(chain: Any) -> list[dict]:
     return [c for c in cleaned if c is not None]
 
 
+def _effective_context_window(head_window: Any, chain: list[dict], out: dict) -> int | None:
+    """生效窗口 = min(主模型 context_window, 降级链各跳 context_window)——只对**提供了**窗口的
+    项参与取 min，谁都没提供则返回 None（维持现状：交给 budget.py 用 env/全局兜底）。
+
+    为什么取 min 而不是只认主模型：预算（chapters_budget）在 review/present 节点提前算一次、
+    payload 定型之后才进 gateway.invoke() 做链上故障转移——同一份 payload 可能实际发给链上
+    任何一跳。按主模型（如 128K）的窗口组好正文，转移到窗口更小的降级模型（如 32K）时照样超窗口
+    400（2026-08-09 wave4b：混主 128K/降级 32K 链场景）。取整条链的最小窗口，保证无论最终由
+    哪一跳应答，这份 payload 都装得下——这是这里能做的最保守修法，不是"每跳按需重算预算"
+    （那需要把预算计算从"提前算一次"挪到 gateway 每次真正切换模型时，是另一块工作量，
+    见 wave4-report concern 1）。
+
+    下限校验沿用 W1 的逻辑（commit 561f9f8）：min 值必须大于**生效的**输出配额，否则算出负的
+    输入预算——这种配置本身是错的，按"安全回退默认"语义丢弃，而不是拿一个荒谬的数去算。"""
+    candidates: list[int] = []
+    if isinstance(head_window, int) and not isinstance(head_window, bool):
+        candidates.append(head_window)
+    candidates.extend(c["context_window"] for c in chain if isinstance(c.get("context_window"), int))
+    if not candidates:
+        return None
+    window = min(candidates)
+    from agent.config import settings as _settings
+
+    effective_max_tokens = out.get("model_max_tokens") or _settings.model_max_tokens or 0
+    floor = max(effective_max_tokens, _DEFAULT_OUTPUT_RESERVE)
+    return window if window > floor else None
+
+
 def model_override_to_settings(sel: dict | None) -> dict:
     """把 run 携带的 {provider,model,fallbacks,params,chain} 映射为 Settings 字段；覆盖 env 默认（spec311）。
     空串/None/缺失 → 丢弃（继承 env，默认配置即 no-op）；未知 provider → 丢弃（避免 run 时 KeyError）；
-    params/chain 不在 _OVERRIDE_MAP 里，单独校验后映射（spec319/spec319.1）。"""
+    params/chain 不在 _OVERRIDE_MAP 里，单独校验后映射（spec319/spec319.1）。
+    model_context_window 是二者合流后才能定案的字段（min-of-chain，见 _effective_context_window），
+    故收尾统一处理，不放进上面按 key 分派的循环里。"""
     if not sel:
         return {}
     out: dict = {}
+    head_window: Any = None
+    chain: list[dict] = []
     for k, v in sel.items():
         if k == "params":
             if isinstance(v, dict):
                 out.update(_params_override(v))
+                head_window = v.get("context_window")
             continue
         if k == "chain":
             cleaned = _chain_override(v)
@@ -237,12 +267,16 @@ def model_override_to_settings(sel: dict | None) -> dict:
                 # 全局思考默认取主模型（链首）开关：覆盖 content(deepagent)/make_agent_node 等
                 # 不走链条项、只调 get_chat(provider=None) 的路径。
                 out["model_thinking"] = bool(cleaned[0].get("thinking"))
+                chain = cleaned
             continue
         if k not in _OVERRIDE_MAP or not v:
             continue
         if k == "provider" and v not in PROVIDERS:
             continue
         out[_OVERRIDE_MAP[k]] = v
+    window = _effective_context_window(head_window, chain, out)
+    if window is not None:
+        out["model_context_window"] = window
     return out
 
 

@@ -247,6 +247,22 @@ def test_override_maps_chain():
     }
 
 
+def test_override_chain_keeps_valid_context_window_drops_invalid_key_only():
+    """context_window 是正整数才保留；非法值（负数/非 int）只丢这一个键，不牵连整项——该跳仍进链
+    （2026-08-09 wave4b 回归：此前 _clean_chain_item 把未声明的 key 连同 context_window 一起剥掉，
+    降级链带的窗口到不了运行时）。"""
+    out = model_override_to_settings({"chain": [
+        {"provider": "deepseek", "model": "deepseek-v4", "context_window": 131072, "api_key": "k1"},
+        {"provider": "qwen", "model": "qwen-plus", "context_window": -1, "api_key": "k2"},     # 非法：丢键不丢项
+        {"provider": "glm", "model": "glm-4", "context_window": "128k", "api_key": "k3"},       # 非 int：丢键不丢项
+    ]})
+    chain = out["model_chain"]
+    assert len(chain) == 3   # 三项都存活，未知/非法窗口不牵连整项
+    assert chain[0]["context_window"] == 131072
+    assert "context_window" not in chain[1]
+    assert "context_window" not in chain[2]
+
+
 def test_override_chain_empty_list_not_set():
     """chain 全部被清洗掉（或原本为空列表）⇒ 不设 model_chain 键（继承 env/默认）。"""
     assert model_override_to_settings({"chain": []}) == {}

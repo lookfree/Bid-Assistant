@@ -94,6 +94,66 @@ class TestSettingsPlumbing:
         out = model_override_to_settings({"params": {"context_window": 16384}})
         assert "model_context_window" not in out
 
+    def test_effective_window_is_min_of_chain(self, monkeypatch):
+        """主 131072 + 降级 32768 混链 → 生效窗口取 min，保证故障转移到降级模型时
+        （2026-08-08 wave4）组好的正文依然装得下——此前只认主模型窗口，切到降级 32K 模型时
+        按 128K 组好的请求照样撞 400（2026-08-09 wave4b）。"""
+        from agent.config import settings
+        from agent.models.gateway import model_override_to_settings
+
+        monkeypatch.setattr(settings, "model_max_tokens", None)
+        out = model_override_to_settings({
+            "params": {"context_window": 131072},
+            "chain": [
+                {"provider": "deepseek", "model": "deepseek-v4", "context_window": 131072, "api_key": "k1"},
+                {"provider": "qwen", "model": "qwen-plus", "context_window": 32768, "api_key": "k2"},
+            ],
+        })
+        assert out["model_context_window"] == 32768
+
+    def test_effective_window_uses_head_when_chain_omits_it(self, monkeypatch):
+        """降级链没带窗口（旧版 App 或未配置）时只用主模型（params.context_window）的——
+        "只对提供了窗口的项取 min" 的另一半：没提供的项不参与、不拖累整体。"""
+        from agent.config import settings
+        from agent.models.gateway import model_override_to_settings
+
+        monkeypatch.setattr(settings, "model_max_tokens", None)
+        out = model_override_to_settings({
+            "params": {"context_window": 131072},
+            "chain": [
+                {"provider": "deepseek", "model": "deepseek-v4", "api_key": "k1"},   # 无 context_window
+                {"provider": "qwen", "model": "qwen-plus", "api_key": "k2"},         # 无 context_window
+            ],
+        })
+        assert out["model_context_window"] == 131072
+
+    def test_effective_window_absent_when_nobody_provides_it(self):
+        """主与降级链都没带窗口 → 不设 model_context_window，维持现状（交给 budget.py 用
+        env/全局兜底），不是本 wave 该动的行为。"""
+        from agent.models.gateway import model_override_to_settings
+
+        out = model_override_to_settings({"chain": [
+            {"provider": "deepseek", "model": "deepseek-v4", "api_key": "k1"},
+            {"provider": "qwen", "model": "qwen-plus", "api_key": "k2"},
+        ]})
+        assert "model_context_window" not in out
+
+    def test_effective_window_min_still_subject_to_the_w1_floor(self, monkeypatch):
+        """min 之后仍要过 W1 的下限校验：降级链某一跳窗口比生效 max_tokens 还小 → 整体拒绝，
+        回落 env/全局兜底，而不是拿一个会算出负输入额度的窗口去定预算。"""
+        from agent.config import settings
+        from agent.models.gateway import model_override_to_settings
+
+        monkeypatch.setattr(settings, "model_max_tokens", None)
+        out = model_override_to_settings({
+            "params": {"max_tokens": 32768, "context_window": 131072},
+            "chain": [
+                {"provider": "deepseek", "model": "deepseek-v4", "context_window": 131072, "api_key": "k1"},
+                {"provider": "qwen", "model": "qwen-plus", "context_window": 16384, "api_key": "k2"},  # < 生效 32768
+            ],
+        })
+        assert "model_context_window" not in out
+
     def test_node_reads_it_from_the_gateway(self):
         from types import SimpleNamespace
 
