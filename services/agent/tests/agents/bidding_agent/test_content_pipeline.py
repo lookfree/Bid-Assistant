@@ -727,6 +727,35 @@ class TestLibraryRefsInjection:
         assert "【资料库·人员】" not in performance_brief
         assert "【资料库·人员】" not in tech_brief and "【资料库·业绩】" not in tech_brief
 
+    def test_tags_are_injected_into_the_block(self, monkeypatch):
+        """tags（2026-08-09 结构化录入 Task 2）：条目录入提示曾录了也从不下发,用户写了白写——
+        现在随 title/meta/fields/body 一起进简报行。"""
+        state = self._state()
+        refs = self._refs()
+        refs["personnel"][0]["tags"] = ["PMP", "高级工程师"]
+        state["run_input"] = {"library_refs": refs}
+        chat = _FakeChat()
+        _run(state, chat, monkeypatch=monkeypatch)
+        personnel_brief = _brief_of(chat, "项目团队与人员配置")
+        assert "PMP,高级工程师" in personnel_brief
+
+    def test_library_ref_line_format_includes_tags_between_meta_and_fields(self):
+        """`_library_ref_line` 逐字段核对：title|meta|tags(逗号连)|fields|body。"""
+        from agent.agents.bidding_agent.nodes.content_pipeline import _library_ref_line
+
+        line = _library_ref_line({
+            "title": "张三", "meta": "项目经理", "tags": ["PMP", "高级工程师"],
+            "fields": [{"label": "职称", "value": "高工"}], "body": "十年经验",
+        })
+        assert line == "- 张三|项目经理|PMP,高级工程师|职称:高工|十年经验"
+
+    def test_library_ref_line_tags_absent_or_empty_renders_as_empty_segment(self):
+        """无 tags 键 / 空数组：该段落为空字符串，不炸、不占位错乱。"""
+        from agent.agents.bidding_agent.nodes.content_pipeline import _library_ref_line
+
+        assert _library_ref_line({"title": "李四"}) == "- 李四||||"
+        assert _library_ref_line({"title": "王五", "tags": []}) == "- 王五||||"
+
     def test_bare_peizhi_keyword_no_longer_triggers_personnel_block(self, monkeypatch):
         """终审 I-3：人员词表删掉裸词"配置"——"人员配置"仍被"人员"覆盖照常命中，但纯技术性的
         "设备配置"/"系统配置"章不该被误抓进人员简报块（用户口径已定，计划已改）。"""

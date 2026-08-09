@@ -161,6 +161,21 @@ describe("libraryRefsRunInput 形状与截断", () => {
     expect(result.library_refs).toBeUndefined()
     expect("library_refs" in result).toBe(false)
   })
+
+  it("⑦tags 有值才带键（录入提示曾录了也不被下发，用户写了白写——补上这一路）", async () => {
+    const [p] = await getDb()
+      .insert(libraryItems)
+      .values({ userId: userA, category: "personnel", title: "赵六", tags: ["PMP", "高级工程师"] })
+      .returning()
+
+    try {
+      const result = await libraryRefsRunInput(userA)
+      const item = result.library_refs?.personnel.find((x) => x.title === "赵六")
+      expect(item).toEqual({ title: "赵六", tags: ["PMP", "高级工程师"] }) // 无 meta/fields/body 键，与 fields 同款「有值才带键」
+    } finally {
+      await getDb().delete(libraryItems).where(eq(libraryItems.id, p!.id))
+    }
+  })
 })
 
 describe("credentials 附件透传 ocrText", () => {

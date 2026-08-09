@@ -53,7 +53,15 @@ export async function credentialsRunInput(userId: string): Promise<CredentialInp
   return credentials.length > 0 ? credentials : undefined
 }
 
-export type LibraryRefItem = { title: string; meta?: string; fields?: { label: string; value: string }[]; body?: string }
+export type LibraryRefItem = {
+  title: string
+  meta?: string
+  fields?: { label: string; value: string }[]
+  body?: string
+  // tags（2026-08-09 人员/业绩结构化录入 Task 2）：条目原本就有录入提示（如「PMP、高级工程师」）
+  // 却从没被下发给 agent，用户填了白填——补上这一路，与 fields/body 同款「有值才带键」。
+  tags?: string[]
+}
 
 const LIBRARY_REF_LIMIT = 20
 
@@ -78,7 +86,13 @@ const LIBRARY_REF_BODY_CHARS = 3000
 
 async function fetchLibraryRefs(userId: string, category: "personnel" | "performance"): Promise<LibraryRefItem[]> {
   const rows = await getDb()
-    .select({ title: libraryItems.title, meta: libraryItems.meta, fields: libraryItems.fields, body: libraryItems.body })
+    .select({
+      title: libraryItems.title,
+      meta: libraryItems.meta,
+      fields: libraryItems.fields,
+      body: libraryItems.body,
+      tags: libraryItems.tags,
+    })
     .from(libraryItems)
     .where(and(eq(libraryItems.userId, userId), eq(libraryItems.category, category)))
     .orderBy(desc(libraryItems.updatedAt))
@@ -87,6 +101,7 @@ async function fetchLibraryRefs(userId: string, category: "personnel" | "perform
   return rows.map((r) => ({
     title: r.title,
     ...(r.meta ? { meta: r.meta } : {}),
+    ...(r.tags && r.tags.length > 0 ? { tags: r.tags } : {}),
     ...(r.fields && r.fields.length > 0 ? { fields: r.fields } : {}),
     // UTF-16 安全截断（终审 wave2）：裸 slice 可能切在代理对中间产出孤代理，见 lib/text.ts 注释。
     ...(r.body ? { body: sliceAtCodePoint(r.body, LIBRARY_REF_BODY_CHARS) } : {}),

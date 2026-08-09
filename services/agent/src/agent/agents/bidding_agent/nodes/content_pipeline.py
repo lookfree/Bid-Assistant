@@ -225,13 +225,15 @@ def _pipeline_context(state: dict, ch: dict) -> str:
 
 
 def _library_ref_line(it: dict) -> str:
-    """单条人员/业绩资料库条目 → 简报行：`title|meta|label:value;…|body`（格式按计划 Task 3）。"""
+    """单条人员/业绩资料库条目 → 简报行：`title|meta|tags|label:value;…|body`
+    （tags 逗号连接；2026-08-09 结构化录入 Task 2：条目原有录入提示却从未被下发，补上这一路）。"""
     title = str(it.get("title") or "").strip()
     meta = str(it.get("meta") or "").strip()
+    tags = ",".join(str(t).strip() for t in (it.get("tags") or []) if str(t).strip())
     fields = ";".join(f"{f.get('label', '')}:{f.get('value', '')}"
                        for f in (it.get("fields") or []) if isinstance(f, dict))
     body = str(it.get("body") or "").strip()
-    return f"- {title}|{meta}|{fields}|{body}"
+    return f"- {title}|{meta}|{tags}|{fields}|{body}"
 
 
 def _library_ref_block(items: list, label: str) -> str:
