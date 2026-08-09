@@ -119,6 +119,24 @@ def test_rewrite_unknown_agent_type_404(monkeypatch, submit_gateway):
     assert res.status_code == 404
 
 
+def test_rewrite_rejects_the_credentials_appendix_chapter(monkeypatch, submit_gateway):
+    """终审 I1 第三道门：sys-creds 是纯代码拼接的确定性附录，App API 已经按库里提纲的
+    system 标记挡了一道——这里是最后一道，不管请求怎么绕过来的都要拦住。就地 422，
+    不查 thread state、不建 gateway、不碰模型（此前这条路由对这个 id 没有任何特殊处理，
+    会像普通章一样把它送进 LLM，把确定性 HTML 改写成幻觉）。"""
+    called = {"gateway": False}
+
+    def _spy_gateway(model):
+        called["gateway"] = True
+        return submit_gateway({}, reply=_NEW_HTML)
+
+    monkeypatch.setattr(chapters_mod, "_make_gateway", _spy_gateway)
+    res = asyncio.run(rewrite("bidding_agent", "th-sys", RewriteBody(chapter_id="sys-creds", instruction="补充资质")))
+    assert res.status_code == 422
+    assert "system_chapter" in res.body.decode()
+    assert called["gateway"] is False, "系统章改写走到了建 gateway 这一步——没有在最外层挡住"
+
+
 def test_rewrite_missing_chapter_404(monkeypatch, submit_gateway):
     cp = _use_memory_cp(monkeypatch)
     monkeypatch.setattr(chapters_mod, "_make_gateway", lambda m: submit_gateway({}, reply=_NEW_HTML))

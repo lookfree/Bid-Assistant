@@ -11,6 +11,7 @@ from agent.models.gateway import build_gateway
 from agent.runtime.registry import get_agent, RunContext
 from agent.routes.runs import RunModelOverride
 from agent.agents.bidding_agent.nodes.content import rewrite_chapter
+from agent.agents.bidding_agent.nodes.credentials_chapter import SYS_CREDS_ID
 import agent.agents.bidding_agent  # noqa: F401 API 进程也注册 bidding_agent（executor 只在 worker 进程导入）
 
 router = APIRouter()
@@ -37,6 +38,11 @@ async def rewrite(agent_type: str, thread_id: str, body: RewriteBody):
     """单章改写（spec315a 契约 6）：同步路由——取 thread state 该章原文 → LLM 改写 →
     aupdate_state 单章合并回 state（chapters merge reducer 保其余章）→ 返回新 HTML。
     计费在 App API（hold→本调用→persist→settle），agent 依旧 money-blind。"""
+    # 附录系统章（sys-creds）纵深拒绝（终审 I1 第三道门）：App API 已经按库里提纲的 system
+    # 标记挡了一道，这里是最后一道——不管请求怎么绕过来的，chapter_id 命中就地 422，
+    # 不查 state、不建 gateway、不碰模型。内容纯代码拼接，任何改写都是把它变成模型幻觉。
+    if body.chapter_id == SYS_CREDS_ID:
+        return JSONResponse({"error": "system_chapter"}, status_code=422)
     try:
         agent = get_agent(agent_type)                     # 注册表校验，沿用现有模式
     except KeyError:
