@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray } from "drizzle-orm"
 import { getDb } from "../db/client"
 import { libraryItems, projectFiles } from "../db/schema"
+import { sliceAtCodePoint } from "../lib/text"
 
 // 附录渲染仅认图片扩展（docx 无法内嵌 pdf，见 spec325 Global Constraints）
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg"])
@@ -87,6 +88,7 @@ async function fetchLibraryRefs(userId: string, category: "personnel" | "perform
     title: r.title,
     ...(r.meta ? { meta: r.meta } : {}),
     ...(r.fields && r.fields.length > 0 ? { fields: r.fields } : {}),
-    ...(r.body ? { body: r.body.slice(0, LIBRARY_REF_BODY_CHARS) } : {}),
+    // UTF-16 安全截断（终审 wave2）：裸 slice 可能切在代理对中间产出孤代理，见 lib/text.ts 注释。
+    ...(r.body ? { body: sliceAtCodePoint(r.body, LIBRARY_REF_BODY_CHARS) } : {}),
   }))
 }

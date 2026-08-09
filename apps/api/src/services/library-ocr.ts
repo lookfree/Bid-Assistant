@@ -2,6 +2,7 @@ import { and, eq, inArray } from "drizzle-orm"
 import { getDb } from "../db/client"
 import { libraryItems, projectFiles } from "../db/schema"
 import { getObjectBytes } from "../storage/s3"
+import { sliceAtCodePoint } from "../lib/text"
 import { ocrImage } from "./ocr"
 
 // 只认图片扩展（与 credentials.ts 的 IMAGE_EXTS 同口径：docx 无法内嵌 pdf，OCR 同理只对图片有意义）
@@ -11,17 +12,24 @@ function extOf(key: string): string {
   return key.split(".").pop()?.toLowerCase() ?? ""
 }
 
+// data URL 的 MIME 归一：.jpg 的标准 MIME 是 image/jpeg，"image/jpg" 不是合法值——多次评审被提起，
+// 虽然当前 OCR 容器不校验 MIME 未出过问题，留着非标值是持续噪音，一行止住（不改扩展名判定/展示逻辑）。
+function mimeOf(ext: string): string {
+  return ext === "jpg" ? "jpeg" : ext
+}
+
 // 单附件识别：下载字节 → 拼 data URL → 调 OCR；下载或识别任一环节失败按「未识别到文字」处理，
 // 不向上抛——失败是这一个附件的事，不该拖累同条目里的其它附件。
 async function recognize(key: string, ext: string): Promise<string> {
   try {
     const bytes = await getObjectBytes(key)
     const base64 = Buffer.from(bytes).toString("base64")
-    const text = await ocrImage(`data:image/${ext};base64,${base64}`)
+    const text = await ocrImage(`data:image/${mimeOf(ext)};base64,${base64}`)
     // 纵深防御（终审 I-2）：与 routes/library.ts 的 zod ocrText max(500) 对齐——OCR 容器不受
     // 我们控制，一旦哪次识别失约返回超长文本，写库时不截断的话，这条 ocrText 从此每次保存
     // （包括用户压根没碰这个字段的整条更新）都会撞 zod 400，把条目锁死在无法保存的状态。
-    return text.slice(0, 500)
+    // UTF-16 安全截断（终审 wave2）：裸 slice 可能切在代理对中间产出孤代理，见 lib/text.ts 注释。
+    return sliceAtCodePoint(text, 500)
   } catch {
     return ""
   }

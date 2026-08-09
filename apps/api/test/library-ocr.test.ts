@@ -173,6 +173,38 @@ describe("backfillAttachmentOcr", () => {
     expect(atts[0]?.ocrText?.length).toBeLessThanOrEqual(500)
   })
 
+  it("⑧.jpg 附件 → data URL 的 MIME 归一为 image/jpeg（标准值），不是非标的 image/jpg（终审 wave2，第三次被审查提起）", async () => {
+    let capturedUrl = ""
+    ocrBehavior = async (dataUrl) => {
+      capturedUrl = dataUrl
+      return "识别文字"
+    }
+    const fileId = await insertImageFile("license.jpg")
+    const itemId = await insertItem([{ fileId, name: "license.jpg" }])
+
+    await backfillAttachmentOcr(itemId, userId)
+
+    expect(capturedUrl.startsWith("data:image/jpeg;base64,")).toBe(true)
+    const atts = await loadAttachments(itemId)
+    expect(atts[0]?.ocrText).toBe("识别文字")
+  })
+
+  it("⑨容器返回文本恰好在 500 字截断边界跨过 emoji → 不产生孤立代理（终审 wave2，UTF-16 安全截断）", async () => {
+    // 第 500 个 code unit 落在 emoji 的高位代理上：裸 slice(0, 500) 会切出孤代理，
+    // 经 JSON 传给 agent 服务后拖垮同一请求发出的所有模型调用（原发现有活体证明）。
+    ocrBehavior = async () => "字".repeat(499) + "😀" + "字".repeat(20)
+    const fileId = await insertImageFile("emoji-boundary.png")
+    const itemId = await insertItem([{ fileId, name: "emoji-boundary.png" }])
+
+    await backfillAttachmentOcr(itemId, userId)
+
+    const atts = await loadAttachments(itemId)
+    const text = atts[0]?.ocrText ?? ""
+    expect(text.length).toBeLessThanOrEqual(500)
+    const lastCode = text.charCodeAt(text.length - 1)
+    expect(lastCode >= 0xd800 && lastCode <= 0xdbff).toBe(false) // 末位不是孤立的高位代理
+  })
+
   it("⑦zod 往返：带 ocrText 的附件经真实路由保存查回仍在（防 attachmentSchema 静默剥字段）", async () => {
     const { libraryRoutes } = await import("../src/routes/library")
     const app = new Hono()
