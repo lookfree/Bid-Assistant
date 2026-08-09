@@ -42,11 +42,17 @@ beforeAll(async () => {
   })
   // export 步：result 即 BiddingState.artifacts 合并快照（顶层 docx + pptx + pdf，e2e 实测形状）
   // pdf 由 spec323 best-effort 转换产出，本项目的转换假定成功（key 存在）
+  // docx_tech：2026-08-09 export-scope 分册产物键（与全量键并存，见 nodes/export.py 的合并通道）
   await getDb().insert(projectSteps).values({
     projectId,
     step: "export",
     status: "done",
-    result: { docx: "artifacts/t/bid.docx", pptx: "artifacts/t/present.pptx", pdf: "artifacts/t/bid.pdf" },
+    result: {
+      docx: "artifacts/t/bid.docx",
+      pptx: "artifacts/t/present.pptx",
+      pdf: "artifacts/t/bid.pdf",
+      docx_tech: "artifacts/t/bid_tech.docx",
+    },
   })
 })
 
@@ -97,6 +103,12 @@ describe("/api/projects/:id/artifacts/:kind", () => {
     expect(noPdf.status).toBe(404)
     const stillDocx = await app.request(`/api/projects/${p2!.id}/artifacts/docx`, { headers: auth() })
     expect(stillDocx.status).toBe(200)
+  })
+
+  it("分册键 docx_tech：ARTIFACT_NAME 认得(2026-08-09 export-scope)，与全量 docx 并存不冲突", async () => {
+    const res = await app.request(`/api/projects/${projectId}/artifacts/docx_tech`, { headers: auth() })
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { url: string }).url).toContain("artifacts/t/bid_tech.docx")
   })
 
   it("未知 kind → 400；无产物项目 → 404", async () => {

@@ -41,7 +41,17 @@ const STEP_TEXT: Record<Step, string> = {
 
 // 产物下载名（预签名 URL 的 Content-Disposition）
 // spec323：pdf 由 export 步 best-effort 转换产出，缺失时 artifacts 无此 key（下面按 kind 404）
-const ARTIFACT_NAME: Record<string, string> = { docx: "投标文件.docx", pptx: "述标演示.pptx", pdf: "投标文件.pdf" }
+// 2026-08-09 export-scope Task 2：分册产物键带 _tech/_biz 后缀（agent 侧命名，见 nodes/export.py），
+// 下载名同步带上分册后缀——与 render_docx 封面/页脚的「·技术标部分」/「·商务标部分」口径一致。
+const ARTIFACT_NAME: Record<string, string> = {
+  docx: "投标文件.docx",
+  pptx: "述标演示.pptx",
+  pdf: "投标文件.pdf",
+  docx_tech: "投标文件·技术标部分.docx",
+  pdf_tech: "投标文件·技术标部分.pdf",
+  docx_biz: "投标文件·商务标部分.docx",
+  pdf_biz: "投标文件·商务标部分.pdf",
+}
 
 // 可编辑回写的步（spec315a 契约 1）：read/review/export 的 result 不接受前端覆写
 const EDITABLE_STEPS = ["outline", "content", "present"] as const
