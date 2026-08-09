@@ -2,13 +2,34 @@
 
 import { useEffect, useRef, useState } from "react"
 import { ApiError } from "@/lib/api-client"
-import { artifactDownload, triggerDownload, runStep, StreamIncompleteError, type ProjectInfo } from "@/lib/project"
+import {
+  artifactDownload,
+  exportPreview,
+  triggerDownload,
+  runStep,
+  StreamIncompleteError,
+  type ExportPreview,
+  type ProjectInfo,
+} from "@/lib/project"
 import { storedFormat } from "@/lib/generation-config"
 import { notifyCreditsChanged, pollStepResult, useOtherStepResult } from "@/lib/use-step"
 import type { RealRisk } from "@/lib/risk-derive"
+import { artifactKeys, type ExportScope } from "@/lib/export-scope"
 
 /** 步序闸 / 402 引导提示（区别于 3 秒即逝的 exportStatus）。 */
 export type ExportGate = { text: string; href: string; label: string }
+
+// export 步结果快照（已经 App 层 toCamel）：全量键 docx/pdf/pdfPages 不变，分册键随 scope 走
+// docxTech/pdfTech/pdfPagesTech、docxBiz/pdfBiz/pdfPagesBiz——与 lib/export-scope.ts 的
+// artifactKeys()（下载路由用的 snake_case 键）是两套大小写，靠 camelArtifactKey 对应。
+export type ExportArtifacts = Record<string, string | number | undefined>
+
+/** scope → 该 artifact 在 toCamel 后的字段名（下载路由用 artifactKeys 的 snake_case，这里是它的
+ *  camelCase 版本，供读 exportedResult 判断"该册是否已产出"用）。 */
+export function camelArtifactKey(scope: ExportScope, base: "docx" | "pdf" | "pdfPages"): string {
+  const sfx = scope === "tech" ? "Tech" : scope === "business" ? "Biz" : ""
+  return `${base}${sfx}`
+}
 
 /** 导出全流程 hook（从 content/page.tsx 拆出,页面超 800 行拆分）：
  *  入口付费墙 → 体检确认/高风险二次确认（弹层仍在页面,这里回调发信号）→ export 步执行
@@ -34,6 +55,8 @@ export function useExport(opts: {
   const { projectId, info } = opts
   const [exportOpen, setExportOpen] = useState(false)
   const [exportFormat, setExportFormat] = useState<"word" | "pdf">("word")
+  // 导出范围三选一（2026-08-09 export-scope）：全量/技术标册/商务标册，默认全量（老行为不变）。
+  const [exportScope, setExportScope] = useState<ExportScope>("full")
   const [exportStatus, setExportStatus] = useState<string>("")
   const [exportGate, setExportGate] = useState<ExportGate | null>(null)
   // 本地净态：导出成功置 true，正文一变置 false（null=还没有本地判断，听服务端的）。
@@ -46,23 +69,39 @@ export function useExport(opts: {
   const [exporting, setExporting] = useState(false)
   const exportingRef = useRef(false)
 
-  // spec323：已跑过 export 步且结果无 pdf key ⇒ 该次 docx→pdf 转换失败（agent best-effort），PDF 选项置灰
-  const { data: exportedResult } = useOtherStepResult<{ pdf?: string }>(projectId, info, "export")
-  const pdfUnavailable = !!exportedResult && !exportedResult.pdf
+  // spec323：已跑过 export 步且**本次 scope** 的产物无 pdf key ⇒ 该次 docx→pdf 转换失败（agent
+  // best-effort），PDF 选项置灰。2026-08-09 分册起 pdf 键随 scope 走，不能再固定读 pdf——
+  // 否则技术册转换失败时会被商务册仍在的 pdf 键误判成"可用"。
+  const { data: exportedResult } = useOtherStepResult<ExportArtifacts>(projectId, info, "export")
+  const pdfUnavailable = !!exportedResult && !exportedResult[camelArtifactKey(exportScope, "pdf")]
   // 已知不可用时把停留在 pdf 的选择拨回 word，避免「已禁用但仍被选中」的怪状态
   useEffect(() => {
     if (pdfUnavailable) setExportFormat((f) => (f === "pdf" ? "word" : f))
   }, [pdfUnavailable])
+
+  // 导出预告（spec 方案A）：挂载弹窗（每次打开）时取 credentials 清单，失败静默——
+  // 预告区只少资质那一行，不挡导出。
+  const [preview, setPreview] = useState<ExportPreview | null>(null)
+  useEffect(() => {
+    if (!exportOpen || !projectId) return
+    let alive = true
+    exportPreview(projectId)
+      .then((r) => { if (alive) setPreview(r) })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [exportOpen, projectId])
 
   function flashExportStatus(text: string) {
     setExportStatus(text)
     setTimeout(() => setExportStatus(""), 3000)
   }
 
-  /** 真实页数后缀（agent 导出时用 PDF 数出的地面真值,artifacts.pdfPages）。
+  /** 真实页数后缀（agent 导出时用 PDF 数出的地面真值,artifacts.pdfPages，分册键随 scope 走）。
    *  从手头已有的 export 结果读（评审 F5:再发一次网络请求既多付一个 RTT,挂住还会卡死 finally）。 */
-  const pagesSuffix = (r: { pdfPages?: number } | null | undefined): string =>
-    typeof r?.pdfPages === "number" && r.pdfPages > 0 ? `（实际 ${r.pdfPages} 页）` : ""
+  const pagesSuffix = (r: ExportArtifacts | null | undefined, scope: ExportScope): string => {
+    const v = r?.[camelArtifactKey(scope, "pdfPages")]
+    return typeof v === "number" && v > 0 ? `（实际 ${v} 页）` : ""
+  }
 
   /** 本次导出服务端是否免费（口径见 services/export-dirty.ts）：内容改过就收费，
    *  未改动的重复下载免费。必须与服务端同口径——前端若仍按旧的「导出过就免费」判断，
@@ -140,7 +179,10 @@ export function useExport(opts: {
       return
     }
     // 真实导出：export 步（渲染完整 .docx，best-effort 转 .pdf，落 MinIO）→ 预签名 URL 直下
-    const kind = format === "pdf" ? "pdf" : "docx"
+    // 2026-08-09 分册：产物键随 exportScope 走后缀（docx_tech/pdf_biz…），下面判断 PDF 专属文案
+    // 一律看 format（三种 scope 下都是字面量 "word"|"pdf"），不能再看 kind（scope≠full 时它不是 "pdf"）。
+    const keys = artifactKeys(exportScope)
+    const kind = format === "pdf" ? keys.pdf : keys.docx
     exportingRef.current = true
     setExporting(true)
     setExportStatus(format === "pdf" ? "正在渲染完整标书（PDF）…" : "正在渲染完整标书…")
@@ -151,12 +193,15 @@ export function useExport(opts: {
         // 提纲顺序调整、渲染器升级全都拿不到——用户可能拿着不含自己修改的标书去投标。
         // 导出是确定性渲染（无 LLM）,重渲只花本机 CPU,服务端对重渲也不再计费,故一律重跑。
         const fmt = storedFormat()
-        const exportRes = (await runStep(projectId, "export", undefined, fmt ? { format: fmt } : undefined)) as {
-          pdfPages?: number
-        } | null
+        const exportRes = (await runStep(
+          projectId,
+          "export",
+          undefined,
+          { ...(fmt ? { format: fmt } : {}), export_scope: exportScope },
+        )) as ExportArtifacts | null
         const dl = await artifactDownload(projectId, kind)
         triggerDownload(dl.url)
-        setExportStatus(`已开始下载《${dl.filename}》${pagesSuffix(exportRes)}，可在浏览器「下载」列表查看`)
+        setExportStatus(`已开始下载《${dl.filename}》${pagesSuffix(exportRes, exportScope)}，可在浏览器「下载」列表查看`)
         setLocalClean(true)
       } catch (e) {
         // 连接中途断开 / 双发撞 running / 撞上对账刚收尾（step_already_done）：run 在服务端照常
@@ -167,17 +212,17 @@ export function useExport(opts: {
             (e.code === "step_already_running" || e.code === "step_already_done"))
         if (converge) {
           try {
-            const converged = (await pollStepResult(projectId, "export")) as { pdfPages?: number } | null
+            const converged = (await pollStepResult(projectId, "export")) as ExportArtifacts | null
             notifyCreditsChanged()
             const dl = await artifactDownload(projectId, kind)
             triggerDownload(dl.url)
-            setExportStatus(`已开始下载《${dl.filename}》${pagesSuffix(converged)}，可在浏览器「下载」列表查看`)
+            setExportStatus(`已开始下载《${dl.filename}》${pagesSuffix(converged, exportScope)}，可在浏览器「下载」列表查看`)
             setLocalClean(true)
             return
           } catch (e2) {
             // 收敛成功但 pdf 产物缺失（该次 docx→pdf 转换失败）:导出步其实成功了,给准确文案
             setExportStatus(
-              kind === "pdf" && e2 instanceof ApiError && e2.status === 404
+              format === "pdf" && e2 instanceof ApiError && e2.status === 404
                 ? "PDF 生成失败，仅提供 Word"
                 : "导出失败，请重试",
             )
@@ -190,7 +235,7 @@ export function useExport(opts: {
           setExportStatus("")
         } else if (e instanceof ApiError && e.status === 409) {
           setExportStatus("步骤顺序不符，请先完成前序步骤")
-        } else if (kind === "pdf" && e instanceof ApiError && e.status === 404) {
+        } else if (format === "pdf" && e instanceof ApiError && e.status === 404) {
           setExportStatus("PDF 生成失败，仅提供 Word")
         } else {
           setExportStatus("导出失败，请重试")
@@ -228,9 +273,24 @@ export function useExport(opts: {
     })()
   }, [projectId, info])
 
+  /** 下载区（已产出的某册再下载,不重渲、不再计费——直接按产物键取预签名地址）。 */
+  async function redownload(kind: string) {
+    if (!projectId) return
+    try {
+      const dl = await artifactDownload(projectId, kind)
+      triggerDownload(dl.url)
+      flashExportStatus(`已开始下载《${dl.filename}》，可在浏览器「下载」列表查看`)
+    } catch {
+      flashExportStatus("下载失败，请重试")
+    }
+  }
+
   return {
     exportOpen, setExportOpen,
     exportFormat, setExportFormat,
+    exportScope, setExportScope,
+    preview,
+    exportedResult, redownload,
     exportStatus, flashExportStatus,
     exportGate, exportGateHint,
     hasExported, pdfUnavailable, exporting, freeRerender, markContentChanged,

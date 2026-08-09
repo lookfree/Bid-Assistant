@@ -455,11 +455,20 @@ export async function rewriteChapter(
 
 // 产物预签名下载（docx/pptx/pdf，pdf 为 spec323 best-effort 转换产物，可能不存在），浏览器直下 MinIO。
 // filename = 服务端下发的下载名（带项目名），供「下载成功」提示点名具体文件。
+// kind 为服务端 ARTIFACT_NAME 允许表里的键，2026-08-09 起分册导出会带 docx_tech/pdf_biz 等后缀键
+// （见 lib/export-scope.ts 的 artifactKeys），故类型放宽为 string，不再锁死三个字面量。
 export async function artifactDownload(
   id: string,
-  kind: "docx" | "pptx" | "pdf",
+  kind: string,
 ): Promise<{ url: string; filename: string }> {
   return api.request<{ url: string; filename: string }>(`/api/projects/${id}/artifacts/${kind}`)
+}
+
+// 导出预告（2026-08-09 export-scope Task 3 GET /export-preview）：告诉前端本次全套导出会附加的资质附录。
+// 挂载导出弹窗时取，失败不影响导出——调用方按静默失败处理（预告区只少一行）。
+export type ExportPreview = { credentials: { title: string; imageCount: number }[] }
+export async function exportPreview(id: string): Promise<ExportPreview> {
+  return api.request<ExportPreview>(`/api/projects/${id}/export-preview`)
 }
 
 /** 述标导出：按当前存库 deck 免费重渲 .pptx 再取预签名 URL。

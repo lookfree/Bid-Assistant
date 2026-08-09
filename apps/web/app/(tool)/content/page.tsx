@@ -37,7 +37,8 @@ import { deriveHealthReport } from "@/lib/risk-derive"
 import { ITEM_ANCHOR_MIN, outlineItemAnchor, scrollToAnchor } from "@/lib/anchor"
 import { stepNotApplicable, stepPrereq, useOtherStepResult, useStep } from "@/lib/use-step"
 import { normalizeChapterHtml } from "@/lib/chapter-normalize"
-import { useExport } from "./use-export"
+import { camelArtifactKey, useExport } from "./use-export"
+import { artifactKeys, scopeAvailability, type ExportScope } from "@/lib/export-scope"
 import { AiNotice } from "@/components/tool/ai-notice"
 import { ApiError } from "@/lib/api-client"
 import { rewriteChapter, triggerDownload } from "@/lib/project"
@@ -80,6 +81,24 @@ function rewriteErrorText(e: unknown): string {
   return "请稍后重试"
 }
 
+const SCOPE_LABEL: Record<ExportScope, string> = { full: "", tech: "技术标册", business: "商务标册" }
+
+/** 下载区（2026-08-09 export-scope）：已产出的分册再下载，不重渲、不再计费——遍历三种 scope，
+ *  exportedResult（export 步结果快照，已 toCamel）里存在的产物键才出按钮，全量/技术/商务并存。 */
+function scopedDownloads(
+  exported: Record<string, string | number | undefined> | null,
+): { key: string; kind: string; text: string }[] {
+  if (!exported) return []
+  const out: { key: string; kind: string; text: string }[] = []
+  for (const s of ["full", "tech", "business"] as ExportScope[]) {
+    const keys = artifactKeys(s)
+    const label = SCOPE_LABEL[s] ? `（${SCOPE_LABEL[s]}）` : ""
+    if (exported[camelArtifactKey(s, "docx")]) out.push({ key: `${s}-docx`, kind: keys.docx, text: `下载 Word${label}` })
+    if (exported[camelArtifactKey(s, "pdf")]) out.push({ key: `${s}-pdf`, kind: keys.pdf, text: `下载 PDF${label}` })
+  }
+  return out
+}
+
 export default function ContentPage() {
   const [bidType, setBidType] = useState<BidType>("tech")
   // 章节树：从空开始，由 outline/content 结果构建
@@ -116,7 +135,6 @@ export default function ContentPage() {
   }, [realBodies, outlineResult])
   const [activeId, setActiveId] = useState<string>("t1")
   const [chatOpen, setChatOpen] = useState(true)
-  const [exportScope, setExportScope] = useState<BidType>("full")
   const [editor, setEditor] = useState<TiptapEditor | null>(null)
   const editorScrollRef = useRef<HTMLDivElement>(null)
   // 外部替换正文（AI 改写/快照回退）→ epoch+1 → RichEditor 换 key 重挂:内容与撤销栈干净重置
@@ -174,6 +192,7 @@ export default function ContentPage() {
   /* 导出全流程（入口/步序闸/断流收敛/断点续看）拆到 use-export.ts；确认弹层仍在本页,回调发信号 */
   const {
     exportOpen, setExportOpen, exportFormat, setExportFormat, exportStatus, flashExportStatus,
+    exportScope, setExportScope, preview, exportedResult, redownload,
     exportGate, exportGateHint, hasExported, pdfUnavailable, exporting, freeRerender, markContentChanged,
     onExportEntry, attemptExport, doExport,
   } = useExport({
@@ -183,6 +202,9 @@ export default function ContentPage() {
     requestCheckConfirm: () => setCheckConfirm("export"),
     onHighRisk: () => setExportConfirm(true),
   })
+  // 下载区（分册再下载）与三选一置灰：都从页面已加载的 outline 章节数据算，不额外发请求
+  const scopedDownloadItems = scopedDownloads(exportedResult)
+  const scopeAvail = scopeAvailability(outlineResult?.chapters ?? [])
 
   /** 起跑正文生成：显式给参数用之;缺省（含失败重试路径）回读用户存过的目标字数——
    *  否则重试的付费 run 会静默丢掉篇幅配置（审查修正 2026-07-23）。 */
@@ -743,6 +765,22 @@ export default function ContentPage() {
             </Link>
           )}
 
+          {/* 下载区（2026-08-09 export-scope）：已产出的分册直接再下载，不用回导出弹窗重渲 */}
+          {scopedDownloadItems.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {scopedDownloadItems.map((d) => (
+                <button
+                  key={d.key}
+                  onClick={() => void redownload(d.kind)}
+                  className="inline-flex items-center gap-1 rounded-lg border border-border bg-card px-2.5 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-muted"
+                >
+                  <Download className="size-3" />
+                  {d.text}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* 一键废标体检（真实项目跑 review 步；content 未完成时禁用） */}
           <div className="relative">
             <button
@@ -831,6 +869,8 @@ export default function ContentPage() {
                 balance={balance}
                 pdfUnavailable={pdfUnavailable}
                 freeRerender={freeRerender}
+                availability={scopeAvail}
+                preview={preview}
                 projectId={projectId}
                 onScope={setExportScope}
                 onFormat={setExportFormat}
