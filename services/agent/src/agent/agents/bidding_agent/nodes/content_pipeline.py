@@ -69,6 +69,13 @@ _PERFORMANCE_RE = re.compile(r"业绩|案例|经验|项目经历")
 # 内部字符）,并如实注明未列出条数（评审 2026-08-09）。
 _LIBRARY_REF_BLOCK_CHARS = 3000
 
+# 短章补写兜底（2026-08-09 生产实测：用户选 5.1 万字/99 页只拿到 48%）。提示词管不住"欠"这一侧
+# ——写手实测 produced/work=0.675——所以在代码里加一道确定性的下限校验。
+# 0.8 而非 0.9：达标线是 90%，触发线留一成缓冲，免得 88% 的章也去烧一轮调用。
+_EXPAND_FLOOR = 0.8
+# 预算 <1500 字的小章不触发：几百字的章本来就该"写完即止"（表单/承诺函多在此列），
+# 相对偏差又大，来回抖一轮纯烧钱。
+_EXPAND_MIN_BUDGET = 1500
 
 
 def _cache_key(ctx, generation: int, brief: str) -> str:
@@ -346,9 +353,56 @@ async def _attempt(ctx, chat, msgs: list, sem: asyncio.Semaphore, progress: _Pro
             progress.in_flight -= 1
 
 
+async def _expand_short(ctx, chat, system_prompt: str, ch: dict, user: str, html: str,
+                        budget: int, sem: asyncio.Semaphore, progress: _Progress) -> str:
+    """短章补写兜底：首稿明显短于本章预算时，追**一轮**扩写并返回终稿。
+
+    把当前稿连同"现 X 字 / 目标 N 字"发回模型，要求保持既有结构与事实、只补实质内容，
+    输出**完整替换稿**（而不是增量片段——增量还得代码去缝，缝错就是断章）。
+
+    铁律是不丢内容：扩写失败、清洗炸、产出仍不长于首稿，一律回落首稿；扩写稿被长度上限
+    截断则**整份弃用**（截断的替换稿会把本章尾部整段吃掉，比短更糟）。每章至多一次
+    （调用点在 fresh 章收稿处，缓存命中章根本不到这里），失败只 warning 不抛——与
+    `_retry_missing` 同风格，兜底绝不反过来打断已经写成的一章。"""
+    from agent.agents.bidding_agent.nodes.content import _visible_len
+    from agent.agents.bidding_agent.render.sanitize import (
+        clean_internal_ids, strip_chat_wrapper, strip_document_shell)
+
+    cid = ch.get("id") or ""
+    cur = _visible_len(html)
+    if budget < _EXPAND_MIN_BUDGET or cur >= budget * _EXPAND_FLOOR:
+        return html
+    logger.info("章 %s 首稿 %d 字 < 目标 %d 字的 %d%%，追一轮扩写", cid, cur, budget, _EXPAND_FLOOR * 100)
+    msgs = [SystemMessage(content=system_prompt), HumanMessage(content=(
+        f"{user}\n\n以下是本章已完成的初稿（现约 {cur} 字，本章目标约 {budget} 字，仍差 "
+        f"{budget - cur} 字）：\n{html}\n\n"
+        "请在**保持既有结构、标题层级与事实不变**的前提下扩写补足到目标字数（上限 +10%）："
+        "细化方案与技术路线、补充实施步骤与分工、质量与安全保障措施、具体参数/指标/数据与表格。"
+        "严禁堆套话、复读已写段落或注水凑字数。"
+        "输出**完整的本章正文 HTML 替换稿**（含初稿已有的全部内容），首字符必须是 '<'。"))]
+    try:
+        out = await _attempt(ctx, chat, msgs, sem, progress)
+    except Exception as e:  # noqa: BLE001 兜底失败保留首稿；永久性错误此刻已无意义（本章已成稿）
+        logger.warning("章 %s 扩写调用失败，保留首稿：%s", cid, str(e)[:200])
+        return html
+    if _finish_reason(out) == "length":
+        logger.warning("章 %s 扩写稿被长度上限截断，整份弃用（截断替换稿会吃掉本章尾部）", cid)
+        return html
+    try:
+        grown = clean_internal_ids(strip_document_shell(strip_chat_wrapper(_text_of(out))))
+    except Exception:  # noqa: BLE001 清洗炸 → 首稿照常交付
+        logger.exception("章 %s 扩写稿清洗失败，保留首稿", cid)
+        return html
+    if "<" not in grown or _visible_len(grown) <= cur:
+        logger.warning("章 %s 扩写稿不长于首稿（%d → %d 字），取较长者", cid, cur, _visible_len(grown))
+        return html
+    logger.info("章 %s 扩写完成：%d → %d 字（目标 %d）", cid, cur, _visible_len(grown), budget)
+    return grown
+
+
 async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, shared: dict,
                      sem: asyncio.Semaphore, progress: _Progress, generation: int) -> tuple[str, str]:
-    """写一章：断点命中直接用；否则限流下调模型，产出清洗后落缓存。
+    """写一章：断点命中直接用；否则限流下调模型，产出清洗后（必要时追一轮扩写）落缓存。
     残章/截断稿重试一次（截断稿绝不入库——半章缓存 24h 等于把残稿钉死,评审 2026-08-08）；
     两次失败 → 记缺章。简报构造/清洗抛错只废本章,绝不连累其他 19 章（gather 无隔离,评审）。"""
     from agent.agents.bidding_agent.render.sanitize import (
@@ -370,6 +424,7 @@ async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, share
     msgs = [SystemMessage(content=system_prompt), HumanMessage(content=user)]
     min_chars = _NA_MIN_CHARS if "不适用" in (ch.get("title") or "") else _MIN_CHAPTER_CHARS
     html = ""
+    truncated = False       # 撞过长度上限的章不再追扩写（见下方接线处注释）
     for attempt in (1, 2):
         try:
             out = await _attempt(ctx, chat, msgs, sem, progress)
@@ -379,6 +434,7 @@ async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, share
             logger.warning("章 %s 第 %d 次生成失败：%s", cid, attempt, str(e)[:200])
             continue
         if _finish_reason(out) == "length":
+            truncated = True
             logger.warning("章 %s 第 %d 次输出被长度上限截断，重试（截断稿不入库）", cid, attempt)
             msgs = [SystemMessage(content=system_prompt),
                     HumanMessage(content=user + "\n\n上次输出因超长被截断：请压缩篇幅、确保本章完整收尾。")]
@@ -397,6 +453,13 @@ async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, share
     if len(html) < min_chars or "<" not in html:
         logger.error("章 %s 两次尝试仍无有效产出，记为缺章", cid)
         return cid, ""
+    # 短章补写兜底：在**收稿处、落缓存之前**——缓存里必须是扩写后的终稿，否则下次续跑命中
+    # 缓存就再也扩不动了。证照插图等下游 post-pass 在 run_content_pipeline 里跑，照常作用于终稿。
+    # 撞过长度上限的章跳过：刚让它"压缩篇幅、确保完整收尾"，转头再让它扩写自相矛盾，而扩写是
+    # 整章替换，再撞一次上限等于拿半章换成稿——不丢内容优先（评审裁量 2026-08-09）。
+    budget = int((shared.get("budgets") or {}).get(cid) or 0)
+    if budget and not truncated:
+        html = await _expand_short(ctx, chat, system_prompt, ch, user, html, budget, sem, progress)
     await _cache_set(ctx, key, html)
     await progress.chapter_done(cid)
     return cid, html
