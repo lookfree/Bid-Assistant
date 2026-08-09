@@ -416,6 +416,7 @@ def _shared_blocks(state: dict, read: dict, outline: dict, chapters: list[dict])
 
 async def run_content_pipeline(ctx, state: dict) -> dict[str, str]:
     """入口：提纲各章并发（限流）独立生成 → {章id: html}。缺章如实缺（前端有免费补齐）。"""
+    from agent.agents.bidding_agent.nodes.cert_placement import place_certificates
     from agent.agents.bidding_agent.nodes.common import filter_read_by_package
     from agent.agents.bidding_agent.nodes.content import CHAPTER_DRAFT_PROMPT, _content_reference_block
     from agent.agents.bidding_agent.nodes.credentials_chapter import SYS_CREDS_ID
@@ -464,6 +465,9 @@ async def run_content_pipeline(ctx, state: dict) -> dict[str, str]:
     out = {cid: html for cid, html in pairs if html}
     if not out:
         raise RuntimeError("未产出任何章节草稿（全部章节生成失败）")
+    # 证照定向插章 post-pass（Task 4,计划③）：在缓存读写之外单独跑——fresh 章刚写完、
+    # 缓存命中章刚取出，此刻统一现算一遍插图，绝不写回上面的章节缓存（评审 2026-08-09）。
+    out = place_certificates(out, state)
     missing = [cid for cid, html in pairs if not html]
     if missing:
         logger.error("代码编排收尾仍缺 %d 章：%s（前端可免费补齐）", len(missing), missing)
