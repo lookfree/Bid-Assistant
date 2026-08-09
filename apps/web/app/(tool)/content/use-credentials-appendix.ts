@@ -10,6 +10,12 @@ import type { Chapter } from "./chapter-nav"
 const IMG_TAG_RE = /<img\b[^>]*>/gi
 const DATA_FILE_ID_RE = /data-file-id\s*=\s*(?:"([^"]*)"|'([^']*)')/i
 const HAS_SRC_RE = /\bsrc\s*=/i
+// 取预签名失败时垫的占位 src（1×1 透明 GIF）：TipTap 的 Image parse 规则是 `img[src]`，无 src 的
+// <img> 不会被识别为图片节点，会被静默丢弃——丢了就再也补不回（data-file-id 引用一起没了）。
+// 垫一个 src 就能让节点保住，图暂时显示为空框，但引用不丢；存回服务端时不会把这个占位地址
+// 意外落库——resizable-image.tsx 的 Src 扩展 renderHTML 对带 data-file-id 的节点恒不输出 src
+// （`attrs["data-file-id"] ? {} : ...`），不管当前 src 是预签名地址还是这个占位图（主#2）。
+const FAILED_SRC = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
 
 /** 附录占位图 → 现取的预签名地址（Task 5；终审 I-1 起对所有章节生效——Task 4 的资质定向注入
  *  post-pass 会把同一种无 src 占位图 <img data-file-id> 插进普通章节，不止 sys-creds 附录章，
@@ -45,14 +51,19 @@ function useResolvedCredentialSrc(html: string) {
   }, [pendingKey])
 
   /** 把已取到的预签名地址现填进占位图 src（原始 HTML 不动，只在喂给编辑器前现填）；
-   *  还没取到 URL 的、已经带 src 的（用户编辑过或本来就是普通插图）原样跳过——对所有章节生效。 */
+   *  还没取到 URL 的、已经带 src 的（用户编辑过或本来就是普通插图）原样跳过——对所有章节生效。
+   *  取失败的（srcMap[id]===null）垫 FAILED_SRC 而不是继续留空——留空会被 TipTap 静默丢节点，
+   *  下一次失焦保存就把这张证照的引用永久冲掉（主#2，hook 顶部注释已说明该 bug）。 */
   function withResolvedSrc(htmlIn: string): string {
     return htmlIn.replace(IMG_TAG_RE, (tag) => {
       if (HAS_SRC_RE.test(tag)) return tag
       const m = DATA_FILE_ID_RE.exec(tag)
       const id = m?.[1] ?? m?.[2]
-      const url = id ? srcMap[id] : undefined
-      return url ? tag.replace(/<img\b/i, `<img src="${url}"`) : tag
+      if (!id) return tag
+      const url = srcMap[id]
+      if (url) return tag.replace(/<img\b/i, `<img src="${url}"`)
+      if (id in srcMap) return tag.replace(/<img\b/i, `<img src="${FAILED_SRC}"`) // 已尝试但失败
+      return tag // 还没取到，等 pendingResolve
     })
   }
 
@@ -65,6 +76,9 @@ function useResolvedCredentialSrc(html: string) {
  *  占位图解析对所有章节生效（终审 I-1：Task 4 post-pass 会把这种占位图插进普通章节）；
  *  过期提示/刷新仍只对 sys-creds 章生效——其余章节没有"整章重建"这个概念。 */
 export function useCredentialsAppendix(opts: {
+  // 调用方（content/page.tsx）在早退返回之前就要挂完全部 hook（React hooks 规则不允许条件调用），
+  // 而 `list.find(...) ?? list[0]` 在章列表为空的首帧确实是 undefined——类型标 Chapter 只是沿用
+  // 调用方现有的（不严谨的）标注，这里按运行时真会拿到 undefined 来处理（主#1）。
   active: Chapter
   preview: ExportPreview | null
   projectId: string | null
@@ -73,13 +87,13 @@ export function useCredentialsAppendix(opts: {
   applyRefresh: (chapterId: string, html: string) => void
 }) {
   const { active, preview, projectId, applyRefresh } = opts
-  const isSysCreds = active.id === SYS_CREDS_ID
+  const isSysCreds = active?.id === SYS_CREDS_ID
 
-  const { pendingResolve, withResolvedSrc } = useResolvedCredentialSrc(active.html)
+  const { pendingResolve, withResolvedSrc } = useResolvedCredentialSrc(active?.html ?? "")
 
   // 过期判定：sys-creds 章存在（active 就是它）且 export-preview 已到手时，比对章内占位图集合
   // 与资料库现存资质图片集合。preview 还没到手（首屏未加载完）时按"未过期"处理，不误报。
-  const stale = isSysCreds && preview ? appendixStale(placeholderFileIds(active.html), preview.credential_file_ids) : false
+  const stale = isSysCreds && preview ? appendixStale(placeholderFileIds(active?.html ?? ""), preview.credential_file_ids) : false
 
   const [refreshing, setRefreshing] = useState(false)
   // 刷新遇 409 no_credentials（资料库资质条目已清零，2026-08-09 终审 I1）：这种失败点一次
@@ -91,7 +105,7 @@ export function useCredentialsAppendix(opts: {
   // 是否显示再叠加 isSysCreds 守卫（见 noCredentialsNoticeVisible），两道一起堵。
   useEffect(() => {
     setNoCredentialsNotice(false)
-  }, [active.id])
+  }, [active?.id])
   /** 点「刷新附录」：调 Task 4 的免费重建端点，成功就地替换该章 HTML；409 content_not_done/
    *  404 静默收起（点一下解决不了，不值得弹窗打断）；409 no_credentials 转成一次性提示。 */
   async function refreshAppendix() {

@@ -31,6 +31,7 @@ export function ExportMenu({
   freeRerender = false,
   availability,
   preview,
+  hasSysCredsChapter,
   projectId,
   onScope,
   onFormat,
@@ -45,6 +46,10 @@ export function ExportMenu({
   freeRerender?: boolean
   availability: Record<BidType, boolean>
   preview: { credentials: { title: string; imageCount: number }[] } | null
+  /** 章节列表里是否真有 sys-creds 附录章（被删行为#1）：preview.credentials 只看资料库有没有
+   *  资质条目，跟这份正文里到底有没有生成附录章无关——存量项目/生成完之后才补传资质的项目，
+   *  资料库有资质但章不存在，这里仍旧承诺"资质证照附录 N 项"就是空头支票，实际导出并不含它。 */
+  hasSysCredsChapter: boolean
   projectId?: string | null
   onScope: (s: BidType) => void
   onFormat: (f: ExportFormat) => void
@@ -99,10 +104,14 @@ export function ExportMenu({
         <div className="mt-3 rounded-md bg-muted/40 p-2.5 text-[11px] text-muted-foreground">
           <p>导出将自动附加:封面、目录、投标人承诺与签章页、AI 生成说明页</p>
           {scope !== "tech" && preview?.credentials?.length ? (
-            <p className="mt-1">
-              资质证照附录 {preview.credentials.length} 项:
-              {preview.credentials.map((x) => (x.imageCount > 1 ? `${x.title}×${x.imageCount}` : x.title)).join("、")}
-            </p>
+            hasSysCredsChapter ? (
+              <p className="mt-1">
+                资质证照附录 {preview.credentials.length} 项:
+                {preview.credentials.map((x) => (x.imageCount > 1 ? `${x.title}×${x.imageCount}` : x.title)).join("、")}
+              </p>
+            ) : (
+              <p className="mt-1">到正文页生成资质附录后随册导出</p>
+            )
           ) : null}
           {scope === "tech" && <p className="mt-1">技术标册不附资质证照(暗标惯例)</p>}
         </div>

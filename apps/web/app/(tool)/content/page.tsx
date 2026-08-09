@@ -53,7 +53,9 @@ import { ReportDialog } from "./report-dialog"
 import { useHealthCheck } from "./use-health-check"
 import { useChapterEdits } from "./use-chapter-edits"
 import { useCredentialsAppendix } from "./use-credentials-appendix"
+import { useCredentialsAppendixEntry } from "./use-credentials-appendix-entry"
 import { CredentialsAppendixBanner } from "./credentials-appendix-banner"
+import { SYS_CREDS_ID } from "@/lib/credentials-appendix"
 import { libraryItemHtml, loadAttachmentImages } from "./use-editor-insert"
 import { RichEditor } from "./rich-editor"
 import type { Editor as TiptapEditor } from "@tiptap/react"
@@ -326,6 +328,14 @@ export default function ContentPage() {
   // （2026-08-09 附录系统章节 Task 5）。刷新成功复用 applyRewrite 就地替换该章 HTML——
   // 刷新端点与单章改写在服务端走同一条置脏路径，前端处理方式也该一样。
   const credAppendix = useCredentialsAppendix({ active, preview, projectId, applyRefresh: applyRewrite })
+  // 存量项目补挂附录入口（被删行为#1）：content 已生成完、资料库确有资质，但章节列表里从没有
+  // 过 sys-creds 章（项目建于该功能上线前，或生成完之后才补传资质）——上面那条过期横条挂在
+  // "打开着附录章"这个前提上，章不存在就永远碰不到它，用户没有任何入口能把它变出来。
+  const hasSysCredsChapter = useMemo(() => [...data.tech, ...data.business].some((c) => c.id === SYS_CREDS_ID), [data])
+  const appendixEntry = useCredentialsAppendixEntry({
+    isReal, preview, hasSysCredsChapter, projectId,
+    onCreated: (chapter) => setData((d) => ({ ...d, business: [...d.business, chapter] })),
+  })
 
   function openLibrary() {
     setLibraryOpen(true)
@@ -587,6 +597,24 @@ export default function ContentPage() {
           >
             <Sparkles className="size-4" />
             生成投标正文
+          </button>
+        </div>
+      )}
+      {appendixEntry.visible && (
+        <div className="mb-3 flex flex-col gap-3 rounded-2xl border border-primary/20 gradient-brand-soft px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold text-foreground">资料库有资质证照，尚未生成附录章</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {appendixEntry.error || "一键生成「资格证明文件」附录章，随标书一并导出（不消耗积分）"}
+            </p>
+          </div>
+          <button
+            onClick={() => void appendixEntry.create()}
+            disabled={appendixEntry.creating}
+            className="inline-flex shrink-0 items-center gap-2 rounded-xl gradient-brand px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            <Sparkles className="size-4" />
+            {appendixEntry.creating ? "生成中…" : "生成资质附录"}
           </button>
         </div>
       )}
@@ -925,6 +953,7 @@ export default function ContentPage() {
                 freeRerender={freeRerender}
                 availability={scopeAvail}
                 preview={preview}
+                hasSysCredsChapter={hasSysCredsChapter}
                 projectId={projectId}
                 onScope={setExportScope}
                 onFormat={setExportFormat}
