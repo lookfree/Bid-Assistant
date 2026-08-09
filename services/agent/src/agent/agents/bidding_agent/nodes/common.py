@@ -8,7 +8,9 @@ from html import unescape
 
 from agent.framework.budget import chapter_budget, estimate_tokens
 from agent.parsing import storage_read
-from agent.parsing.ocr import ocr_scanned_pages     # 扫描页识别（OCR 未配置时是恒等变换）
+# 扫描页识别（OCR 未配置时是恒等变换）；deadline 由本模块起一次，跨受审文件共享
+from agent.parsing.ocr import new_deadline as ocr_deadline
+from agent.parsing.ocr import ocr_scanned_pages
 from agent.parsing.service import read_and_parse
 from agent.parsing.storage_read import storage      # spec106 MinIO 单例
 from agent.runtime.progress import publish_phase     # 各节点推阶段事件（read/outline/review/present 共用）
@@ -53,13 +55,17 @@ async def parse_bid_docs(keys: str | list[str], ctx=None) -> tuple[dict[str, str
     （OCR 未配置/识别失败 → 原样跳过,见 parsing/ocr.py）。第二项只收 OCR 之后**仍**有图片页的
     文件 [{name, pages, image_pages}]：那些页的内容模型确实看不见,审查据此说「无法核验」
     而不是「缺少」（2026-08-09 生产实测,见 ParsedDoc.image_pages）。全部识别成功 → 统计为空、注记消失。
+
+    OCR 的时长预算**在这里建一次、所有文件共享**：独立审查一次最多收 10 份标书,若每份各开一份
+    20 分钟的帽,最坏就是 200 分钟——用户在一个已预扣积分的步上干等几小时,而心跳还一直说它活着。
     """
     out: dict[str, str] = {}
     scanned: list[dict] = []
+    deadline = ocr_deadline()
     for key in _key_list(keys):
         name = key.rsplit("/", 1)[-1]
         parsed = await asyncio.to_thread(read_and_parse, key)
-        parsed = await ocr_scanned_pages(parsed, key, _ocr_progress(ctx, name))
+        parsed = await ocr_scanned_pages(parsed, key, _ocr_progress(ctx, name), deadline)
         if parsed.image_pages:
             scanned.append({"name": name,
                             "pages": parsed.pages or parsed.image_pages,

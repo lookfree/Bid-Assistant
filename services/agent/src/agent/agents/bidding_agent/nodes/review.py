@@ -17,6 +17,9 @@ from agent.agents.bidding_agent.prompts.categories import category_scope, indust
 
 
 
+# 本步的阶段名（前端横幅）。取材/OCR 之后要再发一次把它换回来，故抽成常量。
+_PHASE = "逐条比对招标要求与标书内容"
+
 # 通用自查（未提供招标文件）的口径说明:必须明示局限,防用户把自查结果当成对照审查结论
 _SELF_CHECK_NOTE = (
     "\n【通用自查模式】本次未提供招标文件:只做标书自身的完整性、格式规范、常见废标点、"
@@ -73,11 +76,14 @@ def make_review_node(ctx):
     read 走 slim_read 裁 source_quote；章节正文按 _CHAPTER_CAP 截断（防超窗）；
     read.required_structure 非空时一并注入（spec321，供构成覆盖比对），为空时 payload 与此前一致。"""
     async def review_node(state):
-        await publish_phase(ctx, "逐条比对招标要求与标书内容")
+        await publish_phase(ctx, _PHASE)
         # 选包时读标收窄到该包(spec324 优化):审查只比对该包要求,不会把别包的要求误判成缺失。
         read_state = filter_read_by_package(state.get("read") or {}, state.get("run_input"))
         run_input = state.get("run_input") or {}
         chapters_src, scanned = await _resolve_chapters(ctx, state, run_input)
+        # 阶段名回位：扫描页 OCR 期间横幅被"识别《x》的扫描页 N/N"顶掉，之后是长达数分钟的
+        # 模型调用，不把它换回来的话，用户会一直看着一个已经结束的阶段。
+        await publish_phase(ctx, _PHASE)
         # 截断前先压实成紧凑文本：图片换占位符（一张 base64 就有二十万字符，2026-08-06 用户反馈
         # 「证照放进正文、审查却报缺件」的真因），HTML 标签与实体一并剥掉——2026-08-07 全量实测
         # 喂进去的字符有 **56% 是标签**，有一章正文才 5261 字、本可整章放下，却因表格标签把串撑到

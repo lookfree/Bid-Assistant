@@ -75,7 +75,7 @@ async def test_parse_bid_docs_feeds_ocr_text_into_the_chapters(monkeypatch):
                          pages=3, image_pages=0)
     seen = {}
 
-    async def _fake_ocr(doc, key, on_progress=None):
+    async def _fake_ocr(doc, key, on_progress=None, deadline=None):
         seen["key"] = key
         return recognized if doc is scanned_doc else doc
 
@@ -86,6 +86,25 @@ async def test_parse_bid_docs_feeds_ocr_text_into_the_chapters(monkeypatch):
     assert scanned == []                                   # 全识别出来了 → 没有「看不见的页」
     assert "法定代表人身份证 张三" in chapters["sec-1"]
     assert "[第2页·扫描件识别]" in chapters["sec-1"]
+
+
+async def test_parse_bid_docs_shares_one_ocr_deadline_across_files(monkeypatch):
+    """OCR 的时长帽是**一次审查**的，不是每份文件各一份：独立审查一次最多收 10 份标书，
+    每份各开 20 分钟 → 最坏 200 分钟，用户在一个已预扣积分的步上干等几小时。
+    故 deadline 在 parse_bid_docs 里建一次、原样传给每一份文件（第二份继承的是剩余预算）。"""
+    seen: list[float | None] = []
+
+    async def _fake_ocr(doc, key, on_progress=None, deadline=None):
+        seen.append(deadline)
+        return doc
+
+    monkeypatch.setattr(common_mod, "read_and_parse",
+                        lambda key: _Parsed([{"id": "sec-1-c1", "text": "投标函"}],
+                                            pages=9, image_pages=3))
+    monkeypatch.setattr(common_mod, "ocr_scanned_pages", _fake_ocr)
+    await parse_bid_docs(["uploads/u/x/一.pdf", "uploads/u/x/二.pdf"])
+    assert len(seen) == 2
+    assert seen[0] is not None and seen[0] == seen[1]     # 同一条 deadline，不是各开一份
 
 
 def test_parse_bid_chapters_does_not_ocr(monkeypatch):

@@ -124,6 +124,10 @@ def splice_ocr_pages(doc: ParsedDoc, ocr_texts: dict[int, str]) -> ParsedDoc:
     条款与标题**必须重算**：识别出来的字要和正文一样参与章节切分和预算，只改 text 不改 clauses
     的话，下游按 clauses 聚章（nodes/common.py::parse_bid_docs），认出来的内容一个字都进不了
     审查材料。image_pages 扣掉已识别的页——剩下的才是真正还看不见的页（全部识别成功 → 注记消失）。
+
+    「已识别」按**认出来的字够不够读**算，不是「非空就算」：糊掉的章、被当成字符的花纹常常只出
+    一两个字，那种页用户实际上还是什么都看不见，必须继续算「无法核验」。门槛与页面本身的扫描
+    判定同源（is_image_page），改阈值两边同时生效。
     """
     if not ocr_texts:
         return doc
@@ -132,8 +136,9 @@ def splice_ocr_pages(doc: ParsedDoc, ocr_texts: dict[int, str]) -> ParsedDoc:
         pages[i] = f"{_OCR_PAGE_MARK.format(n=i + 1)}\n{text}"
     full = "\n".join(pages)
     clauses, headings = _split_clauses(full.split("\n"))
+    readable = sum(1 for t in ocr_texts.values() if not is_image_page(t))
     return replace(doc, text=full, page_texts=pages, clauses=clauses, headings=headings,
-                   image_pages=max(0, doc.image_pages - len(ocr_texts)))
+                   image_pages=max(0, doc.image_pages - readable))
 
 
 def parse_xlsx(data: bytes) -> ParsedDoc:
