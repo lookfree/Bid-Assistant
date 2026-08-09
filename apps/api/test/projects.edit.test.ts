@@ -251,3 +251,66 @@ describe("PATCH /api/projects/:id/steps/:step 编辑回写", () => {
     expect(res.status).toBe(404)
   })
 })
+
+// 终审 wave2：两处整列覆盖保全——present 编辑保存必须把存量 result.artifacts（executor 合并进来
+// 的真实渲染 pptx+previews）携带过去，否则一次保存就把它抹掉；outline 保存时若存量行已有
+// sys-creds 系统章而入参树（陈旧标签页）没带，服务端把系统章字面量补回。
+describe("PATCH /api/projects/:id/steps/:step —— 整列覆盖两处保全", () => {
+  let projectIdPresent = ""
+  let projectIdOutline = ""
+  const ARTIFACTS = { pptx: "artifacts/t/present.pptx", previews: ["artifacts/t/preview-01.png", "artifacts/t/preview-02.png"] }
+  const SYS_CREDS_CHAPTER = { id: "sys-creds", no: "附录", title: "资格证明文件", group: "business", system: true, sourced: false, items: [] }
+
+  beforeAll(async () => {
+    const [p1] = await getDb()
+      .insert(bidProjects)
+      .values({ userId: userA, threadId: `proj-${crypto.randomUUID()}`, currentStep: "export", status: "running" })
+      .returning()
+    projectIdPresent = p1!.id
+    // present 步 result：executor 已把真实渲染产物（pptx key + 逐页预览图）合并进 artifacts 键
+    await getDb().insert(projectSteps).values({
+      projectId: projectIdPresent, step: "present", status: "done",
+      result: { ...deck(), artifacts: ARTIFACTS },
+    })
+
+    const [p2] = await getDb()
+      .insert(bidProjects)
+      .values({ userId: userA, threadId: `proj-${crypto.randomUUID()}`, currentStep: "export", status: "running" })
+      .returning()
+    projectIdOutline = p2!.id
+    // outline 步 result：content 收尾已追加 sys-creds 系统章；模拟陈旧标签页——PATCH 入参树里没有它
+    await getDb().insert(projectSteps).values({
+      projectId: projectIdOutline, step: "outline", status: "done",
+      result: { chapters: [{ id: "ch-1", no: "第一章", title: "原提纲标题", group: "tech", items: [] }, SYS_CREDS_CHAPTER] },
+    })
+  })
+
+  it("present 编辑保存（改标题/时长/幻灯片）后，result.artifacts（pptx+previews）仍在，不被整份覆写抹掉", async () => {
+    const edited = deck({ title: "编辑后的述标主题", duration: 20 })
+    const res = await patch(projectIdPresent, "present", { result: edited }, tokenA)
+    expect(res.status).toBe(200)
+
+    const [row] = await getDb()
+      .select()
+      .from(projectSteps)
+      .where(and(eq(projectSteps.projectId, projectIdPresent), eq(projectSteps.step, "present")))
+    const stored = row!.result as Record<string, unknown>
+    expect(stored.title).toBe("编辑后的述标主题") // 编辑确实生效
+    expect(stored.artifacts).toEqual(ARTIFACTS) // 存量 artifacts 没被抹掉
+  })
+
+  it("陈旧标签页覆盖 outline（入参树不含 sys-creds）→ 保存后 sys-creds 系统章仍在", async () => {
+    // 陈旧标签页只带了它加载时看到的那一章，不知道 content 收尾后追加的系统章
+    const staleTree = { chapters: [chapter({ id: "ch-1", title: "重命名后的标题" })] }
+    const res = await patch(projectIdOutline, "outline", { result: staleTree }, tokenA)
+    expect(res.status).toBe(200)
+
+    const [row] = await getDb()
+      .select()
+      .from(projectSteps)
+      .where(and(eq(projectSteps.projectId, projectIdOutline), eq(projectSteps.step, "outline")))
+    const chapters = (row!.result as { chapters: { id: string; title?: string }[] }).chapters
+    expect(chapters.find((c) => c.id === "ch-1")?.title).toBe("重命名后的标题") // 编辑确实生效
+    expect(chapters.some((c) => c.id === "sys-creds")).toBe(true) // 系统章被服务端补回，没被陈旧覆盖丢掉
+  })
+})

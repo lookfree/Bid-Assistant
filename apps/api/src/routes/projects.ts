@@ -25,7 +25,7 @@ import { credentialsRunInput, libraryRefsRunInput, type CredentialInput } from "
 import { buildCredentialsChapterHtml, syncCredentialsOutline, SYS_CREDS_ID } from "../services/credentials-chapter"
 import { toCamel, toSnake } from "../lib/case"
 import { parsePagination, pagedBody, pagedResult } from "../lib/pagination"
-import { presignGet, deleteObject } from "../storage/s3"
+import { presignGet, deleteObject, listObjectKeys } from "../storage/s3"
 
 // 与 agent 节点序一致（spec201 NODE_ORDER）；定义随收尾核心迁至 step-finalize.ts，这里 re-export 保兼容
 export { STEP_ORDER } from "../services/step-finalize"
@@ -264,6 +264,8 @@ export type ProjectDeps = {
   presignGet: typeof presignGet
   getAgentModel: typeof client.getAgentModel
   renderDeck: typeof client.renderDeck
+  deleteObject: typeof deleteObject
+  listObjectKeys: typeof listObjectKeys
 }
 
 /** 属主校验取项目行：只见自己的，查不到与越权同语义（undefined → 404）。 */
@@ -439,6 +441,8 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
   const presign = deps.presignGet ?? presignGet
   const resolveModel = deps.getAgentModel ?? client.getAgentModel
   const renderDeck = deps.renderDeck ?? client.renderDeck
+  const removeObject = deps.deleteObject ?? deleteObject
+  const listArtifactKeys = deps.listObjectKeys ?? listObjectKeys
 
   const r = new Hono<{ Variables: { user: User } }>()
   r.use("*", authMiddleware)
@@ -1053,10 +1057,35 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     // passthrough schema,PATCH 直改 enterprise_template_id 可绕过两道门并指向**他人**的 MinIO 对象
     // （agent fetch_master_bytes 裸读 key）——一律以库中现值为准覆盖客户端送来的值。
     if (step === "present") {
-      const cur = (row.result as Record<string, unknown> | null)?.enterprise_template_id
+      const curResult = row.result as Record<string, unknown> | null
+      const cur = curResult?.enterprise_template_id
       const s = stored as Record<string, unknown>
       if (cur == null) delete s.enterprise_template_id
       else s.enterprise_template_id = cur
+      // 终审 wave2：executor 把真实渲染产出的 previews/pptx 合并进 present 结果的 artifacts 键
+      // （present.py 节点新增），但客户端编辑保存（改标题/时长/幻灯片）从不携带这个键——PATCH
+      // 整份覆写会把它连带抹掉，GET /:id/deck-previews 从此只回空数组，述标页永久回落 CSS 近似图，
+      // 直到用户再花积分重新生成一次。存量有 artifacts 就原样带过去；没有（老项目/从未渲染过）
+      // 不凭空造一个空对象。
+      const curArtifacts = curResult?.artifacts
+      if (curArtifacts != null) s.artifacts = curArtifacts
+      else delete s.artifacts
+    }
+    // outline 步：存量行已有 sys-creds 系统章，而入参树没带 → 服务端把系统章字面量补回。
+    // 陈旧标签页（加载于 content 收尾追加系统章之前）整份覆盖会把它连带删掉，这与用户在正文页
+    // 故意删掉附录章无法区分（正文页删章走另一条语义——content result 删 sys-creds 键，不动
+    // outline；有意退出附录走那条路）。二者不可区分时取保全：宁可让真想删的用户在提纲页也点一次
+    // 删除，不能让没碰过附录的用户因为开着旧标签页保存一次就悄悄丢章。
+    if (step === "outline") {
+      const curChapters = (row.result as { chapters?: unknown[] } | null)?.chapters
+      const curSysCreds = Array.isArray(curChapters)
+        ? curChapters.find((ch) => (ch as { id?: unknown })?.id === SYS_CREDS_ID)
+        : undefined
+      if (curSysCreds) {
+        const s = stored as { chapters?: unknown[] }
+        const hasSysCreds = Array.isArray(s.chapters) && s.chapters.some((ch) => (ch as { id?: unknown })?.id === SYS_CREDS_ID)
+        if (!hasSysCreds) s.chapters = [...(s.chapters ?? []), curSysCreds]
+      }
     }
     // 内容真的变了才置脏。正文编辑器 blur 即自动保存，而它的「没改就不发」判断是拿
     // TipTap 的 getHTML() 和库里 agent 产出的 HTML 比字符串——TipTap 会规范化标签/空白，
@@ -1191,10 +1220,15 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     if (!contentRow) return c.json({ error: "content_not_done" }, 409)
 
     // 与单章改写同一并发手法：事务内 FOR UPDATE 重读最新 result 再 merge，不整份覆盖，
-    // 避免与同期发生的其它章节编辑互相踩踏。
+    // 避免与同期发生的其它章节编辑互相踩踏。同一事务里顺带比对重建 HTML 与现存 sys-creds 值——
+    // 终审 wave2：库其实没变的「手滑刷新」（用户点了刷新但资料库自上次以来毫无改动）此前无条件
+    // 置脏，会让下次导出从免费变收费，纯属误伤。
+    let htmlUnchanged = false
     await getDb().transaction(async (tx) => {
       const [fresh] = await tx.select().from(projectSteps).where(eq(projectSteps.id, contentRow.id)).for("update")
-      const chapters = { ...((fresh?.result as Record<string, unknown>) ?? {}), [SYS_CREDS_ID]: html }
+      const freshResult = (fresh?.result as Record<string, unknown>) ?? {}
+      htmlUnchanged = freshResult[SYS_CREDS_ID] === html
+      const chapters = { ...freshResult, [SYS_CREDS_ID]: html }
       await tx.update(projectSteps).set({ result: chapters }).where(eq(projectSteps.id, contentRow.id))
     })
     // outline 无 sys-creds 时补章（幂等；已存在则不动）——覆盖「resultShapeOk 判 content 步失败过
@@ -1209,7 +1243,8 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     }
 
     try {
-      await markExportDirty(p.id) // 刷新本身不收费，但正文变了，下次导出要收费
+      // 刷新本身不收费，但正文变了才该让下次导出收费——HTML 逐字未变时跳过，见上方比对。
+      if (!htmlUnchanged) await markExportDirty(p.id)
     } catch {
       console.warn(`[export-dirty] 刷新附录后置脏失败 project=${p.id}`)
     }
@@ -1347,17 +1382,27 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     if (!(kind in ARTIFACT_NAME)) return c.json({ error: "bad_kind" }, 400)
     const p = await ownedProject(id, c.get("user").id)
     if (!p) return c.json({ error: "not_found" }, 404)
-    const steps = await getDb().select().from(projectSteps).where(eq(projectSteps.projectId, p.id))
+    const steps = await getDb()
+      .select()
+      .from(projectSteps)
+      .where(and(eq(projectSteps.projectId, p.id), eq(projectSteps.status, "done")))
+      .orderBy(desc(projectSteps.createdAt))
     // export 步的 result 即 BiddingState.artifacts 合并快照（顶层 {docx,pptx}）；
     // 兼容嵌套 result.artifacts 形态（防上游契约演化），两处都找。
-    const key = steps
+    // 空墓碑保全（终审 wave2）：本册渲染失败时 agent 会显式把该键写 null 作废上一版残留——
+    // 若只找「第一个字符串键」，旧行快照里的旧文件会顶替最新行的 null 墓碑被发出去。改为按
+    // 最新（created_at 降序）优先找「第一个快照里含该键」的行定夺：值是字符串才发；是 null
+    // 就该 404，不能有旧文件顶上。
+    const hit = steps
       .map((s) => {
         const r = s.result as { artifacts?: Record<string, unknown>; [k: string]: unknown } | null
-        const v = r?.artifacts?.[kind] ?? r?.[kind]
-        return typeof v === "string" ? v : undefined
+        if (r?.artifacts && kind in r.artifacts) return r.artifacts[kind] as string | null
+        if (r && kind in r) return r[kind] as string | null
+        return undefined
       })
-      .find((k): k is string => typeof k === "string")
-    if (!key) return c.json({ error: "artifact_not_ready" }, 404)
+      .find((v) => v !== undefined)
+    if (typeof hit !== "string") return c.json({ error: "artifact_not_ready" }, 404)
+    const key = hit
     // 下载名带项目名（用户反馈：静态「投标文件.docx」下载后分不清是哪个标的产物）。
     // 项目名多取自上传原始文件名，可能内嵌 .pdf 等扩展名（含「·包名」「（再投）」后缀前的位置）——剥掉再拼。
     // filename 一并返回：前端「下载成功」提示要点名具体文件（与 Content-Disposition 同源）。
@@ -1391,8 +1436,10 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
   // 删除标书（前端有二次确认）：生成中（有 running 步）的拒删——删了会打断在途 run 且钱已预扣；
   // 连带清理：steps 随 FK 级联删，上传文件记录按 key 删，MinIO 对象 best-effort 删。
   // 审查修正（2026-07-23）：①招标文件可能被克隆兄弟项目共用（再投场景 clone 原样复用 key）——
-  // 仍被引用的绝不删,否则兄弟项目永久报废;②线下标书 bidFileKey 一并清;③产物按确定性 key
-  // （artifacts/<threadId>/bid.docx|bid.pdf|present.pptx,重渲同 key 覆盖）收集,补齐 pptx/pdf 漏网;
+  // 仍被引用的绝不删,否则兄弟项目永久报废;②线下标书 bidFileKey 一并清;
+  // ③终审 wave2：产物按 artifacts/<threadId>/ 前缀列出全部对象删除，不再硬编码固定文件名——
+  // 分册导出（bid_tech/bid_biz 的 docx+pdf）、述标逐页预览图（preview-NN.png）都是按 threadId
+  // 动态命名的新对象，硬编码三个文件名早就漏了它们，删项目留一堆孤儿对象在 MinIO 里;
   // ④running 复查放进事务缩小与「起步」的竞态窗（残余极端交错由 24h 孤儿 hold 清扫兜底）。
   // 账本不动：已消费积分不随删除退回。
   r.delete("/:id", async (c) => {
@@ -1402,7 +1449,6 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     if (!p) return c.json({ error: "not_found" }, 404)
     const uploads = new Set<string>(p.tenderFileKeys ?? (p.tenderFileKey ? [p.tenderFileKey] : []))
     for (const k of p.bidFileKeys ?? (p.bidFileKey ? [p.bidFileKey] : [])) uploads.add(k)
-    const artifacts = new Set<string>(["bid.docx", "bid.pdf", "present.pptx"].map((f) => `artifacts/${p.threadId}/${f}`))
     const deleted = await getDb().transaction(async (tx) => {
       const [running] = await tx
         .select({ id: projectSteps.id })
@@ -1427,7 +1473,8 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       if (!ref) removable.push(k)
     }
     if (removable.length) await getDb().delete(projectFiles).where(inArray(projectFiles.key, removable))
-    await Promise.allSettled([...removable, ...artifacts].map((k) => deleteObject(k)))
+    const artifactKeys = await listArtifactKeys(`artifacts/${p.threadId}/`)
+    await Promise.allSettled([...removable, ...artifactKeys].map((k) => removeObject(k)))
     return c.json({ ok: true })
   })
 

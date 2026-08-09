@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bun:test"
 import { eq, inArray } from "drizzle-orm"
 import { Hono } from "hono"
-import { projectRoutes } from "../src/routes/projects"
+import { projectRoutes, type ProjectDeps } from "../src/routes/projects"
 import { seedConfigs } from "../src/services/config"
 import { loginWithPhone } from "../src/services/auth"
 import { getDb, closeDb } from "../src/db/client"
@@ -84,5 +84,49 @@ describe("DELETE /api/projects/:id", () => {
     expect(await getDb().select().from(bidProjects).where(eq(bidProjects.id, id))).toHaveLength(1)
     expect((await del("not-a-uuid", tokenA)).status).toBe(404)
     await getDb().delete(bidProjects).where(eq(bidProjects.id, id))
+  })
+
+  it("产物按 artifacts/<threadId>/ 前缀清全部对象（终审 wave2，mock s3）：不再硬编码固定文件名，分册/预览图等新对象也被删", async () => {
+    // 硬编码 ["bid.docx","bid.pdf","present.pptx"] 早已过时——分册导出（bid_tech/bid_biz 的
+    // docx+pdf）、述标逐页预览图（preview-NN.png）都是按 threadId 动态命名的新对象，
+    // 硬编码清单漏删它们，留孤儿在 MinIO 里。改为列出前缀下全部对象再删，用 mock s3 钉住这一点：
+    // 不连真 MinIO，只验证「按正确前缀列出」+「把列出的每个 key 都传给删除」这两件事。
+    const id = await mkProject("done")
+    const [p] = await getDb().select().from(bidProjects).where(eq(bidProjects.id, id))
+    const threadId = p!.threadId
+    const listedPrefixes: string[] = []
+    const deletedKeys: string[] = []
+    const mockDeps: Partial<ProjectDeps> = {
+      listObjectKeys: async (prefix: string) => {
+        listedPrefixes.push(prefix)
+        return [
+          `artifacts/${threadId}/bid_tech.docx`,
+          `artifacts/${threadId}/bid_tech.pdf`,
+          `artifacts/${threadId}/bid_biz.docx`,
+          `artifacts/${threadId}/preview-01.png`,
+          `artifacts/${threadId}/preview-02.png`,
+        ]
+      },
+      deleteObject: async (key: string) => {
+        deletedKeys.push(key)
+      },
+    }
+    const mockApp = new Hono()
+    mockApp.route("/api/projects", projectRoutes(mockDeps))
+
+    const res = await mockApp.request(`http://x/api/projects/${id}`, {
+      method: "DELETE", headers: { Authorization: `Bearer ${tokenA}` },
+    })
+    expect(res.status).toBe(200)
+    expect(listedPrefixes).toEqual([`artifacts/${threadId}/`]) // 按该项目的 threadId 前缀列出
+    expect(deletedKeys.sort()).toEqual(
+      [
+        `artifacts/${threadId}/bid_tech.docx`,
+        `artifacts/${threadId}/bid_tech.pdf`,
+        `artifacts/${threadId}/bid_biz.docx`,
+        `artifacts/${threadId}/preview-01.png`,
+        `artifacts/${threadId}/preview-02.png`,
+      ].sort(),
+    ) // 列出的每个对象都被删了，不再是硬编码的三个固定文件名
   })
 })

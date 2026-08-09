@@ -111,6 +111,34 @@ describe("/api/projects/:id/artifacts/:kind", () => {
     expect(((await res.json()) as { url: string }).url).toContain("artifacts/t/bid_tech.docx")
   })
 
+  it("空墓碑保全（终审 wave2）：两行 export 快照，新行 pdf_tech=null → 404，不发旧行残留的旧文件", async () => {
+    const [p3] = await getDb()
+      .insert(bidProjects)
+      .values({ userId, threadId: `proj-${crypto.randomUUID()}` })
+      .returning()
+    // 旧行：pdf_tech 转换曾经成功过，快照里还留着字符串 key
+    await getDb().insert(projectSteps).values({
+      projectId: p3!.id,
+      step: "export",
+      status: "done",
+      result: { docx_tech: "artifacts/t3/bid_tech.docx", pdf_tech: "artifacts/t3/bid_tech-old.pdf" },
+      createdAt: new Date(Date.now() - 60_000),
+    })
+    // 新行（最近一次重新导出）：本次 docx→pdf 转换失败，agent 显式把 pdf_tech 置空作废旧文件
+    await getDb().insert(projectSteps).values({
+      projectId: p3!.id,
+      step: "export",
+      status: "done",
+      result: { docx_tech: "artifacts/t3/bid_tech.docx", pdf_tech: null },
+      createdAt: new Date(),
+    })
+    const res = await app.request(`/api/projects/${p3!.id}/artifacts/pdf_tech`, { headers: auth() })
+    expect(res.status).toBe(404) // 不该顶替发出旧行的字符串 key
+    // docx_tech 两行都是同值字符串，仍应正常可下载（回归：本次修复不误伤仍有效的产物）
+    const docx = await app.request(`/api/projects/${p3!.id}/artifacts/docx_tech`, { headers: auth() })
+    expect(docx.status).toBe(200)
+  })
+
   it("未知 kind → 400；无产物项目 → 404", async () => {
     const bad = await app.request(`/api/projects/${projectId}/artifacts/exe`, { headers: auth() })
     expect(bad.status).toBe(400)

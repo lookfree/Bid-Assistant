@@ -288,6 +288,25 @@ describe("POST /:id/refresh-credentials-appendix", () => {
     expect(proj!.contentChangedAt!.getTime()).toBeGreaterThan(new Date("2020-01-01T00:00:00Z").getTime())
   })
 
+  it("重复刷新：资料库未变，重建 HTML 与库内现值逐字相同 → 不再置脏（终审 wave2，误伤修复）", async () => {
+    // 上一条用例已把 sys-creds 刷成当前资料库状态对应的 HTML；库没再变过，这次刷新重建出的
+    // HTML 理应逐字相同。此前无条件 markExportDirty，这种"手滑再点一次刷新"的空操作会让下次
+    // 导出从免费变收费——先清脏标记，验证刷新后不该被重新置脏。
+    await getDb()
+      .update(bidProjects)
+      .set({ exportDirty: false, contentChangedAt: new Date("2020-01-01T00:00:00Z") })
+      .where(eq(bidProjects.id, projectIdA))
+
+    const res = await app.request(`/api/projects/${projectIdA}/refresh-credentials-appendix`, {
+      method: "POST", headers: auth(tokenA),
+    })
+    expect(res.status).toBe(200)
+
+    const [proj] = await getDb().select().from(bidProjects).where(eq(bidProjects.id, projectIdA))
+    expect(proj!.exportDirty).toBe(false) // 库没变 → 不该被置脏
+    expect(proj!.contentChangedAt!.getTime()).toBe(new Date("2020-01-01T00:00:00Z").getTime()) // 也不该被推进
+  })
+
   it("409 no_credentials：资料库无资质条目", async () => {
     const bKey = `uploads/${userB}/${crypto.randomUUID()}/招标文件.pdf`
     await getDb()

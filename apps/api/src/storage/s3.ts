@@ -4,6 +4,7 @@ import {
   GetObjectCommand,
   HeadObjectCommand,
   DeleteObjectCommand,
+  ListObjectsV2Command,
 } from "@aws-sdk/client-s3"
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
 import { getEnv } from "../config/env"
@@ -133,4 +134,20 @@ export async function getObjectBytes(key: string): Promise<Uint8Array> {
 // 删除对象（超限回收、清理用）。
 export async function deleteObject(key: string): Promise<void> {
   await getS3().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }))
+}
+
+// 列出前缀下全部对象 key（分页兜底，单页最多 1000 条）。删除项目按前缀清对象用——分册产物
+// （bid_tech/bid_biz 的 docx/pdf）、述标逐页预览图（preview-NN.png）都是按 threadId 动态命名的
+// 新对象，硬编码固定文件名清单会漏删，全按前缀列出再删才不留孤儿。
+export async function listObjectKeys(prefix: string): Promise<string[]> {
+  const keys: string[] = []
+  let token: string | undefined
+  do {
+    const r = await getS3().send(
+      new ListObjectsV2Command({ Bucket: bucket(), Prefix: prefix, ContinuationToken: token }),
+    )
+    for (const o of r.Contents ?? []) if (o.Key) keys.push(o.Key)
+    token = r.IsTruncated ? r.NextContinuationToken : undefined
+  } while (token)
+  return keys
 }
