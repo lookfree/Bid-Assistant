@@ -1191,7 +1191,14 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     })
     // outline 无 sys-creds 时补章（幂等；已存在则不动）——覆盖「resultShapeOk 判 content 步失败过
     // 一次、这一次刷新是第一次成功写进 sys-creds」之类的边角，让附录章在编辑器提纲里也看得见。
-    await syncCredentialsOutline(p.id, { [SYS_CREDS_ID]: html })
+    // 只 warn 不 throw（审查修正）：content result 的 sys-creds 键已经在上面的事务里成功落库，
+    // 补章失败不该遮蔽已成功的正文更新——下次 content 收尾钩子（finalizeStepSuccess）会补上。
+    // 若这里裸抛，一次瞬时 DB 抖动就会把这个请求变成非契约的 500，用户把已经生效的刷新误判失败。
+    try {
+      await syncCredentialsOutline(p.id, { [SYS_CREDS_ID]: html })
+    } catch (e) {
+      console.warn(`[credentials-chapter] 刷新端点补章失败 project=${p.id}:`, e)
+    }
 
     try {
       await markExportDirty(p.id) // 刷新本身不收费，但正文变了，下次导出要收费
