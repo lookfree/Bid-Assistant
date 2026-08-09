@@ -21,6 +21,10 @@ describe("步结果形状守卫", () => {
     expect(resultShapeOk("export", { docx: "k" })).toBe(true)
     expect(resultShapeOk("export", { pptx: "k" })).toBe(true)
     expect(resultShapeOk("export", { pdfPages: 3 })).toBe(false)
+    // 2026-08-09 export-scope：新项目首次导出就选分册（无全量 docx）是可达路径，不能判失败
+    expect(resultShapeOk("export", { docx_tech: "artifacts/x/bid_tech.docx", pdf_tech: null, pdf_pages_tech: null })).toBe(true)
+    expect(resultShapeOk("export", { docx_biz: "artifacts/x/bid_biz.docx" })).toBe(true)
+    expect(resultShapeOk("export", { pdf_tech: "k", pdf_pages_tech: 3 })).toBe(false) // 空 result（无任一 docx/pptx 主干键）仍判坏
   })
 
   it("content 的键是模型定的章 id，只要求非空对象 —— 不能按固定字段判", () => {

@@ -20,8 +20,11 @@ const REQUIRED: Partial<Record<Step, (r: Record<string, unknown>) => boolean>> =
   outline: (r) => Array.isArray(r.chapters),
   // 读标：categories 是所有后续步骤的依据
   read: (r) => Array.isArray(r.categories),
-  // 导出：至少要有一个产物 key，否则下载侧拿不到东西
-  export: (r) => typeof r.docx === "string" || typeof r.pptx === "string",
+  // 导出：至少要有一个产物 key，否则下载侧拿不到东西。2026-08-09 export-scope 起首导可以是
+  // 分册（docx_tech/docx_biz，缺全量 docx）——新项目首次就选技术册/商务册是可达路径,不能只认
+  // 未带后缀的 docx,否则渲染成功也会被判形状不符、全额退款（终审后控制器核实：非存量场景）。
+  export: (r) => typeof r.docx === "string" || typeof r.docx_tech === "string"
+    || typeof r.docx_biz === "string" || typeof r.pptx === "string",
 }
 
 /**
