@@ -110,6 +110,24 @@ def test_review_caps_the_bid_text_it_feeds_the_model(submit_gateway):
     assert total < DEFAULT_CONTEXT_WINDOW, f"整条输入 {total} tokens，装不进窗口"
 
 
+def test_review_system_prompt_notes_render_time_constants(submit_gateway):
+    """spec②:渲染恒定项（封面/目录/承诺签章页/AI 说明页）常驻系统提示——审查不该把这些
+    恒定附加项判成缺失。放系统提示（而非拼进用户消息）：这条规则不随 state 变化，
+    REVIEW_SYSTEM_PROMPT 本就是 fixed 预算计算的一部分，扩它无需再改 review.py 的载荷组装。"""
+    gw = submit_gateway({"submit_risk_report": _RISK_ARGS})
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
+    node = make_review_node(ctx)
+    asyncio.run(node({
+        "read": {"risk_summary": []},
+        "outline": {"chapters": []},
+        "chapters": {},
+    }))
+    system_msg = gw.chats[-1].last_messages[0].content
+    assert "【渲染恒定项】" in system_msg
+    assert "封面、目录、投标人承诺与签章页、AI 生成说明页" in system_msg
+    assert "已具备(导出恒定附加)" in system_msg
+
+
 def test_review_feeds_everything_when_it_fits(submit_gateway):
     """放得下就一个字都不砍。"""
     gw = submit_gateway({"submit_risk_report": _RISK_ARGS})
