@@ -86,6 +86,23 @@ describe("spec319 /admin-api/models", () => {
     expect(await res.json()).toEqual({ ok: true })
   })
 
+  // review 主清单#13：PUT 的 zod 形状校验（ModelParamsSchema）要接受 contextWindow 并原样落库/回显——
+  // 这是运营在后台把 32K 窗口填进模型配置的唯一入口，缺了它字段会在 400 invalid_input 或落库时被吞掉。
+  it("PUT 带 contextWindow 的模型配置 → 200 落库，GET 读回原样带着该字段", async () => {
+    await clearAgentModel()
+    const { headers } = await makeAdminSession("ops", regA)
+    const body = {
+      models: [{ id: "m1", provider: "glm", model: "glm-4-flash", params: { temperature: 0.7, maxTokens: 4095, topP: 1, contextWindow: 32768 }, enabled: true, test: { status: "passed" } }],
+      chain: ["m1"],
+    }
+    const putRes = await withAgentTest({ ok: true, latency_ms: 5 }, () =>
+      app.request("http://x/admin-api/models", { method: "PUT", headers, body: JSON.stringify(body) }))
+    expect(putRes.status).toBe(200)
+    const getRes = await app.request("http://x/admin-api/models", { headers })
+    const got = (await getRes.json()) as any
+    expect(got.models[0].params.contextWindow).toBe(32768)
+  })
+
   it("support 角色 PUT → 403（无 config.write）", async () => {
     const { headers } = await makeAdminSession("support", regA)
     const res = await app.request("http://x/admin-api/models", { method: "PUT", headers, body: JSON.stringify({ models: [], chain: [] }) })

@@ -248,6 +248,35 @@ describe("spec319 model-config 纯逻辑", () => {
     expect(deriveRunOverride({ models: [], chain: [] })).toBeUndefined()
   })
 
+  // review 主清单#13：agent gateway.py 一直在消费 params.context_window，但此前 App 从未下发过——
+  // 运营配 32K 窗口的模型时预算照全局 131072 算，撞 400。主链走顶层 params（agent 已认的路径），
+  // 降级链每跳也各自带自己的 context_window（混合 128K/32K 链不能只共享一个值）。
+  it("deriveRunOverride：主/降级模型各自配置 contextWindow → 顶层 params 带主模型的，chain 每跳带各自的", () => {
+    const cfg: ModelConfig = {
+      models: [
+        { id: "a", provider: "deepseek", model: "deepseek-chat", params: { temperature: 0.5, maxTokens: 4096, topP: 0.9, contextWindow: 131072 }, enabled: true, test: { status: "passed" } },
+        { id: "b", provider: "glm", model: "glm-4-flash", params: { temperature: 0.7, maxTokens: 4095, topP: 1, contextWindow: 32768 }, enabled: true, test: { status: "passed" } },
+      ],
+      chain: ["a", "b"],
+    }
+    const out = deriveRunOverride(cfg)
+    expect(out?.params).toMatchObject({ context_window: 131072 })
+    expect(out?.chain).toEqual([
+      { provider: "deepseek", model: "deepseek-chat", thinking: false, context_window: 131072 },
+      { provider: "glm", model: "glm-4-flash", thinking: false, context_window: 32768 },
+    ])
+  })
+
+  it("deriveRunOverride：contextWindow 未配置 → 顶层 params 与 chain 条目均不带该键（不是 undefined 值，是键缺失）", () => {
+    const cfg: ModelConfig = {
+      models: [{ id: "a", provider: "deepseek", model: "deepseek-chat", params: { temperature: 0.5, maxTokens: 4096, topP: 0.9 }, enabled: true, test: { status: "passed" } }],
+      chain: ["a"],
+    }
+    const out = deriveRunOverride(cfg)
+    expect(out?.params && "context_window" in out.params).toBe(false)
+    expect(out?.chain?.[0] && "context_window" in out.chain[0]).toBe(false)
+  })
+
   it("deriveRunOverride：不因 test.status=untested 而拒绝下发（降级铁律：run 永远用已配置的跑）", () => {
     const cfg: ModelConfig = {
       models: [{ id: "a", provider: "deepseek", model: "deepseek-chat", params: { temperature: 0.7, maxTokens: 8192, topP: 1 }, enabled: true, test: { status: "untested" } }],
@@ -287,6 +316,28 @@ describe("spec319 model-config 服务（连库，mbp 跑）", () => {
     }
     await saveModelConfig(cfg)
     expect(await getModelConfig()).toEqual(cfg)
+  })
+
+  // review 主清单#13：contextWindow 是新加字段，往返落库/读回必须原样保留（正整数），
+  // 不带该字段的旧配置也要继续按"未配置"读回（不会被凭空补出一个值）。
+  it("saveModelConfig：带 contextWindow 的模型配置往返一致", async () => {
+    await clearAgentModel()
+    const cfg: ModelConfig = {
+      models: [{ id: "m1", provider: "glm", model: "glm-4-flash", params: { temperature: 0.7, maxTokens: 4095, topP: 1, contextWindow: 32768 }, enabled: true, thinking: false, test: { status: "passed" } }],
+      chain: ["m1"],
+    }
+    await saveModelConfig(cfg)
+    expect(await getModelConfig()).toEqual(cfg)
+  })
+
+  it("saveModelConfig：contextWindow 非正整数 → InvalidParamsError，不落库", async () => {
+    await clearAgentModel()
+    const cfg: ModelConfig = {
+      models: [{ id: "m1", provider: "glm", model: "glm-4-flash", params: { temperature: 0.7, maxTokens: 4095, topP: 1, contextWindow: -1 }, enabled: true, test: { status: "passed" } }],
+      chain: ["m1"],
+    }
+    await expect(saveModelConfig(cfg)).rejects.toThrow(InvalidParamsError)
+    expect(await getModelConfig()).toEqual({ models: [], chain: [] })
   })
 })
 

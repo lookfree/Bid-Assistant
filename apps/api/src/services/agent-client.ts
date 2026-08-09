@@ -6,12 +6,24 @@ import { getModelConfig, type ModelConfig } from "./model-config"
 
 // chain 条目 snake（spec319.1）：自建端点带 base_url/api_key；注册表条目二者皆无——agent
 // model_override_to_settings 按此形状清洗写入 Settings.model_chain。
-export type AgentChainEntry = { provider: string; model: string; base_url?: string; api_key?: string; thinking?: boolean }
+// context_window（review 主清单#13）：每跳自己配置的上下文窗口，随该跳一起下发——链上每个
+// 模型的窗口可能不同（主 128K + 降级 32K 这类混合链），不能只靠顶层 params 那一个全局值。
+export type AgentChainEntry = {
+  provider: string
+  model: string
+  base_url?: string
+  api_key?: string
+  thinking?: boolean
+  context_window?: number
+}
 export type AgentModelSelection = {
   provider?: string
   model?: string | null
   fallbacks?: string
-  params?: { temperature: number; max_tokens: number; top_p: number } // agent 侧认 snake（spec319）
+  // agent 侧认 snake（spec319）；context_window 是主模型（chain[0]）的窗口——agent gateway.py
+  // 目前只从这份顶层 params 读窗口（_params_override），chain[] 各跳自带的 context_window
+  // 是为降级链准备的信息，暂由 agent 侧后续消费。
+  params?: { temperature: number; max_tokens: number; top_p: number; context_window?: number }
   chain?: AgentChainEntry[] // 结构化链（spec319.1）：携带每跳的自建端点，agent 端优先于 fallbacks 字符串
 }
 
@@ -19,7 +31,9 @@ export type AgentModelSelection = {
  *  chain 为空或主模型引用失效 → undefined（agent 用 env 默认）。
  *  注意：不检查 test.status——测通门槛只在 saveModelConfig 时把关，run 时永远用已配置的跑（降级铁律）。
  *  spec319.1：额外派生结构化 chain（自建条目带 base_url/api_key）；旧 fallbacks 字符串保留但自建条目跳过
- *  （agent 端 chain 优先，fallbacks 仅遗留兜底，字符串形状装不下 base_url/api_key）。 */
+ *  （agent 端 chain 优先，fallbacks 仅遗留兜底，字符串形状装不下 base_url/api_key）。
+ *  contextWindow 缺省（未配置）时两处都不下发该键——agent 侧按"键不存在"回落全局兜底窗口，
+ *  与"可空=用全局"的语义一致，不发一个 undefined/0 去踩 agent 侧的合法性判断。 */
 export function deriveRunOverride(cfg: ModelConfig): AgentModelSelection | undefined {
   if (!cfg.chain.length) return undefined
   const primary = cfg.models.find((m) => m.id === cfg.chain[0])
@@ -38,6 +52,7 @@ export function deriveRunOverride(cfg: ModelConfig): AgentModelSelection | undef
     thinking: m.thinking === true, // 每模型思考开关（默认关）；agent 据此决定是否下发关闭思考的 extra_body
     ...(m.baseUrl ? { base_url: m.baseUrl } : {}),
     ...(m.apiKey ? { api_key: m.apiKey } : {}),
+    ...(m.params.contextWindow ? { context_window: m.params.contextWindow } : {}),
   }))
   return {
     provider: primary.provider,
@@ -47,6 +62,7 @@ export function deriveRunOverride(cfg: ModelConfig): AgentModelSelection | undef
       temperature: primary.params.temperature,
       max_tokens: primary.params.maxTokens,
       top_p: primary.params.topP,
+      ...(primary.params.contextWindow ? { context_window: primary.params.contextWindow } : {}),
     },
     chain,
   }

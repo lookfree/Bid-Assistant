@@ -5,7 +5,10 @@ import { getConfig, setConfig } from "./config"
 // 模型注册表 + 运行编排链（spec319 Task B）：billing_configs key "agent_model" 的新 value 形状。
 // 取代旧的单条 {provider,model,fallbacks}；旧结构在读时原地迁移（不回写），写时强校验。
 
-export type ModelParams = { temperature: number; maxTokens: number; topP: number }
+// contextWindow 可空：留空 = 用 agent 侧全局兜底窗口（DEFAULT_CONTEXT_WINDOW/env）；
+// 填了才覆盖——运营给 32K 窗口的模型配置这个字段，budget.py 才不会照 131072 全局窗口算，
+// 撞 400（发现见 review 主清单#13：agent gateway.py 一直在消费这个键，只是从未有人下发过）。
+export type ModelParams = { temperature: number; maxTokens: number; topP: number; contextWindow?: number }
 export type ModelTest = { status: "passed" | "failed" | "untested"; at?: string; latencyMs?: number; error?: string | null }
 // baseUrl 非空 ⇒ 自建/任意 OpenAI 兼容端点条目（spec319.1）：provider 为自由标签，apiKey 明文存库。
 // apiKeyHint 仅 GET 出参展示（maskModelConfig 产出），从不由写路径消费。
@@ -62,7 +65,12 @@ export class ChainRequiresTestedError extends Error {
 
 // 形状 schema（route 层解析原始 body 用；service 层 validateModelConfig 只做语义校验，
 // 假定入参已是这个形状——由 zod 类型系统在编译期保证，运行期形状交给 route 边界把关）。
-const ModelParamsSchema = z.object({ temperature: z.number(), maxTokens: z.number(), topP: z.number() })
+const ModelParamsSchema = z.object({
+  temperature: z.number(),
+  maxTokens: z.number(),
+  topP: z.number(),
+  contextWindow: z.number().optional(),
+})
 const ModelTestSchema = z.object({
   status: z.enum(["passed", "failed", "untested"]),
   at: z.string().optional(),
@@ -165,6 +173,11 @@ function validateParams(id: string, p: ModelParams): void {
   }
   if (!Number.isInteger(p.maxTokens) || p.maxTokens <= 0 || p.maxTokens > 32768) {
     throw new InvalidParamsError(`model ${id}: maxTokens 需为 1-32768 的正整数`)
+  }
+  // 可空字段：不填=用 agent 侧全局兜底窗口，填了必须是正整数（agent 侧 _params_override
+  // 只认合法正整数，非法值会被它自己丢弃——这里先在保存时把关，别让明显错的值混进配置）。
+  if (p.contextWindow !== undefined && (!Number.isInteger(p.contextWindow) || p.contextWindow <= 0)) {
+    throw new InvalidParamsError(`model ${id}: contextWindow 需为正整数`)
   }
 }
 
