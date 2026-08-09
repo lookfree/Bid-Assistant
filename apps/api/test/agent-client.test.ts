@@ -263,3 +263,40 @@ test("rewriteFailureDetail：为用户写的中文说明照常放行", () => {
   expect(rewriteFailureDetail(new Error("agent rewriteChapter 502: 上传的标书未能解析出任何正文（扫描件/图片版暂不支持）")))
     .toContain("扫描件")
 })
+
+test("rewriteChapter：连接层失败（fetch reject）自动重试一次", async () => {
+  // 2026-08-09 生产：容器间瞬断让三次改写连续 502，请求根本没到 agent（无副作用），
+  // 事后同载荷复现全通——这类抖动应该由一次自动重试吸收，而不是打回用户。
+  let calls = 0
+  const fetchImpl = (async () => {
+    calls++
+    if (calls === 1) throw new Error("ConnectionRefused: Unable to connect")
+    return new Response(JSON.stringify({ chapter_id: "ch-1", html: "<p>ok</p>" }), { status: 200 })
+  }) as unknown as typeof fetch
+  const r = await rewriteChapter({ agentType: "bidding_agent", threadId: "t1", chapterId: "ch-1", instruction: "x", fetchImpl })
+  expect(calls).toBe(2)
+  expect(r.html).toBe("<p>ok</p>")
+})
+
+test("rewriteChapter：agent 已回包的非 2xx 绝不重放", async () => {
+  // 已到达 agent 的请求可能已产生副作用（改写会合进图状态），HTTP 错误走报错分支，不许重试。
+  let calls = 0
+  const fetchImpl = (async () => {
+    calls++
+    return new Response(JSON.stringify({ error: "章节不存在: zz" }), { status: 404 })
+  }) as unknown as typeof fetch
+  await expect(rewriteChapter({ agentType: "bidding_agent", threadId: "t1", chapterId: "zz", instruction: "x", fetchImpl }))
+    .rejects.toThrow("agent rewriteChapter 404")
+  expect(calls).toBe(1)
+})
+
+test("rewriteChapter：重试仍连不上 → 原样抛出", async () => {
+  let calls = 0
+  const fetchImpl = (async () => {
+    calls++
+    throw new Error("ConnectionRefused: Unable to connect")
+  }) as unknown as typeof fetch
+  await expect(rewriteChapter({ agentType: "bidding_agent", threadId: "t1", chapterId: "ch-1", instruction: "x", fetchImpl }))
+    .rejects.toThrow("ConnectionRefused")
+  expect(calls).toBe(2)
+})

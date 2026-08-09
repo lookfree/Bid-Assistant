@@ -1164,6 +1164,9 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
       // 真实原因带给用户：压成笼统的 agent_failed 只会让人反复重试同一件做不到的事
       // （2026-08-08：从未生成过的章被 agent 侧守卫直接拒掉，用户只看到「请稍后重试」，
       // 连一次模型调用都没发生过）。detail 走同一套过滤，不外泄栈。
+      // 原始异常必须落日志：2026-08-09 三连 502 事后无从知道确切错误（这里曾静默吞掉），
+      // 同载荷复现全通、只能推断为瞬时网络抖动——别再让下一次排障从零猜起。
+      console.error(`chapter rewrite failed: project=${id} chapter=${chapterId}`, e)
       return c.json({ error: "agent_failed", detail: client.rewriteFailureDetail(e) }, 502)
     }
 

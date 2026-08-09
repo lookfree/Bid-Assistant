@@ -183,13 +183,15 @@ export async function rewriteChapter(opts: {
   chapterTitle?: string
   model?: AgentModelSelection
   userId?: string
+  fetchImpl?: typeof fetch // 测试注入用；生产不传
 }): Promise<{ chapter_id: string; html: string }> {
   const body: Record<string, unknown> = { chapter_id: opts.chapterId, instruction: opts.instruction }
   if (opts.baseHtml !== undefined) body.base_html = opts.baseHtml
   if (opts.chapterTitle) body.chapter_title = opts.chapterTitle
   if (opts.model) body.model = opts.model // 有配置才下发；无则 agent 用 env 默认（与 createRun 同法）
   if (opts.userId) body.user_id = opts.userId // spec316：改写检索同样按 user_id 隔离
-  const r = await fetch(
+  const doFetch = (opts.fetchImpl ?? fetch)
+  const send = () => doFetch(
     `${getEnv().AGENT_BASE_URL}/agents/${opts.agentType}/threads/${opts.threadId}/chapters/rewrite`,
     {
       method: "POST",
@@ -202,6 +204,16 @@ export async function rewriteChapter(opts: {
       signal: AbortSignal.timeout(600_000),
     },
   )
+  let r: Response
+  try {
+    r = await send()
+  } catch {
+    // 连接层失败（请求根本没到 agent，无任何副作用）等 2s 重试一次：2026-08-09 生产实测
+    // 容器间瞬断让三次改写连续 502，事后同载荷复现全通——这类抖动不该直接打回用户。
+    // 只在 fetch 本身 reject 时重试；agent 已回包的非 2xx 走下面的正常报错，绝不重放。
+    await new Promise((res) => setTimeout(res, 2000))
+    r = await send()
+  }
   if (!r.ok) {
     // 带上 agent 的错误文本：路由据此区分「本章太长改不完整」这类**用户能自己解决**的失败，
     // 只丢状态码的话用户永远只看到「改写失败，请重试」，然后对着一个永远改不完的长章反复重试。
