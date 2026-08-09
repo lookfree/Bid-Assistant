@@ -21,7 +21,7 @@ import { resultShapeOk, SHAPE_MISMATCH_ERROR } from "../services/step-result-sha
 import { detectedCategory, effectiveCategory, logCategoryCorrection } from "../services/bid-category"
 import { markExportDirty, shouldChargeExport } from "../services/export-dirty"
 import { getConfig } from "../services/config"
-import { credentialsRunInput, type CredentialInput } from "../services/credentials"
+import { credentialsRunInput, libraryRefsRunInput, type CredentialInput } from "../services/credentials"
 import { buildCredentialsChapterHtml, syncCredentialsOutline, SYS_CREDS_ID } from "../services/credentials-chapter"
 import { toCamel, toSnake } from "../lib/case"
 import { parsePagination, pagedBody, pagedResult } from "../lib/pagination"
@@ -844,6 +844,9 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         ...(step === "content" && gen.targetChars ? { target_chars: gen.targetChars } : {}),
         ...(step === "content" ? await generationRunInput() : {}),
         ...(step === "content" ? await contentCredentials(userId) : {}),
+        // library_refs（2026-08-09 定向注入 Task 2）：仅 content 步下发，export 步无需再感知
+        // 它——人员/业绩条目直发给 agent 按章关键词拼简报，两类都空则不带该键（今天行为不变）。
+        ...(step === "content" ? await libraryRefsRunInput(userId) : {}),
         // 正文断点续跑：下发**已成功完成过几次正文**。agent 据此选检查点线路——
         // 重试时这个数不变（接上刚写了一半的那条），重新生成时 +1（换一条干净的线）。
         // 不用布尔"是不是重新生成"：那个推断在"重新生成失败后重试"时会翻转，

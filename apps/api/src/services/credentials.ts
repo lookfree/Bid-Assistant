@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm"
+import { and, desc, eq, inArray } from "drizzle-orm"
 import { getDb } from "../db/client"
 import { libraryItems, projectFiles } from "../db/schema"
 
@@ -11,7 +11,9 @@ function extOf(key: string): string {
 
 // images 从 string[] 改对象数组（2026-08-09 附录系统章节）：agent 拿 fileId 拼占位图
 // data-file-id（编辑器/导出各自解析取字节），key/name 供展示与后续渲染使用。
-export type CredentialInput = { title: string; images: { fileId: string; key: string; name: string }[] }
+// ocrText（2026-08-09 定向注入 Task 2）：附件的前置 OCR 识别文字透传给 agent 拼占位图 alt；
+// 附件未回填（后台 OCR 尚未跑完/非图片）则该键缺省，agent 侧宽容处理（退化成纯标题 alt）。
+export type CredentialInput = { title: string; images: { fileId: string; key: string; name: string; ocrText?: string }[] }
 
 // content 步 run_input.credentials 下发（2026-08-09 起，原 spec325 的 export 步下发已退役）：
 // 取该用户「资质」类资料库条目挂的图片附件，交 agent 在正文收尾时确定性构建「资格证明文件」
@@ -39,11 +41,47 @@ export async function credentialsRunInput(userId: string): Promise<CredentialInp
       images: (item.attachments ?? [])
         .map((a) => {
           const key = keyById.get(a.fileId)
-          return key && IMAGE_EXTS.has(extOf(key)) ? { fileId: a.fileId, key, name: a.name } : null
+          return key && IMAGE_EXTS.has(extOf(key))
+            ? { fileId: a.fileId, key, name: a.name, ...(a.ocrText ? { ocrText: a.ocrText } : {}) }
+            : null
         })
-        .filter((x): x is { fileId: string; key: string; name: string } => x !== null),
+        .filter((x): x is { fileId: string; key: string; name: string; ocrText?: string } => x !== null),
     }))
     .filter((c) => c.images.length > 0)
 
   return credentials.length > 0 ? credentials : undefined
+}
+
+export type LibraryRefItem = { title: string; meta?: string; fields?: { label: string; value: string }[]; body?: string }
+
+const LIBRARY_REF_LIMIT = 20
+
+// content 步 run_input.library_refs（2026-08-09 定向注入 Task 2）：人员/业绩类资料库条目直发给
+// agent，按章关键词命中后确定性拼进简报——不再赌 RAG 召回率。每类按更新时间倒序截前 20 条
+// （预算见 Global Constraints），两类都空则不下发该键，agent 侧按键缺失判断「库空」。
+export async function libraryRefsRunInput(
+  userId: string,
+): Promise<{ library_refs?: { personnel: LibraryRefItem[]; performance: LibraryRefItem[] } }> {
+  const [personnel, performance] = await Promise.all([
+    fetchLibraryRefs(userId, "personnel"),
+    fetchLibraryRefs(userId, "performance"),
+  ])
+  if (personnel.length === 0 && performance.length === 0) return {}
+  return { library_refs: { personnel, performance } }
+}
+
+async function fetchLibraryRefs(userId: string, category: "personnel" | "performance"): Promise<LibraryRefItem[]> {
+  const rows = await getDb()
+    .select({ title: libraryItems.title, meta: libraryItems.meta, fields: libraryItems.fields, body: libraryItems.body })
+    .from(libraryItems)
+    .where(and(eq(libraryItems.userId, userId), eq(libraryItems.category, category)))
+    .orderBy(desc(libraryItems.updatedAt))
+    .limit(LIBRARY_REF_LIMIT)
+
+  return rows.map((r) => ({
+    title: r.title,
+    ...(r.meta ? { meta: r.meta } : {}),
+    ...(r.fields && r.fields.length > 0 ? { fields: r.fields } : {}),
+    ...(r.body ? { body: r.body } : {}),
+  }))
 }
