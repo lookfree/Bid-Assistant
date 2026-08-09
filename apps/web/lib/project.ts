@@ -466,7 +466,13 @@ export async function artifactDownload(
 
 // 导出预告（2026-08-09 export-scope Task 3 GET /export-preview）：告诉前端本次全套导出会附加的资质附录。
 // 挂载导出弹窗时取，失败不影响导出——调用方按静默失败处理（预告区只少一行）。
-export type ExportPreview = { credentials: { title: string; imageCount: number }[] }
+// 终审 C1：volumes（各册最近一次成功导出时刻，null=从未导出）+ content_changed_at（内容最近一次
+// 变更时刻），供下载区判断某册是否已过期（改稿后没重新导出过该册）——字段名与 App API 响应逐字一致。
+export type ExportPreview = {
+  credentials: { title: string; imageCount: number }[]
+  volumes: { full: string | null; tech: string | null; biz: string | null }
+  content_changed_at: string | null
+}
 export async function exportPreview(id: string): Promise<ExportPreview> {
   return api.request<ExportPreview>(`/api/projects/${id}/export-preview`)
 }

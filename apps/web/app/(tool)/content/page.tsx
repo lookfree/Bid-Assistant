@@ -38,7 +38,8 @@ import { ITEM_ANCHOR_MIN, outlineItemAnchor, scrollToAnchor } from "@/lib/anchor
 import { stepNotApplicable, stepPrereq, useOtherStepResult, useStep } from "@/lib/use-step"
 import { normalizeChapterHtml } from "@/lib/chapter-normalize"
 import { camelArtifactKey, useExport } from "./use-export"
-import { artifactKeys, scopeAvailability, type ExportScope } from "@/lib/export-scope"
+import { artifactKeys, scopeAvailability, volumeStale, type ExportScope } from "@/lib/export-scope"
+import type { ExportPreview } from "@/lib/project"
 import { AiNotice } from "@/components/tool/ai-notice"
 import { ApiError } from "@/lib/api-client"
 import { rewriteChapter, triggerDownload } from "@/lib/project"
@@ -84,17 +85,25 @@ function rewriteErrorText(e: unknown): string {
 const SCOPE_LABEL: Record<ExportScope, string> = { full: "", tech: "技术标册", business: "商务标册" }
 
 /** 下载区（2026-08-09 export-scope）：已产出的分册再下载，不重渲、不再计费——遍历三种 scope，
- *  exportedResult（export 步结果快照，已 toCamel）里存在的产物键才出按钮，全量/技术/商务并存。 */
+ *  exportedResult（export 步结果快照，已 toCamel）里存在的产物键才出按钮，全量/技术/商务并存。
+ *  终审 C1：exportedResult 里某册的 docx/pdf 键一旦产出就不会消失（agent 侧 artifacts 通道跨 run
+ *  合并，见 use-export.ts 里 pdfUnavailableFor 同一处注释）——只按"键是否存在"出按钮，会让改稿后
+ *  没重新导出的册也显示"可下载"，一点就下到改稿前的旧文件。preview.volumes[scope] 是该册最近一次
+ *  真渲染的时刻，与 preview.content_changed_at 比较才知道这个键背后的文件是不是最新的。 */
 function scopedDownloads(
   exported: Record<string, string | number | undefined> | null,
-): { key: string; kind: string; text: string }[] {
+  preview: ExportPreview | null,
+): { key: string; kind: string; text: string; stale: boolean }[] {
   if (!exported) return []
-  const out: { key: string; kind: string; text: string }[] = []
+  const out: { key: string; kind: string; text: string; stale: boolean }[] = []
+  const contentChangedAt = preview?.content_changed_at ?? null
   for (const s of ["full", "tech", "business"] as ExportScope[]) {
     const keys = artifactKeys(s)
     const label = SCOPE_LABEL[s] ? `（${SCOPE_LABEL[s]}）` : ""
-    if (exported[camelArtifactKey(s, "docx")]) out.push({ key: `${s}-docx`, kind: keys.docx, text: `下载 Word${label}` })
-    if (exported[camelArtifactKey(s, "pdf")]) out.push({ key: `${s}-pdf`, kind: keys.pdf, text: `下载 PDF${label}` })
+    const exportedAt = preview?.volumes[s === "business" ? "biz" : s] ?? null
+    const stale = volumeStale(exportedAt, contentChangedAt, true)
+    if (exported[camelArtifactKey(s, "docx")]) out.push({ key: `${s}-docx`, kind: keys.docx, text: `下载 Word${label}`, stale })
+    if (exported[camelArtifactKey(s, "pdf")]) out.push({ key: `${s}-pdf`, kind: keys.pdf, text: `下载 PDF${label}`, stale })
   }
   return out
 }
@@ -202,8 +211,8 @@ export default function ContentPage() {
     requestCheckConfirm: () => setCheckConfirm("export"),
     onHighRisk: () => setExportConfirm(true),
   })
-  // 下载区（分册再下载）与三选一置灰：都从页面已加载的 outline 章节数据算，不额外发请求
-  const scopedDownloadItems = scopedDownloads(exportedResult)
+  // 下载区（分册再下载）：exportedResult 判"该册是否已产出"（不额外发请求），preview 判"是否过期"
+  const scopedDownloadItems = scopedDownloads(exportedResult, preview)
   const scopeAvail = scopeAvailability(outlineResult?.chapters ?? [])
 
   /** 起跑正文生成：显式给参数用之;缺省（含失败重试路径）回读用户存过的目标字数——
@@ -765,14 +774,18 @@ export default function ContentPage() {
             </Link>
           )}
 
-          {/* 下载区（2026-08-09 export-scope）：已产出的分册直接再下载，不用回导出弹窗重渲 */}
+          {/* 下载区（2026-08-09 export-scope）：已产出的分册直接再下载，不用回导出弹窗重渲。
+              终审 C1：过期的册（内容改过、该册没重新导出过）禁用直下——绝不悄悄发旧文件；
+              要拿新版只能走「导出」按钮，进弹窗显式确认（可能计费）后再重渲，不在这里的点击里发生。 */}
           {scopedDownloadItems.length > 0 && (
             <div className="flex flex-wrap items-center gap-1.5">
               {scopedDownloadItems.map((d) => (
                 <button
                   key={d.key}
                   onClick={() => void redownload(d.kind)}
-                  className="inline-flex items-center gap-1 rounded-lg border border-border bg-card px-2.5 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-muted"
+                  disabled={d.stale}
+                  title={d.stale ? "内容已修改，重新导出后可下载" : undefined}
+                  className="inline-flex items-center gap-1 rounded-lg border border-border bg-card px-2.5 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-card"
                 >
                   <Download className="size-3" />
                   {d.text}

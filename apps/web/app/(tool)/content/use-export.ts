@@ -31,6 +31,16 @@ export function camelArtifactKey(scope: ExportScope, base: "docx" | "pdf" | "pdf
   return `${base}${sfx}`
 }
 
+/** PDF 选项是否该置灰（终审 I1）：仅当该 scope 已产出 docx（导过）但 pdf 缺失/为 null（agent 侧
+ *  soffice 转换失败）时才置灰——「导过但转不出 PDF」与「这册压根没导过」是两回事，此前只看
+ *  「pdf 键不存在」，会把从未导出过的册也一并置灰，堵死分册 PDF 的首次导出。 */
+export function pdfUnavailableFor(exported: ExportArtifacts | null | undefined, scope: ExportScope): boolean {
+  if (!exported) return false
+  const hasDocx = !!exported[camelArtifactKey(scope, "docx")]
+  const hasPdf = !!exported[camelArtifactKey(scope, "pdf")]
+  return hasDocx && !hasPdf
+}
+
 /** 导出全流程 hook（从 content/page.tsx 拆出,页面超 800 行拆分）：
  *  入口付费墙 → 体检确认/高风险二次确认（弹层仍在页面,这里回调发信号）→ export 步执行
  *  → 断流收敛（StreamIncomplete/409 转轮询,绝不误报失败诱导重扣）→ 断点续看（切页回来
@@ -69,27 +79,30 @@ export function useExport(opts: {
   const [exporting, setExporting] = useState(false)
   const exportingRef = useRef(false)
 
-  // spec323：已跑过 export 步且**本次 scope** 的产物无 pdf key ⇒ 该次 docx→pdf 转换失败（agent
-  // best-effort），PDF 选项置灰。2026-08-09 分册起 pdf 键随 scope 走，不能再固定读 pdf——
-  // 否则技术册转换失败时会被商务册仍在的 pdf 键误判成"可用"。
+  // spec323：已跑过 export 步且**本次 scope** 的产物有 docx 无 pdf key ⇒ 该次 docx→pdf 转换失败
+  // （agent best-effort），PDF 选项置灰。2026-08-09 分册起 pdf 键随 scope 走，不能再固定读 pdf——
+  // 否则技术册转换失败时会被商务册仍在的 pdf 键误判成"可用"。终审 I1：必须先看 docx 键是否存在——
+  // 该 scope 从未导出过时 docx/pdf 键都没有，此前只看"pdf 键不存在"会把它也一并置灰，堵死首次导出。
   const { data: exportedResult } = useOtherStepResult<ExportArtifacts>(projectId, info, "export")
-  const pdfUnavailable = !!exportedResult && !exportedResult[camelArtifactKey(exportScope, "pdf")]
+  const pdfUnavailable = pdfUnavailableFor(exportedResult, exportScope)
   // 已知不可用时把停留在 pdf 的选择拨回 word，避免「已禁用但仍被选中」的怪状态
   useEffect(() => {
     if (pdfUnavailable) setExportFormat((f) => (f === "pdf" ? "word" : f))
   }, [pdfUnavailable])
 
-  // 导出预告（spec 方案A）：挂载弹窗（每次打开）时取 credentials 清单，失败静默——
-  // 预告区只少资质那一行，不挡导出。
+  // 导出预告（spec 方案A）：项目就绪即取一次（不再只等弹窗打开）——终审 C1 起，preview.volumes/
+  // content_changed_at 还要喂给页面常驻的下载区（与弹窗是否开过无关，导出完就可能立刻显示按钮），
+  // 只在开弹窗时才取会让首屏下载按钮读到旧数据、误判"未过期"。弹窗每次打开仍重取一次保证新鲜
+  // （exportOpen 仍在依赖数组里）；失败静默——预告区只少资质那一行，下载区退化为不置灰，不挡导出。
   const [preview, setPreview] = useState<ExportPreview | null>(null)
   useEffect(() => {
-    if (!exportOpen || !projectId) return
+    if (!projectId) return
     let alive = true
     exportPreview(projectId)
       .then((r) => { if (alive) setPreview(r) })
       .catch(() => {})
     return () => { alive = false }
-  }, [exportOpen, projectId])
+  }, [projectId, exportOpen])
 
   function flashExportStatus(text: string) {
     setExportStatus(text)
