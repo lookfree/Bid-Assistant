@@ -737,17 +737,17 @@ class TestLibraryRefsInjection:
         chat = _FakeChat()
         _run(state, chat, monkeypatch=monkeypatch)
         personnel_brief = _brief_of(chat, "项目团队与人员配置")
-        assert "PMP,高级工程师" in personnel_brief
+        assert "标签:PMP,高级工程师" in personnel_brief
 
     def test_library_ref_line_format_includes_tags_between_meta_and_fields(self):
-        """`_library_ref_line` 逐字段核对：title|meta|tags(逗号连)|fields|body。"""
+        """`_library_ref_line` 逐字段核对：title|meta|标签:tags(逗号连)|fields|body。"""
         from agent.agents.bidding_agent.nodes.content_pipeline import _library_ref_line
 
         line = _library_ref_line({
             "title": "张三", "meta": "项目经理", "tags": ["PMP", "高级工程师"],
             "fields": [{"label": "职称", "value": "高工"}], "body": "十年经验",
         })
-        assert line == "- 张三|项目经理|PMP,高级工程师|职称:高工|十年经验"
+        assert line == "- 张三|项目经理|标签:PMP,高级工程师|职称:高工|十年经验"
 
     def test_library_ref_line_tags_absent_or_empty_renders_as_empty_segment(self):
         """无 tags 键 / 空数组：该段落为空字符串，不炸、不占位错乱。"""

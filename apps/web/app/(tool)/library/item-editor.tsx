@@ -96,6 +96,20 @@ export function buildEntryInput(
   }
 }
 
+/**
+ * 预置字段（人员/业绩类）弹层打开时的初始值：已存 fields 里命中预置标签的值回填到对应输入框；
+ * 非人员/业绩类目、或条目本无 fields 时返回空对象。
+ */
+function initialPresetFields(catId: LibraryCategoryId, item: LibraryEntry | null): PresetFieldValues {
+  const labels = PRESET_FIELD_LABELS[catId]
+  if (!labels) return {}
+  const values: PresetFieldValues = {}
+  for (const f of item?.fields ?? []) {
+    if (labels.includes(f.label)) values[f.label] = f.value
+  }
+  return values
+}
+
 /* ---------------- 新增 / 编辑条目弹层（保存走 POST/PUT，附件走真实直传） ---------------- */
 export function ItemEditor({
   catId,
@@ -117,16 +131,7 @@ export function ItemEditor({
     body: item?.body ?? "",
     tags: (item?.tags ?? []).join("、"),
   })
-  // 预置字段（人员/业绩类）：已存 fields 里命中预置标签的值回填到对应输入框
-  const [presetFields, setPresetFields] = useState<PresetFieldValues>(() => {
-    const labels = PRESET_FIELD_LABELS[catId]
-    if (!labels) return {}
-    const values: PresetFieldValues = {}
-    for (const f of item?.fields ?? []) {
-      if (labels.includes(f.label)) values[f.label] = f.value
-    }
-    return values
-  })
+  const [presetFields, setPresetFields] = useState<PresetFieldValues>(() => initialPresetFields(catId, item))
   const [attachments, setAttachments] = useState<LibraryAttachment[]>(item?.attachments ?? [])
   const [uploading, setUploading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -190,13 +195,14 @@ export function ItemEditor({
    meta 占位文案统一带上"将写入标书"：这里填的不是无关备注，是会被读进生成结果的内容
    （人员/业绩类经结构化通道直发 agent；其余类目随条目参与检索与人工插入）。
    personnel/performance 的 meta 示例已改：职称/从业年限/持证书/合同金额等挪去下方预置输入框，
-   不再让 meta 和预置字段抢同一份信息。 */
+   不再让 meta 和预置字段抢同一份信息。text 类目例外：libraryItemHtml 对有正文的条目直接返回
+   body，不会走到拼 meta 那一支，故 text 的提示不带"将写入标书"。 */
 const FIELD_HINTS: Record<LibraryCategoryId, { title: string; meta: string; tags: string }> = {
   qualification: { title: "如：ISO27001 信息安全管理体系认证", meta: "如：认证机构、证书编号（将写入标书）", tags: "如：信息安全、体系认证" },
   performance: { title: "如：某市政务云运维服务项目（2025）", meta: "如：项目简介、亮点（将写入标书）", tags: "如：政务、千万级" },
   personnel: { title: "如：张三", meta: "如：其他补充说明（将写入标书）", tags: "如：PMP、高级工程师" },
   finance: { title: "如：2025 年度审计报告", meta: "如：出具机构、覆盖年度（将写入标书）", tags: "如：审计、纳税" },
-  text: { title: "如：公司简介（标准版）", meta: "如：适用场景、更新时间（将写入标书）", tags: "如：简介、售后承诺" },
+  text: { title: "如：公司简介（标准版）", meta: "如：适用场景、更新时间（备注用，无模板正文时才写入标书）", tags: "如：简介、售后承诺" },
   presentation: { title: "如：企业介绍 PPT 母版", meta: "如：适用场景、页数（将写入标书）", tags: "如：述标、母版" },
 }
 

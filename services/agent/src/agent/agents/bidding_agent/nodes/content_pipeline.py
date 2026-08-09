@@ -225,11 +225,13 @@ def _pipeline_context(state: dict, ch: dict) -> str:
 
 
 def _library_ref_line(it: dict) -> str:
-    """单条人员/业绩资料库条目 → 简报行：`title|meta|tags|label:value;…|body`
-    （tags 逗号连接；2026-08-09 结构化录入 Task 2：条目原有录入提示却从未被下发，补上这一路）。"""
+    """单条人员/业绩资料库条目 → 简报行：`title|meta|标签:tags|label:value;…|body`
+    （tags 逗号连接，前缀`标签:`以免与紧邻的 meta 段混读；2026-08-09 结构化录入 Task 2：
+    条目原有录入提示却从未被下发，补上这一路）。"""
     title = str(it.get("title") or "").strip()
     meta = str(it.get("meta") or "").strip()
-    tags = ",".join(str(t).strip() for t in (it.get("tags") or []) if str(t).strip())
+    tags_str = ",".join(str(t).strip() for t in (it.get("tags") or []) if str(t).strip())
+    tags = f"标签:{tags_str}" if tags_str else ""
     fields = ";".join(f"{f.get('label', '')}:{f.get('value', '')}"
                        for f in (it.get("fields") or []) if isinstance(f, dict))
     body = str(it.get("body") or "").strip()
