@@ -24,8 +24,11 @@ const captured: {
   ref: string
   holdId: string
   preDeductCalls: number
+  rewriteCalls: number // agent 改写通道被真正调用的次数——系统章拒绝断言"没调"用它，不靠
+  // 把 rewriteArgs 手动置回 undefined 再对着一次 await 之后的读取做类型窄化（TS 不会因为
+  // 中间那次 await 调用而重新放宽属性类型，会把后续访问锁死成 never）。
   rewriteArgs?: Parameters<ProjectDeps["rewriteChapter"]>[0]
-} = { ref: "", holdId: "", preDeductCalls: 0 }
+} = { ref: "", holdId: "", preDeductCalls: 0, rewriteCalls: 0 }
 
 const NEW_HTML = "<p>改写后的正文（更正式）</p>"
 
@@ -45,6 +48,7 @@ const mockDeps: Partial<ProjectDeps> = {
     return billing.settle(ref, holdId, actualCost)
   },
   rewriteChapter: async (opts) => {
+    captured.rewriteCalls++
     captured.rewriteArgs = opts
     if (agentFail) throw new Error("agent boom")
     // 与 agent-client 真实抛法同形：`agent rewriteChapter <status>: <agent 的 error 文本>`
@@ -65,6 +69,7 @@ let projectId = "" // A 的项目，content done
 let threadId = ""
 let draftProjectId = "" // A 的项目，content 未 done
 let poorProjectId = "" // B 的项目，content done 但 B 没积分
+let sysChapterProjectId = "" // A 的项目，outline 含 sys-creds 系统章（终审 I1 第三道门）
 
 let prevSignupGrant: unknown
 
@@ -113,6 +118,33 @@ beforeAll(async () => {
     status: "done",
     result: { "ch-1": "<p>b</p>" },
   })
+
+  // outline 含 sys-creds 系统章 + 一个普通章，content 两章都有正文——用来验证系统章改写被
+  // 就地拒绝、普通章不受影响（终审 I1 第三道门：改写路由要按库里提纲的 system 标记拒收）。
+  const [sc] = await getDb()
+    .insert(bidProjects)
+    .values({ userId: userA, threadId: `proj-${crypto.randomUUID()}`, status: "running", currentStep: "review" })
+    .returning()
+  sysChapterProjectId = sc!.id
+  await getDb().insert(projectSteps).values([
+    {
+      projectId: sysChapterProjectId,
+      step: "outline",
+      status: "done",
+      result: {
+        chapters: [
+          { id: "sys-creds", no: "附录", title: "资格证明文件", group: "business", system: true, sourced: false, items: [] },
+          { id: "ch-1", no: "第一章", title: "项目理解", group: "tech", sourced: true, items: [] },
+        ],
+      },
+    },
+    {
+      projectId: sysChapterProjectId,
+      step: "content",
+      status: "done",
+      result: { "sys-creds": "<h3>营业执照</h3>", "ch-1": "<p>旧正文</p>" },
+    },
+  ])
 })
 
 afterAll(async () => {
@@ -253,5 +285,20 @@ describe("POST /:id/chapters/:chapterId/rewrite 单章改写（真账本）", ()
     const nonUuid = await rewrite("not-a-uuid", "ch-1", { instruction: "x" }, tokenA)
     expect(nonUuid.status).toBe(404)
     expect(captured.preDeductCalls).toBe(calls)
+  })
+
+  it("⑤ 附录系统章（sys-creds）：409 system_chapter，就地拒绝不调 agent；普通章不受影响", async () => {
+    const rewriteCallsBefore = captured.rewriteCalls
+    const preDeductCallsBefore = captured.preDeductCalls
+    const res = await rewrite(sysChapterProjectId, "sys-creds", { instruction: "补充一份资质" }, tokenA)
+    expect(res.status).toBe(409)
+    expect(((await res.json()) as { error: string }).error).toBe("system_chapter")
+    expect(captured.rewriteCalls).toBe(rewriteCallsBefore) // agent 通道完全没被调
+    expect(captured.preDeductCalls).toBe(preDeductCallsBefore)
+
+    const ok = await rewrite(sysChapterProjectId, "ch-1", { instruction: "改得更正式" }, tokenA)
+    expect(ok.status).toBe(200)
+    expect(captured.rewriteCalls).toBe(rewriteCallsBefore + 1)
+    expect(captured.rewriteArgs?.chapterId).toBe("ch-1")
   })
 })

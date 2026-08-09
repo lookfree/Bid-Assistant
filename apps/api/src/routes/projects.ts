@@ -1091,10 +1091,15 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     // 新增的章在它里面根本没有，而那正是「待生成」的主力。这里同时充当 id 校验——
     // 既不在提纲、也没有正文的 id 一律拒，不把无效 id 送进 agent。
     const outlineRow = await latestDoneStep(p.id, "outline")
-    const outlineChapters = ((outlineRow?.result as { chapters?: { id?: string; no?: string; title?: string }[] } | null)
+    const outlineChapters = ((outlineRow?.result as
+      { chapters?: { id?: string; no?: string; title?: string; system?: boolean }[] } | null)
       ?.chapters ?? [])
     const planned = outlineChapters.find((ch) => ch.id === chapterId)
     if (!planned && typeof baseHtml !== "string") return c.json({ error: "chapter_not_found" }, 404)
+    // 附录系统章（sys-creds）纵深拒绝（终审 I1 第三道门）：内容纯代码拼接，任何改写请求
+    // （不论从右栏对话还是别的入口发起）都必须在这里就地拒绝，不解析模型配置、不调 agent。
+    // id 兜底与本轮 C1 的教训同形：库里提纲一旦再丢一次 system 标记，id 命中仍要拦住。
+    if (planned?.system || chapterId === SYS_CREDS_ID) return c.json({ error: "system_chapter" }, 409)
     const chapterTitle = planned ? `${planned.no ?? ""} ${planned.title ?? ""}`.trim() : undefined
     // 模型唯一来自运营后台配置：未配置直接报错（预扣前取，不占额度），绝不回退默认模型
     const model = await resolveModel()
