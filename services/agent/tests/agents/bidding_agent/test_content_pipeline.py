@@ -78,6 +78,9 @@ def _state(n=6):
 def _run(state, chat, redis=None, monkeypatch=None):
     from agent.agents.bidding_agent.nodes import content_pipeline as mod
     monkeypatch.setattr(mod, "resilient_chat", lambda gw, provider=None: chat)
+    # 缺章补写轮的真实等待是 90 秒（评审 2026-08-09）；测试默认打成 0，个别要断言等待行为
+    # 本身的测试可以在调用 _run 前再 monkeypatch 回真值或自定义桩。
+    monkeypatch.setattr(mod, "_MISSING_RETRY_DELAY_S", 0)
     return asyncio.run(run_content_pipeline(_ctx(redis), state))
 
 
@@ -139,10 +142,57 @@ class TestPipeline:
 
     def test_a_stubborn_bad_chapter_is_missing_not_fatal(self, monkeypatch):
         """某章两次都吐残稿 → 如实缺章（前端免费补齐），**其它章照常交付**——
-        旧引擎是一处失败全盘皆输。"""
+        旧引擎是一处失败全盘皆输。缺章补写轮也救不回来的（bad_ids 是永久性坏）
+        依然如实记缺章，不会因为多补了一次就变成假装成功。"""
         chat = _FakeChat(bad_ids={"章节3"})
         out = _run(_state(5), chat, monkeypatch=monkeypatch)
         assert "t3" not in out and len(out) == 4
+
+    def test_missing_chapter_recovers_in_the_makeup_pass(self, monkeypatch):
+        """主 gather 收尾仍缺章 → 等一下再各补一次——短暂故障不再直接变墓碑，
+        这是老引擎"漏了就补"的语义回归（#85 删旧规划者引擎时随它一起丢了）。"""
+        class _RecoveringChat:
+            """章节3 头两次调用（主 gather 内 _write_one 的两次尝试）吐残稿，
+            第三次（补写轮）恢复正常——模拟限流/连接抖动这类短暂故障。"""
+
+            def __init__(self):
+                self.calls_by_chapter: dict[str, int] = {}
+
+            async def ainvoke(self, msgs, config=None):
+                user = msgs[-1].content
+                tail = user.split("请撰写本章")[-1]
+                title = next((t for t in ("章节1", "章节2", "章节3") if t in tail), "")
+                n = self.calls_by_chapter.get(title, 0) + 1
+                self.calls_by_chapter[title] = n
+                if title == "章节3" and n <= 2:
+                    return AIMessage(content="太短")
+                return AIMessage(content=f"<h3>一、正文</h3><p>{'内容' * 60}</p>")
+
+        chat = _RecoveringChat()
+        out = _run(_state(3), chat, monkeypatch=monkeypatch)
+        assert set(out) == {"t1", "t2", "t3"}, "短暂故障的缺章该在补写轮里补上，不该直接变墓碑"
+        assert chat.calls_by_chapter["章节3"] == 3
+
+    def test_makeup_pass_waits_before_retrying(self, monkeypatch):
+        """补写轮必须先等一下（给短暂故障机会自愈），不是立刻重打。
+
+        桩必须实打实让出事件循环（`await real_sleep(0)`），不能是"await 一个不含任何
+        await 的协程"——那种桩不会真正让出控制权，心跳协程里的 `while True: await
+        asyncio.sleep(...)` 会因此变成不出让控制权的死循环，整个测试挂死。
+        """
+        from agent.agents.bidding_agent.nodes import content_pipeline as mod
+
+        slept = []
+        real_sleep = mod.asyncio.sleep
+
+        async def _fake_sleep(s):
+            slept.append(s)
+            await real_sleep(0)
+
+        monkeypatch.setattr(mod, "resilient_chat", lambda gw, provider=None: _FakeChat(bad_ids={"章节2"}))
+        monkeypatch.setattr(mod.asyncio, "sleep", _fake_sleep)
+        asyncio.run(run_content_pipeline(_ctx(), _state(3)))
+        assert mod._MISSING_RETRY_DELAY_S in slept
 
     def test_progress_events_carry_exact_counts(self, monkeypatch):
         """进度不再靠回调猜——写完就是写完。事件形状与旧引擎一致，前端零改动。"""
@@ -233,6 +283,29 @@ class TestBriefTargeting:
         assert "招标格式模板" not in _brief_of(chat, "章节2"), "格式模板发给了无关章"
 
 
+class TestPackageScope:
+    """选包时每章简报追加范围约束（spec324，与 outline 同款）——#85 删旧规划者引擎时随它
+    一起丢了，正文不再知道只投一个包件（从 test_content_node 的
+    test_content_node_with_package_injects_scope_constraint 移植到流水线版）。"""
+
+    def test_package_scope_line_reaches_every_chapter_brief(self, monkeypatch):
+        state = _state(2)
+        state["run_input"] = {"package": {"id": "p1", "name": "实网攻防"}}
+        chat = _FakeChat()
+        _run(state, chat, monkeypatch=monkeypatch)
+        for title in ("章节1", "章节2"):
+            brief = _brief_of(chat, title)
+            assert "本项目仅投包件《实网攻防》(p1)" in brief
+            assert "涉及分包件评分表/偏离表仅取该包件" in brief
+            assert brief.endswith("该包件。")
+
+    def test_no_package_selected_brief_unchanged(self, monkeypatch):
+        """未选包（缺省）行为不变——不追加范围约束行。"""
+        chat = _FakeChat()
+        _run(_state(1), chat, monkeypatch=monkeypatch)
+        assert "仅投包件" not in _brief_of(chat, "章节1")
+
+
 class TestReferenceInjection:
     """RAG 参考资料段（spec316）：启用则每章简报带；检索故障绝不阻断正文生成（降级铁律）。"""
 
@@ -288,6 +361,7 @@ class TestPgAuditTrail:
         from agent.agents.bidding_agent.nodes import content_pipeline as mod
         from agent.agents.bidding_agent.nodes.content_pipeline import run_content_pipeline
         monkeypatch.setattr(mod, "resilient_chat", lambda gw, provider=None: chat)
+        monkeypatch.setattr(mod, "_MISSING_RETRY_DELAY_S", 0)
         rec = self._Recorder()
         ctx = SimpleNamespace(thread_id="proj-t", run_id="r1", redis=None, gateway=object(),
                               recorder=rec, agent_type="bidding_agent", user_id=None)

@@ -48,6 +48,10 @@ _NA_MIN_CHARS = 10
 # 成本口径,付费首稿沿用等于静默丢弃第 13 条之后的所有要求含★（评审 2026-08-08）。
 _REQ_NONSTAR_MAX = 48
 _REQ_LINE_CHARS = 240
+# 主 gather 收尾仍缺章：等一下再各补一次，而不是当场判死——老引擎"漏了就补"的语义。
+# 缺章多半是端点瞬时抖动（限流/连接抖动撞在同一批里），90 秒足够让抖动过去，
+# 又不会让用户等太久（评审 2026-08-09）。
+_MISSING_RETRY_DELAY_S = 90
 
 # 永久性错误：后台未配置模型 / 整条降级链鉴权失败。逐章重试 2N 次毫无意义,还把根因
 # 埋进 warning——直接抛给整步,用户看到真实原因（评审 2026-08-08）。按类型识别,不猜文案。
@@ -275,6 +279,8 @@ def _chapter_brief(state: dict, ch: dict, shared: dict) -> tuple[str, str]:
     （资料库更新/召回抖动），进哈希会让"重试只补缺章"静默退化成全量重跑——旧引擎的
     resume 哈希刻意排除过它,这个不变量删旧路时丢了（评审 2026-08-08）。
     偏离表/格式模板/篇幅目标都**按章 id 精确投递**,不再靠标题子串猜。"""
+    from agent.agents.bidding_agent.nodes.common import package_scope
+
     cid = ch.get("id") or ""
     parts = [_pipeline_context(state, ch)]
     if shared.get("project"):
@@ -298,7 +304,11 @@ def _chapter_brief(state: dict, ch: dict, shared: dict) -> tuple[str, str]:
     if shared.get("performance") and _PERFORMANCE_RE.search(text):
         parts.append(shared["performance"])
     parts.append(f"请撰写本章（{ch.get('no') or ''} {ch.get('title') or ''}）的完整正文 HTML。")
-    return "\n\n".join(p for p in parts if p), shared.get("ref") or ""
+    # 选包范围约束（spec324，与 outline 同款）：删旧引擎时随规划者一起丢了，正文不再知道
+    # 只投一个包件——写手把别的包件也当成要响应的范围。进 stable 部分：选包变了缓存键
+    # 也要跟着变，不能把上一次选包时写的正文当断点续跑出来。
+    stable = "\n\n".join(p for p in parts if p) + package_scope(state.get("run_input"))
+    return stable, shared.get("ref") or ""
 
 
 def _text_of(out) -> str:
@@ -467,13 +477,41 @@ async def run_content_pipeline(ctx, state: dict) -> dict[str, str]:
     out = {cid: html for cid, html in pairs if html}
     if not out:
         raise RuntimeError("未产出任何章节草稿（全部章节生成失败）")
-    # 证照定向插章 post-pass（Task 4,计划③）：在缓存读写之外单独跑——fresh 章刚写完、
-    # 缓存命中章刚取出，此刻统一现算一遍插图，绝不写回上面的章节缓存（评审 2026-08-09）。
-    out = place_certificates(out, state)
     missing = [cid for cid, html in pairs if not html]
+    if missing:
+        out = await _retry_missing(ctx, chat, system_prompt, state, chapters, shared, sem,
+                                   progress, generation, out, missing)
+        missing = [cid for cid in missing if cid not in out]
+    # 证照定向插章 post-pass（Task 4,计划③）：在缓存读写之外单独跑——fresh 章刚写完、
+    # 缓存命中章刚取出/补写章刚补完，此刻统一现算一遍插图，绝不写回上面的章节缓存
+    # （只能跑一次：place_certificates 是纯追加、不去重，对同一 out 跑两遍会把证照块插两份）。
+    out = place_certificates(out, state)
     if missing:
         logger.error("代码编排收尾仍缺 %d 章：%s（前端可免费补齐）", len(missing), missing)
         # 漏章落 observability 事件（与旧引擎同一事件名，复盘查询口径不变）
         await _log_pg(ctx, "content_incomplete", {"missing": missing, "missing_count": len(missing),
                       "total": len(chapters), "phase": "final"}, level="warn")
     return out
+
+
+async def _retry_missing(ctx, chat, system_prompt: str, state: dict, chapters: list[dict], shared: dict,
+                         sem: asyncio.Semaphore, progress: _Progress, generation: int,
+                         out: dict[str, str], missing: list[str]) -> dict[str, str]:
+    """缺章补写轮：主 gather 收尾仍有缺章时，等一下（短暂故障有机会自愈）再对每章各补一次
+    _write_one——老引擎"漏了就补"的语义，删旧引擎时连同规划者一起丢了，缺章直接变墓碑。
+    补写沿用同一 generation/缓存键：上一轮失败没写过缓存，这里只是让它有机会真正跑成。"""
+    logger.warning("代码编排收尾缺 %d 章，等 %ds 后各补一次：%s", len(missing), _MISSING_RETRY_DELAY_S, missing)
+    await asyncio.sleep(_MISSING_RETRY_DELAY_S)
+    by_id = {c["id"]: c for c in chapters}
+    retried = await asyncio.gather(*[
+        _write_one(ctx, chat, system_prompt, state, by_id[cid], shared, sem, progress, generation)
+        for cid in missing if cid in by_id], return_exceptions=True)
+    result = dict(out)
+    for r in retried:
+        if isinstance(r, BaseException):
+            logger.warning("缺章补写调用异常，本章仍记为缺章：%s", str(r)[:200])
+            continue
+        cid, html = r
+        if html:
+            result[cid] = html
+    return result
