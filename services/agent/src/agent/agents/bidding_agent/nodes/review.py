@@ -4,13 +4,15 @@ import json
 from agent.framework.budget import run_with_shrink
 from agent.framework.create_agent import run_submit_agent
 from agent.agents.bidding_agent.nodes.common import (
-    slim_read, filter_read_by_package, parse_bid_chapters, publish_phase, html_to_review_text,
+    slim_read, filter_read_by_package, parse_bid_docs, publish_phase, html_to_review_text,
     allocate_chapter_budget, chapters_budget, chapters_in_outline, compress_read,
     MIN_CHAPTER_CHARS,
 )
 from agent.agents.bidding_agent.nodes.classify import classify_from_chapters, empty_category
 from agent.agents.bidding_agent.schemas import RiskReport
-from agent.agents.bidding_agent.prompts.review import REVIEW_SYSTEM_PROMPT
+from agent.agents.bidding_agent.prompts.review import (
+    REVIEW_SYSTEM_PROMPT, SCAN_REVIEW_RULE, scan_pages_note,
+)
 from agent.agents.bidding_agent.prompts.categories import category_scope, industry_patches
 
 
@@ -42,6 +44,30 @@ async def _resolve_category(ctx, run_input: dict, read_state: dict, chapters: di
     return await classify_from_chapters(ctx, chapters), True
 
 
+async def _resolve_chapters(state: dict, run_input: dict) -> tuple[dict[str, str], list[dict]]:
+    """本次受审的正文 {章id: html}，以及受审文件里「看不见」的页数统计（见 parse_bid_docs）。"""
+    chapters_src = state.get("chapters") or {}
+    scanned: list[dict] = []
+    # spec328 独立审查:线下标书没有生成链路,chapters 由上传文件确定性解析而来
+    bid_files = run_input.get("bid_file_keys") or (
+        [run_input["bid_file_key"]] if run_input.get("bid_file_key") else []
+    )
+    if not chapters_src and bid_files:
+        chapters_src, scanned = await asyncio.to_thread(parse_bid_docs, bid_files)
+        # 审查修正：解析为空（扫描件/图片 PDF 提不出文字）绝不能拿空文档去跑计费审查——
+        # run 直接失败,App 侧 settleFailed 全额退款,错误文案告知原因
+        if not chapters_src:
+            raise RuntimeError("上传的标书未能解析出任何正文（扫描件/图片版暂不支持），请上传可复制文字的 docx/pdf 后重试")
+    # 删章留下的孤儿键（chapters 是合并通道）不该被体检：那是不会交付的内容，
+    # 报出来的风险用户在文档里根本找不到。无提纲的线下审查项目原样放行。
+    filtered = chapters_in_outline(chapters_src, state.get("outline") or {})
+    # 只拦"**被过滤清空**"这一种：本来就没有正文的场景（自查/空提纲）上面已有各自的处理，
+    # 一刀切会把它们一起误杀。过滤清空 = 正文与提纲对不上，拿空文档跑计费步骤等于骗钱。
+    if chapters_src and not filtered:
+        raise RuntimeError("投标正文与提纲章节对不上（提纲可能已改动），请重新生成正文后再审查")
+    return filtered, scanned
+
+
 def make_review_node(ctx):
     """graph 节点：读 read+outline+chapters 比对 → 产 RiskReport → 写 state['risk']；模型未提交即失败（可重试）。
     read 走 slim_read 裁 source_quote；章节正文按 _CHAPTER_CAP 截断（防超窗）；
@@ -51,30 +77,12 @@ def make_review_node(ctx):
         # 选包时读标收窄到该包(spec324 优化):审查只比对该包要求,不会把别包的要求误判成缺失。
         read_state = filter_read_by_package(state.get("read") or {}, state.get("run_input"))
         run_input = state.get("run_input") or {}
-        chapters_src = state.get("chapters") or {}
-        # spec328 独立审查:线下标书没有生成链路,chapters 由上传文件确定性解析而来
-        bid_files = run_input.get("bid_file_keys") or (
-            [run_input["bid_file_key"]] if run_input.get("bid_file_key") else []
-        )
-        if not chapters_src and bid_files:
-            chapters_src = await asyncio.to_thread(parse_bid_chapters, bid_files)
-            # 审查修正：解析为空（扫描件/图片 PDF 提不出文字）绝不能拿空文档去跑计费审查——
-            # run 直接失败,App 侧 settleFailed 全额退款,错误文案告知原因
-            if not chapters_src:
-                raise RuntimeError("上传的标书未能解析出任何正文（扫描件/图片版暂不支持），请上传可复制文字的 docx/pdf 后重试")
+        chapters_src, scanned = await _resolve_chapters(state, run_input)
         # 截断前先压实成紧凑文本：图片换占位符（一张 base64 就有二十万字符，2026-08-06 用户反馈
         # 「证照放进正文、审查却报缺件」的真因），HTML 标签与实体一并剥掉——2026-08-07 全量实测
         # 喂进去的字符有 **56% 是标签**，有一章正文才 5261 字、本可整章放下，却因表格标签把串撑到
         # 38431，模型只读到 561 字（10%）。表格结构保留成「单元格 | 单元格 / 换行」，
         # 因为审查要靠表格行判断★条款有没有逐条登进偏离表。
-        # 删章留下的孤儿键（chapters 是合并通道）不该被体检：那是不会交付的内容，
-        # 报出来的风险用户在文档里根本找不到。无提纲的线下审查项目原样放行。
-        filtered = chapters_in_outline(chapters_src, state.get("outline") or {})
-        # 只拦"**被过滤清空**"这一种：本来就没有正文的场景（自查/空提纲）上面已有各自的处理，
-        # 一刀切会把它们一起误杀。过滤清空 = 正文与提纲对不上，拿空文档跑计费步骤等于骗钱。
-        if chapters_src and not filtered:
-            raise RuntimeError("投标正文与提纲章节对不上（提纲可能已改动），请重新生成正文后再审查")
-        chapters_src = filtered
         texts = {cid: html_to_review_text(html) for cid, html in chapters_src.items()}
         # 分类判定（spec334）：**在审查之前**做，这一轮就能用上分类知识——放到审查之后的话，
         # 用户看到分类时报告已经出完，得再花一次钱重跑才生效。
@@ -90,6 +98,10 @@ def make_review_node(ctx):
         if structure:
             payload["required_structure"] = structure
         mode_note = "" if read_state else _SELF_CHECK_NOTE
+        # 受审文件有扫描图片页时才加这两段：判定纪律进系统提示（与其它规则同处），
+        # 页数说明进用户消息最前（紧挨着材料）。没有扫描页 → 两者皆为空串，提示词逐字节不变。
+        system = REVIEW_SYSTEM_PROMPT + (SCAN_REVIEW_RULE if scanned else "")
+        scan_note = scan_pages_note(scanned)
         # 分类必查项（spec334）：**主次类别都取**——查多了只多看一眼，漏一条是废标。
         # 行业资质补丁在读标条目（有招标文件）或标书正文（自查）上做字面匹配，不拿全文匹配：
         # 补丁词是资质类术语，只出现在需求与资格条款里，全文匹配只增噪声和成本。
@@ -104,7 +116,7 @@ def make_review_node(ctx):
                                              ensure_ascii=False))
         # 正文额度按剩余窗口算：固定部分（系统提示 + 读标结论 + 约束文字）先占，剩下的才是正文的。
         # 写死常量的下场见 chapters_budget 的注释——砍不够是 400，砍过头是白丢内容。
-        fixed = REVIEW_SYSTEM_PROMPT + json.dumps(payload, ensure_ascii=False) + mode_note + extra
+        fixed = system + scan_note + json.dumps(payload, ensure_ascii=False) + mode_note + extra
         budget = chapters_budget(ctx, fixed)
         # 固定部分（读标结论 + 提示词 + schema）本身就撑满窗口：正文一个字都放不下。
         # 这种载荷缩多少轮都装不进去，与其白烧三轮 400，不如当场失败——App 侧全额退款。
@@ -116,10 +128,10 @@ def make_review_node(ctx):
             """按给定折扣重建载荷再跑——估算失准时由 run_with_shrink 逐档收缩。"""
             payload["chapters"] = allocate_chapter_budget(
                 texts, int(budget * factor), MIN_CHAPTER_CHARS)
-            user = (f"招标与投标材料：\n{json.dumps(payload, ensure_ascii=False)}{mode_note}"
+            user = (f"{scan_note}招标与投标材料：\n{json.dumps(payload, ensure_ascii=False)}{mode_note}"
                     f"\n请审查并提交体检报告。{extra}")
             return await run_submit_agent(
-                ctx, REVIEW_SYSTEM_PROMPT, user,
+                ctx, system, user,
                 "submit_risk_report", RiskReport, "提交审查报告")
 
         result = await run_with_shrink(_attempt, label="审查")

@@ -281,12 +281,12 @@ def test_present_parses_external_bid_when_no_chapters(monkeypatch, submit_gatewa
             pass
     monkeypatch.setattr(common_mod, "storage", _Storage())
 
-    class _Parsed:
-        clauses = [
-            {"id": "sec-1-c1", "text": "运维保障方案正文"},
-            {"id": "sec-2-c1", "text": "报价合计 100 万元"},
-        ]
-    monkeypatch.setattr(common_mod2, "read_and_parse", lambda key: _Parsed())
+    from agent.parsing.types import ParsedDoc
+    parsed = ParsedDoc(text="全文", kind="docx", clauses=[
+        {"id": "sec-1-c1", "text": "运维保障方案正文"},
+        {"id": "sec-2-c1", "text": "报价合计 100 万元"},
+    ])
+    monkeypatch.setattr(common_mod2, "read_and_parse", lambda key: parsed)
 
     gw = _CapGateway(_DRAFT_ARGS)
     ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-1", gateway=gw)
@@ -306,9 +306,9 @@ def test_present_external_bid_parse_empty_fails_loud(monkeypatch, submit_gateway
             pass
     monkeypatch.setattr(common_mod, "storage", _Storage())
 
-    class _EmptyParsed:
-        clauses = []
-    monkeypatch.setattr(common_mod2, "read_and_parse", lambda key: _EmptyParsed())
+    from agent.parsing.types import ParsedDoc
+    monkeypatch.setattr(common_mod2, "read_and_parse",
+                        lambda key: ParsedDoc(text="", kind="pdf", pages=8, image_pages=8))
 
     ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-1",
                      gateway=submit_gateway({"submit_deck_draft": _DRAFT_ARGS,
@@ -372,7 +372,10 @@ def test_present_never_delivers_a_title_only_deck(monkeypatch, submit_gateway):
         async def put_bytes(self, key, data, content_type=None):
             pass
     monkeypatch.setattr(common_mod, "storage", _Storage())
-    monkeypatch.setattr(common_mod2, "read_and_parse", lambda key: type("P", (), {"clauses": [{"id": "sec-1-c1", "text": "正文"}]})())
+    from agent.parsing.types import ParsedDoc
+    monkeypatch.setattr(common_mod2, "read_and_parse",
+                        lambda key: ParsedDoc(text="正文", kind="docx",
+                                              clauses=[{"id": "sec-1-c1", "text": "正文"}]))
 
     # 骨架直接构造成「正文页无要点」（绕过 schema，模拟历史数据/校验被绕过的情形）
     empty = {"title": "述标", "duration": 15, "template": "blue",

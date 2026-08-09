@@ -59,15 +59,14 @@ def test_review_node_parses_external_bid_when_no_chapters(submit_gateway, monkey
     """spec328 独立审查：chapters 空 + run_input.bid_file_key → 确定性解析上传标书成章;
     read 为空 → 注入通用自查口径（明示未对照招标文件）。"""
     import agent.agents.bidding_agent.nodes.common as common_mod
+    from agent.parsing.types import ParsedDoc
 
-    class _Parsed:
-        clauses = [
-            {"id": "sec-1-c1", "text": "第一部分正文A"},
-            {"id": "sec-1-c2", "text": "第一部分正文B"},
-            {"id": "sec-2-c1", "text": "报价合计 100 万元"},
-        ]
-
-    monkeypatch.setattr(common_mod, "read_and_parse", lambda key: _Parsed())
+    parsed = ParsedDoc(text="全文", kind="docx", clauses=[
+        {"id": "sec-1-c1", "text": "第一部分正文A"},
+        {"id": "sec-1-c2", "text": "第一部分正文B"},
+        {"id": "sec-2-c1", "text": "报价合计 100 万元"},
+    ])
+    monkeypatch.setattr(common_mod, "read_and_parse", lambda key: parsed)
     gw = submit_gateway({"submit_risk_report": _RISK_ARGS})
     ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
     node = make_review_node(ctx)
@@ -78,11 +77,53 @@ def test_review_node_parses_external_bid_when_no_chapters(submit_gateway, monkey
     assert "通用自查模式" in user_msg and "未提供招标文件" in user_msg      # 无 read → 明示局限
 
 
+def test_review_node_notes_scanned_pages_and_bans_missing_high_risk(submit_gateway, monkeypatch):
+    """2026-08-09 生产实测：366 页标书里 139 页是扫描件（身份证/授权书/盖章报价表），文字提不出来，
+    审查便把**实际存在**的材料判成「缺少」高风险。诚实分级：告诉模型有多少页它看不见，
+    并要求这类判定降为「无法核验(扫描件)」中风险。"""
+    import agent.agents.bidding_agent.nodes.common as common_mod
+    from agent.parsing.types import ParsedDoc
+
+    monkeypatch.setattr(common_mod, "read_and_parse", lambda key: ParsedDoc(
+        text="投标函", kind="pdf", pages=366, image_pages=139,
+        clauses=[{"id": "sec-1-c1", "text": "投标函正文"}]))
+    gw = submit_gateway({"submit_risk_report": _RISK_ARGS})
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
+    asyncio.run(make_review_node(ctx)({"run_input": {"bid_file_key": "uploads/u/x/投标文件.pdf"}}))
+    system_msg = gw.chats[-1].last_messages[0].content
+    user_msg = gw.chats[-1].last_messages[-1].content
+    # 文件可见性说明进用户消息：多少页、多少页看不见、里面很可能是什么
+    assert "投标文件.pdf" in user_msg and "366" in user_msg and "139" in user_msg
+    assert "扫描图片页" in user_msg and "证照" in user_msg
+    # 判定纪律进系统提示：看不见的一律降为中风险，且不出现内部字段名
+    assert "无法核验（扫描件）" in system_msg and "中风险" in system_msg
+    assert "image_pages" not in system_msg and "image_pages" not in user_msg
+
+
+def test_review_node_without_scanned_pages_keeps_prompt_unchanged(submit_gateway, monkeypatch):
+    """文件全是可复制文字 → 提示词与此前逐字节一致（系统提示不加料、用户消息不加前缀），
+    「缺少」高风险照判不误。"""
+    import agent.agents.bidding_agent.nodes.common as common_mod
+    from agent.agents.bidding_agent.prompts.review import REVIEW_SYSTEM_PROMPT
+    from agent.parsing.types import ParsedDoc
+
+    monkeypatch.setattr(common_mod, "read_and_parse", lambda key: ParsedDoc(
+        text="投标函", kind="pdf", pages=10, image_pages=0,
+        clauses=[{"id": "sec-1-c1", "text": "投标函正文"}]))
+    gw = submit_gateway({"submit_risk_report": _RISK_ARGS})
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
+    asyncio.run(make_review_node(ctx)({"run_input": {"bid_file_key": "uploads/u/x/bid.pdf"}}))
+    assert gw.chats[-1].last_messages[0].content == REVIEW_SYSTEM_PROMPT
+    assert gw.chats[-1].last_messages[-1].content.startswith("招标与投标材料：")
+
+
 def test_review_node_with_tender_and_bid_file_uses_compare_mode(submit_gateway, monkeypatch):
     """带招标文件（read 非空）时即便 chapters 来自解析,也走对照口径（不注入通用自查说明）。"""
     import agent.agents.bidding_agent.nodes.common as common_mod
+    from agent.parsing.types import ParsedDoc
     monkeypatch.setattr(common_mod, "read_and_parse",
-                        lambda key: type("P", (), {"clauses": [{"id": "sec-1-c1", "text": "响应正文"}]})())
+                        lambda key: ParsedDoc(text="响应正文", kind="docx",
+                                              clauses=[{"id": "sec-1-c1", "text": "响应正文"}]))
     gw = submit_gateway({"submit_risk_report": _RISK_ARGS})
     ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
     node = make_review_node(ctx)

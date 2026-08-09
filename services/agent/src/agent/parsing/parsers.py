@@ -82,14 +82,21 @@ def parse_docx(data: bytes) -> ParsedDoc:
                      clauses=clauses, headings=headings)
 
 
+# 一页可见文字少于这么多字就当扫描图片页：正文页随便一段都远超，扫描页至多剩页眉页码。
+_MIN_VISIBLE_CHARS = 20
+
+
 def parse_pdf(data: bytes) -> ParsedDoc:
-    """解析 .pdf 字节 → 逐页文本(拼接) + 页数 + 条款 id。扫描件 OCR 不在 Phase 1 范围。"""
+    """解析 .pdf 字节 → 逐页文本(拼接) + 页数 + 扫描图片页数 + 条款 id。扫描件 OCR 不在 Phase 1 范围。
+    提不出文字的页只计数、不猜内容——下游据此说「无法核验」，而不是把它当成「没有这份材料」。"""
     from pypdf import PdfReader
     reader = PdfReader(io.BytesIO(data))
     pages = [(pg.extract_text() or "") for pg in reader.pages]
+    # 数「可见文字」而不是原串长度：空白/换行不算字，否则满页空行的扫描页会被当成有内容。
+    image_pages = sum(1 for p in pages if len("".join(p.split())) < _MIN_VISIBLE_CHARS)
     text = "\n".join(pages)
     clauses, headings = _split_clauses(text.split("\n"))
-    return ParsedDoc(text=text, kind="pdf", pages=len(reader.pages),
+    return ParsedDoc(text=text, kind="pdf", pages=len(reader.pages), image_pages=image_pages,
                      clauses=clauses, headings=headings)
 
 

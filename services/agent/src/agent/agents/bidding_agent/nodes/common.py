@@ -15,22 +15,32 @@ from agent.runtime.progress import publish_phase     # 各节点推阶段事件�
 logger = logging.getLogger(__name__)
 
 __all__ = ["publish_phase", "upload_artifact", "fetch_master_bytes", "package_scope",
-           "filter_read_by_package", "slim_read", "parse_bid_chapters", "html_to_review_text",
+           "filter_read_by_package", "slim_read", "parse_bid_docs", "parse_bid_chapters",
+           "html_to_review_text",
            "allocate_chapter_budget", "chapters_budget", "chapters_in_outline", "compress_read",
            "strip_clause_ids",
            "MIN_CHAPTER_CHARS"]
 
 
-def parse_bid_chapters(keys: str | list[str]) -> dict[str, str]:
-    """线下标书 → chapters（spec328 独立审查 / 独立述标共用）：确定性解析,按节聚合成 {sec-N: html}。
-    无 LLM、不计费;解析失败抛错由节点层转 run 失败（App 侧退款）。review/present 两节点共用——
-    没有 state['chapters']（没跑过 content）时,靠 run_input 里的标书文件兜底解析出正文。
+def parse_bid_docs(keys: str | list[str]) -> tuple[dict[str, str], list[dict]]:
+    """线下标书 → (chapters, 扫描图片页统计)（spec328 独立审查 / 独立述标共用）：确定性解析,
+    按节聚合成 {sec-N: html}。无 LLM、不计费;解析失败抛错由节点层转 run 失败（App 侧退款）。
+    review/present 两节点共用——没有 state['chapters']（没跑过 content）时,靠 run_input 里的
+    标书文件兜底解析出正文。
 
     收多份文件（商务标与技术标常常分册出卷）：按传入顺序逐份解析再拼接。**节号必须全局重排**——
-    每份文件的节号都从 sec-1 起,直接合并会让后一份把前一份的同号节整节覆盖（静默丢半本标书）。"""
+    每份文件的节号都从 sec-1 起,直接合并会让后一份把前一份的同号节整节覆盖（静默丢半本标书）。
+
+    第二项只收「有扫描图片页」的文件 [{name, pages, image_pages}]：这些页的内容模型看不见,
+    审查必须据此说「无法核验」而不是「缺少」（2026-08-09 生产实测,见 ParsedDoc.image_pages）。"""
     out: dict[str, str] = {}
+    scanned: list[dict] = []
     for key in [keys] if isinstance(keys, str) else keys:
         parsed = read_and_parse(key)
+        if parsed.image_pages:
+            scanned.append({"name": key.rsplit("/", 1)[-1],
+                            "pages": parsed.pages or parsed.image_pages,
+                            "image_pages": parsed.image_pages})
         by_sec: dict[str, list[str]] = {}
         for c in parsed.clauses:
             m = re.match(r"^(sec-\d+)-", c.get("id") or "")
@@ -40,7 +50,12 @@ def parse_bid_chapters(keys: str | list[str]) -> dict[str, str]:
             html = "".join(f"<p>{t}</p>" for t in texts if t)
             if html:
                 out[f"sec-{len(out) + 1}"] = html
-    return out
+    return out, scanned
+
+
+def parse_bid_chapters(keys: str | list[str]) -> dict[str, str]:
+    """只要正文（述标用；口径见 parse_bid_docs）——述标不消费扫描页统计。"""
+    return parse_bid_docs(keys)[0]
 
 
 async def upload_artifact(ctx, filename: str, data: bytes, content_type: str) -> str:

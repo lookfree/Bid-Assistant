@@ -1,10 +1,10 @@
 import agent.agents.bidding_agent.nodes.common as common_mod
-from agent.agents.bidding_agent.nodes.common import parse_bid_chapters
+from agent.agents.bidding_agent.nodes.common import parse_bid_chapters, parse_bid_docs
+from agent.parsing.types import ParsedDoc
 
 
-class _Parsed:
-    def __init__(self, clauses):
-        self.clauses = clauses
+def _Parsed(clauses, pages=None, image_pages=0):
+    return ParsedDoc(text="", kind="pdf", pages=pages, image_pages=image_pages, clauses=clauses)
 
 
 def test_parse_bid_chapters_single_file_keeps_section_order(monkeypatch):
@@ -49,3 +49,17 @@ def test_parse_bid_chapters_skips_files_that_yield_nothing(monkeypatch):
     monkeypatch.setattr(common_mod, "read_and_parse", lambda key: by_key[key])
     assert parse_bid_chapters(["a.pdf", "b.docx"]) == {"sec-1": "<p>正文</p>"}
     assert parse_bid_chapters(["a.pdf"]) == {}
+
+
+def test_parse_bid_docs_reports_only_files_with_scanned_pages(monkeypatch):
+    """扫描图片页统计按文件回报（只回有图片页的那些），供审查诚实分级；
+    全是可复制文字的文件不出现在统计里 → 审查提示词与此前一致。"""
+    by_key = {
+        "uploads/u/x/扫描件.pdf": _Parsed([{"id": "sec-1-c1", "text": "投标函"}],
+                                       pages=366, image_pages=139),
+        "uploads/u/x/正常.docx": _Parsed([{"id": "sec-1-c1", "text": "技术方案"}]),
+    }
+    monkeypatch.setattr(common_mod, "read_and_parse", lambda key: by_key[key])
+    chapters, scanned = parse_bid_docs(list(by_key))
+    assert list(chapters) == ["sec-1", "sec-2"]
+    assert scanned == [{"name": "扫描件.pdf", "pages": 366, "image_pages": 139}]

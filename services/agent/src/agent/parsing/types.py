@@ -11,6 +11,11 @@ class ParsedDoc:
     text: str
     kind: str                                  # docx/pdf/xlsx
     pages: int | None = None
+    # 提不出可见文字的页数（扫描图片页）。PDF 才有意义，其余格式恒为 0。
+    # 2026-08-09 生产实测：366 页的投标文件有 139 页是扫描件（身份证、授权书、盖章报价表），
+    # 这些页的内容对模型完全不可见；审查据此把「文本里找不到」诚实报成「无法核验」，
+    # 而不是断言「缺少」——那一批假阳性高风险的根因就在这里。
+    image_pages: int = 0
     tables: list[list[list[str]]] = field(default_factory=list)
     clauses: list[dict] = field(default_factory=list)  # [{id: "${secId}-cN", text}] 稳定条款 id，供读标/提纲定位
     # 章节标题 [{sec: "sec-N", title, level}]：与 clauses **并列**而不混入其中——标题一旦成为条款就会

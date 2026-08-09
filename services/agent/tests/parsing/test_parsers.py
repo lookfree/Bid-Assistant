@@ -20,6 +20,26 @@ def test_parse_pdf(docgen):
     assert doc.kind == "pdf" and doc.pages == 1 and "Tender PDF Body" in doc.text
 
 
+def test_pdf_counts_pages_without_visible_text():
+    """扫描图片页统计（2026-08-09 生产实测：366 页标书 139 页零文字）：提不出文字的页要数出来，
+    审查才敢把"看不见"说成"无法核验"，而不是断言"缺少"。
+    用空白页模拟——对文本提取而言，扫描图片页与空白页是同一回事（都提不出字）。"""
+    from fpdf import FPDF
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("helvetica", size=12)
+    pdf.cell(0, 10, "Tender body text that is clearly longer than the threshold")
+    pdf.add_page()                      # 无文字：等价于扫描图片页
+    doc = parse_bytes(bytes(pdf.output()), "t.pdf")
+    assert doc.pages == 2 and doc.image_pages == 1
+
+
+def test_non_pdf_documents_report_no_image_pages(docgen):
+    """docx/xlsx 没有"页"的概念 → 恒为 0（默认值兜底，既有解析路径行为不变）。"""
+    assert parse_bytes(docgen.docx("招标文件正文"), "t.docx").image_pages == 0
+    assert parse_bytes(docgen.xlsx(), "s.xlsx").image_pages == 0
+
+
 def test_clauses_have_stable_ids(docgen):
     doc = parse_bytes(docgen.docx("招标文件正文", "第二段"), "tender.docx")
     assert doc.clauses and re.match(r"^sec-.+-c1$", doc.clauses[0]["id"])

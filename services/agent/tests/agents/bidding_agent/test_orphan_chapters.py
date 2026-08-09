@@ -35,8 +35,9 @@ class TestFilter:
 class TestWiring:
     """光有函数没用——三处都得真的用上，其中一处直接关系到计费。"""
 
+    # 取「谁在定正文」那个函数：审查侧的正文取材（含线下标书解析）已拆到 _resolve_chapters。
     @pytest.mark.parametrize("module,fn", [
-        ("agent.agents.bidding_agent.nodes.review", "make_review_node"),
+        ("agent.agents.bidding_agent.nodes.review", "_resolve_chapters"),
         ("agent.agents.bidding_agent.nodes.present", "make_present_node"),
     ])
     def test_review_and_present_filter(self, module, fn):
