@@ -392,7 +392,7 @@ export default function ReadPage() {
         <div className="mt-5 flex items-center gap-2.5 rounded-2xl border border-warning/40 bg-warning/10 p-4">
           <AlertTriangle className="size-5 shrink-0 text-warning-foreground" />
           <p className="text-sm text-foreground">
-            招标要求提供：{missingCertList.join("、")}——资料库未见，建议先到
+            招标要求提供：{missingCertList.join("、")}——资料库未见可用图片附件（PDF 附件请先转为图片），建议先到
             <Link href="/library" className="mx-1 font-semibold text-primary hover:underline">
               资料库
             </Link>

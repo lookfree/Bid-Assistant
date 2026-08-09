@@ -11,15 +11,17 @@ const IMG_TAG_RE = /<img\b[^>]*>/gi
 const DATA_FILE_ID_RE = /data-file-id\s*=\s*(?:"([^"]*)"|'([^']*)')/i
 const HAS_SRC_RE = /\bsrc\s*=/i
 
-/** 附录占位图 → 现取的预签名地址（Task 5）：只在 sys-creds 章工作，其余章节原样跳过。拆出这段
- *  是为了让 useCredentialsAppendix 收在 80 行内——行为不变，既有测试覆盖不动。 */
-function useResolvedCredentialSrc(html: string, isSysCreds: boolean) {
+/** 附录占位图 → 现取的预签名地址（Task 5；终审 I-1 起对所有章节生效——Task 4 的资质定向注入
+ *  post-pass 会把同一种无 src 占位图 <img data-file-id> 插进普通章节，不止 sys-creds 附录章，
+ *  "三端同源"要求编辑器不能对着占位图裂图）。拆出这段是为了让 useCredentialsAppendix 收在
+ *  80 行内——行为不变，既有测试覆盖不动。 */
+function useResolvedCredentialSrc(html: string) {
   // fileId → 现取的预签名下载地址，取到就一直缓存到本组件卸载（预签名有效期远长于一次编辑
   // 会话；过期也无所谓，见 lib/credentials-appendix.ts 顶部注释，用户重新打开正文页会再取一遍）。
   // 值为 null = 取过但失败（文件已被删/网络错）——必须仍然记一个键：不记的话这个 id 会被
   // pendingIds 永远当"还没取"，一张坏图就把整章的加载态卡死，其余图也一起显示不出来。
   const [srcMap, setSrcMap] = useState<Record<string, string | null>>({})
-  const pendingIds = isSysCreds ? placeholderFileIds(html).filter((id) => !(id in srcMap)) : []
+  const pendingIds = placeholderFileIds(html).filter((id) => !(id in srcMap))
   const pendingKey = pendingIds.join(",")
 
   useEffect(() => {
@@ -43,9 +45,8 @@ function useResolvedCredentialSrc(html: string, isSysCreds: boolean) {
   }, [pendingKey])
 
   /** 把已取到的预签名地址现填进占位图 src（原始 HTML 不动，只在喂给编辑器前现填）；
-   *  非 sys-creds 章、还没取到 URL 的、已经带 src 的（用户编辑过或本来就是普通插图）原样跳过。 */
+   *  还没取到 URL 的、已经带 src 的（用户编辑过或本来就是普通插图）原样跳过——对所有章节生效。 */
   function withResolvedSrc(htmlIn: string): string {
-    if (!isSysCreds) return htmlIn
     return htmlIn.replace(IMG_TAG_RE, (tag) => {
       if (HAS_SRC_RE.test(tag)) return tag
       const m = DATA_FILE_ID_RE.exec(tag)
@@ -61,7 +62,8 @@ function useResolvedCredentialSrc(html: string, isSysCreds: boolean) {
 /** 「资格证明文件」附录章占位图解析 + 过期提示（2026-08-09 附录系统章节 Task 5）：
  *  服务端存的是无 src 的占位图 <img data-file-id data-object-key>，编辑器现取预签名地址
  *  才能显示；资料库改过而附录章还是生成那一刻的旧快照时，给一条可一键刷新的横条。
- *  只对 sys-creds 章生效——其余章节的插图都走既有的永久 data URL 内嵌，不需要这套。 */
+ *  占位图解析对所有章节生效（终审 I-1：Task 4 post-pass 会把这种占位图插进普通章节）；
+ *  过期提示/刷新仍只对 sys-creds 章生效——其余章节没有"整章重建"这个概念。 */
 export function useCredentialsAppendix(opts: {
   active: Chapter
   preview: ExportPreview | null
@@ -73,7 +75,7 @@ export function useCredentialsAppendix(opts: {
   const { active, preview, projectId, applyRefresh } = opts
   const isSysCreds = active.id === SYS_CREDS_ID
 
-  const { pendingResolve, withResolvedSrc } = useResolvedCredentialSrc(active.html, isSysCreds)
+  const { pendingResolve, withResolvedSrc } = useResolvedCredentialSrc(active.html)
 
   // 过期判定：sys-creds 章存在（active 就是它）且 export-preview 已到手时，比对章内占位图集合
   // 与资料库现存资质图片集合。preview 还没到手（首屏未加载完）时按"未过期"处理，不误报。
