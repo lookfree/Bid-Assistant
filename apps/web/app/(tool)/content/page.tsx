@@ -52,6 +52,8 @@ import { ExportMenu, type BidType } from "./export-menu"
 import { ReportDialog } from "./report-dialog"
 import { useHealthCheck } from "./use-health-check"
 import { useChapterEdits } from "./use-chapter-edits"
+import { useCredentialsAppendix } from "./use-credentials-appendix"
+import { CredentialsAppendixBanner } from "./credentials-appendix-banner"
 import { libraryItemHtml, loadAttachmentImages } from "./use-editor-insert"
 import { RichEditor } from "./rich-editor"
 import type { Editor as TiptapEditor } from "@tiptap/react"
@@ -317,6 +319,11 @@ export default function ContentPage() {
     // 正文一变，导出侧立刻改回「要收费」——否则本次会话内改完再导出会显示「不消耗积分」却被扣
     onContentChanged: markContentChanged,
   })
+
+  // 「资格证明文件」附录章：占位图现取预签名 src + 资料库有更新时的过期提示与一键刷新
+  // （2026-08-09 附录系统章节 Task 5）。刷新成功复用 applyRewrite 就地替换该章 HTML——
+  // 刷新端点与单章改写在服务端走同一条置脏路径，前端处理方式也该一样。
+  const credAppendix = useCredentialsAppendix({ active, preview, projectId, applyRefresh: applyRewrite })
 
   function openLibrary() {
     setLibraryOpen(true)
@@ -652,18 +659,35 @@ export default function ContentPage() {
             <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => void onImageChosen(e)} />
           </div>
 
+          {/* 附录过期提示条：只在查看「资格证明文件」章且资料库资质图片集合已跟这一章脱节时出现 */}
+          {credAppendix.stale && (
+            <CredentialsAppendixBanner refreshing={credAppendix.refreshing} onRefresh={() => void credAppendix.refreshAppendix()} />
+          )}
+
           {active.html.trim() ? (
-            <RichEditor
-              key={`${active.id}:${editorEpoch}`}
-              /* 装载时与提纲对齐（剥内嵌旧章标题/编号跟随章号，与导出同规则）：只影响用户
-                 打开的这一章，编辑保存后自然收敛——绝不在建树时改写未打开章（整份回写会把
-                 未经用户过目的改动落库，评审 F5） */
-              html={normalizeChapterHtml(stripDocumentShell(active.html), active.no, active.title, active.id)}
-              scrollRef={editorScrollRef}
-              onBlurSave={saveEditor}
-              onEditor={setEditor}
-              contentClass="prose-sm min-w-0 break-words px-6 py-5 text-sm leading-relaxed text-foreground outline-none [&_h3]:mb-2 [&_h3]:mt-4 [&_h3]:text-base [&_h3]:font-semibold [&_h4]:mb-1.5 [&_h4]:mt-3.5 [&_h4]:text-sm [&_h4]:font-semibold [&_h5]:mb-1 [&_h5]:mt-3 [&_h5]:text-sm [&_h5]:font-medium [&_h6]:mb-1 [&_h6]:mt-2.5 [&_h6]:text-sm [&_h6]:font-medium [&_h6]:text-muted-foreground [&_li]:ml-5 [&_li]:list-disc [&_p]:mb-3 [&_table]:my-3 [&_table]:w-full [&_table]:border-collapse [&_th]:border [&_th]:border-border [&_th]:bg-muted/40 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-medium [&_th]:break-words [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_td]:break-words"
-            />
+            credAppendix.pendingResolve ? (
+              // 占位图现取预签名地址还没回来：不能把无 src 的 <img> 喂给 TipTap（会被静默丢弃
+              // 且此后再也补不回），先等这一轮取完，通常就几百毫秒。
+              <div className="flex min-h-0 flex-1 items-center justify-center gap-2 px-6 py-10 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" />
+                正在加载附录图片…
+              </div>
+            ) : (
+              <RichEditor
+                key={`${active.id}:${editorEpoch}`}
+                /* 装载时与提纲对齐（剥内嵌旧章标题/编号跟随章号，与导出同规则）：只影响用户
+                   打开的这一章，编辑保存后自然收敛——绝不在建树时改写未打开章（整份回写会把
+                   未经用户过目的改动落库，评审 F5）。附录章的占位图 src 只在这里现填，
+                   绝不写回 data/state（见 use-credentials-appendix.ts 与 resizable-image.tsx）。 */
+                html={credAppendix.withResolvedSrc(
+                  normalizeChapterHtml(stripDocumentShell(active.html), active.no, active.title, active.id),
+                )}
+                scrollRef={editorScrollRef}
+                onBlurSave={saveEditor}
+                onEditor={setEditor}
+                contentClass="prose-sm min-w-0 break-words px-6 py-5 text-sm leading-relaxed text-foreground outline-none [&_h3]:mb-2 [&_h3]:mt-4 [&_h3]:text-base [&_h3]:font-semibold [&_h4]:mb-1.5 [&_h4]:mt-3.5 [&_h4]:text-sm [&_h4]:font-semibold [&_h5]:mb-1 [&_h5]:mt-3 [&_h5]:text-sm [&_h5]:font-medium [&_h6]:mb-1 [&_h6]:mt-2.5 [&_h6]:text-sm [&_h6]:font-medium [&_h6]:text-muted-foreground [&_li]:ml-5 [&_li]:list-disc [&_p]:mb-3 [&_table]:my-3 [&_table]:w-full [&_table]:border-collapse [&_th]:border [&_th]:border-border [&_th]:bg-muted/40 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-medium [&_th]:break-words [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_td]:break-words"
+              />
+            )
           ) : (
             <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 py-10 text-center">
               <div className="flex size-12 items-center justify-center rounded-2xl bg-primary/10">

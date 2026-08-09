@@ -470,11 +470,25 @@ export async function artifactDownload(
 // 变更时刻），供下载区判断某册是否已过期（改稿后没重新导出过该册）——字段名与 App API 响应逐字一致。
 export type ExportPreview = {
   credentials: { title: string; imageCount: number }[]
+  // 2026-08-09 附录系统章节 Task 5：资料库全部资质图片附件的 fileId 平铺，供「资格证明文件」
+  // 附录章过期比对用（见 lib/credentials-appendix.ts 的 appendixStale）。
+  credential_file_ids: string[]
   volumes: { full: string | null; tech: string | null; biz: string | null }
   content_changed_at: string | null
 }
 export async function exportPreview(id: string): Promise<ExportPreview> {
   return api.request<ExportPreview>(`/api/projects/${id}/export-preview`)
+}
+
+// 附录刷新（2026-08-09 附录系统章节 Task 5，消费 Task 4 的端点）：资料库资质条目改过后，
+// 免费重建「资格证明文件」章 HTML（不重新生成整份正文）。无资质条目 409 no_credentials；
+// content 步未完成 409 content_not_done；他人项目 404——均以 ApiError 抛出，调用方按码静默处理。
+export async function refreshCredentialsAppendix(id: string): Promise<{ html: string }> {
+  const result = await api.request<{ html: string }>(`/api/projects/${id}/refresh-credentials-appendix`, {
+    method: "POST",
+  })
+  invalidateProjectCache(id)
+  return result
 }
 
 /** 述标导出：按当前存库 deck 免费重渲 .pptx 再取预签名 URL。
