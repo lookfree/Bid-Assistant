@@ -41,6 +41,32 @@ def test_build_chapter_is_pure_deterministic_html_with_no_bytes():
     assert "&lt;script&gt;" in escaped and "&quot;" in escaped and "&gt;" in escaped
 
 
+def test_alt_carries_ocr_text_truncated_to_120_chars():
+    """终审 I-4：占位图 alt 从纯标题改为「标题|ocrText 截前 120 字」——与 cert_placement.py
+    的章内证照 post-pass 同一套格式（同一个 `_image_alt`，两处调用方共享一份实现）。
+    无 ocrText 的附件仍退化为纯标题（既有行为不变）。"""
+    long_ocr = "字" * 200
+    credentials = [{"title": "营业执照", "images": [
+        {"fileId": "f1", "key": "k1", "name": "n1", "ocrText": "统一社会信用代码91xx"},
+        {"fileId": "f2", "key": "k2", "name": "n2", "ocrText": long_ocr},
+        {"fileId": "f3", "key": "k3", "name": "n3"},
+    ]}]
+    html = build_credentials_chapter(credentials)
+    assert 'alt="营业执照|统一社会信用代码91xx"' in html
+    assert f'alt="营业执照|{long_ocr[:120]}"' in html
+    assert long_ocr not in html, "完整 200 字版本不该出现，必须截断"
+    assert 'alt="营业执照"' in html, "无 ocrText 的附件仍应退化为纯标题"
+
+
+def test_alt_escapes_title_and_ocr_text_as_one_combined_string():
+    """标题与 ocrText 都含需转义字符时，拼接后整串只转义一次——不能各自先转义再拼接
+    （否则 "&" 会变成 "&amp;amp;" 的二次转义）。"""
+    credentials = [{"title": "A&B", "images": [{"fileId": "f1", "key": "k1", "name": "n1", "ocrText": "C<D>"}]}]
+    html = build_credentials_chapter(credentials)
+    assert 'alt="A&amp;B|C&lt;D&gt;"' in html
+    assert "&amp;amp;" not in html
+
+
 def _state(credentials=None, outline_chapters=None, extra_run_input=None):
     run_input = dict(extra_run_input or {})
     if credentials is not None:

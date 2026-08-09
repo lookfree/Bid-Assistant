@@ -35,20 +35,36 @@ def _esc(text: object) -> str:
             .replace('"', "&quot;"))
 
 
+_OCR_ALT_CHARS = 120
+
+
+def _image_alt(title: str, ocr_text: object) -> str:
+    """占位图 alt：`标题|ocrText 截前 120 字`（无 ocrText 则纯标题），整串统一转义一次——
+    与 App 侧 credentials-chapter.ts `imageAlt` 逐字节同形（终审 I-4：此前只有 cert_placement.py
+    的章内插图 post-pass 带 OCR 摘要，附录章占位图仍是纯标题，两处占位图 alt 语义不该不一致；
+    cert_placement.py 现从本模块导入这个函数，不再各自持有一份）。"""
+    ocr = str(ocr_text or "").strip()
+    label = f"{title}|{ocr[:_OCR_ALT_CHARS]}" if ocr else title
+    return _esc(label)
+
+
 def build_credentials_chapter(credentials: list[dict]) -> str:
     """资格证明文件章 HTML——每个条目一个 <h3>标题</h3>,逐图一个占位 <img>（三属性:
     data-file-id/data-object-key/alt,**无 src 无字节**),包在 <p> 里与既有章节 HTML 风格
-    一致。空列表（资料库无资质条目）返回空串,调用方据此判断是否需要追加系统章。"""
+    一致。alt 带 OCR 摘要（终审 I-4，与章内证照 post-pass 同形）。空列表（资料库无资质
+    条目）返回空串,调用方据此判断是否需要追加系统章。"""
     if not credentials:
         return ""
     parts: list[str] = []
     for entry in credentials:
-        title = _esc(entry.get("title"))
+        raw_title = str(entry.get("title") or "")
+        title = _esc(raw_title)
         parts.append(f"<h3>{title}</h3>")
         for img in entry.get("images") or []:
             file_id = _esc(img.get("fileId"))
             key = _esc(img.get("key"))
-            parts.append(f'<p><img data-file-id="{file_id}" data-object-key="{key}" alt="{title}" /></p>')
+            alt = _image_alt(raw_title, img.get("ocrText"))
+            parts.append(f'<p><img data-file-id="{file_id}" data-object-key="{key}" alt="{alt}" /></p>')
     return "\n".join(parts)
 
 

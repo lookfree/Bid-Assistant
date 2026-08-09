@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from agent.agents.bidding_agent.nodes.common import filter_read_by_package
 from agent.agents.bidding_agent.nodes.content import _collect_clause_ids
-from agent.agents.bidding_agent.nodes.credentials_chapter import SYS_CREDS_ID, _esc
+from agent.agents.bidding_agent.nodes.credentials_chapter import SYS_CREDS_ID, _esc, _image_alt
 
 # 证照词表字面量——与计划 Global Constraints、web 侧 lib/cert-keywords.ts 逐字同形（两端各自
 # 持有确定性实现,字面量一改就要同步改另一处，注释互指）。
@@ -22,15 +22,8 @@ CERT_KEYWORDS = ("营业执照", "资质证书", "授权书", "法定代表人�
 
 # post-pass 定位只看 read 结论里资格/商务两类条目——技术类要求命中证照字样极罕见且易误报。
 _CERT_CATEGORY_KEYS = ("qualification", "commercial")
-_OCR_ALT_CHARS = 120
-
-
-def _image_alt(title: str, ocr_text: object) -> str:
-    """占位图 alt：`标题|ocrText 截前 120 字`（无 ocrText 则纯标题），整串统一转义
-    （Global Constraints 字面量口径）。"""
-    ocr = str(ocr_text or "").strip()
-    label = f"{title}|{ocr[:_OCR_ALT_CHARS]}" if ocr else title
-    return _esc(label)
+# `_image_alt`（标题|ocrText 截前 120 字）现收在 credentials_chapter.py：附录章占位图 alt
+# 与本文件的章内插图 alt 是同一套格式（终审 I-4），不再各自持有一份实现。
 
 
 def _cert_block(keyword: str, entry: dict | None) -> str:

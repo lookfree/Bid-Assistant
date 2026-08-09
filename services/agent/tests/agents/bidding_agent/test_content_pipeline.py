@@ -612,6 +612,17 @@ class TestLibraryRefsInjection:
         assert "【资料库·人员】" not in performance_brief
         assert "【资料库·人员】" not in tech_brief and "【资料库·业绩】" not in tech_brief
 
+    def test_bare_peizhi_keyword_no_longer_triggers_personnel_block(self, monkeypatch):
+        """终审 I-3：人员词表删掉裸词"配置"——"人员配置"仍被"人员"覆盖照常命中，但纯技术性的
+        "设备配置"/"系统配置"章不该被误抓进人员简报块（用户口径已定，计划已改）。"""
+        state = self._state()
+        state["outline"]["chapters"][2]["title"] = "设备配置与系统集成方案"
+        state["run_input"] = {"library_refs": self._refs()}
+        chat = _FakeChat()
+        _run(state, chat, monkeypatch=monkeypatch)
+        equip_brief = _brief_of(chat, "设备配置与系统集成方案")
+        assert "【资料库·人员】" not in equip_brief
+
     def test_budget_truncation_caps_the_block_and_notes_dropped_count(self, monkeypatch):
         """30 条长条目顶穿预算——块必须截断在 `_LIBRARY_REF_BLOCK_CHARS` 内并如实注明
         未列出条数（评审：App 侧单条字段无字符上限，这是唯一防线）。"""

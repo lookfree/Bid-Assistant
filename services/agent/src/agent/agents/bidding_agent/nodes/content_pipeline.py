@@ -55,7 +55,9 @@ _PERMANENT_ERRORS = (ModelNotConfigured, AuthenticationError)
 
 # 人员/业绩定向注入（Task 3,2026-08-09 计划④）：章标题/子项 label 命中关键词即注入对应资料库
 # 条目块——不再赌 RAG 召回率覆盖长尾。词表字面量按 Global Constraints,agent 侧独立判定。
-_PERSONNEL_RE = re.compile(r"人员|团队|组织|配置|简历")
+# 裸词"配置"终审时删掉：本意是接"人员配置"，但"人员"本身已覆盖该场景；裸词反而会误抓
+# "设备配置""系统配置"等技术章节，把不相关的人员简报块塞进去（终审 I-3，用户口径已定）。
+_PERSONNEL_RE = re.compile(r"人员|团队|组织|简历")
 _PERFORMANCE_RE = re.compile(r"业绩|案例|经验|项目经历")
 # 每类注入块字符预算：目标与偏离表条目预算（_DEVIATION_BLOCK_CHARS）一致——App 侧单条字段无
 # 字符上限,这是唯一防线;但截断算法不同：偏离表逐条判断、超限就跳过非★条目继续凑其余条目,
