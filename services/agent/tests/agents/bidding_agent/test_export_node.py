@@ -41,6 +41,7 @@ def test_export_node_pdf_conversion_failure_keeps_docx_only(monkeypatch):
         "chapters": {"t1": "<p>正文</p>"},
         "read": {"project_meta": {"name": "投标文件"}},
     }))
+    assert isinstance(out["artifacts"].pop("exported_at"), str)  # 终审 C1：本册渲染时刻标记，逐次不同不断言定值
     assert out["artifacts"] == {"docx": "artifacts/proj-9/bid.docx", "pdf": None, "pdf_pages": None}
     assert "artifacts/proj-9/bid.pdf" not in saved
 
@@ -62,6 +63,7 @@ def test_export_node_pdf_conversion_success_adds_pdf_key(monkeypatch):
         "read": {"project_meta": {"name": "投标文件"}},
     }))
     # 假 PDF 字节解析不出页数 → pdf_pages 显式 None（同样要压过 merge 里的旧值）
+    assert isinstance(out["artifacts"].pop("exported_at"), str)  # 终审 C1：本册渲染时刻标记
     assert out["artifacts"] == {"docx": "artifacts/proj-10/bid.docx", "pdf": "artifacts/proj-10/bid.pdf",
                                 "pdf_pages": None}
     assert saved["artifacts/proj-10/bid.pdf"] == (13, "application/pdf")
@@ -84,6 +86,7 @@ def test_export_node_rerenders_pptx_when_deck_present(monkeypatch):
         "deck": {"title": "述标", "template": "tech",
                  "slides": [{"id": "s0", "title": "封面", "kind": "cover"}]},
     }))
+    assert isinstance(out["artifacts"].pop("exported_at"), str)  # 终审 C1：本册渲染时刻标记
     assert out["artifacts"] == {"docx": "artifacts/proj-8/bid.docx", "pdf": None, "pdf_pages": None,
                                 "pptx": "artifacts/proj-8/present.pptx"}
     assert saved["artifacts/proj-8/bid.docx"] > 0 and saved["artifacts/proj-8/present.pptx"] > 0
@@ -340,6 +343,24 @@ def test_artifacts_reducer_keeps_pptx_and_docx():
     assert merged == {"pptx": "artifacts/p/present.pptx", "docx": "artifacts/p/bid.docx"}
 
 
+def test_scope_marker_survives_merge_without_being_overwritten_by_other_scope():
+    """终审 C1：不同册各自导出的 artifacts 经跨 run 合并 reducer（present/export 共用的同一个
+    _merge_dict，thread_id 稳定不变即靠它续状态）叠加后，各自的 exported_at{_sfx} 互不覆盖——
+    这是 App 侧 export-preview 判断"某册最近一次真渲染时刻"的前提：docx/docx_tech 等键值一旦
+    产出就不再变化（确定性 MinIO key、原地覆盖），单看键是否存在分不出"这行是不是真重渲了那册"，
+    只有 exported_at 每次真渲染才刷新，不改动的册原样带旧值——先导全量、后单独导技术册，
+    全量那次的 exported_at 必须原样保留（不能被技术册那次运行带偏，那正是 bug 成因）。"""
+    from agent.agents.bidding_agent.state import _merge_dict
+    full_run = {"docx": "artifacts/p/bid.docx", "pdf": None, "pdf_pages": None,
+                "exported_at": "2026-08-01T00:00:00.000+00:00"}
+    tech_run = {"docx_tech": "artifacts/p/bid_tech.docx", "pdf_tech": None, "pdf_pages_tech": None,
+                "exported_at_tech": "2026-08-09T00:00:00.000+00:00"}
+    merged = _merge_dict(full_run, tech_run)
+    assert merged["exported_at"] == "2026-08-01T00:00:00.000+00:00"  # 全量渲染时刻未被技术册运行动过
+    assert merged["docx"] == "artifacts/p/bid.docx"  # 全量 docx 键值同样原样保留（正是 bug 的成因）
+    assert merged["exported_at_tech"] == "2026-08-09T00:00:00.000+00:00"
+
+
 def test_scope_tech_filters_chapters_and_writes_suffixed_keys(monkeypatch):
     """技术册：只渲 group=tech 章；产物键 docx_tech/pdf_tech/pdf_pages_tech，
     render_docx 收到 scope='tech'。"""
@@ -370,9 +391,10 @@ def test_scope_tech_filters_chapters_and_writes_suffixed_keys(monkeypatch):
     }))
     assert [c["id"] for c in captured["outline"]["chapters"]] == ["t1"]
     assert captured["kwargs"]["scope"] == "tech"
-    assert set(out["artifacts"].keys()) == {"docx_tech", "pdf_tech", "pdf_pages_tech"}
+    assert set(out["artifacts"].keys()) == {"docx_tech", "pdf_tech", "pdf_pages_tech", "exported_at_tech"}
     assert out["artifacts"]["docx_tech"] == "artifacts/proj-30/bid_tech.docx"
     assert out["artifacts"]["pdf_tech"] == "artifacts/proj-30/bid_tech.pdf"
+    assert isinstance(out["artifacts"]["exported_at_tech"], str)
 
 
 def test_scope_business_takes_untagged_chapters(monkeypatch):
@@ -405,6 +427,7 @@ def test_scope_business_takes_untagged_chapters(monkeypatch):
     }))
     assert [c["id"] for c in captured["outline"]["chapters"]] == ["u1"]
     assert captured["kwargs"]["scope"] == "business"
+    assert isinstance(out["artifacts"].pop("exported_at_biz"), str)  # 终审 C1：本册渲染时刻标记
     assert out["artifacts"] == {
         "docx_biz": "artifacts/proj-31/bid_biz.docx",
         "pdf_biz": None,
@@ -441,11 +464,46 @@ def test_scope_default_full_unchanged(monkeypatch):
     }))
     assert [c["id"] for c in captured["outline"]["chapters"]] == ["t1", "b1"]
     assert captured["kwargs"]["scope"] == "full"
+    assert isinstance(out["artifacts"].pop("exported_at"), str)  # 终审 C1：本册渲染时刻标记
     assert out["artifacts"] == {
         "docx": "artifacts/proj-32/bid.docx",
         "pdf": None,
         "pdf_pages": None,
     }
+
+
+def test_scope_unknown_value_normalizes_to_full(monkeypatch):
+    """终审 M2：export_scope 给了未知字面量（不是 tech/business）→ 按 full 处理：章节不过滤，
+    render_docx 收到的 scope 归一成 'full'（不是原始未知值），产物键不带后缀。此前 sfx 归一但
+    scope 参未归一，会让全量章节配上空组尾巴（render_docx 的 tag 逻辑判 scope=="full" 才加尾巴）。"""
+    class _Storage:
+        async def put_bytes(self, key, data, content_type=None):
+            pass
+
+    monkeypatch.setattr(common_mod, "storage", _Storage())
+    monkeypatch.setattr(export_mod, "docx_to_pdf", lambda data: None)
+    captured = {}
+    real_render_docx = export_mod.render_docx
+
+    def _capturing_render_docx(*args, **kwargs):
+        data = real_render_docx(*args, **kwargs)
+        captured["outline"] = args[0]
+        captured["kwargs"] = kwargs
+        return data
+    monkeypatch.setattr(export_mod, "render_docx", _capturing_render_docx)
+    node = make_export_node(RunContext(run_id="r", agent_type="bidding_agent", thread_id="proj-34"))
+    out = asyncio.run(node({
+        "outline": {"chapters": [
+            {"id": "t1", "no": "第一章", "title": "项目理解", "group": "tech"},
+            {"id": "b1", "no": "第二章", "title": "商务报价", "group": "business"},
+        ]},
+        "chapters": {"t1": "<p>技术正文</p>", "b1": "<p>商务正文</p>"},
+        "read": {"project_meta": {"name": "投标文件"}},
+        "run_input": {"export_scope": "bogus-scope"},
+    }))
+    assert [c["id"] for c in captured["outline"]["chapters"]] == ["t1", "b1"]  # 未过滤，与 full 一致
+    assert captured["kwargs"]["scope"] == "full"  # 不是原始的 "bogus-scope"
+    assert set(out["artifacts"].keys()) == {"docx", "pdf", "pdf_pages", "exported_at"}  # 无分册后缀
 
 
 def test_scope_with_no_matching_chapters_raises(monkeypatch):

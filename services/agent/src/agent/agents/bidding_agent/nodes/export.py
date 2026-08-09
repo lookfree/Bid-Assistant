@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from agent.agents.bidding_agent.render.docx import render_docx
 from agent.agents.bidding_agent.render.pdf import docx_to_pdf, pdf_page_count
 from agent.agents.bidding_agent.render.pptx import render_pptx
@@ -70,7 +71,19 @@ def make_export_node(ctx):
     2026-08-08 导出分册：run_input.export_scope 为 "tech"/"business" 时按 group 过滤章节
     （分组口径与预算一致：tech 组进技术册，其余含未标组归商务册），产物键与文件名带
     _tech/_biz 后缀，与全量键互不覆盖；过滤后空册抛 RuntimeError（防御，前端本已置灰）。
-    缺省/未知 scope 一律按 full 处理，键与调用与今天逐字节一致；pptx 分支不受 scope 影响。"""
+    缺省/未知 scope 一律按 full 处理，键与调用与今天逐字节一致；pptx 分支不受 scope 影响
+    （终审 M2：未知字面量此前只在章节过滤/产物后缀两处按 full 兜底，传给 render_docx 的 scope
+    仍是原始未知值——渲染器据此决定「章标题是否带（技术标/商务标）组尾巴」，于是全量章节配上
+    了空尾巴，读者分不清这是不是分册；现在归一发生在读取 run_input 之后的唯一出口，三处下游
+    （过滤/后缀/render_docx）逐字节同看到 "full"）。
+    终审 C1：artifacts 是跨 run 合并 reducer（present 的 pptx 与 export 的 docx 并存不覆盖），
+    docx/docx_tech/docx_biz 一旦产出，键值永远不变（MinIO key 按 thread_id 确定性命名、原地覆盖），
+    单看某一行 result 是否含某册的 docx 键，分不出「这行是不是真重渲了那册」——不同册各自导出时
+    互不清空对方的键，App 侧若只按「result 含 docx 键」判断某册的最近导出时刻，会把很久以前的
+    全量导出误判成刚发生（前端下载区据此显示「未过期」，用户下到改稿前的旧文件却看不到提示）。
+    exported_at{_tech/_biz} 每次本册真渲染都刷新为当次时间戳，不改动的册原样带着旧值，
+    是这行 result 里唯一「只随本册变化」的字段，供 App 的 export-preview 接口据此判断各册
+    是否在最近一次内容变更之后重新导出过。"""
     async def export_node(state):
         meta = (state.get("read") or {}).get("project_meta", {})
         run_input = state.get("run_input") or {}
@@ -81,6 +94,8 @@ def make_export_node(ctx):
         await _scan_and_flag(ctx, state)
         # spec 2026-08-08 导出分册：export_scope 缺省/未知值一律按 full 处理，逐字节兼容旧调用
         scope = run_input.get("export_scope") or "full"
+        if scope not in ("tech", "business"):  # 终审 M2：未知字面量归一到 full，别只清空后缀漏了 render_docx 的 scope 参
+            scope = "full"
         outline = state.get("outline") or {}
         if scope in ("tech", "business"):
             # 分组口径与预算一致：tech 组进技术册，其余（含未标组）归商务册
@@ -96,7 +111,10 @@ def make_export_node(ctx):
         key = await upload_artifact(
             ctx, f"bid{sfx}.docx", data,
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-        artifacts = {f"docx{sfx}": key}
+        # 终审 C1：本册真实渲染时刻——毫秒精度 + 数字时区偏移（timespec="milliseconds"，非默认的
+        # 微秒精度），逐字节可被 JS `new Date()` 解析，App 侧拿它与 content_changed_at 比较新旧。
+        rendered_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        artifacts = {f"docx{sfx}": key, f"exported_at{sfx}": rendered_at}
         # soffice 子进程最长 120s：丢线程池，别把单进程事件循环整体卡死（终审 Important 项）
         pdf_bytes = await asyncio.to_thread(docx_to_pdf, data)
         if pdf_bytes is not None:
