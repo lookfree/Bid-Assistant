@@ -98,6 +98,11 @@ class Settings(BaseSettings):
     # tender chunks 保留天数：项目向量只在生成正文期间有用，超期由每日清扫删除（表规模治理）
     rag_tender_ttl_days: int = 30
 
+    # 本地 OCR 服务（services/ocr 的独立容器，与 App 侧共用同一个 OCR_BASE_URL）。
+    # 审查/体检解析线下标书时，扫描图片页逐页转图送它识别（parsing/ocr.py）。
+    # **留空 = 这套环境没部署 OCR**：整段跳过，扫描页照旧只报「无法核验」，不猜、不回退。
+    ocr_base_url: str | None = None
+
     # 输出敏感词库路径（spec326 算法备案）：None 则用包内默认词库 framework/sensitive_words.txt；
     # 运营需按监管要求扩充维护时可指向外部文件，无需改代码。
     sensitive_words_path: str | None = None

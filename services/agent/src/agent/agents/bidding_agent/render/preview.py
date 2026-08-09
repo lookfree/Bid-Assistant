@@ -51,20 +51,15 @@ def render_deck_previews(pptx_bytes: bytes) -> list[bytes]:
     """.pptx → 每页一张 PNG（顺序与幻灯片一致）。失败抛错，由调用方决定是否降级。"""
     import pypdfium2 as pdfium
 
+    from agent.parsing.pdf_render import page_image
+
     with tempfile.TemporaryDirectory() as tmp:
         pdf_path = _pptx_to_pdf(pptx_bytes, tmp)
         doc = pdfium.PdfDocument(pdf_path)
         out: list[bytes] = []
         try:
             for i in range(len(doc)):
-                page = doc[i]
-                scale = _WIDTH_PX / max(page.get_width(), 1)
-                pil = page.render(scale=scale).to_pil()
-                import io
-
-                buf = io.BytesIO()
-                pil.save(buf, "PNG", optimize=True)
-                out.append(buf.getvalue())
+                out.append(page_image(doc[i], _WIDTH_PX)[0])
         finally:
             doc.close()
     return out
@@ -87,11 +82,11 @@ class UnrenderablePdf(Exception):
 def render_pdf_pages(pdf_bytes: bytes, max_pages: int = _PDF_PAGE_MAX,
                      width_px: int = _PDF_PAGE_WIDTH_PX) -> list[tuple[bytes, int, int]]:
     """PDF → 每页一张 PNG(按页序)。返回 [(png_bytes, width, height)]。
-    渲染循环与 render_deck_previews 同源:按宽等比缩放、PIL 存 PNG。
+    渲染循环与 render_deck_previews 同源:按宽等比缩放、PIL 存 PNG（parsing/pdf_render.page_image）。
     先查页数再渲染——6 页的文件不该白渲 5 页才发现超限。"""
-    import io
-
     import pypdfium2 as pdfium
+
+    from agent.parsing.pdf_render import page_image
 
     try:
         doc = pdfium.PdfDocument(pdf_bytes)
@@ -100,14 +95,6 @@ def render_pdf_pages(pdf_bytes: bytes, max_pages: int = _PDF_PAGE_MAX,
     try:
         if len(doc) > max_pages:
             raise TooManyPages(f"{len(doc)} pages > {max_pages}")
-        out: list[tuple[bytes, int, int]] = []
-        for i in range(len(doc)):
-            page = doc[i]
-            scale = width_px / max(page.get_width(), 1)
-            pil = page.render(scale=scale).to_pil()
-            buf = io.BytesIO()
-            pil.save(buf, "PNG", optimize=True)
-            out.append((buf.getvalue(), pil.width, pil.height))
-        return out
+        return [page_image(doc[i], width_px) for i in range(len(doc))]
     finally:
         doc.close()

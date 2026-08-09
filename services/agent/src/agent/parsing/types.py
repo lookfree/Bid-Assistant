@@ -16,6 +16,9 @@ class ParsedDoc:
     # 这些页的内容对模型完全不可见；审查据此把「文本里找不到」诚实报成「无法核验」，
     # 而不是断言「缺少」——那一批假阳性高风险的根因就在这里。
     image_pages: int = 0
+    # 逐页文本（PDF 才有，其余格式为空）。text 是它按页拼起来的结果，之所以另存一份：
+    # 扫描页 OCR 要知道**哪一页**看不见、并把识别文字插回**那一页原来的位置**（见 parsing/ocr.py）。
+    page_texts: list[str] = field(default_factory=list)
     tables: list[list[list[str]]] = field(default_factory=list)
     clauses: list[dict] = field(default_factory=list)  # [{id: "${secId}-cN", text}] 稳定条款 id，供读标/提纲定位
     # 章节标题 [{sec: "sec-N", title, level}]：与 clauses **并列**而不混入其中——标题一旦成为条款就会

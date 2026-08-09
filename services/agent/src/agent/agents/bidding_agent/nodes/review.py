@@ -1,5 +1,4 @@
 from __future__ import annotations
-import asyncio
 import json
 from agent.framework.budget import run_with_shrink
 from agent.framework.create_agent import run_submit_agent
@@ -44,8 +43,9 @@ async def _resolve_category(ctx, run_input: dict, read_state: dict, chapters: di
     return await classify_from_chapters(ctx, chapters), True
 
 
-async def _resolve_chapters(state: dict, run_input: dict) -> tuple[dict[str, str], list[dict]]:
-    """本次受审的正文 {章id: html}，以及受审文件里「看不见」的页数统计（见 parse_bid_docs）。"""
+async def _resolve_chapters(ctx, state: dict, run_input: dict) -> tuple[dict[str, str], list[dict]]:
+    """本次受审的正文 {章id: html}，以及受审文件里 OCR 之后**仍**看不见的页数统计
+    （见 parse_bid_docs：扫描页先送 OCR，识别出来的字并进正文）。"""
     chapters_src = state.get("chapters") or {}
     scanned: list[dict] = []
     # spec328 独立审查:线下标书没有生成链路,chapters 由上传文件确定性解析而来
@@ -53,7 +53,7 @@ async def _resolve_chapters(state: dict, run_input: dict) -> tuple[dict[str, str
         [run_input["bid_file_key"]] if run_input.get("bid_file_key") else []
     )
     if not chapters_src and bid_files:
-        chapters_src, scanned = await asyncio.to_thread(parse_bid_docs, bid_files)
+        chapters_src, scanned = await parse_bid_docs(bid_files, ctx)
         # 审查修正：解析为空（扫描件/图片 PDF 提不出文字）绝不能拿空文档去跑计费审查——
         # run 直接失败,App 侧 settleFailed 全额退款,错误文案告知原因
         if not chapters_src:
@@ -77,7 +77,7 @@ def make_review_node(ctx):
         # 选包时读标收窄到该包(spec324 优化):审查只比对该包要求,不会把别包的要求误判成缺失。
         read_state = filter_read_by_package(state.get("read") or {}, state.get("run_input"))
         run_input = state.get("run_input") or {}
-        chapters_src, scanned = await _resolve_chapters(state, run_input)
+        chapters_src, scanned = await _resolve_chapters(ctx, state, run_input)
         # 截断前先压实成紧凑文本：图片换占位符（一张 base64 就有二十万字符，2026-08-06 用户反馈
         # 「证照放进正文、审查却报缺件」的真因），HTML 标签与实体一并剥掉——2026-08-07 全量实测
         # 喂进去的字符有 **56% 是标签**，有一章正文才 5261 字、本可整章放下，却因表格标签把串撑到

@@ -8,6 +8,7 @@ from html import unescape
 
 from agent.framework.budget import chapter_budget, estimate_tokens
 from agent.parsing import storage_read
+from agent.parsing.ocr import ocr_scanned_pages     # 扫描页识别（OCR 未配置时是恒等变换）
 from agent.parsing.service import read_and_parse
 from agent.parsing.storage_read import storage      # spec106 MinIO 单例
 from agent.runtime.progress import publish_phase     # 各节点推阶段事件（read/outline/review/present 共用）
@@ -22,40 +23,71 @@ __all__ = ["publish_phase", "upload_artifact", "fetch_master_bytes", "package_sc
            "MIN_CHAPTER_CHARS"]
 
 
-def parse_bid_docs(keys: str | list[str]) -> tuple[dict[str, str], list[dict]]:
-    """线下标书 → (chapters, 扫描图片页统计)（spec328 独立审查 / 独立述标共用）：确定性解析,
+def _aggregate(parsed, out: dict[str, str]) -> None:
+    """一份解析结果按节聚合进 out（追加成 sec-1..N 的连续键）。**节号全局重排**——
+    每份文件的节号都从 sec-1 起,直接合并会让后一份把前一份的同号节整节覆盖（静默丢半本标书）。"""
+    by_sec: dict[str, list[str]] = {}
+    for c in parsed.clauses:
+        m = re.match(r"^(sec-\d+)-", c.get("id") or "")
+        if m:
+            by_sec.setdefault(m.group(1), []).append(c.get("text") or "")
+    for texts in by_sec.values():
+        html = "".join(f"<p>{t}</p>" for t in texts if t)
+        if html:
+            out[f"sec-{len(out) + 1}"] = html
+
+
+def _key_list(keys: str | list[str]) -> list[str]:
+    """兼容旧调用形状：单个 key 的字符串 = 只有一份文件。"""
+    return [keys] if isinstance(keys, str) else keys
+
+
+async def parse_bid_docs(keys: str | list[str], ctx=None) -> tuple[dict[str, str], list[dict]]:
+    """线下标书 → (chapters, 还看不见的扫描页统计)（spec328 独立审查 / 废标体检）：确定性解析,
     按节聚合成 {sec-N: html}。无 LLM、不计费;解析失败抛错由节点层转 run 失败（App 侧退款）。
-    review/present 两节点共用——没有 state['chapters']（没跑过 content）时,靠 run_input 里的
-    标书文件兜底解析出正文。
+    没有 state['chapters']（没跑过 content）时,靠 run_input 里的标书文件兜底解析出正文。
 
-    收多份文件（商务标与技术标常常分册出卷）：按传入顺序逐份解析再拼接。**节号必须全局重排**——
-    每份文件的节号都从 sec-1 起,直接合并会让后一份把前一份的同号节整节覆盖（静默丢半本标书）。
+    收多份文件（商务标与技术标常常分册出卷）：按传入顺序逐份解析再拼接（节号见 _aggregate）。
 
-    第二项只收「有扫描图片页」的文件 [{name, pages, image_pages}]：这些页的内容模型看不见,
-    审查必须据此说「无法核验」而不是「缺少」（2026-08-09 生产实测,见 ParsedDoc.image_pages）。"""
+    **扫描页先送 OCR**：识别出来的文字按页拼回该文件正文,和别的正文一样参与后续切分与预算
+    （OCR 未配置/识别失败 → 原样跳过,见 parsing/ocr.py）。第二项只收 OCR 之后**仍**有图片页的
+    文件 [{name, pages, image_pages}]：那些页的内容模型确实看不见,审查据此说「无法核验」
+    而不是「缺少」（2026-08-09 生产实测,见 ParsedDoc.image_pages）。全部识别成功 → 统计为空、注记消失。
+    """
     out: dict[str, str] = {}
     scanned: list[dict] = []
-    for key in [keys] if isinstance(keys, str) else keys:
-        parsed = read_and_parse(key)
+    for key in _key_list(keys):
+        name = key.rsplit("/", 1)[-1]
+        parsed = await asyncio.to_thread(read_and_parse, key)
+        parsed = await ocr_scanned_pages(parsed, key, _ocr_progress(ctx, name))
         if parsed.image_pages:
-            scanned.append({"name": key.rsplit("/", 1)[-1],
+            scanned.append({"name": name,
                             "pages": parsed.pages or parsed.image_pages,
                             "image_pages": parsed.image_pages})
-        by_sec: dict[str, list[str]] = {}
-        for c in parsed.clauses:
-            m = re.match(r"^(sec-\d+)-", c.get("id") or "")
-            if m:
-                by_sec.setdefault(m.group(1), []).append(c.get("text") or "")
-        for texts in by_sec.values():
-            html = "".join(f"<p>{t}</p>" for t in texts if t)
-            if html:
-                out[f"sec-{len(out) + 1}"] = html
+        _aggregate(parsed, out)
     return out, scanned
 
 
+def _ocr_progress(ctx, name: str):
+    """扫描件识别的阶段播报（长识别期间前端横幅不能一动不动）。ctx 缺省 → 不播报。
+    run 的**存活心跳**与此无关：runtime/executor.py 的 _heartbeat_pump 是独立泵，
+    节点内不产事件也照样续期，OCR 段天然被覆盖，不会被清道夫当孤儿回收。"""
+    if ctx is None:
+        return None
+
+    async def _report(done: int, total: int) -> None:
+        await publish_phase(ctx, f"识别《{name}》的扫描页 {done}/{total}")
+
+    return _report
+
+
 def parse_bid_chapters(keys: str | list[str]) -> dict[str, str]:
-    """只要正文（述标用；口径见 parse_bid_docs）——述标不消费扫描页统计。"""
-    return parse_bid_docs(keys)[0]
+    """只要正文（述标用；聚合口径同 parse_bid_docs）——述标不消费扫描页统计，
+    也**不做扫描页 OCR**：证照/签字页对讲标 PPT 没有信息量，却要花掉整份文件的识别时间。"""
+    out: dict[str, str] = {}
+    for key in _key_list(keys):
+        _aggregate(read_and_parse(key), out)
+    return out
 
 
 async def upload_artifact(ctx, filename: str, data: bytes, content_type: str) -> str:

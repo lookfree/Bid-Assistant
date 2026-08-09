@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from dataclasses import replace
 
 from agent.parsing.types import ParsedDoc, UnsupportedDocument
 
@@ -86,18 +87,53 @@ def parse_docx(data: bytes) -> ParsedDoc:
 _MIN_VISIBLE_CHARS = 20
 
 
+def is_image_page(text: str) -> bool:
+    """这一页是不是提不出可见文字（= 扫描图片页）。
+    数「可见文字」而不是原串长度：空白/换行不算字，否则满页空行的扫描页会被当成有内容。
+    阈值**单点在此**——页数统计与 OCR 选页共用同一判据，改一处两边同时生效。"""
+    return len("".join(text.split())) < _MIN_VISIBLE_CHARS
+
+
+def scanned_page_indices(doc: ParsedDoc) -> list[int]:
+    """doc 里扫描图片页的页序号（0 基）。OCR 只对这些页做——文本页绝不重复识别。"""
+    return [i for i, t in enumerate(doc.page_texts) if is_image_page(t)]
+
+
 def parse_pdf(data: bytes) -> ParsedDoc:
-    """解析 .pdf 字节 → 逐页文本(拼接) + 页数 + 扫描图片页数 + 条款 id。扫描件 OCR 不在 Phase 1 范围。
-    提不出文字的页只计数、不猜内容——下游据此说「无法核验」，而不是把它当成「没有这份材料」。"""
+    """解析 .pdf 字节 → 逐页文本(拼接) + 页数 + 扫描图片页数 + 条款 id。
+    提不出文字的页在这里只计数、不猜内容；能不能识别出来是下一步的事（parsing/ocr.py 配置驱动，
+    未配置 OCR 服务时一切照旧）——下游据此说「无法核验」，而不是当成「没有这份材料」。"""
     from pypdf import PdfReader
     reader = PdfReader(io.BytesIO(data))
     pages = [(pg.extract_text() or "") for pg in reader.pages]
-    # 数「可见文字」而不是原串长度：空白/换行不算字，否则满页空行的扫描页会被当成有内容。
-    image_pages = sum(1 for p in pages if len("".join(p.split())) < _MIN_VISIBLE_CHARS)
+    image_pages = sum(1 for p in pages if is_image_page(p))
     text = "\n".join(pages)
     clauses, headings = _split_clauses(text.split("\n"))
     return ParsedDoc(text=text, kind="pdf", pages=len(reader.pages), image_pages=image_pages,
-                     clauses=clauses, headings=headings)
+                     page_texts=pages, clauses=clauses, headings=headings)
+
+
+# 识别文本插回正文时的页首标记：既告诉模型这段字是从扫描页认出来的（可能带识别误差），
+# 也让它知道这一页**确实有内容**，不再当成看不见。
+_OCR_PAGE_MARK = "[第{n}页·扫描件识别]"
+
+
+def splice_ocr_pages(doc: ParsedDoc, ocr_texts: dict[int, str]) -> ParsedDoc:
+    """OCR 文本按页插回原位置 → 新的 ParsedDoc（{页序号: 识别文字}，0 基）。
+
+    条款与标题**必须重算**：识别出来的字要和正文一样参与章节切分和预算，只改 text 不改 clauses
+    的话，下游按 clauses 聚章（nodes/common.py::parse_bid_docs），认出来的内容一个字都进不了
+    审查材料。image_pages 扣掉已识别的页——剩下的才是真正还看不见的页（全部识别成功 → 注记消失）。
+    """
+    if not ocr_texts:
+        return doc
+    pages = list(doc.page_texts)
+    for i, text in ocr_texts.items():
+        pages[i] = f"{_OCR_PAGE_MARK.format(n=i + 1)}\n{text}"
+    full = "\n".join(pages)
+    clauses, headings = _split_clauses(full.split("\n"))
+    return replace(doc, text=full, page_texts=pages, clauses=clauses, headings=headings,
+                   image_pages=max(0, doc.image_pages - len(ocr_texts)))
 
 
 def parse_xlsx(data: bytes) -> ParsedDoc:
