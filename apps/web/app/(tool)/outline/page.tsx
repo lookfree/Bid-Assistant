@@ -52,17 +52,21 @@ type Chapter = {
   structureRef?: string | null
   /** 用户手写的本章写作说明（与子项 desc 同义）：随提纲保存，作为该章写作要求进入正文生成提示词 */
   desc?: string
+  /** 系统生成章标记（如资格证明文件附录 sys-creds）：保存回写必须透传——剥掉这个键=附录被模型
+   *  重写（sourceFileId 同类教训第三次，终审 C1）。 */
+  system?: boolean
   items: OutlineItem[]
 }
 
 const toOutline = (list: RealChapter[]): Chapter[] =>
-  list.map(({ id, no, title, sourced, structureRef, desc, items }) => ({
+  list.map(({ id, no, title, sourced, structureRef, desc, system, items }) => ({
     id,
     no,
     desc,
     title,
     sourced,
     structureRef,
+    system,
     items: items.map((it) => ({ ...it, children: (it.children ?? []).map((c) => ({ ...c })) })),
   }))
 

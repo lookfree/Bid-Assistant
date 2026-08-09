@@ -158,6 +158,9 @@ export type OutlineChapterInput = {
   sourced?: boolean
   structureRef?: string | null
   desc?: string
+  /** 系统生成章标记（如资格证明文件附录 sys-creds）：保存回写必须透传——剥掉这个键=附录被模型
+   *  重写（sourceFileId 同类教训第三次，终审 C1）。 */
+  system?: boolean
   items: Parameters<typeof serializeItems>[0]
 }
 
@@ -178,6 +181,9 @@ export function buildOutlinePayload(
       sourced: ch.sourced,
       structureRef: ch.structureRef ?? null,
       desc: ch.desc ?? "",
+      // system 键只在系统章（如 sys-creds）上出现——原样透传，undefined 时序列化自然不落这个键，
+      // 普通章不受影响。丢了它 = 附录被当普通章送模型改写（终审 C1）。
+      system: ch.system,
       items: serializeItems(ch.items),
     }))
   return bizFirst

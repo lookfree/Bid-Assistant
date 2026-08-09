@@ -112,4 +112,9 @@ describe("落盘形状", () => {
     const [c] = buildOutlinePayload([chapter({ structureRef: undefined })], [], false) as Array<Record<string, unknown>>
     expect(c).toHaveProperty("structureRef", null)
   })
+
+  it("system 章标记透传（丢了这个键=附录被当普通章送模型改写，终审 C1）", () => {
+    const [c] = buildOutlinePayload([chapter({ id: "sys-creds", system: true })], [], false) as Array<Record<string, unknown>>
+    expect(c).toHaveProperty("system", true)
+  })
 })

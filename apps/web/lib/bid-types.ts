@@ -64,6 +64,10 @@ export type BidChapter = {
   group: Group
   /** 是否能在招标文件中索引到来源；false 表示提纲新增 */
   sourced: boolean
+  /** 系统生成章标记（如资格证明文件附录 sys-creds，2026-08-09 附录系统章节）：内容纯代码拼接，
+   *  正文/补写流水线必须整体跳过——剥掉这个键=附录被模型重写（sourceFileId 同类教训第三次，
+   *  终审 C1）。提纲编辑保存回写、正文页读取都必须原样透传，不能在任何一处白名单里漏掉。 */
+  system?: boolean
   /** 提纲子项 */
   items: OutlineItem[]
 }
