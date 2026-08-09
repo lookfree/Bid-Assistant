@@ -27,7 +27,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { adminApi } from "@/lib/admin-api"
-import { ParamView, ParamEdit } from "./param-field"
+import { ParamView, ParamEdit, ContextWindowView, ContextWindowEdit } from "./param-field"
 import {
   PROVIDER_OPTIONS,
   providerLabel,
@@ -270,6 +270,7 @@ function ParamsGrid({
           <ParamView paramKey="maxTokens" value={model.params.maxTokens} />
           <ParamView paramKey="topP" value={model.params.topP} />
         </div>
+        <ContextWindowView value={model.params.contextWindow} />
         {model.thinking && <span className="text-xs text-muted-foreground">思考模式：开</span>}
         {exceedsMaxOutput && <MaxOutputWarning maxOutput={maxOutput!} />}
       </div>
@@ -283,6 +284,10 @@ function ParamsGrid({
         <ParamEdit paramKey="maxTokens" value={draft.params.maxTokens} onChange={setParam("maxTokens")} />
         <ParamEdit paramKey="topP" value={draft.params.topP} onChange={setParam("topP")} />
       </div>
+      <ContextWindowEdit
+        value={draft.params.contextWindow}
+        onChange={(v) => setDraft((d) => resetTestOnEdit({ ...d, params: { ...d.params, contextWindow: v } }))}
+      />
       {/* 思考模式开关：默认关（更快更省、可流式强制提交）；改动后需重新测通才能保存/编排。 */}
       <label className="flex items-center justify-between gap-2 rounded-md border border-border px-2.5 py-1.5">
         <span className="flex flex-col">

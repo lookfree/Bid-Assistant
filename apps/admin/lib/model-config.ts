@@ -5,7 +5,9 @@
 // （固定用 "custom"），不再限于注册表 3 家；PROVIDER_LABELS 对未知 key 用 providerLabel() 兜底。
 export type Provider = string
 
-export type ModelParams = { temperature: number; maxTokens: number; topP: number }
+// contextWindow 可空：留空 = 用 agent 侧全局兜底窗口；填了才覆盖该模型的预算计算窗口
+// （review 主清单#13：32K 窗口的模型不填这个，agent 会一直按全局 131072 算,撞 400）。
+export type ModelParams = { temperature: number; maxTokens: number; topP: number; contextWindow?: number }
 
 export type ModelTestStatus = "passed" | "failed" | "untested"
 

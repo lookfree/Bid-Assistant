@@ -77,3 +77,67 @@ export function ParamEdit({
     </div>
   )
 }
+
+// 上下文窗口（tokens）：与上面三个采样参数并列展示但语义不同——唯一可留空的字段（留空=用运营
+// 后台的全局默认窗口估算预算），所以单独一对组件而不复用 ParamView/ParamEdit（那两个的 value
+// 是必填 number，装不下"未配置"这个状态）。表单形态照抄 maxTokens 字段（同样的输入框风格）。
+export const CONTEXT_WINDOW_TOOLTIP =
+  "该模型的最大上下文窗口（输入+输出总 token 数），决定审查/述标等步骤能喂多少正文进去。\n留空则按运营后台的全局默认窗口估算预算；模型实际窗口比全局默认小（如 32K 窗口的模型）时务必填写，否则预算会算多、请求可能因超出模型真实窗口而失败。"
+
+export function ContextWindowView({ value }: { value?: number }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <div className="cursor-help rounded-md border border-border bg-muted/40 px-2.5 py-1.5">
+            <div className="text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+              context_window
+            </div>
+            <div className="text-[15px] font-semibold tabular-nums text-foreground">
+              {value ?? "用全局默认"}
+            </div>
+          </div>
+        }
+      />
+      <TooltipContent side="top" className="max-w-64 text-pretty">
+        {CONTEXT_WINDOW_TOOLTIP}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+export function ContextWindowEdit({
+  value,
+  onChange,
+}: {
+  value?: number
+  onChange: (v: number | undefined) => void
+}) {
+  return (
+    <div className="flex flex-col gap-1 rounded-md border border-primary/30 bg-primary/5 px-2.5 py-1.5">
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <span className="w-fit cursor-help text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+              context_window
+            </span>
+          }
+        />
+        <TooltipContent side="top" className="max-w-64 text-pretty">
+          {CONTEXT_WINDOW_TOOLTIP}
+        </TooltipContent>
+      </Tooltip>
+      <Input
+        type="number"
+        step={1}
+        placeholder="留空=用全局默认"
+        className="h-6 border-0 bg-transparent p-0 text-[15px] font-semibold tabular-nums shadow-none placeholder:text-xs placeholder:font-normal focus-visible:ring-0"
+        value={value ?? ""}
+        onChange={(e) => {
+          const raw = e.target.value.trim()
+          onChange(raw === "" ? undefined : Math.max(1, Number(raw) || 0))
+        }}
+      />
+    </div>
+  )
+}

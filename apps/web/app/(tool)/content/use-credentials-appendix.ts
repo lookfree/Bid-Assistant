@@ -26,6 +26,8 @@ function useResolvedCredentialSrc(html: string) {
   // 会话；过期也无所谓，见 lib/credentials-appendix.ts 顶部注释，用户重新打开正文页会再取一遍）。
   // 值为 null = 取过但失败（文件已被删/网络错）——必须仍然记一个键：不记的话这个 id 会被
   // pendingIds 永远当"还没取"，一张坏图就把整章的加载态卡死，其余图也一起显示不出来。
+  // 失败重试没有显式逻辑：靠本 hook 所在组件重挂载时这个 state 复位为 {}，重挂载后同一 id
+  // 会被当成"还没取"再请求一次——即"单轮重试"，同一次组件生命周期内不会自动再试第二次。
   const [srcMap, setSrcMap] = useState<Record<string, string | null>>({})
   const pendingIds = placeholderFileIds(html).filter((id) => !(id in srcMap))
   const pendingKey = pendingIds.join(",")
