@@ -57,8 +57,10 @@ _PERMANENT_ERRORS = (ModelNotConfigured, AuthenticationError)
 # 条目块——不再赌 RAG 召回率覆盖长尾。词表字面量按 Global Constraints,agent 侧独立判定。
 _PERSONNEL_RE = re.compile(r"人员|团队|组织|配置|简历")
 _PERFORMANCE_RE = re.compile(r"业绩|案例|经验|项目经历")
-# 每类注入块字符预算：与偏离表条目预算（_DEVIATION_BLOCK_CHARS）同手法——App 侧单条字段无字符
-# 上限,这是唯一防线;超限截断并如实注明未列出条数,不静默丢弃也不放任顶穿上下文（评审 2026-08-09）。
+# 每类注入块字符预算：目标与偏离表条目预算（_DEVIATION_BLOCK_CHARS）一致——App 侧单条字段无
+# 字符上限,这是唯一防线;但截断算法不同：偏离表逐条判断、超限就跳过非★条目继续凑其余条目,
+# 这里逐条**顺序累计**、一超预算立即停止（含单条自身就超预算的情形,同样整体截断,不拆条目
+# 内部字符）,并如实注明未列出条数（评审 2026-08-09）。
 _LIBRARY_REF_BLOCK_CHARS = 3000
 
 

@@ -631,6 +631,17 @@ class TestLibraryRefsInjection:
         block_before_note = "【资料库·人员】" + block.split("(另有")[0]
         assert len(block_before_note) <= _LIBRARY_REF_BLOCK_CHARS, "预算截断没生效，30 条长条目全塞进了简报"
 
+    def test_single_entry_alone_exceeds_budget_still_gets_capped_and_noted(self):
+        """边界：**第一条自己**（非多条累计）就顶穿预算——循环首轮直接 break、dropped=全部条目。
+        这条路径与上一条"多条累计超限"是截断算法里两个不同的分支，重构时最容易悄悄回归。"""
+        from agent.agents.bidding_agent.nodes.content_pipeline import (
+            _LIBRARY_REF_BLOCK_CHARS, _library_ref_block)
+
+        block = _library_ref_block([{"title": "X", "body": "详" * 6000}], "人员")
+        block_before_note = block.split("\n(另有")[0]
+        assert len(block_before_note) <= _LIBRARY_REF_BLOCK_CHARS, "单条自身超预算却没被截断"
+        assert "(另有 1 条未列出)" in block, "唯一那条被砍掉却没如实注明"
+
     def test_no_library_refs_leaves_every_brief_untouched(self, monkeypatch):
         """无 library_refs 时今天的行为逐字节不变——哪怕章标题命中关键词也不该多出任何块
         （回归硬承诺：`shared["personnel"]`/`shared["performance"]` 缺省时必须是空串）。"""
