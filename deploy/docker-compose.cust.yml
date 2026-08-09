@@ -23,6 +23,10 @@ services:
     env_file: [.env.deploy.local]
     expose: ["8090"]
 
+  # 审查步会把线下标书的扫描页送 231 的 OCR 识别（OCR_BASE_URL，与 api 同一个地址，
+  # 经 .env.deploy.local 注入；留空即整段跳过）。**别改成 environment: "${OCR_BASE_URL}" 透传**：
+  # environment 覆盖 env_file，一旦 compose 少带 --env-file 就会插成空串把 OCR 静默关掉
+  # （同一个坑见 deploy-cust.sh 里数据机那段的注释）。
   agent-worker:
     image: bid-agent:${TAG}
     restart: unless-stopped
