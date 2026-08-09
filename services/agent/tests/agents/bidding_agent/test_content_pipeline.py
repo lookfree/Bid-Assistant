@@ -173,6 +173,20 @@ class TestPipeline:
         dones = [_json.loads(f["event"])["data"] for f in redis.streams if "chapter" in str(f.get("event"))]
         assert {d["total"] for d in dones} == {3}, "进度 total 混进了系统章"
 
+    def test_system_flag_missing_but_id_matches_sys_creds_still_skipped(self, monkeypatch):
+        """纵深兜底（终审 C1）：web 侧曾在提纲保存时漏透传 "system" 键，库里 sys-creds 章会
+        丢失这个标记——那种坏数据一旦流回 content，只靠 c.get("system") 判断就会把附录当
+        普通章发模型改写（幻觉）。id 命中 SYS_CREDS_ID 必须独立兜底跳过，不依赖 system 键存在。"""
+        state = _state(3)
+        state["outline"]["chapters"].append(
+            {"id": "sys-creds", "no": "附录", "title": "资格证明文件", "group": "business",
+             "sourced": False, "items": []})   # 故意不带 "system" 键
+        chat = _FakeChat()
+        out = _run(state, chat, monkeypatch=monkeypatch)
+        assert "sys-creds" not in out
+        assert chat.calls == 3, "system 键丢了，附录仍被当成一次模型调用"
+        assert all("资格证明文件" not in u for _, u in chat.seen), "系统章标题泄漏进了某份简报"
+
 
 class TestBriefTargeting:
     """按需注入：偏离表条目只发给偏离表章、招标格式模板只发给被点名的格式章——

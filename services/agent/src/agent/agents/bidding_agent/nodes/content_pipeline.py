@@ -345,6 +345,7 @@ async def run_content_pipeline(ctx, state: dict) -> dict[str, str]:
     """入口：提纲各章并发（限流）独立生成 → {章id: html}。缺章如实缺（前端有免费补齐）。"""
     from agent.agents.bidding_agent.nodes.common import filter_read_by_package
     from agent.agents.bidding_agent.nodes.content import CHAPTER_DRAFT_PROMPT, _content_reference_block
+    from agent.agents.bidding_agent.nodes.credentials_chapter import SYS_CREDS_ID
     from agent.agents.bidding_agent.prompts.categories import category_scope
 
     outline_raw = state.get("outline") or {}
@@ -352,7 +353,10 @@ async def run_content_pipeline(ctx, state: dict) -> dict[str, str]:
     # content 都会把库里 outline result 回灌进图内状态，outline 带着系统章是常态而非重试专属
     # 的边角场景——净化一次、往下游一路传净化后的 outline/state，不发模型调用、不进进度计数、
     # 不分字数预算、不进偏离表判定，比在每个消费点各自补一次 system 判断更不容易漏。
-    chapters = [c for c in outline_raw.get("chapters", []) if c.get("id") and not c.get("system")]
+    # 纵深兜底（终审 C1）：web 侧曾把提纲白名单序列化时漏透传 "system" 键（sourceFileId 同类
+    # 教训第三次）——就算这个键丢了，id 命中 SYS_CREDS_ID 仍按系统章处理，不靠单一信号。
+    chapters = [c for c in outline_raw.get("chapters", [])
+                if c.get("id") and not (c.get("system") or c.get("id") == SYS_CREDS_ID)]
     if not chapters:
         raise RuntimeError("提纲为空，无章可写")
     outline = {**outline_raw, "chapters": chapters}
