@@ -75,37 +75,40 @@ export type SlideStyle = {
 }
 
 export const slideStyles: SlideStyle[] = [
-  // 色块对齐 PPT 渲染器实际输出（render/pptx.py 设计令牌），不要用品牌色——品牌是红的，
-  // 「商务蓝」曾套 gradient-brand 导致选择器里显示红色（用户实测困惑）。
+  // 色值逐个对齐 PPT 渲染器的设计令牌（services/agent 的 render/styles.py），直接写十六进制，
+  // 不要用品牌色也不要挑"最接近的调色板名"——品牌是红的，「商务蓝」曾套 gradient-brand
+  // 导致选择器里显示红色（用户实测困惑），近似色则会让选择器与真实导出对不上。
   {
     id: "blue",
-    name: "商务蓝",
-    swatch: "bg-blue-800",
-    coverBg: "bg-blue-800",
-    bar: "bg-blue-600",
-    dot: "bg-blue-600",
-    chip: "bg-blue-600/10 text-blue-700",
-    accent: "text-blue-700",
+    name: "商务提案",
+    swatch: "bg-[#14396B]",
+    coverBg: "bg-[#14396B]", // 满幅封面就是这块主色
+    bar: "bg-[#2563EB]",
+    dot: "bg-[#2563EB]",
+    chip: "bg-[#2563EB]/10 text-[#2563EB]",
+    accent: "text-[#2563EB]",
   },
   {
     id: "tech",
-    name: "科技感",
-    swatch: "bg-teal-700",
-    coverBg: "bg-teal-700",
-    bar: "bg-teal-500",
-    dot: "bg-teal-500",
-    chip: "bg-teal-500/10 text-teal-700",
-    accent: "text-teal-700",
+    name: "技术方案",
+    // 深色模板：swatch 取强调青绿（识别色），coverBg 取页面底色（分栏封面的地就是这块深色）
+    swatch: "bg-[#2DD4BF]",
+    coverBg: "bg-[#0F172A]",
+    bar: "bg-[#2DD4BF]",
+    dot: "bg-[#2DD4BF]",
+    // 预览卡片是浅底，青绿小字在白底上读不出来，文字降到同色系的深一档
+    chip: "bg-[#2DD4BF]/15 text-[#0F766E]",
+    accent: "text-[#0F766E]",
   },
   {
     id: "gov",
-    name: "政务红",
-    swatch: "bg-red-700",
-    coverBg: "bg-red-700",
-    bar: "bg-red-600",
-    dot: "bg-red-600",
-    chip: "bg-red-600/10 text-red-600",
-    accent: "text-red-600",
+    name: "党政庄重",
+    swatch: "bg-[#8E1B1B]",
+    coverBg: "bg-[#8E1B1B]", // 通栏横幅封面的横幅色
+    bar: "bg-[#8A6A16]",
+    dot: "bg-[#8A6A16]",
+    chip: "bg-[#8A6A16]/10 text-[#8A6A16]",
+    accent: "text-[#8A6A16]",
   },
 ]
 
