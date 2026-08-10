@@ -44,4 +44,9 @@ class ParsedDoc:
     # 挤掉条款序号，既改了 clause_id 口径（定位/引用全线受影响），也让模型把标题当条款读。
     # level：1=第N章/节/篇/部分，2=「一、」式顶层编号。仅供左栏按层级渲染，读标提示词不消费。
     headings: list[dict] = field(default_factory=list)
+    # 标题坐标 [{page, line, text, level, fixed}]（PDF 才有）。章节切分靠书签树与排版字号定标题
+    # （见 parsing/pdf_sections.py），而扫描页 OCR 拼回正文后要**重算** clauses——那时候字号与
+    # 书签都已不在手边。记下「第几页第几行是标题」，重算时原样复用，识别文字则一个字都不参与
+    # 标题判定（口径同 docx 的 synthetic 块）。空 = 解析时一条标题都没认出来（重算后同样是单节）。
+    heading_marks: list[dict] = field(default_factory=list)
     meta: dict = field(default_factory=dict)

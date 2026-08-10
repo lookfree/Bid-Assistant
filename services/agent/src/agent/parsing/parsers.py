@@ -11,6 +11,9 @@ from dataclasses import dataclass, replace
 from agent.parsing.docx_sections import (
     Block, heading_style_levels, paragraph_level, split_docx_blocks,
 )
+from agent.parsing.pdf_sections import (
+    PdfLine, outline_titles, page_lines, pdf_lines, resplit_marked, split_pdf_lines,
+)
 from agent.parsing.types import SYSTEM_NOTE_PREFIX, ParsedDoc, UnsupportedDocument
 
 # 章节标题启发式：第N章/第N节/第N篇/第N部分，或「一、二、」式顶层编号（标题一般较短）。
@@ -233,15 +236,25 @@ def scanned_page_indices(doc: ParsedDoc) -> list[int]:
 def parse_pdf(data: bytes) -> ParsedDoc:
     """解析 .pdf 字节 → 逐页文本(拼接) + 页数 + 扫描图片页数 + 条款 id。
     提不出文字的页在这里只计数、不猜内容；能不能识别出来是下一步的事（parsing/ocr.py 配置驱动，
-    未配置 OCR 服务时一切照旧）——下游据此说「无法核验」，而不是当成「没有这份材料」。"""
+    未配置 OCR 服务时一切照旧）——下游据此说「无法核验」，而不是当成「没有这份材料」。
+
+    章节切分走 pdf 专用口径（书签树 + 排版字号优先，见 parsing/pdf_sections.py）——
+    xlsx 仍用 _split_clauses 的纯编号启发式。抽文本时**顺手**把每行的字号/字重带回来
+    （零额外解析，见 pdf_sections.page_lines），标题判定全靠它。"""
     from pypdf import PdfReader
     reader = PdfReader(io.BytesIO(data))
-    pages = [(pg.extract_text() or "") for pg in reader.pages]
+    outline = outline_titles(reader)
+    pages: list[str] = []
+    lines: list[PdfLine] = []
+    for n, pg in enumerate(reader.pages):
+        page_text, styles = page_lines(pg)
+        pages.append(page_text)
+        lines.extend(pdf_lines(n, page_text, styles, outline))
     flags = _scanned_flags(reader.pages, pages)
-    text = "\n".join(pages)
-    clauses, headings = _split_clauses(text.split("\n"))
-    return ParsedDoc(text=text, kind="pdf", pages=len(reader.pages), image_pages=sum(flags),
-                     page_texts=pages, image_page_flags=flags, clauses=clauses, headings=headings)
+    clauses, headings, marks = split_pdf_lines(lines)
+    return ParsedDoc(text="\n".join(pages), kind="pdf", pages=len(reader.pages),
+                     image_pages=sum(flags), page_texts=pages, image_page_flags=flags,
+                     clauses=clauses, headings=headings, heading_marks=marks)
 
 
 # 识别文本插回正文时的页首注记：既告诉模型这段字是从扫描页认出来的（可能带识别误差），
@@ -279,6 +292,11 @@ def splice_ocr_pages(doc: ParsedDoc, ocr_texts: dict[int, str]) -> ParsedDoc:
     **追加**——原页那几十字是精确可选文本（投标人名称、法定代表人、日期、电话），审查要拿它逐字
     比对，换成一段近似识别就成了拿错字去比（实测「有限」→「有眼」）。追加会让标题类文字重复一遍，
     比丢掉原文划算得多。
+
+    重算时**沿用解析阶段定下的标题坐标**（doc.heading_marks，见 parsing/pdf_sections.py）：
+    书签树与排版字号那时候还在手边，现在只剩纯文本了，重判一次的话整份文档的章节结构会
+    在 OCR 前后变成两个样。识别文字则一个字都不参与标题判定——证照认出来的行大量长成
+    「1、法定代表人：张三」，正是启发式眼里的章节标题（口径同 splice_docx_images）。
     """
     readable = {i: t for i, t in ocr_texts.items() if _recognized(t, doc.page_texts[i])}
     if not readable:
@@ -288,7 +306,7 @@ def splice_ocr_pages(doc: ParsedDoc, ocr_texts: dict[int, str]) -> ParsedDoc:
         mark = _OCR_PAGE_MARK.format(n=i + 1)
         pages[i] = f"{mark}\n{text}" if is_image_page(pages[i]) else f"{pages[i]}\n{mark}\n{text}"
     full = "\n".join(pages)
-    clauses, headings = _split_clauses(full.split("\n"))
+    clauses, headings = resplit_marked(pages, doc.heading_marks)
     # 逐页判定同步扣掉已识别的页：留着旧值的话，谁再拿这份 doc 问「哪几页看不见」都会拿到
     # 一个与 image_pages 对不上的答案（识别过的页仍在名单里）。
     flags = [f and i not in readable for i, f in enumerate(doc.image_page_flags)]
