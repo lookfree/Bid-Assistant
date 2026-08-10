@@ -5,6 +5,7 @@ from pptx.enum.shapes import MSO_SHAPE, MSO_SHAPE_TYPE
 from pptx.util import Emu, Inches
 from agent.agents.bidding_agent.schemas import DeckSpec
 from agent.agents.bidding_agent.render.pptx import render_pptx
+from agent.agents.bidding_agent.render.styles import CARD, TYPE
 from agent.agents.bidding_agent.render.styles import TEMPLATE_TOKENS as _TEMPLATE_TOKENS
 
 
@@ -55,7 +56,7 @@ def test_blue_cover_is_a_full_bleed_gradient_with_the_title_in_the_lower_half():
 
     title_box = next(sh for sh in cover.shapes if sh.has_text_frame and sh.text_frame.text == "封面")
     run = title_box.text_frame.paragraphs[0].runs[0]
-    assert run.font.size.pt == 40
+    assert run.font.size.pt == TYPE["cover_title"]
     assert run.font.bold is True
     assert run.font.color.rgb == RGBColor(0xFF, 0xFF, 0xFF)
     assert title_box.top > prs.slide_height * 0.5, "满幅封面的标题要压在下半页"
@@ -92,7 +93,8 @@ def test_gov_cover_is_a_full_width_banner():
 
 def test_content_slide_bullets_and_scoring_chip():
     """要点从「单文本框 + • 前缀」改成逐条编号卡片（用户反馈整页太素、下半页全白）：
-    一条要点一张卡，卡上有序号徽章，文字 14pt。全部是原生形状，仍可在 PowerPoint 里逐个改。"""
+    一条要点一张卡，卡上有序号徽章。全部是原生形状，仍可在 PowerPoint 里逐个改。
+    3 条要点走 lead 密度（大卡），正文字号随之放大到 TYPE["lead"]。"""
     data = render_pptx(_deck())
     prs = Presentation(io.BytesIO(data))
     content = prs.slides[1]
@@ -101,7 +103,7 @@ def test_content_slide_bullets_and_scoring_chip():
              ("7×24 值守", "分级 SLA", "故障 30 分钟响应")]
     assert len(cards) == 3
     for card in cards:
-        assert card.text_frame.paragraphs[0].runs[0].font.size.pt == 14
+        assert card.text_frame.paragraphs[0].runs[0].font.size.pt == TYPE["lead"]
     badges = [sh for sh in content.shapes
               if sh.has_text_frame and sh.text_frame.text in ("1", "2", "3")]
     assert len(badges) == 3, "每张卡片要有序号徽章"
@@ -518,14 +520,17 @@ def test_every_template_renders_every_layout_and_reopens():
         assert "核心需求理解" in texts and "承诺优于要求" in texts
 
 
-def _master_without_placeholders(width_in: float = 10.0, height_in: float = 7.5) -> bytes:
+def _master_without_placeholders(width_in: float = 10.0, height_in: float = 7.5, *,
+                                 every_layout: bool = False) -> bytes:
     """把首个版式的占位符全部摘掉的迷你母版：客户母版里这种「纯图形版式」很常见，
-    此时封面/结束页会退回我们自己的画法——新封面骨架正是在这条路径上才会被画出来。"""
+    此时封面/结束页会退回我们自己的画法——新封面骨架正是在这条路径上才会被画出来。
+    every_layout=True 连正文版式的占位符一起摘掉，正文页的要点也会退回我们自己的密度版式。"""
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(width_in), Inches(height_in)
-    layout = prs.slide_layouts[0]
-    for ph in list(layout.placeholders):
-        ph._element.getparent().remove(ph._element)
+    layouts = list(prs.slide_layouts) if every_layout else [prs.slide_layouts[0]]
+    for layout in layouts:
+        for ph in list(layout.placeholders):
+            ph._element.getparent().remove(ph._element)
     out = io.BytesIO()
     prs.save(out)
     return out.getvalue()
@@ -562,3 +567,249 @@ def test_every_template_fits_inside_a_narrow_enterprise_master():
                      or sh.top + sh.height > prs.slide_height + slop
                      or sh.left < -slop or sh.top < -slop)]
         assert over == [], f"{tpl} 在 4:3 母版上画出界：{over}"
+
+
+# ---- 视觉精致度第二轮：图表页双栏 / 要点密度 / 字号层级 / 圆角常量 / 饼图色阶 / 封面锚点 ----
+
+def _content_geometry(prs):
+    """(正文左边距, 正文可用宽)：与渲染层同一套几何。"""
+    from agent.agents.bidding_agent.render.pptx_blocks import MARGIN
+    return MARGIN, prs.slide_width - 2 * MARGIN
+
+
+def _chart_deck(bullets: list[str]) -> DeckSpec:
+    return DeckSpec(title="述标", slides=[
+        {"id": "s1", "title": "团队构成", "kind": "content", "layout": "chart", "bullets": bullets,
+         "chart": {"type": "pie", "categories": ["高级", "中级", "初级"],
+                   "series": [{"name": "人数", "values": [3, 6, 4]}]}},
+    ])
+
+
+def test_chart_page_pairs_the_chart_with_a_conclusions_rail():
+    """图表页有自己的双栏版式：图表占主区，右边一条「关键结论」栏。
+    此前图表卡在正文带里、结论压成一行小字贴在图下沿，左右各空出一大片——饼图尤其明显
+    （直径被页高卡住，横向撑不到 12in），用户实评「图表页左右偏空」。"""
+    prs = Presentation(io.BytesIO(render_pptx(_chart_deck(["中级及以上占比 60%", "持证率 100%"]))))
+    slide = prs.slides[0]
+    left, content_w = _content_geometry(prs)
+    chart = next(sh for sh in slide.shapes if sh.has_chart)
+    assert chart.left == left
+    assert chart.width <= content_w * 0.7, "图表仍霸着整幅宽，双栏没生效"
+    assert chart.height > prs.slide_height * 0.55, "图表没吃满正文带的高度"
+    rail = next(sh for sh in slide.shapes if sh.has_text_frame and sh.text_frame.text == "关键结论")
+    assert rail.left > chart.left + chart.width, "结论栏没落在图表右边"
+    panel = next(sh for sh in slide.shapes
+                 if sh.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE
+                 and sh.auto_shape_type == MSO_SHAPE.ROUNDED_RECTANGLE
+                 and sh.left > chart.left + chart.width)
+    # 两栏合起来正好铺满正文可用宽：右边不再剩一条没人用的白
+    assert abs((panel.left + panel.width) - (left + content_w)) <= Emu(9144)
+    texts = " ".join(_all_texts(prs))
+    assert "中级及以上占比 60%" in texts and "持证率 100%" in texts
+
+
+def test_chart_page_without_conclusions_lets_the_chart_span_the_whole_width():
+    """没有结论可放就不画侧栏、也不编内容，让图表自己占满整幅——空栏比空白更难看。"""
+    prs = Presentation(io.BytesIO(render_pptx(_chart_deck([]))))
+    _, content_w = _content_geometry(prs)
+    chart = next(sh for sh in prs.slides[0].shapes if sh.has_chart)
+    assert chart.width == content_w
+    assert "关键结论" not in " ".join(_all_texts(prs)), "没有结论却画出了空侧栏"
+
+
+def _bullet_layout(n: int, *, template: str = "blue", layout: str = "bullets") -> tuple:
+    """n 条要点渲出来的 (列数, 正文字号, 卡片高度)。"""
+    items = [f"要点{i + 1}" for i in range(n)]
+    slide = {"id": "s1", "title": "要点页", "kind": "content", "bullets": items, "layout": layout}
+    if layout == "comparison":
+        slide["stats"] = [{"value": "2 小时", "label": "恢复"}]
+    prs = Presentation(io.BytesIO(render_pptx(DeckSpec(title="述标", slides=[slide]),
+                                              template=template)))
+    boxes = [sh for sh in prs.slides[0].shapes
+             if sh.has_text_frame and sh.text_frame.text in items]
+    assert len(boxes) == n, "要点没有逐条渲出来"
+    return (len({sh.left for sh in boxes}),
+            boxes[0].text_frame.paragraphs[0].runs[0].font.size.pt,
+            max(sh.height for sh in boxes))
+
+
+def test_bullet_pages_switch_layout_with_the_item_count():
+    """2 条和 6 条不能长一个样（用户实评：2 条空得慌、6 条挤）——
+    ≤3 条大卡纵向、4-6 条双栏、>6 条紧凑行，字号与卡高跟着退让。"""
+    two, five, eight = _bullet_layout(2), _bullet_layout(5), _bullet_layout(8)
+    assert (two[0], five[0], eight[0]) == (1, 2, 1), f"列数没随条数变：{two} {five} {eight}"
+    assert two[1] > five[1] > eight[1], f"字号没随密度退让：{two} {five} {eight}"
+    assert two[2] > five[2] > eight[2], f"卡高没随密度收紧：{two} {five} {eight}"
+
+
+def test_a_narrow_column_never_splits_into_two():
+    """对比页左栏只有 56% 宽，4-6 条再切两半每张卡放不下一句话——窄栏一律退回单列。"""
+    assert _bullet_layout(5, layout="comparison")[0] == 1
+
+
+def test_rendered_type_scale_keeps_title_body_and_note_apart():
+    """标题/正文/注释三档必须靠字号 × 字重 × 色阶同时拉开：三档挨在一起就是
+    「排得整齐但不惊艳」。断言读渲染产物而不是常量表——常量改了画法没跟上，这条要红。"""
+    deck = DeckSpec(title="某项目", slides=[
+        {"id": "s1", "title": "核心需求理解", "kind": "content", "scoring": "服务 20 分",
+         "bullets": ["要点一", "要点二", "要点三", "要点四"]},
+    ])
+    prs = Presentation(io.BytesIO(render_pptx(deck)))
+
+    def _run(pred):
+        sh = next(s for s in prs.slides[0].shapes if s.has_text_frame and pred(s.text_frame.text))
+        return sh.text_frame.paragraphs[0].runs[0]
+
+    title = _run(lambda t: t == "核心需求理解")
+    body = _run(lambda t: t == "要点一")
+    note = _run(lambda t: t.startswith("评分点"))
+    caption = _run(lambda t: "/" in t and not t.startswith("评分点"))
+    assert title.font.size.pt >= body.font.size.pt * 1.8, "标题不够大，压不住正文"
+    assert title.font.bold is True and not body.font.bold, "字重没有拉开"
+    assert note.font.size.pt <= body.font.size.pt * 0.85, "注释没有明显退到正文后面"
+    assert caption.font.size.pt <= note.font.size.pt
+
+
+def _rounded(prs):
+    return [sh for sl in prs.slides for sh in sl.shapes
+            if sh.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE
+            and sh.auto_shape_type == MSO_SHAPE.ROUNDED_RECTANGLE]
+
+
+def test_every_rounded_card_shares_one_corner_radius():
+    """圆角要统一到一个**绝对**半径：默认圆角是短边的 16.7%，于是 0.5in 高的角标
+    和 3in 高的数字卡圆角差着六倍——同一页好几种圆角，一眼就是默认值堆出来的。"""
+    for tpl in ("blue", "tech", "gov"):
+        prs = Presentation(io.BytesIO(render_pptx(_full_deck(), template=tpl)))
+        shapes = _rounded(prs)
+        assert len(shapes) >= 5, f"{tpl} 没渲出圆角卡片"
+        for sh in shapes:
+            radius = sh.adjustments[0] * min(sh.width, sh.height)
+            assert abs(radius - CARD["radius"]) <= Emu(9144), \
+                f"{tpl} 有圆角半径 {radius} 偏离统一常量 {CARD['radius']}"
+
+
+def _lab(rgb):
+    def gamma(c: int) -> float:
+        v = c / 255
+        return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+
+    def f(t: float) -> float:
+        return t ** (1 / 3) if t > 0.008856 else 7.787 * t + 16 / 116
+    r, g, b = (gamma(c) for c in rgb)
+    x = f((0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047)
+    y = f(0.2126 * r + 0.7152 * g + 0.0722 * b)
+    z = f((0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883)
+    return (116 * y - 16, 500 * (x - y), 200 * (y - z))
+
+
+def _delta_e(a, b) -> float:
+    return sum((p - q) ** 2 for p, q in zip(_lab(a), _lab(b))) ** 0.5
+
+
+def test_pie_palette_covers_eight_slices_distinctly_and_readably():
+    """>4 类的饼图色阶：8 类不许重复取色（上一轮的短板——封顶之后相邻两块同色），
+    每一块还要压得住那唯一一种数值标签字色（渲染器不认逐扇区字色，只能整图一种）。"""
+    from agent.agents.bidding_agent.render.styles import chart_palette, on_primary
+    for name, tokens in _TEMPLATE_TOKENS.items():
+        label = on_primary(tokens)
+        colors = chart_palette(tokens, 8, label_rgb=label)
+        assert len({str(c) for c in colors}) == 8, f"{name} 的 8 类色阶有重复色：{colors}"
+        for c in colors:
+            assert _contrast(c, label) >= 4.5, f"{name} 的扇区 {c} 压不住数值标签"
+        gaps = [_delta_e(colors[i], colors[j]) for i in range(8) for j in range(i + 1, 8)]
+        assert min(gaps) >= 9.0, f"{name} 有两块几乎同色（ΔE 仅 {min(gaps):.1f}）"
+
+
+def test_eight_slice_pie_really_paints_eight_different_colours():
+    """色阶算得对还不够——真渲出来的 8 个扇区必须是 8 种颜色。"""
+    deck = DeckSpec(title="述标", slides=[
+        {"id": "s1", "title": "报价构成", "kind": "content", "layout": "chart",
+         "chart": {"type": "pie", "categories": [f"项{i}" for i in range(8)],
+                   "series": [{"name": "金额", "values": [float(i + 1) for i in range(8)]}]}},
+    ])
+    prs = Presentation(io.BytesIO(render_pptx(deck, template="blue")))
+    chart = next(sh for sh in prs.slides[0].shapes if sh.has_chart).chart
+    fills = {str(p.format.fill.fore_color.rgb) for p in chart.plots[0].series[0].points}
+    assert len(fills) == 8, f"饼图实际画出来只有 {len(fills)} 种扇区色"
+
+
+def _hairlines(prs, *, vertical: bool) -> list:
+    """封面上的"细线"形状：一个方向很细、另一个方向够长的矩形。"""
+    sw, sh = prs.slide_width, prs.slide_height
+    out = []
+    for s in prs.slides[0].shapes:
+        if s.shape_type != MSO_SHAPE_TYPE.AUTO_SHAPE:
+            continue
+        thin, long_, span = (s.width, s.height, sh) if vertical else (s.height, s.width, sw)
+        if thin <= Emu(63500) and long_ >= span * 0.2:
+            out.append(s)
+    return out
+
+
+def test_each_cover_carries_its_own_visual_anchor():
+    """三套封面各有一处克制的几何锚点（栏位竖线节奏 / 网格 + 裁切角 / 内缩烫金边框）：
+    只有一块底色加一行标题的封面立不住，用户实评「偏素」。"""
+    blue = Presentation(io.BytesIO(render_pptx(_deck(), template="blue")))
+    rhythm = [s for s in _hairlines(blue, vertical=True) if s.left > blue.slide_width * 0.5]
+    assert len(rhythm) >= 4, "商务提案封面右半页没有栏位竖线节奏"
+
+    tech = Presentation(io.BytesIO(render_pptx(_deck(), template="tech")))
+    seam = tech.slide_width * 0.45
+    dots = [s for s in tech.slides[0].shapes
+            if s.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE and s.left >= seam
+            and s.width <= Emu(63500) and s.height <= Emu(63500)]
+    assert len(dots) >= 12, "技术方案封面右栏没有点阵锚点"
+
+    gov = Presentation(io.BytesIO(render_pptx(_deck(), template="gov")))
+    frame_h = [s for s in _hairlines(gov, vertical=False)
+               if s.left > 0 and s.left + s.width < gov.slide_width]
+    frame_v = [s for s in _hairlines(gov, vertical=True)
+               if s.top > 0 and s.top + s.height < gov.slide_height]
+    assert len(frame_h) >= 2 and len(frame_v) >= 2, "党政庄重封面没有内缩一圈的烫金边框"
+
+
+def test_text_boxes_align_optically_with_the_shapes_beside_them():
+    """光学边距：文本框默认左右各留 0.1in 内边距，于是「放在 x 处的文字」实际画在 x+0.1in——
+    同一条左边线上的色块和标题就差了 0.1in，整页看着像没对齐。我们的文本框四边内边距一律清零，
+    需要留白就把留白算进几何里；页码同理，右沿要落在版心右边距上而不是随手贴近页边。"""
+    prs = Presentation(io.BytesIO(render_pptx(_deck(), template="blue")))
+    content = prs.slides[1]
+    title = next(sh for sh in content.shapes
+                 if sh.has_text_frame and sh.text_frame.text == "运维体系")
+    rule = next(sh for sh in content.shapes
+                if sh.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE
+                and _solid_rgb(sh) == _TEMPLATE_TOKENS["blue"]["accent"]
+                and sh.top < prs.slide_height * 0.2)
+    assert title.left == rule.left, "标题框与它上方的强调短线不在同一条左边线上"
+    assert title.text_frame.margin_left == 0, "文本框还留着默认内边距，文字比色块右移 0.1in"
+    left, content_w = _content_geometry(prs)
+    page_no = next(sh for sh in content.shapes
+                   if sh.has_text_frame and sh.text_frame.text == "1 / 2")
+    assert abs((page_no.left + page_no.width) - (left + content_w)) <= Emu(9144), \
+        "页码右沿没有落在版心右边距上"
+
+
+def test_dense_layouts_fit_inside_a_narrow_enterprise_master():
+    """双栏要点 / 紧凑行 / 图表页结论侧栏这三种新版式，在 4:3 母版（10in 宽）里也要画得下。
+    双栏槽宽与侧栏比例都是按**正文可用宽**算的；任何一处退回 16:9 常量，窄母版上就会出界。
+    母版特意挑「占位符被摘光」的那种：有正文占位符时要点走母版自己的占位符，
+    我们的密度版式根本不会被调用，测了个寂寞。"""
+    master = _master_without_placeholders(width_in=10.0, height_in=7.5, every_layout=True)
+    deck = DeckSpec(title="述标", slides=[
+        {"id": "d1", "kind": "content", "title": "五项措施",
+         "bullets": [f"措施{i + 1}" for i in range(5)]},
+        {"id": "d2", "kind": "content", "title": "八项投入",
+         "bullets": [f"投入{i + 1}" for i in range(8)]},
+        {"id": "d3", "kind": "content", "title": "报价构成", "layout": "chart",
+         "bullets": ["人力成本占比 46%"],
+         "chart": {"type": "pie", "categories": [f"项{i}" for i in range(8)],
+                   "series": [{"name": "金额", "values": [float(i + 1) for i in range(8)]}]}},
+    ])
+    for tpl in ("blue", "tech", "gov"):
+        prs = Presentation(io.BytesIO(render_pptx(deck, template=tpl, master_bytes=master)))
+        slop = Emu(9144)
+        over = [(i, sh.left, sh.width) for i, sl in enumerate(prs.slides) for sh in sl.shapes
+                if sh.left is not None and sh.width is not None
+                and (sh.left + sh.width > prs.slide_width + slop or sh.left < -slop)]
+        assert over == [], f"{tpl} 的密集版式在 4:3 母版上画出界：{over}"
