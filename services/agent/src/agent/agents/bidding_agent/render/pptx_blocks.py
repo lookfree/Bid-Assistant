@@ -398,18 +398,19 @@ _CARDS = {"numbered": _card_numbered, "hairline": _card_hairline, "elevated": _c
 _DENSITIES = {
     "lead":    (1, Inches(1.95), "lead"),      # ≤3 条：大卡纵向，字也跟着放大
     "stack":   (1, Inches(1.30), "body"),      # 4–6 条但栏很窄（对比页左栏）：仍走单列
-    "duo":     (2, Inches(1.85), "body"),      # 4–6 条：双栏，一行两张
-    "compact": (1, Inches(0.88), "compact"),   # >6 条：紧凑行，别把一页撑爆
+    "duo":     (2, Inches(1.85), "body"),      # 4 条以上：双栏，一行两张
 }
 
 
 def _density_for(n: int, wide: bool) -> str:
     """条目数（和这一栏够不够宽）→ 密度名。窄栏一律不分双栏：对比页左栏只有 56% 宽，
-    再切两半每张卡放不下一句话。"""
+    再切两半每张卡放不下一句话。
+
+    条目再多也不缩字号：提示词要求每页 3–5 条，超发是偶发，为它单开一档 13pt 紧凑行
+    会让那一页字小到投影上看不清（用户实评「不要用高密度」）。多出来的条目走同一套双栏
+    版式多排一行，卡高由 _grid_cells 自动压——观感与常规页一致，只是行数多。"""
     if n <= 3:
         return "lead"
-    if n > 6:
-        return "compact"
     return "duo" if wide else "stack"
 
 

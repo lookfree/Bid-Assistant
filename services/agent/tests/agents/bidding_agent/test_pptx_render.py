@@ -635,11 +635,20 @@ def _bullet_layout(n: int, *, template: str = "blue", layout: str = "bullets") -
 
 def test_bullet_pages_switch_layout_with_the_item_count():
     """2 条和 6 条不能长一个样（用户实评：2 条空得慌、6 条挤）——
-    ≤3 条大卡纵向、4-6 条双栏、>6 条紧凑行，字号与卡高跟着退让。"""
-    two, five, eight = _bullet_layout(2), _bullet_layout(5), _bullet_layout(8)
-    assert (two[0], five[0], eight[0]) == (1, 2, 1), f"列数没随条数变：{two} {five} {eight}"
-    assert two[1] > five[1] > eight[1], f"字号没随密度退让：{two} {five} {eight}"
-    assert two[2] > five[2] > eight[2], f"卡高没随密度收紧：{two} {five} {eight}"
+    ≤3 条大卡纵向、4 条以上双栏，卡高随行数收紧。"""
+    two, five = _bullet_layout(2), _bullet_layout(5)
+    assert (two[0], five[0]) == (1, 2), f"列数没随条数变：{two} {five}"
+    assert two[1] > five[1], f"字号没随密度退让：{two} {five}"
+    assert two[2] > five[2], f"卡高没随密度收紧：{two} {five}"
+
+
+def test_many_items_stay_readable_instead_of_shrinking_into_a_dense_page():
+    """条目超发（提示词要求每页 3–5 条）不许再单开一档小字紧凑行——投影上看不清。
+    多出来的条目走同一套双栏版式多排一行：字号与 5 条时一致，只有卡高被压。"""
+    five, eight = _bullet_layout(5), _bullet_layout(8)
+    assert eight[0] == 2, f"条目多时没走双栏：{eight}"
+    assert eight[1] == five[1], f"字号被压小了：{eight} vs {five}"
+    assert eight[2] < five[2], f"卡高没随行数收紧：{eight} vs {five}"
 
 
 def test_a_narrow_column_never_splits_into_two():
