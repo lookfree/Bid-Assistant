@@ -144,19 +144,92 @@ class TestReportFilter:
 
     @pytest.mark.parametrize("title,advice", [
         ("正文中残留【系统注记·图片识别 第3张】等标记", "清理后重新排版"),      # 抄了注记原文
-        ("章节 sec-12 的编号未清理", "删除文中的编号"),                       # 抄了章节键
+        ("投标文件多处出现 sec-N 形式的章节编号", "清理后重新排版"),            # 编号占位符的另一种写法
         ("建议清理文件", "删除 sec-xxx 一类的编号与图片标记后再递交"),          # 只在建议里提
     ])
     def test_every_shape_of_the_same_complaint_is_dropped(self, title, advice):
         report = RiskReport(score=80, items=[_finding(title, advice)], passed_items=[])
         assert report.items == [] and report.mid == 0
 
+    def test_a_complaint_that_quotes_a_real_clause_id_is_kept(self):
+        """**硬约束**：宁可漏过一条格式抱怨，也不许删掉一条真发现。
+
+        「章节 sec-12 的编号未清理」这种、抱怨里带**真** id 的写法，本过滤故意放过——
+        分不清它和「按 sec-12 条款补齐材料」这条真发现，而删错的代价高一个数量级。
+        真 id 由 clean_internal_ids 抹掉，卡片照常交付（这也是它当初存在的理由）。
+        """
+        report = RiskReport(score=80, items=[_finding("章节 sec-12 的编号未清理", "删除文中的编号")],
+                            passed_items=[])
+        assert len(report.items) == 1
+        assert "sec-12" not in report.items[0].title      # 编号还是被清掉了，只是卡片留着
+
     @pytest.mark.parametrize("title,advice", [
         ("无法核验（扫描件）：法定代表人身份证明", "该材料可能已在扫描页中，请人工核对"),
         ("技术方案未说明 IPsec-3DES 加密强度", "补写加密算法与密钥长度"),   # 「sec-」不是我们的编号
+        ("响应时间承诺写成 30-sec-timeout，与招标要求单位不符", "改用招标文件的单位重新承诺"),
         ("服务承诺未明确分级 SLA", "按招标要求写明各级响应时限"),
     ])
     def test_real_findings_are_never_touched(self, title, advice):
         """误伤检验：扫描件"无法核验"类结论、以及正文里天然含「sec-」的技术术语都必须留住。"""
         report = RiskReport(score=80, items=[_finding(title, advice)], passed_items=[])
         assert [i.title for i in report.items] == [title]
+
+    # 模型把**真实**条款 id 写进这些字段是提示词点名要求的常态行为（2026-08-08 全量实测
+    # 审查报告里 115 处），clean_internal_ids 当初正是为清洗它们而加。判据若把真 id 当成
+    # "抱怨证据"，删掉的就是废标级的真发现——比多报一条格式抱怨严重一个数量级。
+    @pytest.mark.parametrize("field,value", [
+        ("tender_ref", "对应：评审办法（sec-2-c8）（★不可偏离）"),   # 线上实测 115 处的那个形态
+        ("advice", "按 sec-8-c95 条款补齐授权委托书并盖章"),
+        ("title", "sec-8-c95 要求的授权委托书缺失"),
+        ("chapter_title", "sec-1"),                                # 模型把章节键填进章节标题
+    ])
+    def test_a_real_finding_carrying_a_real_clause_id_is_never_dropped(self, field, value):
+        """反向变异：把判据放宽回裸 `sec-`（或把 tender_ref/chapter_title 也拿去当证据），本用例变红。"""
+        kw = {field: value}
+        report = RiskReport(score=40, items=[
+            _finding(kw.pop("title", "未提供投标保证金缴纳凭证（废标项）"),
+                     kw.pop("advice", "按招标文件要求缴纳并附银行回单"),
+                     level="高风险", tone="destructive", **kw)], passed_items=[])
+        assert len(report.items) == 1, "真发现被误杀"
+        assert report.high == 1
+
+    def test_the_worst_case_from_review_keeps_its_high_risk_count(self):
+        """复审给的最坏形态：一条废标级高风险发现曾被静默删掉，报告变成「0 条高风险、体检分 40」——
+        用户会带着一份要废标的标书去投。"""
+        report = RiskReport(score=40, items=[
+            _finding("未提供投标保证金缴纳凭证（废标项）", "按招标文件要求缴纳并附银行回单",
+                     level="高风险", tone="destructive",
+                     tender_ref="对应：投标人须知（sec-2-c8）（★不可偏离）")], passed_items=[])
+        assert report.high == 1 and len(report.items) == 1
+
+    def test_passed_items_go_through_the_same_filter(self):
+        """通过项也可能在说我们自己的注记；真条款 id 同样只清洗、不丢弃。"""
+        report = RiskReport(score=90, items=[], passed_items=[
+            "文档整洁，无 sec-xxx 一类的残留编号",              # 说的是我们的占位符 → 丢
+            "响应函已提供，含90天有效期承诺（sec-8-c10）",      # 真发现带真 id → 留，只清洗
+        ], )
+        assert len(report.passed_items) == 1 and report.passed == 1
+        assert "sec-8-c10" not in report.passed_items[0] and "响应函已提供" in report.passed_items[0]
+
+
+class TestDedupeKey:
+    """审查载荷里已经没有任何内部条款 id（提纲/构成清单/读标三处都剥过），模型无从填
+    RiskFinding.clause_ids → 去重键不能只靠它，否则同类问题会塌缩成一条、漏报其余条款。"""
+
+    def test_same_wording_on_different_chapters_stays_two_findings(self):
+        a = _finding("★条款未登入偏离表", "在偏离表中逐条登记", target_id="t1", anchor_text="技术偏离表")
+        b = _finding("★条款未登入偏离表", "在偏离表中逐条登记", target_id="b2", anchor_text="商务偏离表")
+        report = RiskReport(score=60, items=[a, b], passed_items=[])
+        assert len(report.items) == 2 and report.mid == 2
+
+    def test_same_wording_same_chapter_different_spot_stays_two_findings(self):
+        a = _finding("★条款未登入偏离表", "逐条登记", target_id="t1", anchor_text="第 3 行 响应时间")
+        b = _finding("★条款未登入偏离表", "逐条登记", target_id="t1", anchor_text="第 9 行 可用率")
+        report = RiskReport(score=60, items=[a, b], passed_items=[])
+        assert len(report.items) == 2
+
+    def test_identical_cards_still_collapse(self):
+        """真正的重复（三张一模一样的卡片）照旧塌缩成一条——去重本来要治的就是它。"""
+        card = _finding("缺少法定代表人授权委托书", "补齐并盖章", target_id="b4", anchor_text="授权委托书")
+        report = RiskReport(score=60, items=[card, dict(card), dict(card)], passed_items=[])
+        assert len(report.items) == 1 and report.mid == 1

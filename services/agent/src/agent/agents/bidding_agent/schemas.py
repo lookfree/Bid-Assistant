@@ -2,7 +2,7 @@ from __future__ import annotations
 import logging
 import re
 from typing import Literal
-from pydantic import BaseModel, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from agent.agents.bidding_agent.render.sanitize import clean_internal_ids, mentions_system_note
 
@@ -241,19 +241,11 @@ class RiskFinding(BaseModel):
     clause_ids: list[str] = Field(
         ..., description="该发现对应的招标条款内部 id 列表，可为空数组但必须提供")
 
-    # 这条发现说的是**我们自己**加进送审材料里的东西（系统注记、内部章节编号），不是用户文件
-    # 里的内容——由 _derive_counts 整条丢弃（见那里的注释）。判定必须**赶在 clean_internal_ids
-    # 之前**：真的「sec-12」会被清洗抹掉，抹完只剩「章节的编号未清理」，证据没了就再也认不出来。
-    # 私有属性：不进 model_dump，落库结果的结构逐字节不变。
-    _about_system_note: bool = PrivateAttr(default=False)
-
     @model_validator(mode="after")
     def _strip_blank(self):
         """全空白等同于没填：min_length 挡不住 "   "。顺带抹掉泄露的内部标识。"""
         if not self.title.strip() or not self.advice.strip():
             raise ValueError("风险项的标题与整改建议都不能为空白")
-        self._about_system_note = mentions_system_note(
-            self.title, self.advice, self.tender_ref, self.chapter_title)
         self.title = clean_internal_ids(self.title)
         self.advice = clean_internal_ids(self.advice)
         self.tender_ref = clean_internal_ids(self.tender_ref)
@@ -282,8 +274,11 @@ class RiskReport(BaseModel):
         # 通过项与风险项一样是给用户看的整句（2026-08-08 实测 12 处：
         # 「响应函已提供，含90天有效期承诺…（sec-8-c10）」）。风险项在 RiskFinding 里已清，
         # 这个平级列表当时漏了。
-        self.passed_items = [clean_internal_ids(p) for p in self.passed_items]
-        seen: set[tuple[str, str, tuple[str, ...]]] = set()
+        # 通过项同样可能是在说我们自己的注记（「文档整洁、无 sec-xxx 一类的残留标记」）——
+        # 判据与风险项共用，同样只认注记前缀与编号占位符，不认真条款 id。
+        self.passed_items = [c for c in (clean_internal_ids(p) for p in self.passed_items)
+                             if c and not mentions_system_note(c)]
+        seen: set[tuple[str, str, tuple[str, ...], str, str]] = set()
         uniq = []
         for i in self.items:
             # 标题清洗前非空、清洗后变空——说明整个标题就是个内部 id/字段名（如「sec-8-c95」），
@@ -292,19 +287,25 @@ class RiskReport(BaseModel):
                 logger.warning("risk finding dropped: title became empty after id cleanup (advice=%r)",
                                i.advice[:40])
                 continue
-            # 这条发现说的是**我们自己**加进送审材料里的东西（系统注记、内部章节编号），不是用户
+            # 这条发现说的是**我们自己**加进送审材料里的东西（系统注记、编号占位符），不是用户
             # 文件里的内容。2026-08-11 生产实测：「投标文件多处出现章节编号(如 sec-xxx)和内嵌图片
             # 标记，未作清理，影响文件整洁性和专业性」——用户的 .docx 里一个都没有。留着就是拿
             # 我们自己的实现细节去冤枉用户，还顺带把它泄露出去。提示词里已明令（见
             # prompts/review._SYSTEM_NOTE_RULE），但那只是"请模型配合"，这里是确定性的那一半。
-            # 判定在 RiskFinding._strip_blank 里做过了（必须赶在清洗抹掉证据之前）。
-            if i._about_system_note:
-                logger.warning("risk finding dropped: 该发现指向系统注记/内部编号而非投标文件内容 (title=%r)",
+            # 只问 title/advice（这条发现在说什么），不问 tender_ref/chapter_title（出处与章节名，
+            # 里面出现编号是模型照提示词办事）；判据本身也只认占位符、不认真 id，见 mentions_system_note。
+            if mentions_system_note(i.title, i.advice):
+                logger.warning("risk finding dropped: 该发现指向系统注记/编号占位符而非投标文件内容 (title=%r)",
                                i.title[:60])
                 continue
             # 引用条款不同的两条发现，标题/建议文字可能撞车（同类问题分别命中不同★条款）——
             # 去重键要能分得开，否则会把它们错误地塌缩成一条，漏报剩下的条款。
-            key = (i.title.strip(), i.advice.strip(), tuple(sorted(set(i.clause_ids))))
+            # **不能只靠 clause_ids**：审查载荷里已经没有任何内部条款 id 了（提纲/构成清单/读标
+            # 三处都剥过，见 nodes/review 与 common._item_for_model），模型无从填起，这一项恒为
+            # 空元组，去重键就退化成 (title, advice) ——正是上面这句注释要防的那种塌缩。
+            # 补上位置：同一条问题落在不同章、或章内不同处，就是不同的发现。
+            key = (i.title.strip(), i.advice.strip(), tuple(sorted(set(i.clause_ids))),
+                   i.target_id.strip(), i.anchor_text.strip())
             if key in seen:
                 continue
             seen.add(key)

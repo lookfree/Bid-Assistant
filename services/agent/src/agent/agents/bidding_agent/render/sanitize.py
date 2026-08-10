@@ -243,14 +243,24 @@ def clean_internal_ids(text: str) -> str:
 # ——用户的 .docx 里没有任何这类东西，是我们拼识别文字时加的注记和自己的章节键。
 # 提示词里已明令这些不属于投标文件（见 prompts/review.SYSTEM_NOTE_RULE），但那是"请模型配合"；
 # 弱模型上失效过不止一次，确定性识别才是能保证的那一半。
-# 判据只认两样，都是正常中文标书结论里不该出现的：
-#   · 「系统注记」——注记的统一前缀（SYSTEM_NOTE_PREFIX），模型要么原样抄、要么复述；
-#   · 裸的「sec-」——真的 sec-8-c95 已被 clean_internal_ids 抹掉，还剩下的是模型自己写的泛指
-#     （sec-xxx / sec-N）。左边界 (?<![A-Za-z]) 同 _ID：「IPsec-3DES」是技术方案原文，不是内部编号。
-_NOTE_WORD = SYSTEM_NOTE_PREFIX.lstrip("【")
-_SYSTEM_NOTE_MENTION = re.compile(rf"{_NOTE_WORD}|(?<![A-Za-z])sec-")
+# **硬约束：宁可漏过一条格式抱怨，也绝不许删掉一条真发现。** 判据因此只认两种
+# 「真发现里不可能出现」的形态，一律不碰真实条款 id：
+#   · 「系统注记」——注记的统一前缀（SYSTEM_NOTE_PREFIX）本身，模型抄了或复述了；
+#   · 泛指写法的编号占位符（sec-xxx / sec-N / sec-* / sec-?）——线上那条投诉原文写的正是
+#     「如 sec-xxx」。**真 id（sec-2-c8）一个都不算**：模型把真条款 id 写进 tender_ref/advice
+#     是提示词点名要求的常态行为（2026-08-08 全量实测审查报告里 115 处），拿它当"抱怨证据"
+#     就会把废标级高风险发现整条删掉——那比多报一条格式抱怨严重一个数量级。
+#     边界两侧都卡死：左边排除字母/数字/连字符（「IPsec-3DES」「30-sec-timeout」是正文原话），
+#     右边要求占位符后面不再接字母数字（否则 sec-next 这类普通英文也会中）。
+# re.escape：前缀是"四处共用、以后可能会调"的常量，带元字符时不加转义会在 import 期抛 re.error。
+_NOTE_WORD = re.escape(SYSTEM_NOTE_PREFIX.lstrip("【"))
+_SYSTEM_NOTE_MENTION = re.compile(
+    rf"{_NOTE_WORD}|(?<![A-Za-z0-9-])sec-(?:[xX]+|[nN]|\*+|\?+)(?![A-Za-z0-9])")
 
 
 def mentions_system_note(*texts: str) -> bool:
-    """这几段文字里有没有在谈论系统注记 / 内部章节编号（即：模型把我们的辅助信息当成了文件内容）。"""
+    """这几段文字里有没有在谈论系统注记 / 编号占位符（即：模型把我们的辅助信息当成了文件内容）。
+
+    **只该拿"这条发现在说什么"的字段来问**（title / advice），不要拿 tender_ref / chapter_title：
+    那两个字段模型本来就被要求写出处与章节名，里面出现编号是它照做，不是它在抱怨。"""
     return any(_SYSTEM_NOTE_MENTION.search(t) for t in texts if t)
