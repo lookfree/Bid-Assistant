@@ -14,6 +14,7 @@
 """
 from agent.parsing.parsers import parse_bytes, splice_ocr_pages
 from agent.parsing.pdf_sections import PdfLine, split_pdf_lines
+from agent.parsing.types import SYSTEM_NOTE_PREFIX
 
 _BODY = 10.5
 
@@ -147,6 +148,9 @@ class TestFalseTitles:
         （docx 那边刚踩过：幻影节还会顺移其后所有 clause id）。"""
         lines = _doc([[
             ("￥1,234,567.00元", 22.0), ("2026年8月1日", 22.0), ("二〇二六年八月", 22.0),
+            # 「零」在落款里有三种打法，少认一种就凭空多切一节：实测「广州市建设工程施工公开招标
+            # 招标文件范本.pdf」的封面写的是 U+25CB 的「二○二二年三月」，Ｏ 是全角字母那一种。
+            ("二○二二年三月", 22.0), ("二Ｏ二二年三月", 22.0),
             ("第一章 采购需求", 16.0), *_body(12, "需求"),
             ("第二章 商务要求", 16.0), *_body(12, "商务"),
             ("第三章 合同条款", 16.0), *_body(12, "合同"),
@@ -258,3 +262,35 @@ class TestOcrSplice:
         assert _sec_count(after.clauses, after.headings) == _sec_count(parsed.clauses,
                                                                       parsed.headings)
         assert any("Zhang San" in c["text"] for c in after.clauses)
+
+    def test_a_note_replacing_a_titled_scan_page_never_inherits_that_title(self):
+        """整页被替换掉的扫描页上原本有一条标题坐标：坐标之外**还要核对行文字**。
+
+        可达条件不苛刻——一页只印一行短标题 + 一张证照图，就同时满足「有标题坐标」
+        （字号比正文大）和「是扫描图片页」（可见文字不足 20 字）。识别文字拼回时整页被替换，
+        原标题所在的那一行变成了页首注记；只认坐标的话，「【系统注记·扫描页识别 第N页】」
+        会被当成章节标题——把我们自己的注记印成用户标书的一节。
+
+        反向变异：把 resplit_marked 里的 `m.get("text") == _norm(t)` 复核去掉，本用例变红。
+        """
+        from fpdf import FPDF
+
+        pdf = FPDF()
+        pdf.add_page()
+        for n, title in enumerate(["Section One Scope", "Section Two Terms"]):
+            pdf.set_font("helvetica", size=18)
+            pdf.multi_cell(0, 10, new_x="LMARGIN", new_y="NEXT", text=title)
+            pdf.set_font("helvetica", size=10.5)
+            for i in range(6):
+                pdf.multi_cell(0, 6, new_x="LMARGIN", new_y="NEXT",
+                               text=f"Body line {n}-{i} of this bid document paragraph")
+        pdf.add_page()                       # 只印一行短标题的页 = 有标题坐标，且算扫描图片页
+        pdf.set_font("helvetica", size=18)
+        pdf.multi_cell(0, 10, new_x="LMARGIN", new_y="NEXT", text="Fee Terms")
+        parsed = parse_bytes(bytes(pdf.output()), "t.pdf")
+        assert parsed.image_pages == 1                                   # 第二页确实算扫描页
+        assert any(m["page"] == 1 for m in parsed.heading_marks)         # 且它上面有标题坐标
+
+        after = splice_ocr_pages(parsed, {1: "1. Legal representative: Zhang San of the bidder"})
+        assert all(SYSTEM_NOTE_PREFIX not in t for t in _titles(after.headings)), _titles(after.headings)
+        assert any("Zhang San" in c["text"] for c in after.clauses)      # 识别文字照常进条款
