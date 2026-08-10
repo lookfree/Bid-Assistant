@@ -52,6 +52,13 @@ def _incomplete_args(msg: Any, tool_name: str) -> bool:
 
     判据改成看 args 原文能不能 json.loads——聚合消息的 tool_call_chunks 里存的是逐片
     拼起来的**原文**，没写完就必然是非法 JSON，与服务商回不回 finish_reason 无关。
+
+    **strict=False 不能少**：langchain 把 args 落进 tool_calls 用的是
+    parse_partial_json(..., strict=False)，比它严就会把**写完的**提交判成截断。差集正是
+    串值里的裸控制字符（裸换行、裸制表符）——模型写长中文字段时的高频形态，而后果是
+    压缩重试三轮、整步失败、全额退款，用户什么都拿不到。检出力不受影响：真截断的三种形态
+    （串/数组/对象未闭合）在 strict=False 下照样非法。判据必须与**落 tool_calls 的那个解析器**
+    同口径，否则每换一家服务商就会冒出一种新的分歧形态。
     误伤担心两处，都不成立：
       · 中文串值里未转义的英文双引号（读标高频）——那种 parse_partial_json 直接抛，消息落进
         invalid_tool_calls、msg.tool_calls 为空，被下面第一行挡掉（仍由 _repair_submit_args 兜）；
@@ -63,12 +70,12 @@ def _incomplete_args(msg: Any, tool_name: str) -> bool:
     for tc in getattr(msg, "tool_call_chunks", None) or []:
         if tc.get("name") not in (tool_name, None):
             continue
-        raw = tc.get("args") or ""
-        if not raw.strip():
-            continue
+        raw = tc.get("args")
+        if not isinstance(raw, str) or not raw.strip():
+            continue        # 契约是 str | None；真遇到别的形状就当"判不了"，绝不因此毙掉一次提交
         try:
-            json.loads(raw)
-        except ValueError:
+            json.loads(raw, strict=False)
+        except (ValueError, TypeError):
             return True
     return False
 

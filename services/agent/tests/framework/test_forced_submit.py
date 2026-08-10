@@ -288,3 +288,58 @@ async def test_a_complete_submission_is_never_mistaken_for_truncated():
 
     assert (await run_submit_agent(ctx, "sys", "user", "submit_x", Toy, "desc")).x == 3
     assert chat.n == 1
+
+
+@pytest.mark.parametrize("raw,want", [
+    ('{"s": "第一行\n第二行"}', "第一行\n第二行"),        # 裸换行：模型写长中文字段的高频形态
+    ('{"s": "列一\t列二"}', "列一\t列二"),                # 裸制表符：表格类结论
+])
+async def test_a_complete_submission_with_bare_control_chars_is_not_truncated(raw, want):
+    """回归（复审 C2）：判据必须与**落 tool_calls 的那个解析器**同口径。
+
+    langchain 用 parse_partial_json(..., strict=False)；我们若用 strict=True，串值里的裸换行/
+    裸制表符——完全正常的**写完的**输出——会被判成截断，压缩重试三轮后整步失败 + 全额退款，
+    用户什么都拿不到。影响面是所有走 _forced_submit 的步（读标每个分段轮、提纲、审查、述标、
+    classify、checklist）。
+    反向变异：把 json.loads 的 strict=False 去掉，本用例抛 RuntimeError。"""
+    chat = _ScriptedChat([AIMessage(content="", tool_calls=[],
+                                    additional_kwargs={"_raw_tool": "submit_s", "_raw_args": raw})])
+    ctx = _ctx(_ScriptedGateway(chat))
+
+    result = await run_submit_agent(ctx, "sys", "user", "submit_s", ToyS, "审查")
+
+    assert result.s == want and chat.n == 1      # 首轮即交付，一轮都没白烧
+
+
+@pytest.mark.parametrize("raw", [
+    '{"s": "写到一半',                    # 串未闭合
+    '{"items": ["甲", "乙"',              # 数组未闭合
+    '{"s": "写完了"',                     # 对象未闭合
+])
+async def test_all_three_shapes_of_real_truncation_are_still_caught(raw):
+    """放宽到 strict=False 之后，真截断的三种形态一条都不能漏。"""
+    chat = _ScriptedChat([AIMessage(content="", tool_calls=[],
+                                    additional_kwargs={"_raw_tool": "submit_s", "_raw_args": raw})] * 3)
+    ctx, rec = _ctx_rec(_ScriptedGateway(chat))
+
+    with pytest.raises(RuntimeError, match="未通过.*提交"):
+        await run_submit_agent(ctx, "sys", "user", "submit_s", ToyS, "审查")
+
+    assert [e["event_meta"].get("outcome") for e in rec.events
+            if e["event_type"] == "submit" and e["role"] == "ai"] == ["truncated"] * 3
+
+
+def test_non_string_args_never_break_the_step():
+    """健壮性（复审 m8）：某适配器把 args 放成 dict 时，判据只该"判不了"（回 False），
+    绝不能抛 AttributeError / TypeError 打断整步。
+
+    直接问 _incomplete_args：langchain 的 AIMessageChunk 自己就拒收非 str 的 args
+    （ToolCallChunk 契约是 str | None），所以这条路今天不可达，构造不出真消息——
+    但守卫要在契约被别的适配器打破时兜住，用鸭子类型的假消息锁住它。"""
+    from agent.framework.create_agent import _incomplete_args
+
+    class _Msg:
+        tool_calls = [{"name": "submit_s", "args": {"s": "已写完"}}]
+        tool_call_chunks = [{"name": "submit_s", "args": {"s": "已写完"}, "id": "ct", "index": 0}]
+
+    assert _incomplete_args(_Msg(), "submit_s") is False
