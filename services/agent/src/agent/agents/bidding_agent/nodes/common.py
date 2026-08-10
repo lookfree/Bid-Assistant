@@ -30,20 +30,30 @@ def _aggregate(parsed, out: dict[str, str]) -> None:
     """一份解析结果按节聚合进 out（追加成 sec-1..N 的连续键）。**节号全局重排**——
     每份文件的节号都从 sec-1 起,直接合并会让后一份把前一份的同号节整节覆盖（静默丢半本标书）。
 
-    条款原文**必须转义**再放进 <p>：标书里"响应时间<30分钟，可用率>99.9%"这类写法在技术偏离表、
-    服务承诺表里遍地都是,裸拼的话 "<30分钟，可用率>" 就是一个像模像样的标签,
+    **章节标题随它自己那一节的正文一起进去**（节首一个 <h3>）：解析层的口径是「标题另存
+    headings、不进 clauses」,只吃 clauses 的话模型拿到的是一堆没有名字的正文块。docx 认出
+    Word 大纲层级之后一份文件动辄几百条标题,而「1.1.2 核心架构要求偏离表」这种标题正是模型
+    判断这一段在答什么的唯一线索——丢了它,审查就会把文档里明明写着的条款报成「未响应」
+    （2026-08-10 用户实例）。headings 本身照常产出,供 _clause_source 与前端定位使用。
+    只有标题、没有正文的节仍不产章：那种节没有可体检的内容,凭空多出来只会挤掉别的章的额度。
+
+    条款原文与标题**必须转义**再放进标签：标书里"响应时间<30分钟，可用率>99.9%"这类写法在
+    技术偏离表、服务承诺表里遍地都是,裸拼的话 "<30分钟，可用率>" 就是一个像模像样的标签,
     下游剥标签时被整段吃掉——模型读到的是"响应时间99.9%",SLA 承诺正好读反。
     喂模型前的还原由消费方各自做（html_to_review_text / present._plain 都会 unescape）。
     quote=False：这里是元素文本不是属性值,引号原样留着更省字数也更贴近原文。"""
+    titles = {h.get("sec"): h.get("title") for h in (parsed.headings or [])}
     by_sec: dict[str, list[str]] = {}
     for c in parsed.clauses:
         m = re.match(r"^(sec-\d+)-", c.get("id") or "")
         if m:
             by_sec.setdefault(m.group(1), []).append(c.get("text") or "")
-    for texts in by_sec.values():
+    for sec, texts in by_sec.items():
         html = "".join(f"<p>{escape(t, quote=False)}</p>" for t in texts if t)
         if html:
-            out[f"sec-{len(out) + 1}"] = html
+            title = (titles.get(sec) or "").strip()
+            head = f"<h3>{escape(title, quote=False)}</h3>" if title else ""
+            out[f"sec-{len(out) + 1}"] = head + html
 
 
 def _key_list(keys: str | list[str]) -> list[str]:
@@ -78,7 +88,7 @@ async def parse_bid_docs(keys: str | list[str], ctx=None) -> tuple[dict[str, str
     for key in _key_list(keys):
         name = key.rsplit("/", 1)[-1]
         parsed = await asyncio.to_thread(read_and_parse, key)
-        if deadline is None and needs_ocr(parsed):
+        if deadline is None and needs_ocr(parsed, key):
             deadline = ocr_deadline()          # 第一份真要识别的文件到手,此刻才开表
         # 先扫描页后内嵌图：一份文件只会走其中一条（PDF 有页、docx 有图），顺序在实际数据上
         # 无差别；写成固定顺序是为了让"预算怎么花的"可预期——真要有既有扫描页又有内嵌图的

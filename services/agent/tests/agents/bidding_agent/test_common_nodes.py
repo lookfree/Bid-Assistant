@@ -6,13 +6,14 @@ from agent.parsing import ocr as ocr_mod
 from agent.parsing.types import ParsedDoc
 
 
-def _Parsed(clauses, pages=None, image_pages=0, embedded_images=0):
+def _Parsed(clauses, pages=None, image_pages=0, embedded_images=0, headings=None):
     """image_pages 顺带造出逐页判定：「这份文件要不要真发 OCR」认的是 image_page_flags
     （scanned_page_indices），只填个数字的话惰性预算判据看不到有扫描页。"""
     total = pages or image_pages
     flags = [i >= total - image_pages for i in range(total)] if image_pages else []
     return ParsedDoc(text="", kind="pdf", pages=pages, image_pages=image_pages,
-                     image_page_flags=flags, clauses=clauses, embedded_images=embedded_images)
+                     image_page_flags=flags, clauses=clauses, embedded_images=embedded_images,
+                     headings=headings or [])
 
 
 def test_parse_bid_chapters_single_file_keeps_section_order(monkeypatch):
@@ -43,6 +44,39 @@ def test_clause_text_with_angle_brackets_survives_to_the_model(monkeypatch):
     assert chapters["sec-1"] == "<p>响应时间&lt;30分钟，可用率&gt;99.9%</p>"
     assert html_to_review_text(chapters["sec-1"]) == clause      # 审查那条消费路
     assert _plain(chapters["sec-1"]) == clause                   # 述标那条消费路
+
+
+async def test_chapter_titles_travel_with_their_own_section(monkeypatch):
+    """章节标题必须**随该节正文一起**进入喂给模型的材料。
+
+    标题另存 headings、不进 clauses 是解析层的口径；聚章只吃 clauses 的话，docx 认出几百条
+    标题之后，模型拿到的反而是一堆没有名字的正文块——而用户的原始诉求正是「偏离表里明明
+    写着的条款被判未响应」，「1.1.2 核心架构要求偏离表」这种标题恰恰是模型判断这段在答什么的
+    唯一线索。审查与述标两条消费路都要看得见它。
+    只有标题、没有正文的节仍不产章（既有口径）：那种节本来就没有可体检的内容。"""
+    parsed = _Parsed([{"id": "sec-1-c1", "text": "本表逐条应答招标技术要求。"},
+                      {"id": "sec-2-c1", "text": "3 身份集成：支持对接统一身份认证平台。"}],
+                     headings=[{"sec": "sec-1", "title": "1.技术偏离表", "level": 1},
+                               {"sec": "sec-2", "title": "1.1.2 核心架构要求偏离表", "level": 3},
+                               {"sec": "sec-3", "title": "2.项目概况", "level": 1}])
+    monkeypatch.setattr(common_mod, "read_and_parse", lambda key: parsed)
+    chapters, _scanned = await parse_bid_docs(["uploads/u/技术文件.docx"])
+    assert list(chapters) == ["sec-1", "sec-2"]          # 空标题节不产章
+    text = html_to_review_text(chapters["sec-2"])        # 审查那条消费路
+    assert text == "1.1.2 核心架构要求偏离表\n3 身份集成：支持对接统一身份认证平台。"
+    assert _plain(chapters["sec-1"]).startswith("1.技术偏离表")   # 述标那条消费路
+
+
+def test_chapter_title_with_angle_brackets_is_escaped_like_the_body(monkeypatch):
+    """标题走的是与条款原文同一套转义：「响应时间<30分钟」这类写法在标题里同样出现，
+    裸拼的话下游剥标签时把半句话吃掉（同 test_clause_text_with_angle_brackets_survives）。"""
+    monkeypatch.setattr(common_mod, "read_and_parse",
+                        lambda key: _Parsed([{"id": "sec-1-c1", "text": "全部满足。"}],
+                                            headings=[{"sec": "sec-1", "level": 1,
+                                                       "title": "3.2 响应时间<30分钟"}]))
+    chapters = parse_bid_chapters("uploads/u/bid.docx")
+    assert chapters["sec-1"] == "<h3>3.2 响应时间&lt;30分钟</h3><p>全部满足。</p>"
+    assert html_to_review_text(chapters["sec-1"]) == "3.2 响应时间<30分钟\n全部满足。"
 
 
 def test_parse_bid_chapters_multi_file_renumbers_instead_of_overwriting(monkeypatch):
@@ -188,6 +222,27 @@ async def test_parse_bid_docs_owns_up_to_images_embedded_in_a_docx(monkeypatch):
     monkeypatch.setattr(common_mod, "read_and_parse", lambda key: by_key[key])
     _chapters, scanned = await parse_bid_docs(list(by_key))
     assert scanned == [{"name": "商务标.docx", "embedded_images": 4}]
+
+
+async def test_a_legacy_doc_with_images_does_not_start_the_ocr_budget(monkeypatch):
+    """`.doc` 里的内嵌图这条链路根本不识别（识别侧只吃 .docx），就不该为它起 20 分钟的表。
+
+    起表判据与「真会发请求」的判据必须同口径：首份是 .doc、后面跟着 9 份大 PDF 时，预算会被
+    它之后的下载啃掉，第一次识别还没发出去就报「预算已用光」——张冠李戴。"""
+    seen: list[float | None] = []
+
+    async def _fake_ocr(doc, key, on_progress=None, deadline=None):
+        seen.append(deadline)
+        return doc
+
+    monkeypatch.setattr(ocr_mod.settings, "ocr_base_url", "http://ocr.test:8100")
+    monkeypatch.setattr(common_mod, "read_and_parse",
+                        lambda key: _Parsed([{"id": "sec-1-c1", "text": "投标函"}],
+                                            embedded_images=5))
+    monkeypatch.setattr(common_mod, "ocr_scanned_pages", _fake_ocr)
+    monkeypatch.setattr(common_mod, "ocr_docx_images", _fake_ocr)
+    await parse_bid_docs(["uploads/u/x/商务标.doc"])
+    assert seen == [None, None]           # 两条链路都拿到「还没起表」
 
 
 def test_parse_bid_chapters_does_not_ocr(monkeypatch):

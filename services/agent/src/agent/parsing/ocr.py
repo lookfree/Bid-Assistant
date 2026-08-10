@@ -98,11 +98,20 @@ def ocr_configured() -> bool:
     return bool((settings.ocr_base_url or "").strip())
 
 
-def needs_ocr(doc: ParsedDoc) -> bool:
-    """这份文件要不要真发 OCR（部署了识别服务 + 确实有看不见的东西：扫描页或 docx 内嵌图）。
+def _splices_docx_images(key: str) -> bool:
+    """这个 key 的内嵌图会不会真被送去识别。**只认 .docx**：.doc 存的是旧格式字节，
+    解析时那份 docx 是 LibreOffice 转出来的临时产物，识别侧要用就得再转一次。
+    判据单点在此——起算预算与真发请求必须同口径，否则 .doc 会白起一张 20 分钟的表
+    （首份是 .doc、后面跟着 9 份大 PDF 时，预算被它之后的下载啃掉）。"""
+    return key.lower().endswith(".docx")
+
+
+def needs_ocr(doc: ParsedDoc, key: str) -> bool:
+    """这份文件要不要真发 OCR（部署了识别服务 + 确实有看得见的活可干：扫描页或 .docx 内嵌图）。
     调用方据此**惰性**起算时长预算：不含第一份要识别的文件到手之前的下载与解析
     （之后的二次下载与识别都吃在预算内，见 _TOTAL_BUDGET_S）。"""
-    return ocr_configured() and bool(scanned_page_indices(doc) or doc.embedded_images)
+    return ocr_configured() and bool(scanned_page_indices(doc)
+                                     or (doc.embedded_images and _splices_docx_images(key)))
 
 
 def new_deadline() -> float:
@@ -163,7 +172,7 @@ async def ocr_docx_images(doc: ParsedDoc, key: str,
     标书若把字节留在 ParsedDoc 里，就是几十上百 MB 跟着整个 run 的状态走；而识别本来
     就是分钟量级的重活，多一次 MinIO 读取 + 一次解析可以忽略。
     """
-    if not ocr_configured() or not doc.embedded_images or not key.lower().endswith(".docx"):
+    if not ocr_configured() or not doc.embedded_images or not _splices_docx_images(key):
         return doc
     if deadline is None:
         deadline = new_deadline()
@@ -270,7 +279,7 @@ async def _ocr_stream(fetch: FetchFn, indices: list[int], on_progress: ProgressF
                 logger.warning("%s OCR 超过本次审查的时长帽 %ds，停在 %d/%d",
                                what, _TOTAL_BUDGET_S, start, len(indices))
                 # 提前收手也要把最后一帧发出去，否则横幅永远停在上一个 10 的倍数
-                await _report(on_progress, start, len(indices), force=True)
+                await _report(on_progress, start, len(indices), what, force=True)
                 break
             chunk = indices[start:start + _CONCURRENCY]
             done = start + len(chunk)
@@ -292,9 +301,9 @@ async def _ocr_stream(fetch: FetchFn, indices: list[int], on_progress: ProgressF
             if fails >= _MAX_CONSECUTIVE_FAILS:
                 logger.warning("%s OCR 连续失败 %d 次，放弃该文件剩余部分（停在 %d/%d）",
                                what, fails, done, len(indices))
-                await _report(on_progress, done, len(indices), force=True)
+                await _report(on_progress, done, len(indices), what, force=True)
                 break
-            await _report(on_progress, done, len(indices))
+            await _report(on_progress, done, len(indices), what)
     return out
 
 
@@ -343,13 +352,14 @@ async def _ocr_one(client: httpx.AsyncClient, base: str, index: int, image: byte
         return index, None
 
 
-async def _report(on_progress: ProgressFn | None, done: int, total: int,
+async def _report(on_progress: ProgressFn | None, done: int, total: int, what: str,
                   force: bool = False) -> None:
     """每 _PROGRESS_EVERY 页（以及最后一页）播报一次进度；播报失败不影响识别。
-    force=True 用于提前收手的路径：不满一个间隔也要把当前进度发出去。"""
+    force=True 用于提前收手的路径：不满一个间隔也要把当前进度发出去。
+    what 跟着调用方走（扫描页 / 内嵌图片）：两条链路共用这一份，写死一条的话日志会指错路。"""
     if not on_progress or (not force and done % _PROGRESS_EVERY and done < total):
         return
     try:
         await on_progress(min(done, total), total)
     except Exception:  # noqa: BLE001 进度 best-effort
-        logger.warning("扫描页 OCR 进度播报失败", exc_info=True)
+        logger.warning("%s OCR 进度播报失败", what, exc_info=True)
