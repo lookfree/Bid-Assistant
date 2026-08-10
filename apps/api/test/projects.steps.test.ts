@@ -32,7 +32,8 @@ const STEP_RESULTS: Record<string, unknown> = {
   },
   outline: { chapters: [{ id: "ch-1", chapter_title: "技术方案", clause_ids: ["sec-1-c1"] }] },
   content: { ch_1: "<p>正文一</p>" },
-  review: { findings: [] },
+  // review 带扫描页统计 sidecar（agent 的 risk["scanned_files"]）：OCR 之后仍看不见的页
+  review: { findings: [], scanned_files: [{ name: "投标文件.pdf", pages: 366, image_pages: 139 }] },
   present: { template: "gov", slides: [{ id: "s-1", title: "封面" }] },
   export: { docx: "artifacts/x.docx", pptx: "artifacts/x.pptx" },
 }
@@ -402,11 +403,16 @@ describe("/api/projects 按步编排", () => {
   })
 
   it("review 步：state_overrides 带 outline+chapters（体检读编辑后现值，不与编辑分叉）", async () => {
-    const { input } = await runStepAndGetInput("review")
+    const { input, sse } = await runStepAndGetInput("review")
     expect(input.state_overrides).toEqual({
       outline: STEP_RESULTS.outline,
       chapters: STEP_RESULTS.content,
     })
+    // 扫描页统计（agent sidecar）必须一路透到前端：报告页据此提示「有 N 页没看到，请人工复核」。
+    // App 侧没有任何按字段白名单的裁剪器，这条断言就是那个前提的看门人——
+    // 哪天有人给审查结果加了 zod/序列化白名单，这个 sidecar 会被静默剥掉，用户再也看不到提示。
+    expect(sse).toContain("scannedFiles")
+    expect(sse).toContain("imagePages")
   })
 
   it("present 步：非法 duration → 400 不留占位行；{duration,template} 透传；state_overrides 带 outline+chapters", async () => {

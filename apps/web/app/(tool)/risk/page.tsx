@@ -19,7 +19,7 @@ import { RejectUploadPanel } from "./reject-upload-panel"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { StepRunCta } from "@/components/tool/step-run-cta"
 import { AiNotice } from "@/components/tool/ai-notice"
-import { deriveRisk, type RealRisk } from "@/lib/risk-derive"
+import { deriveRisk, scanNotice, type RealRisk } from "@/lib/risk-derive"
 import { stepPrereq, useStep } from "@/lib/use-step"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
@@ -213,10 +213,24 @@ function RejectReview() {
   }
 
   const { score, overview, riskItems, passed } = deriveRisk(real)
+  const scan = scanNotice(real)
   return (
     <div className="flex flex-col gap-6">
         <EntryBar onOpen={goEntry} />
         <AiNotice />
+        {/* 扫描页横条：这些页的内容一个字都没进过比对（识别不出来或没部署识别服务），
+            报告里与它们有关的结论——尤其是「缺少某材料」——必须由人再看一眼。
+            不说的话，一份大半是扫描件的标书看起来和一份完整审查过的标书一模一样。 */}
+        {scan && (
+          <div className="flex items-start gap-2 rounded-2xl border border-warning/40 bg-warning/10 px-4 py-3 text-xs leading-relaxed text-foreground">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
+            <p>
+              本标书有 <span className="font-semibold">{scan.pages}</span> 页为扫描件且未能识别出文字
+              （{scan.files.map((f) => `《${f.name}》${f.imagePages}/${f.pages} 页`).join("、")}），
+              这些页的内容未参与本次比对，相关结论请人工复核。
+            </p>
+          </div>
+        )}
         {/* 标书分类（spec334）：**只在没有招标文件的线下自查项目上渲染**——那类项目不跑读标、
             没有读标页，分类是在审查节点开头现判的，用户只能在这里改判。有招标文件的项目在读标页改。 */}
         {!info.project.tenderFileKey && (

@@ -1,4 +1,4 @@
-import type { RiskReport } from "./bid-types"
+import type { RiskReport, ScannedFileStat } from "./bid-types"
 
 // agent RiskReport（camelCase）：review 步结果。
 // /risk 页与 /content 页废标体检共用（同一步、同一份结果），映射逻辑也集中在此。
@@ -17,6 +17,15 @@ export function deriveRisk(f: RealRisk) {
     riskItems: f.items.map((x) => ({ level: x.level, tone: x.tone, title: x.title, chapter: x.tenderRef, advice: x.advice })),
     passed: f.passedItems,
   }
+}
+
+/** 报告头部的扫描页提示：受审文件里**识别之后仍看不见**的页有多少、都在哪几份文件里。
+ *  null = 没有这样的页（老报告没有这个字段、或扫描页全部识别成功）→ 横条不画，页面一如既往。
+ *  这些页的内容没进过比对，基于它们的结论（尤其是「缺少某材料」）必须由人再看一眼。 */
+export function scanNotice(f: RealRisk): { pages: number; files: ScannedFileStat[] } | null {
+  const files = (f.scannedFiles ?? []).filter((x) => x.imagePages > 0)
+  const pages = files.reduce((n, x) => n + x.imagePages, 0)
+  return pages > 0 ? { pages, files } : null
 }
 
 /** /content 页体检条目：带定位目标（标书 tab 与章节 id），chapter 取标书章节名。 */

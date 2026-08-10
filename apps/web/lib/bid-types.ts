@@ -90,6 +90,10 @@ export type RiskFinding = {
   anchorText?: string
 }
 
+/** 受审文件里**识别之后仍看不见**的页（扫描件 OCR 之后还提不出文字的那些）。
+ *  imagePages = 看不见的页数，pages = 该文件总页数。 */
+export type ScannedFileStat = { name: string; pages: number; imagePages: number }
+
 /** review 步结果（agent RiskReport，camelCase）。整改建议对所有用户免费下发（2026-08-01 产品口径）。 */
 export type RiskReport = {
   score: number
@@ -98,6 +102,9 @@ export type RiskReport = {
   passed: number
   items: RiskFinding[]
   passedItems: string[]
+  /** 扫描页统计（agent sidecar）。可选是**事实**：没有看不见的页时 agent 压根不带这个键，
+   *  库里既有的审查结果也一律没有它。 */
+  scannedFiles?: ScannedFileStat[]
 }
 
 
