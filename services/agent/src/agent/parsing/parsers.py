@@ -9,7 +9,7 @@ import tempfile
 from dataclasses import dataclass, replace
 
 from agent.parsing.docx_sections import (
-    Block, heading_style_levels, is_bold_line, paragraph_level, split_docx_blocks,
+    Block, heading_style_levels, paragraph_level, split_docx_blocks,
 )
 from agent.parsing.types import ParsedDoc, UnsupportedDocument
 
@@ -73,7 +73,7 @@ def _docx_lines_in_order(d) -> tuple[list[Block], list[tuple[int, str | None]]]:
     """按文档顺序遍历正文块（段落与表格交错）→ (正文块, 内嵌图片 [(插入块号, 关系id)])。
     表格行以 \t 连接单元格。
 
-    每个块随手记下 Word 自己标的大纲层级与加粗（见 parsing/docx_sections.py）：章节切分要用它，
+    每个块随手记下 Word 自己标的大纲层级（见 parsing/docx_sections.py）：章节切分要用它，
     而层级只有在这里手里还攥着段落元素时问得到，事后拿着纯文本行再问已经问不到了。
     2026-07-22 生产实测根因：招标文件的格式模板（授权委托书/应答一览表等）几乎都排在**表格**里，
     旧实现条款分句只喂段落 → 格式章只剩标题占节号、模板正文整段缺失（sec 空洞），
@@ -98,8 +98,7 @@ def _docx_lines_in_order(d) -> tuple[list[Block], list[tuple[int, str | None]]]:
         if child.tag == qn("w:p"):
             p = Paragraph(child, d)
             if p.text.strip():
-                blocks.append(Block(p.text, level=paragraph_level(child, styles),
-                                    bold=is_bold_line(p)))
+                blocks.append(Block(p.text, level=paragraph_level(child, styles)))
         elif child.tag == qn("w:tbl"):
             for r in Table(child, d).rows:
                 line = "\t".join(c.text for c in r.cells)

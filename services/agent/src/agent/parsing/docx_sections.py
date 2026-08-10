@@ -9,8 +9,9 @@
 判据顺序照抄作者的意图：
 ① 段落样式（Heading N / 标题 N / 基于它们的自定义样式）与 `w:outlineLvl` 是作者**自己标注**
    的层级，比任何正则都可靠；
-② 整份文档一个大纲层级都没有时，才退回编号模式（`1.` / `1.1` / `一、` / `第X章`）与
-   短行加粗的猜测；
+② 整份文档一个大纲层级都没有时，才退回编号模式（`1.` / `1.1` / `一、` / `第X章`）的猜测；
+   **加粗短行不作数**——仓库里 18 份真实标书实测，封面上「报 / 名 / 材 / 料」是四个各自成段的
+   加粗大字、「日期：    年   月   日」也是加粗，认它们当标题只会凭空造出一堆一个字的节；
 ③ 表格里的段落一律不参与标题判定——偏离表首行「招标文件的要求」是表头不是章节，
    放行的话一张偏离表就能切出几十个假节。
 
@@ -40,9 +41,8 @@ _CN_NUMBER = re.compile(r"^[一二三四五六七八九十]+\s*[、．.]")
 # 否则「100.00」这类金额也会被当成标题。
 _DOTTED_NUMBER = re.compile(r"^(\d+(?:\.\d+)*)\s*[.、\s]\s*(.+)$")
 _HAS_WORD = re.compile(r"[一-鿿A-Za-z]")
-# 整段加粗的短行：层级判不出来，给次级——只影响左栏字号，判错至多是缩进不对。
-_BOLD_HEADING_LEVEL = 2
-# 标题不会以句读收尾，「营业执照扫描件如下：」这种引导句不是章节。
+# 标题不会以句读收尾。实测真实标书里「1、提供投标须知规定的全部投标文件：正本1份，副本4份。」
+# 这类编号**列表项**短得过得了长度门槛，不看收尾就会被当成章节。
 _SENTENCE_END = "。；;，,、：:."
 
 
@@ -51,11 +51,10 @@ class Block:
     """文档顺序上的一个正文块（段落或表格行）。
 
     level 是 Word 自己标的大纲层级（1..9），None = 正文；table 标记它来自表格
-    （表格块永不参与标题判定）；bold 只在启发式回退时用得上。"""
+    （表格块永不参与标题判定）。"""
 
     text: str
     level: int | None = None
-    bold: bool = False
     table: bool = False
 
 
@@ -124,27 +123,23 @@ def paragraph_level(p_el, style_levels: dict[str, int]) -> int | None:
     return style_levels.get(sid) if sid else None
 
 
-def is_bold_line(paragraph) -> bool:
-    """整段（每个有字的 run）都加粗。启发式回退时的最后一根稻草。"""
-    runs = [r for r in paragraph.runs if r.text.strip()]
-    return bool(runs) and all(r.bold for r in runs)
-
-
 def _fallback_level(b: Block) -> int | None:
-    """没有任何大纲层级的文档才走这里：编号模式 → 短行加粗。表格行一律不判。"""
+    """没有任何大纲层级的文档才走这里：短行 + 编号模式。表格行一律不判。
+
+    前两种编号（第X章 / 一、）是既有判据，**逐字节沿用**，免得今天切得出来的文档反而变少；
+    阿拉伯编号是本次新增的，噪声也集中在它身上（列表项常常就是「1、xxx。」），故只对它
+    加一道收尾守卫。"""
     t = b.text.strip()
-    if b.table or len(t) > _MAX_HEADING_CHARS:
+    if b.table or not t or len(t) > _MAX_HEADING_CHARS:   # 无字的块（如纯图片段）不是标题
         return None
     if _CHAPTER.match(t):
         return 1
     if _CN_NUMBER.match(t):
         return 2
     m = _DOTTED_NUMBER.match(t)
-    if m and _HAS_WORD.search(m.group(2)):
-        return m.group(1).count(".") + 1
-    if b.bold and t[-1] not in _SENTENCE_END:
-        return _BOLD_HEADING_LEVEL
-    return None
+    if not m or not _HAS_WORD.search(m.group(2)) or t[-1] in _SENTENCE_END:
+        return None
+    return m.group(1).count(".") + 1
 
 
 # 并小节的门槛。**只在启发式回退时生效**：Word 自己标的标题是作者的意图，再短也不并。
@@ -163,7 +158,9 @@ def _group(blocks: list[Block], levels: list[int | None]) -> list[dict]:
         if lv:
             secs.append({"title": b.text.strip(), "level": lv, "texts": []})
         else:
-            secs[-1]["texts"].append(b.text)
+            # 条款文本去首尾空白：与既有 _split_clauses 同口径。前端把审查发现定位回原文时
+            # 拿的就是这段文本去比对，留着首行缩进的全角空格会比对不上。
+            secs[-1]["texts"].append(b.text.strip())
     if secs[0]["title"] is None and not secs[0]["texts"]:
         secs.pop(0)          # 文档以标题开头 → 首个标题即 sec-1（与既有口径一致）
     return secs

@@ -109,6 +109,22 @@ class TestFallbackHeuristics:
                         "采购人不予受理，由此产生的一切后果由投标人自行承担。")
         assert parse_docx(_bytes(d)).headings == []
 
+    def test_a_numbered_list_item_that_ends_in_punctuation_is_not_a_heading(self):
+        """真实标书实测：编号列表项短得过得了长度门槛，靠「标题不以句读收尾」把它挡回去。"""
+        d = Document()
+        d.add_paragraph("1、提供投标须知规定的全部投标文件：正本1份，副本4份。")
+        d.add_paragraph("2、保证遵守招标文件中有关规定和收费标准。")
+        assert parse_docx(_bytes(d)).headings == []
+
+    def test_bold_cover_page_characters_are_not_headings(self):
+        """封面上「报 / 名 / 材 / 料」是四个各自成段的加粗大字。18 份真实标书实测：
+        认加粗短行当标题只会凭空造出一堆一个字的节，故加粗一律不作数。"""
+        d = Document()
+        for ch in "报名材料":
+            d.add_paragraph().add_run(ch).bold = True
+        d.add_paragraph().add_run("日期：       年      月       日").bold = True
+        assert parse_docx(_bytes(d)).headings == []
+
 
 class TestTablesAndDegradation:
     def test_table_rows_are_never_headings(self):
@@ -136,6 +152,13 @@ class TestTablesAndDegradation:
         parsed = parse_docx(_bytes(d))
         assert parsed.headings == []
         assert [c["id"] for c in parsed.clauses] == ["sec-1-c1", "sec-1-c2", "sec-1-c3"]
+
+    def test_clause_text_keeps_the_existing_stripped_shape(self):
+        """条款文本去首尾空白，与既有 _split_clauses 同口径——前端把审查发现定位回原文时
+        拿的就是这段文本去比对，留着首行缩进的全角空格会比对不上。"""
+        d = Document()
+        d.add_paragraph("　　我方承诺所提供的全部资料真实有效。 ")
+        assert parse_docx(_bytes(d)).clauses[0]["text"] == "我方承诺所提供的全部资料真实有效。"
 
     def test_small_document_keeps_its_short_sections(self):
         """小文档里的短节是**真章节**（「第一章 采购公告」下面就一句话），不许并掉。"""
