@@ -21,8 +21,9 @@ export type StandaloneBidEntryProps = {
    *  审查跑完 currentStep 就推进到 present，那份标书仍会显示「可审查」（用户实测）。 */
   doneStep: "review" | "present"
   doneLabel: string
-  uploadTitle: string
-  uploadDesc: string
+  /** 上传卡文案：**给了 uploadHref 就不需要**（那时本入口不自带上传卡）。 */
+  uploadTitle?: string
+  uploadDesc?: string
   /** true=只传标书、不提供招标文件（述标用）：直接去 noTenderHref，不走 /read 对照绕路。 */
   bidOnly?: boolean
   /** 招标文件可选项的提示（仅 !bidOnly 时展示）。 */
@@ -31,7 +32,12 @@ export type StandaloneBidEntryProps = {
   tenderRequired?: boolean
   /** 列表卡底部「改为上传」的文案：各页要求不同（审查要连招标文件一起传），不能写死在共享组件里 */
   switchToUploadLabel: string
-  submitLabel: string
+  /** 给定则本入口**不再自带上传卡**，「改为上传」变成跳到该地址的链接。
+   *  审查页用：那边的标准版面板已经是唯一的上传入口（原地跑读标+体检、价格写明），
+   *  这里再放一张上传卡就是重复品，且行为不一致（旧卡创建完会把用户甩去 /read）——
+   *  两个入口并存曾让用户以为"审查非得先跑一趟招标解读"（2026-08-11 用户实测反馈）。 */
+  uploadHref?: string
+  submitLabel?: string
   /** 附了招标文件时的提交按钮文案（仅 !bidOnly 时可能用到）。 */
   submitLabelWithTender?: string
 }
@@ -41,7 +47,7 @@ export type StandaloneBidEntryProps = {
  *  ② 上传线下标书（bidOnly=false 时可附招标文件先读标；bidOnly=true 只传标书直接操作）。 */
 export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
   const { onBack, backLabel, noTenderHref, pickTitle, pickDesc, emptyHint, isSelectable, readyLabel,
-    switchToUploadLabel, doneStep, doneLabel } = props
+    switchToUploadLabel, doneStep, doneLabel, uploadHref } = props
   const [projects, setProjects] = useState<ProjectListItem[]>([])
   const [loadingList, setLoadingList] = useState(true)
 
@@ -63,8 +69,10 @@ export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
   // **任何时候只显示一张卡**（用户口径：两卡并排那页不需要了）。?focus=upload 只作**初值**，
   // 之后在组件内切换：整页跳转会重跑鉴权、重拉项目列表，为一次纯 UI 切换付这个代价没道理，
   // 而且跳过去就只剩上传卡、没有回列表的路（评审：单向的"路径不丢"等于走进死胡同）。
+  // uploadHref 模式下本入口不自带上传卡，?focus=upload 也不许把它唤出来（否则又冒出重复入口）。
   const [showUpload, setShowUpload] = useState(
-    () => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("focus") === "upload",
+    () => !props.uploadHref && typeof window !== "undefined"
+      && new URLSearchParams(window.location.search).get("focus") === "upload",
   )
 
   return (
@@ -108,7 +116,7 @@ export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
             )}
           </div>
           <button
-            onClick={() => setShowUpload(true)}
+            onClick={() => { if (uploadHref) window.location.href = uploadHref; else setShowUpload(true) }}
             className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-border py-2.5 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
           >
             <UploadCloud className="size-3.5" />
@@ -116,7 +124,7 @@ export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
           </button>
         </section>
         )}
-        {showUpload && (
+        {showUpload && props.uploadTitle && (
           <div className="flex flex-col gap-2">
             <UploadBidCard {...props} />
             <button
@@ -163,8 +171,10 @@ function UploadBidCard({
       ])
       const id = await createReviewProject(bids.map((f) => f.key), tender ? [tender.key] : [])
       setCurrentProjectId(id)
-      // 带招标文件（仅 !bidOnly）：先去读标（读完自动接续本工具的步）；否则直接去本工具页
-      window.location.href = tender ? "/read" : noTenderHref
+      // 一律回本工具页，**带招标文件也不再绕去 /read**：读标由本工具页的「开始对照审查」一并跑掉。
+      // 此前带招标文件时硬跳 /read，用户得等它跑完再自己找回来点生成，中间还容易以为没传成功又传一遍
+      // （2026-08-08 已在标准版那张卡改掉，这个共用入口漏了，两个入口行为不一致——用户实测发现）。
+      window.location.href = noTenderHref
     } catch (e) {
       setError(uploadErrorMessage(e, "创建失败，请重试"))
       setBusy(false)
