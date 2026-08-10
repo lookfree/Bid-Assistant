@@ -294,6 +294,23 @@ def _fail_if_all_permanent(failed: list[dict]) -> None:
     raise RuntimeError(f"招标文件无法解析，读标终止：{detail}")
 
 
+def _fail_if_all_scanned(docs: list[tuple[str, object]]) -> None:
+    """每一份招标文件都是扫描件（每页都提不出文字）⇒ 当场诚实拒绝。
+
+    这类文件「解析成功」却零有效条款：页码/页眉还能刮出几条残渣，够让节点一路放行到烧模型那一步，
+    最后以「模型未提交结构化结果」收场——钱烧了，报错还把排查方向指向模型（同 _fail_if_all_permanent
+    要治的那种事故，只是入口不同：那边是解析抛错，这边是解析「成功」）。
+
+    **读标故意不复用审查那套 OCR**：读标产出的 clause_id 是全链路（提纲/正文/审查/前端左栏定位）
+    的锚点，必须逐字对得上招标原文；OCR 是逐页近似识别，切出来的条款既不稳定也回指不到原文位置，
+    拿它当锚点等于让下游全部引用悬空。看不见就说看不见，让用户换一份可复制文字的版本。"""
+    if not docs or not all(getattr(d, "pages", None) and d.image_pages >= d.pages
+                           for _, d in docs):
+        return
+    names = "、".join(f"《{n}》" for n, _ in docs)
+    raise RuntimeError(f"招标文件为扫描件，无法提取文字，请上传可复制文字的版本：{names}")
+
+
 def _public_failed(failed: list[dict]) -> list[dict]:
     """回传前端的失败清单：只留 name/reason，不外泄内部的瞬时/永久分类字段。"""
     return [{"name": f["name"], "reason": f["reason"]} for f in failed]
@@ -314,6 +331,7 @@ async def _parse_multi_files(files: list[dict]) -> tuple[list[dict], list[dict],
     results = await asyncio.gather(*[_one(f) for f in files])
     docs = [ok for ok, _ in results if ok is not None]
     failed = [bad for _, bad in results if bad is not None]
+    _fail_if_all_scanned(docs)      # 全是扫描件 ⇒ 当场失败，别让模型去读一堆页码
     clauses, file_ranges, headings = merge_parsed(docs)
     return clauses, file_ranges, failed, headings
 
@@ -353,17 +371,22 @@ def make_read_node(ctx):
         else:
             # boto3/解析皆同步 → 丢线程池。注意：工具兜底走的是同一个 read_and_parse——
             # 只对瞬时错误（存储/网络抖动）算二次机会；文件本身损坏则两路都失败，读标退化为无原文可引。
+            name = state["file_key"].rsplit("/", 1)[-1]
             try:
                 parsed = await asyncio.to_thread(read_and_parse, state["file_key"])
-                clauses = parsed.clauses
-                headings = parsed.headings
             except Exception as e:  # noqa: BLE001 瞬时错误降级让模型调 parse_document 重试
-                clauses = []
+                parsed = None
                 # 文件本身的问题（加密封装/损坏/格式不支持）当场失败——此前这里把异常整个吞掉，
                 # 连原因都不留，最后以「模型未提交结构化结果」收场。
-                _fail_if_all_permanent([{"name": state["file_key"].rsplit("/", 1)[-1],
-                                         "reason": _parse_fail_reason(e),
+                _fail_if_all_permanent([{"name": name, "reason": _parse_fail_reason(e),
                                          "transient": _is_transient(e)}])
+            # 全扫描件的判定放在 try **之外**：放里面的话它抛的错会被上面那个 except 接住，
+            # 当成一次解析失败重新分类，具体原因（扫描件）就被通用文案吃掉了。
+            clauses = []
+            if parsed is not None:
+                _fail_if_all_scanned([(name, parsed)])
+                clauses = parsed.clauses
+                headings = parsed.headings
             if clauses:
                 user = ("招标文件已解析为条款分句（id 为稳定锚点，clause_ids 直接引用，无需再调 parse_document）：\n"
                         f"{json.dumps(clauses, ensure_ascii=False)}\n\n请读标。")

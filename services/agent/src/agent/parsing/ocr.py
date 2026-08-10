@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 # 并发路数。OCR 是**纯 CPU 推理**的独立容器（231 上限 3 核、OCR_THREADS=2），2 路即打满它的
 # 线程数；再多只是在容器里排队，还会把同机的 PG/Redis 一起挤慢。
 _CONCURRENCY = 2
+# 闸门是**模块级/进程级**的（同 rag/embedder.py 的 _GLOBAL_SEM）：worker 一次跑 5 个审查
+# （agent_worker_concurrency=5），每个 run 各开 2 路就是 10 路在途打同一个 2 线程的容器——
+# 排队变深后每页都撞每请求总帽（_PAGE_TIMEOUT_S），识别成功率整体塌下去。
+# 按 run 各开一份信号量等于没开闸，所以它必须是模块级单例。
+_GLOBAL_SEM = asyncio.Semaphore(_CONCURRENCY)
 # 单页超时（秒）。231 实测单张 1200×850 证照 0.7–0.9s，整版扫描页更重；20s 是数量级的余量，
 # 到点即跳过该页，绝不让一页把整份文件拖住。
 # 这个口径**同时**盖住一页的两段活：渲染（asyncio.wait_for 包住 to_thread）与 HTTP 请求
@@ -183,9 +188,13 @@ async def _ocr_one(client: httpx.AsyncClient, base: str,
     返回 **None** 让调用方数「连续失败」；识别出空串是正常应答（空白页），返回 ""。
 
     总帽必须自己绑（见 _PAGE_TIMEOUT_S）：httpx 的 timeout 是分相超时，慢滴响应下
-    read 那一相每收到一片字节就重新计时，单页能拖上几分钟而它一次都不会触发。"""
+    read 那一相每收到一片字节就重新计时，单页能拖上几分钟而它一次都不会触发。
+
+    进程级信号量在这里持有（不在渲染那一段）：闸门守的是 OCR 容器的 CPU，渲染是本进程的活。
+    等闸的时间不该计入单页总帽，故 acquire 在 wait_for 之外。"""
     try:
-        return index, await asyncio.wait_for(_post_ocr(client, base, image), _PAGE_TIMEOUT_S)
+        async with _GLOBAL_SEM:
+            return index, await asyncio.wait_for(_post_ocr(client, base, image), _PAGE_TIMEOUT_S)
     except Exception:  # noqa: BLE001 单页失败不牵连其余页，更不该抛穿审查节点
         logger.warning("扫描页 OCR 失败，跳过第 %d 页", index + 1, exc_info=True)
         return index, None

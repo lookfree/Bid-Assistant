@@ -40,6 +40,70 @@ def test_non_pdf_documents_report_no_image_pages(docgen):
     assert parse_bytes(docgen.xlsx(), "s.xlsx").image_pages == 0
 
 
+def _pdf_page(text: str, with_image: bool) -> bytes:
+    """造一页 PDF：text = 页上的可见文字；with_image = 页上再贴一张位图（模拟证照/盖章扫描图）。
+    英文文本只是因为内置字体不支持中文——判定按「可见字数」走，与语种无关。"""
+    import io as _io
+    from fpdf import FPDF
+    from PIL import Image
+
+    pdf = FPDF()
+    pdf.set_font("helvetica", size=12)
+    pdf.add_page()
+    if text:
+        pdf.multi_cell(0, 8, text)
+    if with_image:
+        buf = _io.BytesIO()
+        Image.new("RGB", (200, 120), (200, 200, 200)).save(buf, format="PNG")
+        buf.seek(0)
+        pdf.image(buf, x=10, y=60, w=100)
+    return bytes(pdf.output())
+
+
+# 去掉空白后 30 字：过得了 20 字的纯文字门槛，实质内容却全在图里（「…扫描件如下：」正是 21 字）
+_TITLE_ONLY = "Attached authorization scan copy:"
+_BODY = "Technical response body sentence. " * 30      # 去掉空白 900 字：正常正文页
+
+
+def test_one_line_title_plus_a_scan_image_counts_as_an_image_page():
+    """混合页：一行标题 + 整版贴图。可见字数 21 过得了 20 字门槛，模型却一个字实质内容都读不到——
+    不识别成图片页就既不 OCR、也不进「无法核验」统计，直接退回改这套东西之前的误判。"""
+    from agent.parsing.parsers import scanned_page_indices
+
+    doc = parse_bytes(_pdf_page(_TITLE_ONLY, with_image=True), "t.pdf")
+    assert doc.image_pages == 1
+    assert scanned_page_indices(doc) == [0]         # 且 OCR 真的会去识别它
+
+
+def test_a_text_page_with_a_logo_is_never_treated_as_a_scan():
+    """保守优先：几百字正文 + 页眉 logo 的正常文本页绝不能被误判成扫描页——
+    误判的代价是给它发一次 OCR、并在报告里对一页明明看得见的内容说「无法核验」。"""
+    from agent.parsing.parsers import scanned_page_indices
+
+    doc = parse_bytes(_pdf_page(_BODY, with_image=True), "t.pdf")
+    assert doc.image_pages == 0 and scanned_page_indices(doc) == []
+
+
+def test_short_page_without_any_image_keeps_the_original_threshold():
+    """页里没有图 ⇒ 判据一如既往只看字数：21 字的页不算扫描页（空页/纯页码页才算）。"""
+    from agent.parsing.parsers import scanned_page_indices
+
+    doc = parse_bytes(_pdf_page(_TITLE_ONLY, with_image=False), "t.pdf")
+    assert doc.image_pages == 0 and scanned_page_indices(doc) == []
+
+
+def test_broken_page_resources_never_break_parsing():
+    """查图片是加严判定的辅助信号：坏 PDF 的 xref 让它抛错时只当「这页没有图」，
+    绝不能把整份文件的解析拖垮（解析失败 = 读标/审查当场失败）。"""
+    from agent.parsing.parsers import _has_image_xobject
+
+    class _Bad:
+        def get(self, *a, **kw):
+            raise ValueError("坏 xref")
+
+    assert _has_image_xobject(_Bad()) is False
+
+
 def test_clauses_have_stable_ids(docgen):
     doc = parse_bytes(docgen.docx("招标文件正文", "第二段"), "tender.docx")
     assert doc.clauses and re.match(r"^sec-.+-c1$", doc.clauses[0]["id"])

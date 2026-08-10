@@ -13,6 +13,7 @@ from agent.agents.bidding_agent.prompts.review import (
     REVIEW_SYSTEM_PROMPT, SCAN_REVIEW_RULE, scan_pages_note,
 )
 from agent.agents.bidding_agent.prompts.categories import category_scope, industry_patches
+from agent.parsing.ocr import ocr_configured
 
 
 
@@ -58,9 +59,15 @@ async def _resolve_chapters(ctx, state: dict, run_input: dict) -> tuple[dict[str
     if not chapters_src and bid_files:
         chapters_src, scanned = await parse_bid_docs(bid_files, ctx)
         # 审查修正：解析为空（扫描件/图片 PDF 提不出文字）绝不能拿空文档去跑计费审查——
-        # run 直接失败,App 侧 settleFailed 全额退款,错误文案告知原因
+        # run 直接失败,App 侧 settleFailed 全额退款,错误文案告知原因。
+        # 文案按 OCR 是否配置分流：这套环境**部署了**识别服务却一个字都没拿到,那是服务当时不可用
+        # 或识别失败,不是「本产品不支持扫描件」——照旧文案讲的话,用户会以为传什么都没用而放弃,
+        # 实际上重试一次就好了。没部署识别服务时,原文案才是事实。
         if not chapters_src:
-            raise RuntimeError("上传的标书未能解析出任何正文（扫描件/图片版暂不支持），请上传可复制文字的 docx/pdf 后重试")
+            raise RuntimeError(
+                "扫描页识别服务暂时不可用，未能从上传的标书中提取到正文，请稍后重试"
+                if ocr_configured() else
+                "上传的标书未能解析出任何正文（扫描件/图片版暂不支持），请上传可复制文字的 docx/pdf 后重试")
     # 删章留下的孤儿键（chapters 是合并通道）不该被体检：那是不会交付的内容，
     # 报出来的风险用户在文档里根本找不到。无提纲的线下审查项目原样放行。
     filtered = chapters_in_outline(chapters_src, state.get("outline") or {})
@@ -69,6 +76,45 @@ async def _resolve_chapters(ctx, state: dict, run_input: dict) -> tuple[dict[str
     if chapters_src and not filtered:
         raise RuntimeError("投标正文与提纲章节对不上（提纲可能已改动），请重新生成正文后再审查")
     return filtered, scanned
+
+
+# 「看不见的页」类发现的标题前缀（与 SCAN_REVIEW_RULE 第 2 条的写法一致）。
+_SCAN_TITLE_PREFIX = "无法核验（扫描件）"
+
+
+def _force_scan_level(risk: dict) -> None:
+    """把「无法核验（扫描件）」类发现强制压成中风险并重算计数（就地改 risk）。
+
+    判定纪律写在提示词里，落库的等级却不能只靠模型自觉——同 RiskReport._derive_counts
+    「计数一律推导、不信模型口头」的纪律。一条假的高风险足以让用户以为这份标书要废标，
+    跑去重做一份其实就印在扫描页上的材料。
+    计数必须跟着改：high/mid 是模型提交时按当时的 level 推出来的，改了等级不重算就留旧账。"""
+    hit = False
+    for item in risk.get("items") or []:
+        if str(item.get("title") or "").startswith(_SCAN_TITLE_PREFIX):
+            hit = item.get("level") != "中风险" or item.get("tone") != "warning" or hit
+            item["level"], item["tone"] = "中风险", "warning"
+    if hit:
+        items = risk.get("items") or []
+        risk["high"] = sum(1 for i in items if i.get("level") == "高风险")
+        risk["mid"] = sum(1 for i in items if i.get("level") == "中风险")
+
+
+def _finalize_risk(result, category: dict, self_detected: bool, scanned: list[dict]) -> dict:
+    """模型提交的报告 → 落库的 risk dict：两个 sidecar + 扫描页判定纪律。
+
+    与 read 节点同理：分类并进结果 dict，**不进 submit_risk_report 的工具 schema**。
+    只有本节点现判出来的才落库当判定值——回显用户的选择会让它被当成系统判定（见 _resolve_category）。
+    扫描页统计同样是 sidecar（同 bid_category 手法）：报告页据此提示「有 N 页没看到，
+    相关结论请人工复核」——只有模型知道这个事实、用户看不见的话，一份大半是扫描件的标书
+    会被当成一份完整审查过的标书。没有看不见的页时不带这个键，既有项目的结果结构逐字节不变。"""
+    risk = result.model_dump()
+    if self_detected:
+        risk["bid_category"] = category
+    if scanned:
+        _force_scan_level(risk)
+        risk["scanned_files"] = scanned
+    return risk
 
 
 def make_review_node(ctx):
@@ -141,10 +187,5 @@ def make_review_node(ctx):
                 "submit_risk_report", RiskReport, "提交审查报告")
 
         result = await run_with_shrink(_attempt, label="审查")
-        # 与 read 节点同理：分类并进结果 dict，**不进 submit_risk_report 的工具 schema**。
-        # 只有本节点现判出来的才落库当判定值——回显用户的选择会让它被当成系统判定（见 _resolve_category）。
-        risk = result.model_dump()
-        if self_detected:
-            risk["bid_category"] = category
-        return {"risk": risk}
+        return {"risk": _finalize_risk(result, category, self_detected, scanned)}
     return review_node

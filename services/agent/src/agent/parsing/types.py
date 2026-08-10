@@ -19,6 +19,10 @@ class ParsedDoc:
     # 逐页文本（PDF 才有，其余格式为空）。text 是它按页拼起来的结果，之所以另存一份：
     # 扫描页 OCR 要知道**哪一页**看不见、并把识别文字插回**那一页原来的位置**（见 parsing/ocr.py）。
     page_texts: list[str] = field(default_factory=list)
+    # 逐页「这页看不见吗」的判定（PDF 才有，其余格式为空）。**必须在解析时定下来**：混合页的判据
+    # 要看页里有没有贴图，而那只有解析时手里的 pypdf 页对象答得出，page_texts 事后再问已经问不到了。
+    # 空列表 = 没有这份信息（非 PDF / 旧构造点）→ 下游退回纯字数判据（见 scanned_page_indices）。
+    image_page_flags: list[bool] = field(default_factory=list)
     tables: list[list[list[str]]] = field(default_factory=list)
     clauses: list[dict] = field(default_factory=list)  # [{id: "${secId}-cN", text}] 稳定条款 id，供读标/提纲定位
     # 章节标题 [{sec: "sec-N", title, level}]：与 clauses **并列**而不混入其中——标题一旦成为条款就会

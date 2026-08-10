@@ -1,4 +1,7 @@
 import asyncio
+
+import pytest
+
 from agent.runtime.registry import RunContext
 from agent.agents.bidding_agent.nodes.review import make_review_node
 
@@ -115,6 +118,101 @@ def test_review_node_without_scanned_pages_keeps_prompt_unchanged(submit_gateway
     asyncio.run(make_review_node(ctx)({"run_input": {"bid_file_key": "uploads/u/x/bid.pdf"}}))
     assert gw.chats[-1].last_messages[0].content == REVIEW_SYSTEM_PROMPT
     assert gw.chats[-1].last_messages[-1].content.startswith("招标与投标材料：")
+
+
+def _scanned_doc(pages: int = 366, image_pages: int = 139):
+    """一份「有正文、也有看不见的扫描页」的解析结果（数量取自 2026-08-09 的生产样本）。"""
+    from agent.parsing.types import ParsedDoc
+    return ParsedDoc(text="投标函", kind="pdf", pages=pages, image_pages=image_pages,
+                     clauses=[{"id": "sec-1-c1", "text": "投标函正文"}])
+
+
+def test_scan_rule_overrides_every_missing_equals_high_risk_rule():
+    """扫描页判定纪律必须盖住**所有**「缺失即高风险」的条款。漏掉第 5 条（格式红线缺章）时，
+    印在扫描页上的偏离表/报价一览表照旧被判成高风险缺章——正是这条规则要消灭的假阳性。"""
+    from agent.agents.bidding_agent.prompts.review import SCAN_REVIEW_RULE
+    header = SCAN_REVIEW_RULE.strip().splitlines()[0]
+    for rule_no in ("1", "5", "6", "7"):
+        assert rule_no in header, f"第 {rule_no} 条也判「缺失即高风险」，必须被扫描页规则覆盖"
+
+
+def test_unreadable_bid_blames_the_ocr_service_when_it_is_configured(submit_gateway, monkeypatch):
+    """OCR 已配置却一个字都没解析出来 = 识别服务当时不可用/识别失败，不是「本产品不支持扫描件」。
+    照旧文案讲的话，用户会以为传什么都没用而放弃，实际上重试一次就好了。"""
+    import agent.agents.bidding_agent.nodes.common as common_mod
+    from agent.parsing import ocr as ocr_mod
+    from agent.parsing.types import ParsedDoc
+
+    monkeypatch.setattr(ocr_mod.settings, "ocr_base_url", "http://ocr.test:8100")
+    monkeypatch.setattr(common_mod, "read_and_parse",
+                        lambda key: ParsedDoc(text="", kind="pdf", pages=8, image_pages=8))
+    gw = submit_gateway({"submit_risk_report": _RISK_ARGS})
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
+    with pytest.raises(RuntimeError) as ei:
+        asyncio.run(make_review_node(ctx)({"run_input": {"bid_file_key": "uploads/u/x/bid.pdf"}}))
+    msg = str(ei.value)
+    assert "暂不支持" not in msg
+    assert "暂时不可用" in msg and "重试" in msg
+    assert gw.chats == []            # 计费轮一轮都没烧（run 失败 → App 侧全额退款）
+
+
+def test_unreadable_bid_keeps_the_unsupported_wording_when_ocr_is_off(submit_gateway, monkeypatch):
+    """没部署 OCR 的环境里，「扫描件/图片版暂不支持」就是事实——文案原样保留，让用户去换文件。"""
+    import agent.agents.bidding_agent.nodes.common as common_mod
+    from agent.parsing import ocr as ocr_mod
+    from agent.parsing.types import ParsedDoc
+
+    monkeypatch.setattr(ocr_mod.settings, "ocr_base_url", "")
+    monkeypatch.setattr(common_mod, "read_and_parse",
+                        lambda key: ParsedDoc(text="", kind="pdf", pages=8, image_pages=8))
+    gw = submit_gateway({"submit_risk_report": _RISK_ARGS})
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
+    with pytest.raises(RuntimeError) as ei:
+        asyncio.run(make_review_node(ctx)({"run_input": {"bid_file_key": "uploads/u/x/bid.pdf"}}))
+    assert "扫描件/图片版暂不支持" in str(ei.value)
+
+
+_SCAN_TITLE = "无法核验（扫描件）：法定代表人身份证明"
+
+
+def test_unverifiable_findings_are_forced_down_to_mid_risk(submit_gateway, monkeypatch):
+    """判定纪律写在提示词里，落库的等级却不能只靠模型自觉（同 _derive_counts「不信模型口头」）：
+    模型把「无法核验（扫描件）」条目判成高风险时强制降级，并重算计数——一条假的高风险
+    足以让用户以为这份标书要废标，跑去重做一份本来就印在扫描页上的材料。"""
+    import agent.agents.bidding_agent.nodes.common as common_mod
+
+    args = {**_RISK_ARGS, "high": 2, "mid": 0,
+            "items": [_RISK_ARGS["items"][0],
+                      {**_RISK_ARGS["items"][0], "title": _SCAN_TITLE,
+                       "level": "高风险", "tone": "destructive"}]}
+    monkeypatch.setattr(common_mod, "read_and_parse", lambda key: _scanned_doc())
+    gw = submit_gateway({"submit_risk_report": args})
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
+    risk = asyncio.run(make_review_node(ctx)(
+        {"run_input": {"bid_file_key": "uploads/u/x/投标文件.pdf"}}))["risk"]
+    forced = [i for i in risk["items"] if i["title"] == _SCAN_TITLE][0]
+    assert forced["level"] == "中风险" and forced["tone"] == "warning"
+    assert risk["high"] == 1 and risk["mid"] == 1        # 计数跟着改，不留旧账
+    assert risk["items"][0]["level"] == "高风险"          # 真高风险一条都不许被牵连
+
+
+def test_review_result_carries_the_scanned_stats_for_the_report_banner(submit_gateway, monkeypatch):
+    """扫描页统计随结果落库（sidecar，同 bid_category 手法）：报告页要据此提示
+    「有 N 页没看到，相关结论请人工复核」。只在真有看不见的页时带上，其余项目结果逐字节不变。"""
+    import agent.agents.bidding_agent.nodes.common as common_mod
+
+    monkeypatch.setattr(common_mod, "read_and_parse", lambda key: _scanned_doc())
+    gw = submit_gateway({"submit_risk_report": _RISK_ARGS})
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
+    risk = asyncio.run(make_review_node(ctx)(
+        {"run_input": {"bid_file_key": "uploads/u/x/投标文件.pdf"}}))["risk"]
+    assert risk["scanned_files"] == [
+        {"name": "投标文件.pdf", "pages": 366, "image_pages": 139}]
+
+    monkeypatch.setattr(common_mod, "read_and_parse", lambda key: _scanned_doc(image_pages=0))
+    clean = asyncio.run(make_review_node(ctx)(
+        {"run_input": {"bid_file_key": "uploads/u/x/投标文件.pdf"}}))["risk"]
+    assert "scanned_files" not in clean
 
 
 def test_review_node_with_tender_and_bid_file_uses_compare_mode(submit_gateway, monkeypatch):

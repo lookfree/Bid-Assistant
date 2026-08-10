@@ -106,3 +106,60 @@ def test_single_file_transient_failure_keeps_fallback(monkeypatch, submit_gatewa
 
     assert out["read"]["categories"]
     assert gw.chats
+
+
+def _scanned(pages: int, image_pages: int, clauses: list[dict] | None = None) -> ParsedDoc:
+    """一份 pages 页、其中 image_pages 页提不出文字的 PDF 解析结果。
+    clauses 默认给一条页眉级残渣——全扫描件常常还是能刮出页码/页眉，正是这几条让「解析成功」
+    看起来成立、把节点一路放行到烧模型那一步。"""
+    return ParsedDoc(text="第 1 页", kind="pdf", pages=pages, image_pages=image_pages,
+                     clauses=clauses if clauses is not None else [{"id": "sec-1-c1", "text": "第 1 页"}])
+
+
+def test_fully_scanned_tender_fails_before_burning_a_single_model_round(monkeypatch, submit_gateway):
+    """整份招标文件都是扫描件（每一页都提不出文字）⇒ 当场诚实拒绝。
+    此前这条路「解析成功」但零有效条款，模型对着页码读标，四轮之后以
+    「模型未提交结构化结果」收场——钱烧了，报错还把排查方向指向模型。"""
+    monkeypatch.setattr(read_mod, "read_and_parse", lambda key: _scanned(8, 8))
+    gw = submit_gateway({"submit_read_result": _READ_ARGS})
+
+    with pytest.raises(RuntimeError) as ei:
+        asyncio.run(read_mod.make_read_node(_ctx(gw))({"file_key": "k/招标文件.pdf"}))
+
+    msg = str(ei.value)
+    assert "招标文件为扫描件，无法提取文字，请上传可复制文字的版本" in msg
+    assert "招标文件.pdf" in msg
+    assert gw.chats == []                       # 一轮 token 都没烧
+
+
+def test_fully_scanned_multi_file_tender_also_fails_fast(monkeypatch, submit_gateway):
+    """多文件路径同理：每一份都是扫描件才拒（有一份能读就照常读标，见下一条）。"""
+    monkeypatch.setattr(read_mod, "read_and_parse", lambda key: _scanned(20, 20))
+    gw = submit_gateway({"submit_read_result": _READ_ARGS})
+
+    with pytest.raises(RuntimeError) as ei:
+        asyncio.run(read_mod.make_read_node(_ctx(gw))(
+            {"file_key": "k/招标文件.pdf", "files": _files("招标文件.pdf", "技术规范.pdf")}))
+
+    assert "招标文件为扫描件" in str(ei.value)
+    assert gw.chats == []
+
+
+def test_partly_scanned_tender_is_read_as_usual(monkeypatch, submit_gateway):
+    """半扫描（正文可复制、只有证照页是图）照常读标——这才是绝大多数标书的形态，
+    误杀它等于把产品的主用例关掉。"""
+    monkeypatch.setattr(read_mod, "read_and_parse", lambda key: _scanned(
+        20, 8, [{"id": "sec-1-c1", "text": "项目名称：某平台"}]))
+    gw = submit_gateway({"submit_read_result": _READ_ARGS})
+    out = asyncio.run(read_mod.make_read_node(_ctx(gw))({"file_key": "k/招标文件.pdf"}))
+
+    assert out["read"]["categories"] and gw.chats
+
+
+def test_scanned_check_never_touches_formats_without_pages(monkeypatch, submit_gateway):
+    """docx/xlsx 没有「页」的概念（pages=None、image_pages=0）→ 判据一律不生效，行为不变。"""
+    monkeypatch.setattr(read_mod, "read_and_parse", lambda key: _OK)
+    gw = submit_gateway({"submit_read_result": _READ_ARGS})
+    out = asyncio.run(read_mod.make_read_node(_ctx(gw))({"file_key": "k/招标文件.docx"}))
+
+    assert out["read"]["categories"] and gw.chats

@@ -87,15 +87,54 @@ def parse_docx(data: bytes) -> ParsedDoc:
 _MIN_VISIBLE_CHARS = 20
 
 
+# 混合页门槛：页里贴了图、可见文字又少于这么多字 → 也当扫描图片页。
+# 2026-08-10 实测形态：「法定代表人授权委托书扫描件如下：」（21 字）+ 整版证照图。可见字数过得了
+# 上面 20 字的门槛，实质内容却一个字都提不出来——不认成图片页就既不 OCR 也不进「无法核验」统计，
+# 直接退回治理之前的误判（把印在图里的材料判成「缺少」）。
+# 100 字是**保守**门槛：正常正文页随便一段都远超它，带 logo 页眉/落款章的文本页（几百字）不会误伤。
+_MIXED_PAGE_MAX_CHARS = 100
+
+
 def is_image_page(text: str) -> bool:
     """这一页是不是提不出可见文字（= 扫描图片页）。
     数「可见文字」而不是原串长度：空白/换行不算字，否则满页空行的扫描页会被当成有内容。
-    阈值**单点在此**——页数统计与 OCR 选页共用同一判据，改一处两边同时生效。"""
+    阈值**单点在此**——页数统计、OCR 选页与识别结果的可读判定共用同一判据，改一处全线生效。"""
     return len("".join(text.split())) < _MIN_VISIBLE_CHARS
 
 
+def _has_image_xobject(page) -> bool:
+    """这一页的资源里有没有位图（/Resources /XObject 下 /Subtype = /Image）。
+
+    **只对可见字数落在灰区（20–100 字）的页调用**：解析 XObject 要把间接对象读出来，
+    而位图的间接对象一读就是整条图片流进 pypdf 的对象缓存——整份文件逐页做，139 页的扫描件
+    就是几百 MB 白吃。灰区页本来就少，短路之后这条路几乎不走。
+    任何异常都当「没有图」：这是加严判定的辅助信号，坏 xref 不该把整份文件的解析拖垮。"""
+    try:
+        res = page.get("/Resources")
+        xobjects = res.get_object().get("/XObject") if res is not None else None
+        if xobjects is None:
+            return False
+        return any(v.get_object().get("/Subtype") == "/Image"
+                   for v in xobjects.get_object().values())
+    except Exception:  # noqa: BLE001 见 docstring：判不出来就当没有图，绝不抛给解析入口
+        return False
+
+
+def _scanned_flags(pages, texts: list[str]) -> list[bool]:
+    """逐页「模型看不看得见这页」：纯字数门槛 → 灰区页再查有没有贴图（见 _has_image_xobject）。"""
+    flags: list[bool] = []
+    for pg, t in zip(pages, texts):
+        n = len("".join(t.split()))
+        flags.append(n < _MIN_VISIBLE_CHARS
+                     or (n < _MIXED_PAGE_MAX_CHARS and _has_image_xobject(pg)))
+    return flags
+
+
 def scanned_page_indices(doc: ParsedDoc) -> list[int]:
-    """doc 里扫描图片页的页序号（0 基）。OCR 只对这些页做——文本页绝不重复识别。"""
+    """doc 里扫描图片页的页序号（0 基）。OCR 只对这些页做——文本页绝不重复识别。
+    优先用解析时定下的逐页判定（含混合页），没有那份信息时退回纯字数判据。"""
+    if doc.image_page_flags:
+        return [i for i, f in enumerate(doc.image_page_flags) if f]
     return [i for i, t in enumerate(doc.page_texts) if is_image_page(t)]
 
 
@@ -106,11 +145,11 @@ def parse_pdf(data: bytes) -> ParsedDoc:
     from pypdf import PdfReader
     reader = PdfReader(io.BytesIO(data))
     pages = [(pg.extract_text() or "") for pg in reader.pages]
-    image_pages = sum(1 for p in pages if is_image_page(p))
+    flags = _scanned_flags(reader.pages, pages)
     text = "\n".join(pages)
     clauses, headings = _split_clauses(text.split("\n"))
-    return ParsedDoc(text=text, kind="pdf", pages=len(reader.pages), image_pages=image_pages,
-                     page_texts=pages, clauses=clauses, headings=headings)
+    return ParsedDoc(text=text, kind="pdf", pages=len(reader.pages), image_pages=sum(flags),
+                     page_texts=pages, image_page_flags=flags, clauses=clauses, headings=headings)
 
 
 # 识别文本插回正文时的页首标记：既告诉模型这段字是从扫描页认出来的（可能带识别误差），
@@ -139,7 +178,11 @@ def splice_ocr_pages(doc: ParsedDoc, ocr_texts: dict[int, str]) -> ParsedDoc:
         pages[i] = f"{_OCR_PAGE_MARK.format(n=i + 1)}\n{text}"
     full = "\n".join(pages)
     clauses, headings = _split_clauses(full.split("\n"))
+    # 逐页判定同步扣掉已识别的页：留着旧值的话，谁再拿这份 doc 问「哪几页看不见」都会拿到
+    # 一个与 image_pages 对不上的答案（识别过的页仍在名单里）。
+    flags = [f and i not in readable for i, f in enumerate(doc.image_page_flags)]
     return replace(doc, text=full, page_texts=pages, clauses=clauses, headings=headings,
+                   image_page_flags=flags,
                    image_pages=max(0, doc.image_pages - len(readable)))
 
 

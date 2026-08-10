@@ -330,6 +330,40 @@ async def test_blank_pages_do_not_trip_the_breaker(ocr_env):
     assert "识别成功" in after.text
 
 
+class _CountingStream(httpx.AsyncByteStream):
+    """读响应体期间记在途路数与峰值。桩的处理函数是同步的，重叠只发生在读体那一段，
+    所以计数必须挂在流上——挂在处理函数里永远只看到 1。"""
+
+    def __init__(self, payload: bytes, state: dict, gap: float = 0.02):
+        self._payload, self._state, self._gap = payload, state, gap
+
+    async def __aiter__(self):
+        self._state["live"] += 1
+        self._state["peak"] = max(self._state["peak"], self._state["live"])
+        try:
+            await asyncio.sleep(self._gap)
+            yield self._payload
+        finally:
+            self._state["live"] -= 1
+
+
+async def test_the_ocr_concurrency_cap_is_process_wide_not_per_run(ocr_env):
+    """并发闸必须是**进程级**的：worker 一次跑 5 个审查（agent_worker_concurrency=5），
+    每个 run 各开 2 路就是 10 路在途，全打同一个 2 线程的 OCR 容器——排队变深后每页都撞
+    每请求总帽，识别成功率塌下去，还把同机的 PG/Redis 一起挤慢。"""
+    stub, run = ocr_env
+    state = {"live": 0, "peak": 0}
+    payload = json.dumps({"text": _OK}).encode()
+    stub.reply = lambda n, body: httpx.Response(
+        200, stream=_CountingStream(payload, state),
+        headers={"content-type": "application/json"})
+    pdf = _pdf(_TEXT_PAGE, "", "", "", "", "")            # 一份文件 5 页扫描
+    await asyncio.gather(*[run(pdf) for _ in range(3)])   # 三个 run 同时识别
+    assert len(stub.requests) == 15                       # 三份 × 5 页都真发了请求
+    assert state["peak"] > 0                              # 计数器确实被走到了
+    assert state["peak"] <= ocr_mod._CONCURRENCY          # 同时在途绝不超过闸门
+
+
 async def test_resilience_budgets_are_conservative():
     """韧性预算是常量、不许悄悄放大：OCR 是 CPU 推理容器，并发打爆它会连累同机的数据层。"""
     assert ocr_mod._CONCURRENCY == 2

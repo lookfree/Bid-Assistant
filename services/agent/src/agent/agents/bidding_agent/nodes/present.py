@@ -118,6 +118,8 @@ def make_present_node(ctx):
             [run_input["bid_file_key"]] if run_input.get("bid_file_key") else []
         )
         if not chapters_src and bid_files:
+            # 述标**不做**扫描页 OCR（见 parse_bid_chapters）：证照/签字页对讲标 PPT 没有信息量，
+            # 却要花掉整份文件的识别时间。所以这条文案在这里恒成立，不像审查那样随 OCR 配置分流。
             chapters_src = await asyncio.to_thread(parse_bid_chapters, bid_files)
             if not chapters_src:
                 raise RuntimeError("上传的标书未能解析出任何正文（扫描件/图片版暂不支持），请上传可复制文字的 docx/pdf 后重试")
