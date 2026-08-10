@@ -186,6 +186,30 @@ class TestFallback:
                                      "1.1.2 核心架构要求偏离表", "2 项目概况"]
         assert [h["level"] for h in headings] == [1, 2, 3, 1]
 
+    def test_one_long_table_does_not_drag_numbering_noise_into_the_whole_document(self):
+        """2026-08-11 真文件实测（366 页那份）：字号信号已经认出 173 条标题、平均 29 行一条，
+        只因末尾一张长表没有大字标题，就把编号启发式并进全文——灌进来 129 条评分表行与
+        索引表行（「1.  应答方名称 P16-P18 /」「2.具备PMP证书…满足得1」）。
+        **密度够就不补**：为了一段长表把整本弄脏不划算。"""
+        rows: list[tuple] = []
+        for c in range(20):
+            rows.append((f"第{c + 1}章 技术要求", 16.0))
+            rows += [(f"{i + 1}、评分项{i + 1}：满足得1分，不满足不得分", _BODY) for i in range(15)]
+        rows += [(f"{i + 1}.  评审索引项{i + 1} P{i + 1} /", _BODY) for i in range(250)]
+        _, headings, _ = split_pdf_lines(_doc([rows]))
+        assert _titles(headings) == [f"第{c + 1}章 技术要求" for c in range(20)]
+
+    def test_a_document_marked_too_coarsely_still_falls_back_to_numbering(self):
+        """反过来：只有三行大字、铺得再匀，几百行正文里也一条标题都没有——
+        「最长空档不过全文一半」这道线是过得了的，**密度**过不了，必须补编号。
+        366 页只切出 4 节正是这个形态。"""
+        rows: list[tuple] = [(f"{i + 1}、服务条目{i + 1}的详细要求与响应说明", _BODY)
+                             for i in range(700)]
+        for at, title in ((700, "商务标书"), (350, "技术标书"), (0, "投标文件")):
+            rows.insert(at, (title, 22.0))
+        clauses, headings, _ = split_pdf_lines(_doc([rows]))
+        assert _sec_count(clauses, headings) > 20, "切得太粗时没有补编号"
+
     def test_document_without_any_structure_stays_one_section(self):
         """一个可识别结构都没有的 PDF **退回今天的行为**：整份一节，不凭空造标题。"""
         lines = _doc([[(f"本项目服务期三年，第{i}项服务内容详见技术规范书附件", _BODY)

@@ -71,11 +71,16 @@ _MAX_BOLD_SHARE = 0.3
 # 页眉页脚判定：同一行文字出现在这么多页上就算版式重复行（两条取大的那个）。
 _BOILERPLATE_MIN_PAGES = 4
 _BOILERPLATE_PAGE_SHARE = 0.05
-# 判定「已有信号切得够细」的两道线：标题之间最长的一段普通行，既不能超过全文的一半
-# （docx 同款覆盖度判据），也不能超过这个绝对行数——366 页只切 4 节时覆盖度是过得了的，
-# 而那正是本次要治的故障。200 行 ≈ 5000 字，是下游一章还读得动的上限。
+# 判定「已认出的标题切得够细」的两道线，各治一种病：
+# · **密度**：平均每这么多行至少要有一条标题。366 页只认出 4 条时，「最长空档」那道线其实是
+#   过得了的（4 条均匀铺开），密度过不了——那正是本次要治的故障；
+# · **覆盖**：最长的一段空档不超过全文的一半（docx 同款）。治的是另一种病：只有封面几行大字，
+#   正文一大片全得靠猜。
+# 反过来，密度够、只是某一章特别长（大表格/附件）时**不再补编号**：2026-08-11 真文件实测，
+# 173 条字号标题已经切得很细（平均 29 行一条），只因末尾一张长表就补编号，会把 129 条
+# 评分表行、索引表行（「1. 应答方名称 P16-P18 /」「2.具备PMP证书…得1」）当成标题灌进来。
+_MAX_LINES_PER_HEADING = 200
 _MAX_UNCOVERED_SHARE = 0.5
-_MAX_GAP_LINES = 200
 
 # 通篇只有数字与日期/金额/页码符号的行不是标题（「2026年8月1日」「￥1,234.00元」「共366页」）。
 # 中文数字一并列入：「二〇二六年八月」这类落款同理。
@@ -280,13 +285,13 @@ def _number_levels(lines: list[PdfLine], boiler: set[str]) -> list[int | None]:
 
 
 def _covers(levels: list[int | None]) -> bool:
-    """已认出的标题切得够不够细：条数够 + 标题之间最长的一段普通行既不过全文一半、
-    也不超过 _MAX_GAP_LINES。366 页只认出 4 条时覆盖度是过得了的，绝对行数过不了。"""
+    """已认出的标题切得够不够细：条数够 + 平均密度够 + 最长的一段空档不过全文一半。
+    过不了就再把编号启发式并进来（见 split_pdf_lines）。三道线的分工见常量处的注释。"""
     at = [i for i, lv in enumerate(levels) if lv]
-    if len(at) < _MIN_HEADINGS:
+    if len(at) < _MIN_HEADINGS or len(levels) > len(at) * _MAX_LINES_PER_HEADING:
         return False
     gaps = [at[0], len(levels) - 1 - at[-1]] + [at[i + 1] - at[i] - 1 for i in range(len(at) - 1)]
-    return max(gaps) < min(len(levels) * _MAX_UNCOVERED_SHARE, _MAX_GAP_LINES)
+    return max(gaps) < len(levels) * _MAX_UNCOVERED_SHARE
 
 
 def split_pdf_lines(lines: list[PdfLine]) -> tuple[list[dict], list[dict], list[dict]]:
