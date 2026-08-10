@@ -116,6 +116,42 @@ async def test_failed_images_stay_counted_as_invisible(docx_env):
     assert after.embedded_images == 1
 
 
+async def test_recognized_lines_never_become_chapter_titles(docx_env):
+    """识别文字是**正文**，一个字都不许参与章节切分的标题判定。
+
+    证照 OCR 出来的行大量长成「1、法定代表人：张三」「一、企业基本情况」——正是启发式回退
+    （文档自己一个大纲层级都没有时走的那条路）眼里的章节标题。放行的三重伤害都实测过：
+    ① 被判成标题的那一行**被丢出 clauses**，等于识别内容一个字进不了审查材料；
+    ② `[内嵌图片·识别]` 标记留在上一节、识别正文被切到下一节，模型看不出这段字来自同一张图；
+    ③ 图**后面的原文**被重挂到一个由 OCR 噪声命名的假节下——原文档结构被识别误差改写。"""
+    stub, run = docx_env
+    lines = ["1、法定代表人：张三", "统一社会信用代码 91310000MA1K3XXXXX", "营业执照正副本齐全有效"]
+    stub.reply = lambda n, body: httpx.Response(200, json={"text": "\n".join(lines)})
+    # 全是普通段落的文档（一个大纲层级都没有）→ 切分走启发式回退，正是出事的那条路
+    _, after = await run(_docx("承诺函", "以下是营业执照：", _png(), "以上为营业执照。"))
+
+    assert after.headings == []                       # 识别文字没有造出任何章节标题
+    texts = [c["text"] for c in after.clauses]
+    for line in lines:
+        assert line in texts, f"识别出来的「{line}」没进 clauses（= 进不了审查材料）"
+    secs = {c["id"].rsplit("-c", 1)[0] for c in after.clauses}
+    assert secs == {"sec-1"}                          # 图前、识别文字、图后原文仍是同一节
+
+
+async def test_images_that_only_yield_a_few_characters_are_not_spliced_back(docx_env):
+    """只认出几个花纹字的图不算「看见」：既不拼回正文，也不从张数里扣。
+
+    门槛与扫描页共用 `_recognized`（比对基准是空串）。拼回去的话，一份全是图的废件会凭那
+    几个字切出条款、聚出非空 chapters，绕过 review「解析不出正文 → run 失败 + 全额退款」的闸
+    ——用户为一份什么都看不见的文件付了一次审查的钱。"""
+    stub, run = docx_env
+    stub.reply = lambda n, body: httpx.Response(200, json={"text": "章 ※ 图"})
+    before, after = await run(_docx("正文", _png()))
+    assert len(stub.requests) == 1                    # 图确实送去识别了
+    assert after.embedded_images == 1                 # 认不出来 → 张数不扣，注记照旧
+    assert _MARK not in after.text and after.text == before.text
+
+
 async def test_unconfigured_ocr_changes_nothing(monkeypatch, ocr_stub):
     """OCR_BASE_URL 未配置 = 这套环境没部署识别服务：零 HTTP、零取字节，输出与改前逐字节一致。
 
@@ -175,7 +211,11 @@ async def test_both_ocr_paths_share_one_run_level_deadline(monkeypatch, ocr_stub
     """PDF 扫描页与 docx 内嵌图**共享同一条 deadline**，不是各开一份 20 分钟。
 
     各开一份的话，一次审查最多 10 份文件 = 最坏 200 分钟——用户在一个已预扣积分的步上
-    干等几小时，而心跳泵还一直说这个 run 活着。判据是 new_deadline 全程只起一次表。"""
+    干等几小时，而心跳泵还一直说这个 run 活着。
+
+    判据是**两条识别循环真正收到的是同一个时刻**：只断言 new_deadline 起了一次表是不够的
+    ——内嵌图那条路若无视传进去的 deadline 自己 new_deadline()，起表次数照样是 1（反向变异
+    M2 实证），护栏看着在、其实不在。"""
     import agent.agents.bidding_agent.nodes.common as common_mod
     from agent.agents.bidding_agent.nodes.common import parse_bid_docs
     from fpdf import FPDF
@@ -191,6 +231,14 @@ async def test_both_ocr_paths_share_one_run_level_deadline(monkeypatch, ocr_stub
         starts.append(time.monotonic())
         return time.monotonic() + ocr_mod._TOTAL_BUDGET_S
 
+    used: list[float] = []
+    real_stream = ocr_mod._ocr_stream
+
+    async def _spy(fetch, indices, on_progress, deadline, what):
+        used.append(deadline)                     # 这一条识别循环实际吃的是哪条预算
+        return await real_stream(fetch, indices, on_progress, deadline, what)
+
+    monkeypatch.setattr(ocr_mod, "_ocr_stream", _spy)
     monkeypatch.setattr(common_mod, "ocr_deadline", _deadline)
     monkeypatch.setattr(common_mod, "read_and_parse",
                         lambda key: parse_bytes(blobs[key], key))
@@ -198,5 +246,6 @@ async def test_both_ocr_paths_share_one_run_level_deadline(monkeypatch, ocr_stub
     chapters, scanned = await parse_bid_docs(["a.pdf", "b.docx"])
     assert len(ocr_stub.requests) == 2                # 两条链路都真发了请求
     assert len(starts) == 1                           # 预算只起了一次表
+    assert len(used) == 2 and used[0] == used[1]      # 两条链路吃的是同一条预算
     assert scanned == []                              # 都识别出来了 → 注记消失
     assert "识别文字" in "".join(chapters.values())    # 识别文字真进了审查材料

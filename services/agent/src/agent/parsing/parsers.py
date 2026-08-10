@@ -289,8 +289,10 @@ def splice_docx_images(doc: ParsedDoc, blocks: list[Block], images: list[DocxIma
 
     识别文本**按行**各成一块（OCR 按 mode=lines 取回）：整版证照/盖章表格拼成一块的话，
     审查再也判不出「★条款有没有逐条登进偏离表」这类按行的结论。
-    这些块一律是普通正文（level=None、非表格）：识别文字不该参与 Word 大纲层级的章节切分，
-    章节结构以文档自己标注的为准（见 parsing/docx_sections.py）。
+    这些块一律是普通正文且带 synthetic 标记：识别文字**一个字都不参与标题判定**——
+    证照 OCR 出来的行大量长成「1、法定代表人：张三」，正是启发式眼里的章节标题，
+    放行的话那一行会被丢出 clauses（识别内容进不了审查材料），图后面的原文还会被重挂到
+    一个由 OCR 噪声命名的假节下。章节结构以文档自己的内容为准（见 parsing/docx_sections.py）。
     条款与标题**必须重算**：认出来的字要和正文一样参与切分与预算，只改 text 不改 clauses 的话，
     下游按 clauses 聚章（nodes/common.py::parse_bid_docs），识别内容一个字都进不了审查材料。
     """
@@ -300,8 +302,9 @@ def splice_docx_images(doc: ParsedDoc, blocks: list[Block], images: list[DocxIma
     inserts: dict[int, list[Block]] = {}
     for i, text in readable.items():
         at = images[i].block_index
-        inserts.setdefault(at, []).append(Block(_DOCX_IMAGE_MARK))
-        inserts[at].extend(Block(line) for line in text.split("\n") if line.strip())
+        inserts.setdefault(at, []).append(Block(_DOCX_IMAGE_MARK, synthetic=True))
+        inserts[at].extend(Block(line, synthetic=True)
+                           for line in text.split("\n") if line.strip())
     merged: list[Block] = []
     for n in range(len(blocks) + 1):
         merged.extend(inserts.get(n, ()))

@@ -126,6 +126,46 @@ class TestFallbackHeuristics:
         assert parse_docx(_bytes(d)).headings == []
 
 
+class TestWhichSignalWins:
+    """「作者标了大纲层级」是**覆盖度**判定，不是「有没有」判定。"""
+
+    def test_a_single_styled_cover_title_does_not_veto_the_numbering_heuristic(self):
+        """封面用内置「标题 1」、正文章节手打「第一章」是中文标书很常见的排版。
+
+        按「有一段带层级就算标了」判，整本就为了那一行封面放弃编号启发式——实测 11 节塌成
+        1 节，正是本次要治的那个生产故障形态换了扇门进来。够不上覆盖度就两种信号并用：
+        段落自己标了层级的用它，没标的再猜。"""
+        d = Document()
+        d.add_heading("投标文件", level=1)          # 封面：唯一一个带样式的标题
+        for i in "一二三四五六七八九十":
+            d.add_paragraph(f"第{i}章 章节标题")     # 手打编号：Word 眼里就是普通正文
+            d.add_paragraph("本章正文若干。")
+        parsed = parse_docx(_bytes(d))
+        assert _titles(parsed)[0] == "投标文件"     # 封面那条仍按它自己标的层级算
+        assert len(parsed.headings) == 11
+        assert _sec_of(parsed, "本章正文若干。") == "sec-2"
+
+    def test_a_handful_of_styled_titles_loses_to_a_document_full_of_numbering(self):
+        """封面/目录那几行用了样式、正文几十章全是手打编号：几行样式标题压不过整本编号。"""
+        d = Document()
+        for t in ("投标文件", "目  录", "投标函", "法定代表人授权书"):
+            d.add_heading(t, level=1)
+        for i in range(20):
+            d.add_paragraph(f"第{i + 1}章 手打章节标题")
+            d.add_paragraph("本章正文若干。")
+        assert len(parse_docx(_bytes(d)).headings) == 24
+
+    def test_words_own_outline_wins_over_numbered_body_lines(self):
+        """反过来：作者标够了大纲层级，正文里长得像编号标题的行（目录行、清单项）一律不作数。
+        真实语料实测，这些行大半是目录（「一、磋商响应函\t5」）和日期落款，认了就是几十个假节。"""
+        d = Document()
+        for i in (1, 2, 3):
+            d.add_heading(f"{i}.第{i}章", level=1)
+            d.add_paragraph("1.1 投标文件组成")      # 启发式眼里的标题，实为目录式正文
+            d.add_paragraph("正文若干")
+        assert _titles(parse_docx(_bytes(d))) == ["1.第1章", "2.第2章", "3.第3章"]
+
+
 class TestTablesAndDegradation:
     def test_table_rows_are_never_headings(self):
         """偏离表首行「招标文件的要求」是表头、行里的「1 身份集成」是条目——都不是章节。
@@ -142,6 +182,26 @@ class TestTablesAndDegradation:
 
         parsed = parse_docx(_bytes(d))
         assert _titles(parsed) == ["1.1.2 核心架构要求偏离表"]
+        assert _sec_of(parsed, "身份集成") == "sec-1" and _sec_of(parsed, "终端接入") == "sec-1"
+
+    def test_table_rows_are_never_headings_in_the_fallback_path_either(self):
+        """**无样式**文档里的偏离表：表格守卫在启发式那条路上同样要生效。
+
+        上面那条用例用 add_heading 造文档 → 走 Word 大纲层级那条路，而那条路的表格块 level
+        天然是 None，`_fallback_level` 里的表格守卫**根本走不到**（反向变异实证：把那道守卫
+        删掉，全量用例照样全绿）。真实偏离表首列恰恰是「1.1 xxx」这种编号，放行就是几十个假节。"""
+        d = Document()
+        d.add_paragraph("投标人对招标技术要求逐条应答如下：")
+        t = d.add_table(rows=3, cols=2)
+        t.rows[0].cells[0].text = "招标文件的要求"
+        t.rows[0].cells[1].text = "应答情况"
+        t.rows[1].cells[0].text = "1.1 身份集成对接统一认证"
+        t.rows[1].cells[1].text = "完全响应"
+        t.rows[2].cells[0].text = "一、终端接入支持信创"
+        t.rows[2].cells[1].text = "完全响应"
+
+        parsed = parse_docx(_bytes(d))
+        assert parsed.headings == []
         assert _sec_of(parsed, "身份集成") == "sec-1" and _sec_of(parsed, "终端接入") == "sec-1"
 
     def test_document_without_any_heading_stays_one_section(self):
@@ -203,6 +263,33 @@ class TestDownstreamContracts:
         assert [h["title"] for h in headings] == ["1.技术偏离表", "2.项目概况", "1.商务条款"]
         assert [c["id"] for c in clauses if "乙文" in c["text"]] == ["sec-3-c1"]
         assert ranges[1] == {"name": "b.docx", "sec_from": 3, "sec_to": 3}
+
+    def test_a_file_ending_in_a_title_only_section_does_not_collide_with_the_next(self):
+        """甲文以「只有标题、没有正文」的节收尾时，乙文的首节不许撞上它的节号。
+
+        偏移量只看 clauses 的最大节号 → 空标题节整个被忽略 → 乙文首节沿用甲文尾节的号，
+        `_clause_source` 取第一个匹配的标题，偏离表「出处」列就会印上**另一份文件**的标题；
+        file_ranges 也会把甲文的尾节划进乙文的区间。docx 认出大纲层级之后每份文件几百条标题，
+        以空标题节收尾（末尾一个「附件清单」标题后面直接结束）是常态。"""
+        from agent.agents.bidding_agent.nodes.content import _clause_source
+        from agent.parsing.merge import merge_parsed
+
+        a = Document()
+        a.add_heading("1.正文章", level=1)
+        a.add_paragraph("甲文正文。")
+        a.add_heading("2.附件清单", level=1)      # 只有标题、没有正文的尾节
+        b = Document()
+        b.add_heading("1.乙文首章", level=1)
+        b.add_paragraph("乙文正文。")
+
+        docs = [("a.docx", parse_docx(_bytes(a))), ("b.docx", parse_docx(_bytes(b)))]
+        clauses, ranges, headings = merge_parsed(docs)
+        assert [h["sec"] for h in headings] == ["sec-1", "sec-2", "sec-3"]
+        assert [c["id"] for c in clauses if "乙文" in c["text"]] == ["sec-3-c1"]
+        assert ranges == [{"name": "a.docx", "sec_from": 1, "sec_to": 2},
+                          {"name": "b.docx", "sec_from": 3, "sec_to": 3}]
+        # 出处必须是乙文自己的标题，不能是甲文的尾节标题
+        assert _clause_source({"doc_headings": headings}, ["sec-3-c1"]) == "1.乙文首章"
 
     def test_headings_resolve_a_clause_id_back_to_its_title(self):
         """headings 的用处：把内部条款 id 还原成人看得懂的出处（偏离表「出处」列）。"""

@@ -51,11 +51,14 @@ class Block:
     """文档顺序上的一个正文块（段落或表格行）。
 
     level 是 Word 自己标的大纲层级（1..9），None = 正文；table 标记它来自表格
-    （表格块永不参与标题判定）。"""
+    （表格块永不参与标题判定）；synthetic 标记这块不是文档自己的内容，而是我们插进去的
+    （内嵌图片的识别文字，见 parsers.splice_docx_images）——识别误差不该改写文档结构，
+    故与表格行同待遇：永不成标题。"""
 
     text: str
     level: int | None = None
     table: bool = False
+    synthetic: bool = False
 
 
 def _outline_level(pPr) -> int | None:
@@ -124,13 +127,14 @@ def paragraph_level(p_el, style_levels: dict[str, int]) -> int | None:
 
 
 def _fallback_level(b: Block) -> int | None:
-    """没有任何大纲层级的文档才走这里：短行 + 编号模式。表格行一律不判。
+    """作者没标够大纲层级时才走这里：短行 + 编号模式。表格行与插进来的识别文字一律不判。
 
     前两种编号（第X章 / 一、）是既有判据，**逐字节沿用**，免得今天切得出来的文档反而变少；
     阿拉伯编号是本次新增的，噪声也集中在它身上（列表项常常就是「1、xxx。」），故只对它
     加一道收尾守卫。"""
     t = b.text.strip()
-    if b.table or not t or len(t) > _MAX_HEADING_CHARS:   # 无字的块（如纯图片段）不是标题
+    # 无字的块（如纯图片段）不是标题；synthetic 见 Block 的注释（识别文字永不成标题）
+    if b.table or b.synthetic or not t or len(t) > _MAX_HEADING_CHARS:
         return None
     if _CHAPTER.match(t):
         return 1
@@ -194,10 +198,27 @@ def _emit(secs: list[dict]) -> tuple[list[dict], list[dict]]:
     return clauses, headings
 
 
+# 「作者自己把结构标好了」的认定门槛。按**覆盖度**判而不是 any()：中文标书的封面常用内置
+# 「标题 1」排一两行、正文章节却是手打的「第一章」，按 any() 判的话整本就为了那一行封面放弃
+# 编号启发式——构造实证 11 节塌成 1 节，正是本次要治的故障形态换了扇门进来。
+# 判据两条都要过：带层级的段落既要够多（一两条可能只是封面/页眉套了个样式），
+# 也不能被启发式命中数压倒（差得太远说明作者只标了零头）。
+_MIN_STYLED_HEADINGS = 3
+# 4 倍是拿真实语料挑的：仓库 18 份标书里样式标题相对最少的两份（49 条样式 vs 114 条启发式、
+# 29 vs 85）仍判为 styled——它们的启发式命中大半是目录行（「一、磋商响应函\t5」）与日期落款，
+# 认了只会把目录切成几十个假节。倍数再小就会把这两份翻到并用模式上去。
+_STYLED_OVER_HEURISTIC = 4
+
+
 def split_docx_blocks(blocks: list[Block]) -> tuple[list[dict], list[dict]]:
-    """docx 正文块 → ([{id, text}], [{sec, title, level}])。见模块头的判据顺序。"""
-    styled = any(b.level for b in blocks)
-    levels = [b.level for b in blocks] if styled else [_fallback_level(b) for b in blocks]
+    """docx 正文块 → ([{id, text}], [{sec, title, level}])。见模块头的判据顺序。
+    覆盖度不够时两种信号并用：段落自己标了层级的照用，没标的才拿编号去猜。"""
+    guesses = [_fallback_level(b) for b in blocks]
+    n_styled = sum(1 for b in blocks if b.level)
+    styled = (n_styled >= _MIN_STYLED_HEADINGS
+              and n_styled * _STYLED_OVER_HEURISTIC >= sum(1 for g in guesses if g))
+    levels = ([b.level for b in blocks] if styled
+              else [b.level or g for b, g in zip(blocks, guesses)])
     secs = _group(blocks, levels)
     if not styled:
         secs = _merge_tiny_sections(secs)
