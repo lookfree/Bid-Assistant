@@ -126,19 +126,21 @@ def splice_ocr_pages(doc: ParsedDoc, ocr_texts: dict[int, str]) -> ParsedDoc:
     审查材料。image_pages 扣掉已识别的页——剩下的才是真正还看不见的页（全部识别成功 → 注记消失）。
 
     「已识别」按**认出来的字够不够读**算，不是「非空就算」：糊掉的章、被当成字符的花纹常常只出
-    一两个字，那种页用户实际上还是什么都看不见，必须继续算「无法核验」。门槛与页面本身的扫描
-    判定同源（is_image_page），改阈值两边同时生效。
+    一两个字，那种页用户实际上还是什么都看不见。这种页**既不扣 image_pages，也一个字都不拼回**：
+    拼回去的话，一份全扫描的废件会凭那几个「章」字切出条款、聚出非空 chapters，
+    绕过 review 的「解析不出正文 → run 失败 + 全额退款」闸——用户为一份什么都看不见的文件
+    付了一次审查的钱。门槛与页面本身的扫描判定同源（is_image_page），改阈值两处同时生效。
     """
-    if not ocr_texts:
+    readable = {i: t for i, t in ocr_texts.items() if not is_image_page(t)}
+    if not readable:
         return doc
     pages = list(doc.page_texts)
-    for i, text in ocr_texts.items():
+    for i, text in readable.items():
         pages[i] = f"{_OCR_PAGE_MARK.format(n=i + 1)}\n{text}"
     full = "\n".join(pages)
     clauses, headings = _split_clauses(full.split("\n"))
-    readable = sum(1 for t in ocr_texts.values() if not is_image_page(t))
     return replace(doc, text=full, page_texts=pages, clauses=clauses, headings=headings,
-                   image_pages=max(0, doc.image_pages - readable))
+                   image_pages=max(0, doc.image_pages - len(readable)))
 
 
 def parse_xlsx(data: bytes) -> ParsedDoc:

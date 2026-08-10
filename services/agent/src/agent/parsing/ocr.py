@@ -35,7 +35,16 @@ logger = logging.getLogger(__name__)
 _CONCURRENCY = 2
 # 单页超时（秒）。231 实测单张 1200×850 证照 0.7–0.9s，整版扫描页更重；20s 是数量级的余量，
 # 到点即跳过该页，绝不让一页把整份文件拖住。
+# 这个口径**同时**盖住一页的两段活：渲染（asyncio.wait_for 包住 to_thread）与 HTTP 请求
+# （asyncio.wait_for 包住 client.post）。httpx 自己的 timeout 是**分相**超时、read 那一相
+# 每收到一片字节就重新计时，慢滴响应一次都不会触发它，所以请求级总帽必须自己绑。
 _PAGE_TIMEOUT_S = 20
+# 连续失败几页就放弃该文件剩余页（熔断）。OCR 容器挂了/被打爆时，剩下的页只是把同一个错误
+# 重复几百遍：每页都要先渲染（CPU）再等满一个总帽，300 页就是几十分钟的白等，
+# 而结果与直接放弃完全一样（都不进正文 → 照旧算「还看不见」→ 审查说「无法核验」）。
+# 只数**请求真失败**的页；识别出空文本（真的是空白分隔页）不算故障，否则一叠空白页
+# 就能把后面真有内容的证照页全掐掉。5 次给零星抖动留了余量。
+_MAX_CONSECUTIVE_FAILS = 5
 # 页数帽是**每文件**的。实测样本 139 页；300 封顶，挡的是"单份上千页的扫描册"这一种文件。
 _MAX_PAGES = 300
 # 时长帽是**每次审查**的（跨该次受审的全部文件共享一条 deadline，由 parse_bid_docs 起一次）。
@@ -114,6 +123,7 @@ async def _ocr_pages(data: bytes, indices: list[int],
         return {}
     base = (settings.ocr_base_url or "").strip().rstrip("/")
     out: dict[int, str] = {}
+    fails = 0                       # 连续失败页数（只数请求真失败的，见 _MAX_CONSECUTIVE_FAILS）
     try:
         async with httpx.AsyncClient(timeout=_PAGE_TIMEOUT_S) as client:
             for start in range(0, len(indices), _CONCURRENCY):
@@ -124,29 +134,61 @@ async def _ocr_pages(data: bytes, indices: list[int],
                     await _report(on_progress, start, len(indices), force=True)
                     break
                 chunk = indices[start:start + _CONCURRENCY]
-                pages = await asyncio.to_thread(renderer.render_many, chunk)
+                done = start + len(chunk)
+                pages = await _render_chunk(renderer, chunk)
                 for idx, text in await asyncio.gather(
                         *[_ocr_one(client, base, i, img) for i, img in pages]):
+                    if text is None:            # 请求本身失败（超时/非 200/连不上）
+                        fails += 1
+                        continue
+                    fails = 0
                     if text:
                         out[idx] = text
-                await _report(on_progress, start + len(chunk), len(indices))
+                if fails >= _MAX_CONSECUTIVE_FAILS:
+                    logger.warning("扫描页 OCR 连续失败 %d 次，放弃该文件剩余页（停在 %d/%d）",
+                                   fails, done, len(indices))
+                    await _report(on_progress, done, len(indices), force=True)
+                    break
+                await _report(on_progress, done, len(indices))
     finally:
         await asyncio.to_thread(renderer.close)
     return out
 
 
-async def _ocr_one(client: httpx.AsyncClient, base: str,
-                   index: int, image: bytes) -> tuple[int, str]:
-    """单页送 OCR。超时/非 200/连不上/返回不合形状——任何失败都只是这一页跳过。"""
+async def _render_chunk(renderer: PdfPageRenderer, chunk: list[int]) -> list[tuple[int, bytes]]:
+    """一块页图。渲染跑在线程里，**既不会自己超时也取消不掉**（pdfium 在原生代码里），
+    所以外面绑一层单页口径的总帽把循环放出来；超时的这几页当渲染失败处理（不发 HTTP、
+    照旧算「还看不见」）。落单的那个线程仍会跑完，但页图有像素帽兜着（pdf_render._MAX_PIXELS），
+    不至于变成几小时的巨图。"""
     try:
-        resp = await client.post(f"{base}/ocr", json={
-            "image": base64.b64encode(image).decode(),
-            "max_chars": _MAX_CHARS_PER_PAGE})
-        resp.raise_for_status()
-        return index, (resp.json().get("text") or "").strip()
+        return await asyncio.wait_for(asyncio.to_thread(renderer.render_many, chunk),
+                                      _PAGE_TIMEOUT_S * len(chunk))
+    except TimeoutError:
+        logger.warning("扫描页渲染超时，跳过第 %s 页", [i + 1 for i in chunk])
+        return []
+
+
+async def _post_ocr(client: httpx.AsyncClient, base: str, image: bytes) -> str:
+    """一次 /ocr 调用 → 识别文字。"""
+    resp = await client.post(f"{base}/ocr", json={
+        "image": base64.b64encode(image).decode(),
+        "max_chars": _MAX_CHARS_PER_PAGE})
+    resp.raise_for_status()
+    return (resp.json().get("text") or "").strip()
+
+
+async def _ocr_one(client: httpx.AsyncClient, base: str,
+                   index: int, image: bytes) -> tuple[int, str | None]:
+    """单页送 OCR。超时/非 200/连不上/返回不合形状——任何失败都只是这一页跳过，
+    返回 **None** 让调用方数「连续失败」；识别出空串是正常应答（空白页），返回 ""。
+
+    总帽必须自己绑（见 _PAGE_TIMEOUT_S）：httpx 的 timeout 是分相超时，慢滴响应下
+    read 那一相每收到一片字节就重新计时，单页能拖上几分钟而它一次都不会触发。"""
+    try:
+        return index, await asyncio.wait_for(_post_ocr(client, base, image), _PAGE_TIMEOUT_S)
     except Exception:  # noqa: BLE001 单页失败不牵连其余页，更不该抛穿审查节点
         logger.warning("扫描页 OCR 失败，跳过第 %d 页", index + 1, exc_info=True)
-        return index, ""
+        return index, None
 
 
 async def _report(on_progress: ProgressFn | None, done: int, total: int,

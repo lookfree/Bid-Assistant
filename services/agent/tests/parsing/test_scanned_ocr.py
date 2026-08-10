@@ -4,6 +4,7 @@
 那些页（身份证、盖章报价表、授权书）。OCR 是独立 HTTP 容器，这里用 MockTransport 打桩，
 仍然真走 httpx 的请求/响应/异常路径。
 """
+import asyncio
 import json
 import time
 
@@ -201,14 +202,51 @@ async def test_remaining_budget_is_inherited_not_restarted(ocr_env):
     assert len(stub.requests) == 2 and after.image_pages == 0
 
 
-async def test_barely_recognized_pages_still_count_as_unverifiable(ocr_env):
+async def test_barely_recognized_pages_are_not_spliced_back_at_all(ocr_env):
     """只认出一两个字的页（糊掉的章、被当成字符的花纹）用户实际上还是什么都看不见：
-    文本照样拼回去，但**不从「看不见的页」里扣**——门槛与页面本身的扫描判定同源。"""
+    **既不从「看不见的页」里扣，也不拼回正文**——门槛与页面本身的扫描判定同源。
+
+    不拼是关键：拼回去的那一两个字会变成条款，让一份全扫描的废件产出非空 chapters，
+    绕过 review 的「解析不出正文 → run 失败 + 全额退款」闸，最后拿一堆「章」去跑计费审查。"""
     stub, run = ocr_env
     stub.reply = lambda n, body: httpx.Response(200, json={"text": "章"})
     _, after = await run(_pdf(_TEXT_PAGE, "", ""))
     assert after.image_pages == 2                 # 两页都还算看不见
-    assert "[第2页·扫描件识别]" in after.text      # 认出来的那点字仍原样拼回，不丢
+    assert "扫描件识别" not in after.text          # 垃圾识别一个字都不许进正文
+    assert "章" not in after.text
+
+
+async def test_mixed_quality_pages_splice_only_the_readable_one(ocr_env):
+    """一页认得动、两页是垃圾：只有那一页拼回并从「看不见的页」里扣，另两页原样留着。"""
+    stub, run = ocr_env
+    stub.reply = lambda n, body: (httpx.Response(200, json={"text": _OK}) if n == 1
+                                  else httpx.Response(200, json={"text": "章"}))
+    _, after = await run(_pdf(_TEXT_PAGE, "", "", ""))
+    assert after.image_pages == 2                  # 3 页扫描 − 1 页真读得动
+    assert after.text.count("扫描件识别") == 1
+    assert "识别成功" in after.text
+
+
+async def test_all_garbage_ocr_keeps_chapters_empty_so_the_refund_gate_fires(
+        ocr_env, monkeypatch):
+    """整份全扫描的废件 + 每页只认出一个「章」：chapters 必须还是空的。
+
+    这是**钱**的闸：review 的 _resolve_chapters 看到空 chapters 才会抛错让 run 失败、
+    App 侧 settleFailed 全额退款。垃圾识别文本一旦拼回正文，就会切出条款、聚出章节，
+    闸静默失效——用户拿一份什么都看不见的文件付了一次审查的钱。"""
+    import agent.agents.bidding_agent.nodes.common as common_mod
+    from agent.agents.bidding_agent.nodes.common import parse_bid_docs
+
+    stub, _run = ocr_env
+    stub.reply = lambda n, body: httpx.Response(200, json={"text": "章"})
+    pdf = _pdf("", "", "")
+    monkeypatch.setattr(common_mod, "read_and_parse",
+                        lambda key: parse_bytes(pdf, "投标文件.pdf"))
+    monkeypatch.setattr(ocr_mod, "read_bytes", lambda key: pdf)
+    chapters, scanned = await parse_bid_docs([_KEY])
+    assert len(stub.requests) == 3                 # 三页都送去识别了，只是认不出东西
+    assert chapters == {}
+    assert scanned == [{"name": "投标文件.pdf", "pages": 3, "image_pages": 3}]
 
 
 async def test_stopping_early_still_emits_a_final_progress_frame(ocr_env, monkeypatch):
@@ -224,8 +262,77 @@ async def test_stopping_early_still_emits_a_final_progress_frame(ocr_env, monkey
     assert stub.requests == [] and frames == [(0, 2)]
 
 
+async def test_render_timeout_skips_those_pages_without_raising(ocr_env, monkeypatch):
+    """渲染卡住（畸形巨页、pdfium 陷在原生代码里）不该把整份文件吊死：
+    to_thread 里的渲染既不会自己超时也取消不掉，只有外面绑一层 wait_for 才能把循环放出来。
+    超时的那几页当渲染失败处理——不发 HTTP、照旧算「还看不见」，绝不抛穿审查节点。"""
+    stub, run = ocr_env
+    monkeypatch.setattr(ocr_mod, "_PAGE_TIMEOUT_S", 0.05)
+
+    def _stuck(self, indices):
+        time.sleep(0.6)
+        return [(i, b"jpeg-bytes") for i in indices]
+
+    monkeypatch.setattr(ocr_mod.PdfPageRenderer, "render_many", _stuck)
+    _, after = await run(_pdf(_TEXT_PAGE, "", ""))
+    assert stub.requests == []             # 图都没渲出来，一次 HTTP 都不该发
+    assert after.image_pages == 2          # 那两页照旧算「无法核验」
+
+
+class _DripStream(httpx.AsyncByteStream):
+    """逐字节吐的响应体（慢滴）。httpx 的 timeout 是**分相**超时，read 那一相每收到一片
+    就重新计时，所以片够密的话它一次都不会触发，总耗时却是所有片的和——单页能拖上几分钟。"""
+
+    def __init__(self, payload: bytes, gap: float):
+        self._payload, self._gap = payload, gap
+
+    async def __aiter__(self):
+        for i in range(len(self._payload)):
+            await asyncio.sleep(self._gap)
+            yield self._payload[i:i + 1]
+
+
+async def test_slow_drip_response_is_cut_by_the_per_request_total_cap(ocr_env, monkeypatch):
+    """慢滴响应必须被**每请求总帽**掐断：分相超时管不了它（见 _DripStream），
+    没有总帽的话一页就能拖几分钟，300 页的文件把审查步拖成小时级。"""
+    stub, run = ocr_env
+    payload = json.dumps({"text": _OK}).encode()
+    stub.reply = lambda n, body: httpx.Response(
+        200, stream=_DripStream(payload, 0.02),
+        headers={"content-type": "application/json"})
+    monkeypatch.setattr(ocr_mod, "_PAGE_TIMEOUT_S", 0.1)   # 滴完要 1s 以上，总帽 0.1s
+    _, after = await run(_pdf(_TEXT_PAGE, ""))
+    assert len(stub.requests) == 1
+    assert "识别成功" not in after.text
+    assert after.image_pages == 1          # 被掐掉的页照旧算「无法核验」
+
+
+async def test_consecutive_failures_give_up_on_the_rest_of_the_file(ocr_env):
+    """连续失败即熔断：OCR 容器挂了/被打爆时，剩下的页只是把同一个错误重复几百遍——
+    每页都要先渲染（CPU）再等满一个总帽，结果与直接放弃完全一样（都算「还看不见」）。"""
+    stub, run = ocr_env
+    stub.reply = lambda n, body: httpx.Response(500, text="boom")
+    _, after = await run(_pdf(_TEXT_PAGE, *[""] * 20))
+    # 2 页一块、每块后查一次：第 3 块结束时连续失败 6 次 ≥ 5 → 熔断，后面 14 页不再发请求
+    assert len(stub.requests) == 6
+    assert after.image_pages == 20         # 一页都没识别出来，全算「无法核验」
+    assert ocr_mod._MAX_CONSECUTIVE_FAILS == 5
+
+
+async def test_blank_pages_do_not_trip_the_breaker(ocr_env):
+    """OCR 正常应答、只是这页真没字（空白分隔页）不算故障：
+    按「非空才算成功」数的话，一叠空白页就能把后面真有内容的证照页全掐掉。"""
+    stub, run = ocr_env
+    stub.reply = lambda n, body: (httpx.Response(200, json={"text": ""}) if n <= 10
+                                  else httpx.Response(200, json={"text": _OK}))
+    _, after = await run(_pdf(_TEXT_PAGE, *[""] * 12))
+    assert len(stub.requests) == 12        # 12 页全都发了，没有中途熔断
+    assert "识别成功" in after.text
+
+
 async def test_resilience_budgets_are_conservative():
     """韧性预算是常量、不许悄悄放大：OCR 是 CPU 推理容器，并发打爆它会连累同机的数据层。"""
     assert ocr_mod._CONCURRENCY == 2
     assert ocr_mod._MAX_PAGES == 300
     assert ocr_mod._TOTAL_BUDGET_S == 20 * 60
+    assert ocr_mod._PAGE_TIMEOUT_S == 20

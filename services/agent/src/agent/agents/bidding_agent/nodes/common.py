@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import re
-from html import unescape
+from html import escape, unescape
 
 from agent.framework.budget import chapter_budget, estimate_tokens
 from agent.parsing import storage_read
@@ -27,14 +27,20 @@ __all__ = ["publish_phase", "upload_artifact", "fetch_master_bytes", "package_sc
 
 def _aggregate(parsed, out: dict[str, str]) -> None:
     """一份解析结果按节聚合进 out（追加成 sec-1..N 的连续键）。**节号全局重排**——
-    每份文件的节号都从 sec-1 起,直接合并会让后一份把前一份的同号节整节覆盖（静默丢半本标书）。"""
+    每份文件的节号都从 sec-1 起,直接合并会让后一份把前一份的同号节整节覆盖（静默丢半本标书）。
+
+    条款原文**必须转义**再放进 <p>：标书里"响应时间<30分钟，可用率>99.9%"这类写法在技术偏离表、
+    服务承诺表里遍地都是,裸拼的话 "<30分钟，可用率>" 就是一个像模像样的标签,
+    下游剥标签时被整段吃掉——模型读到的是"响应时间99.9%",SLA 承诺正好读反。
+    喂模型前的还原由消费方各自做（html_to_review_text / present._plain 都会 unescape）。
+    quote=False：这里是元素文本不是属性值,引号原样留着更省字数也更贴近原文。"""
     by_sec: dict[str, list[str]] = {}
     for c in parsed.clauses:
         m = re.match(r"^(sec-\d+)-", c.get("id") or "")
         if m:
             by_sec.setdefault(m.group(1), []).append(c.get("text") or "")
     for texts in by_sec.values():
-        html = "".join(f"<p>{t}</p>" for t in texts if t)
+        html = "".join(f"<p>{escape(t, quote=False)}</p>" for t in texts if t)
         if html:
             out[f"sec-{len(out) + 1}"] = html
 

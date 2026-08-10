@@ -48,20 +48,25 @@ def _pptx_to_pdf(data: bytes, workdir: str) -> str:
 
 
 def render_deck_previews(pptx_bytes: bytes) -> list[bytes]:
-    """.pptx → 每页一张 PNG（顺序与幻灯片一致）。失败抛错，由调用方决定是否降级。"""
+    """.pptx → 每页一张 PNG（顺序与幻灯片一致）。失败抛错，由调用方决定是否降级。
+
+    整个「开文档 → 逐页渲染 → 关文档」在 PDFIUM_LOCK 内：PDFium 是进程级非线程安全的，
+    而这条路径与扫描页 OCR 的渲染跑在**不同的线程池线程**上（见 parsing/pdf_render.py 的
+    锁注释），同时进入就是原生段错误、整个进程消失。LibreOffice 转档不碰 pdfium，留在锁外。"""
     import pypdfium2 as pdfium
 
-    from agent.parsing.pdf_render import page_image
+    from agent.parsing.pdf_render import PDFIUM_LOCK, page_image
 
     with tempfile.TemporaryDirectory() as tmp:
         pdf_path = _pptx_to_pdf(pptx_bytes, tmp)
-        doc = pdfium.PdfDocument(pdf_path)
-        out: list[bytes] = []
-        try:
-            for i in range(len(doc)):
-                out.append(page_image(doc[i], _WIDTH_PX)[0])
-        finally:
-            doc.close()
+        with PDFIUM_LOCK:
+            doc = pdfium.PdfDocument(pdf_path)
+            out: list[bytes] = []
+            try:
+                for i in range(len(doc)):
+                    out.append(page_image(doc[i], _WIDTH_PX)[0])
+            finally:
+                doc.close()
     return out
 
 
@@ -82,19 +87,21 @@ class UnrenderablePdf(Exception):
 def render_pdf_pages(pdf_bytes: bytes, max_pages: int = _PDF_PAGE_MAX,
                      width_px: int = _PDF_PAGE_WIDTH_PX) -> list[tuple[bytes, int, int]]:
     """PDF → 每页一张 PNG(按页序)。返回 [(png_bytes, width, height)]。
-    渲染循环与 render_deck_previews 同源:按宽等比缩放、PIL 存 PNG（parsing/pdf_render.page_image）。
+    渲染循环与 render_deck_previews 同源:按宽等比缩放、PIL 存 PNG（parsing/pdf_render.page_image）,
+    也同样整段持 PDFIUM_LOCK（PDFium 进程级非线程安全,见 parsing/pdf_render.py 的锁注释）。
     先查页数再渲染——6 页的文件不该白渲 5 页才发现超限。"""
     import pypdfium2 as pdfium
 
-    from agent.parsing.pdf_render import page_image
+    from agent.parsing.pdf_render import PDFIUM_LOCK, page_image
 
-    try:
-        doc = pdfium.PdfDocument(pdf_bytes)
-    except Exception as e:  # noqa: BLE001 pdfium 对加密/损坏抛自家异常,统一归为不可渲染
-        raise UnrenderablePdf(str(e)) from e
-    try:
-        if len(doc) > max_pages:
-            raise TooManyPages(f"{len(doc)} pages > {max_pages}")
-        return [page_image(doc[i], width_px) for i in range(len(doc))]
-    finally:
-        doc.close()
+    with PDFIUM_LOCK:
+        try:
+            doc = pdfium.PdfDocument(pdf_bytes)
+        except Exception as e:  # noqa: BLE001 pdfium 对加密/损坏抛自家异常,统一归为不可渲染
+            raise UnrenderablePdf(str(e)) from e
+        try:
+            if len(doc) > max_pages:
+                raise TooManyPages(f"{len(doc)} pages > {max_pages}")
+            return [page_image(doc[i], width_px) for i in range(len(doc))]
+        finally:
+            doc.close()

@@ -1,5 +1,7 @@
 import agent.agents.bidding_agent.nodes.common as common_mod
-from agent.agents.bidding_agent.nodes.common import parse_bid_chapters, parse_bid_docs
+from agent.agents.bidding_agent.nodes.common import (
+    html_to_review_text, parse_bid_chapters, parse_bid_docs)
+from agent.agents.bidding_agent.nodes.present import _plain
 from agent.parsing.types import ParsedDoc
 
 
@@ -18,6 +20,23 @@ def test_parse_bid_chapters_single_file_keeps_section_order(monkeypatch):
     monkeypatch.setattr(common_mod, "read_and_parse", lambda key: parsed)
     out = parse_bid_chapters("uploads/u/bid.docx")
     assert out == {"sec-1": "<p>总体方案</p><p>技术路线</p>", "sec-2": "<p>服务承诺</p>"}
+
+
+def test_clause_text_with_angle_brackets_survives_to_the_model(monkeypatch):
+    """条款原文里的 < 和 > 必须原样走到模型手里。
+
+    裸拼 `<p>{t}</p>` 的话，"响应时间<30分钟，可用率>99.9%" 里的 "<30分钟，可用率>" 就是一个
+    像模像样的标签，下游剥标签时被整段吃掉——模型读到的是"响应时间99.9%"，SLA 承诺正好读反，
+    审查/述标据此出结论。技术偏离表、服务承诺表里这种写法遍地都是。
+    往回走的一跳同样要核：拼进去时转义了，喂模型前必须再还原，否则模型看到的是 "&lt;30分钟"。
+    """
+    clause = "响应时间<30分钟，可用率>99.9%"
+    monkeypatch.setattr(common_mod, "read_and_parse",
+                        lambda key: _Parsed([{"id": "sec-1-c1", "text": clause}]))
+    chapters = parse_bid_chapters("uploads/u/bid.docx")
+    assert chapters["sec-1"] == "<p>响应时间&lt;30分钟，可用率&gt;99.9%</p>"
+    assert html_to_review_text(chapters["sec-1"]) == clause      # 审查那条消费路
+    assert _plain(chapters["sec-1"]) == clause                   # 述标那条消费路
 
 
 def test_parse_bid_chapters_multi_file_renumbers_instead_of_overwriting(monkeypatch):

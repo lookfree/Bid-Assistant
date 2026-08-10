@@ -3,6 +3,7 @@ import asyncio
 import logging
 import json
 import re
+from html import unescape
 from agent.framework.budget import run_with_shrink
 from agent.framework.create_agent import run_submit_agent
 from agent.agents.bidding_agent.nodes.common import (
@@ -21,8 +22,15 @@ logger = logging.getLogger(__name__)
 
 def _plain(html: str) -> str:
     """章节 HTML → 纯文本摘要输入：述标要点/口播稿不需要标签，token 减半。
-    先剥内联图片——base64 单张二十万字符，不剥的话述标输入被一张图撑爆。"""
-    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", strip_inline_images(html))).strip()
+    先剥内联图片——base64 单张二十万字符，不剥的话述标输入被一张图撑爆。
+
+    剥完标签要 unescape：正文里的 <、>、& 在 HTML 里是以实体存的（线下标书由
+    common._aggregate 转义写入，生成正文由模型/编辑器写入），不还原的话模型看到的是
+    "响应时间&lt;30分钟"——实体既占额外字数，也让它读不出这是个数值区间。
+    顺序不能反：先还原再剥标签，会把实体形式的尖括号变成真标签再被剥掉。
+    unescape 放在压空白之前：&nbsp; 还原出来的是不间断空格，一并压掉。"""
+    return re.sub(r"\s+", " ",
+                  unescape(re.sub(r"<[^>]+>", " ", strip_inline_images(html)))).strip()
 
 
 def _slide_notes_context(s) -> dict:
