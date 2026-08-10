@@ -55,19 +55,9 @@ services:
     deploy: { resources: { limits: { cpus: "2", memory: 2G } } }   # 同 web，访问量更低
     expose: ["3001"]
 
-  # 自建 BGE-M3 嵌入服务（agent 经 docker 网络访问 http://bge-embed:8000）
-  bge-embed:
-    build: { context: ../services/bge-embed }
-    image: bid-bge-embed:${TAG}
-    restart: unless-stopped
-    deploy: { resources: { limits: { cpus: "4", memory: 8G } } }   # 实测常驻 7.2G（模型权重），给 8G 留余量
-    environment:
-      EMBED_MODEL: "/models/ms/models/BAAI--bge-m3/snapshots/master"
-      HF_ENDPOINT: "https://hf-mirror.com"
-      HF_HOME: "/models"
-    volumes:
-      - bge_models:/models
-    expose: ["8000"]
+  # BGE-M3 嵌入服务 2026-08-10 迁至数据机（deploy/data/docker-compose.data.yml）：
+  # 与 OCR 同机=本地推理归数据机，卸掉应用机 ~7.2G 常驻内存。
+  # agent 经 RAG_EMBED_ENDPOINT（.env.deploy.local）指向数据机 LAN 地址。
 
   nginx:
     image: nginx:1.27-alpine
@@ -76,6 +66,3 @@ services:
     ports: ["80:80", "8081:8081"]
     volumes:
       - ./nginx-ip:/etc/nginx/conf.d:ro
-
-volumes:
-  bge_models:

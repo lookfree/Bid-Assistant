@@ -104,3 +104,29 @@ services:
       interval: 15s
       timeout: 5s
       retries: 20               # 首次启动要载模型，给足重试
+
+  # BGE-M3 嵌入服务（资料库 RAG 向量化，2026-08-10 自应用机迁来：与 OCR 同机=本地推理归数据机，
+  # 卸掉应用机 ~7.2G 常驻内存；两者天然错峰——嵌入在录入/检索时用、OCR 在审查时用）。
+  # 镜像与模型卷从应用机整体搬运（bid_bge_models 外部卷，权重 4.4G，避免重新下载）。
+  bge-embed:
+    image: bid-bge-embed:${TAG:-latest}
+    restart: unless-stopped
+    deploy: { resources: { limits: { cpus: "4", memory: 8G } } }   # 实测常驻 7.2G，给 8G 留余量
+    environment:
+      EMBED_MODEL: "/models/ms/models/BAAI--bge-m3/snapshots/master"
+      HF_ENDPOINT: "https://hf-mirror.com"
+      HF_HOME: "/models"
+    volumes:
+      - bge_models:/models
+    ports:
+      - "192.168.106.231:8200:8000"   # 绑 LAN 口供 230 的 agent 访问（RAG_EMBED_ENDPOINT 指此）
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 20               # 首次启动要载 4.4G 模型权重，给足重试
+
+volumes:
+  bge_models:
+    external: true              # 显式外部卷 bid_bge_models：从应用机搬运恢复，不随 compose 生命周期删除
+    name: bid_bge_models
