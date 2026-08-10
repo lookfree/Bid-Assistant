@@ -157,8 +157,42 @@ def test_partly_scanned_tender_is_read_as_usual(monkeypatch, submit_gateway):
 
 
 def test_scanned_check_never_touches_formats_without_pages(monkeypatch, submit_gateway):
-    """docx/xlsx 没有「页」的概念（pages=None、image_pages=0）→ 判据一律不生效，行为不变。"""
+    """docx/xlsx 没有「页」的概念（pages=None、image_pages=0）→ 页数那条判据一律不生效，行为不变。"""
     monkeypatch.setattr(read_mod, "read_and_parse", lambda key: _OK)
+    gw = submit_gateway({"submit_read_result": _READ_ARGS})
+    out = asyncio.run(read_mod.make_read_node(_ctx(gw))({"file_key": "k/招标文件.docx"}))
+
+    assert out["read"]["categories"] and gw.chats
+
+
+def _image_only_docx(text: str) -> ParsedDoc:
+    """整本贴成图片的 .docx：正文内嵌 42 张图，可提取的文字近乎没有。
+    .doc 转档后这种形态很常见（整本扫描件贴进 Word），而 docx 没有「页」的口径。"""
+    return ParsedDoc(text=text, kind="docx", embedded_images=42,
+                     clauses=[{"id": "sec-1-c1", "text": text}] if text else [])
+
+
+def test_image_only_docx_tender_fails_before_burning_a_single_model_round(
+        monkeypatch, submit_gateway):
+    """整本贴成图片的 docx 招标文件必须走**同一条**诚实拒绝通道。
+    此前判据只认 pdf 的 pages/image_pages，docx 的 pages 恒 None ⇒ 一律放行，
+    重演的正是这条闸要消灭的事故：token 烧完、以「模型未提交结构化结果」收场。"""
+    monkeypatch.setattr(read_mod, "read_and_parse", lambda key: _image_only_docx("第 1 页"))
+    gw = submit_gateway({"submit_read_result": _READ_ARGS})
+
+    with pytest.raises(RuntimeError) as ei:
+        asyncio.run(read_mod.make_read_node(_ctx(gw))({"file_key": "k/招标文件.docx"}))
+
+    assert "无法提取文字" in str(ei.value) and "招标文件.docx" in str(ei.value)
+    assert gw.chats == []                       # 一轮 token 都没烧
+
+
+def test_a_docx_with_real_body_text_is_never_rejected_for_having_images(
+        monkeypatch, submit_gateway):
+    """贴了一堆证照图、正文却照常可读的 docx 是**主用例**（资格证明章几乎都长这样）：
+    绝不能因为图多就拒掉。判据的字数门槛给得极低，有正文就一定放行。"""
+    body = "招标文件正文" * 30                    # 180 字，远超门槛
+    monkeypatch.setattr(read_mod, "read_and_parse", lambda key: _image_only_docx(body))
     gw = submit_gateway({"submit_read_result": _READ_ARGS})
     out = asyncio.run(read_mod.make_read_node(_ctx(gw))({"file_key": "k/招标文件.docx"}))
 

@@ -39,6 +39,33 @@ def _pdf(*pages: str) -> bytes:
     return bytes(pdf.output())
 
 
+# 混合页：几十字**精确可选文本**（投标人名称/法定代表人/日期）+ 整版贴图。可见字数落在 20–99 的
+# 灰区，解析时按「页里有贴图」判成图片页 ⇒ 会被送去 OCR——正是替换语义会吃掉原文的那种页。
+_MIXED_TEXT = "Bidder: Anji Technology Co Ltd (sealed) Rep: Zhang San 2026-08-01"
+# 半失败的识别：只认出一枚印章。过得了 20 字的可读门槛，却远少于原页那几十字。
+_STAMP_ONLY = "OFFICIAL SEAL ANJI TECH CO"
+# 整版都认出来的识别结果（远超原页字数）
+_FULL_PAGE = "Recognized page body: " + "qualification certificate line. " * 6
+
+
+def _mixed_pdf() -> bytes:
+    """一页 PDF：可见文字 + 整版贴图（混合页，判据见 parsers._MIXED_PAGE_MAX_CHARS）。"""
+    import io as _io
+
+    from fpdf import FPDF
+    from PIL import Image
+
+    pdf = FPDF()
+    pdf.set_font("helvetica", size=12)
+    pdf.add_page()
+    pdf.multi_cell(0, 8, _MIXED_TEXT)
+    buf = _io.BytesIO()
+    Image.new("RGB", (200, 120), (200, 200, 200)).save(buf, format="PNG")
+    buf.seek(0)
+    pdf.image(buf, x=10, y=60, w=100)
+    return bytes(pdf.output())
+
+
 class _OcrStub:
     """OCR 容器的 HTTP 桩：记录每次请求体，按到达序给答复（reply 可换成失败/超时）。"""
 
@@ -88,8 +115,43 @@ async def test_ocr_hits_only_scanned_pages_and_splices_text_back(ocr_env):
     assert "[第2页·扫描件识别]" in after.text and "[第3页·扫描件识别]" in after.text
     assert "识别文字1" in after.text and "识别文字2" in after.text
     assert "threshold" in after.text                     # 文本页原样保留在原位
+    assert after.page_texts[1].startswith("[第2页·扫描件识别]")   # 纯扫描页仍是**替换**语义
     # 识别文本必须重新参与条款切分，否则按 clauses 聚章时一个字都进不了审查材料
     assert any("识别文字1" in c["text"] for c in after.clauses)
+
+
+async def test_a_stamp_only_read_never_replaces_the_real_text_of_a_mixed_page(ocr_env):
+    """混合页（几十字精确文本 + 整版贴图）只认出一枚印章：原文必须原样留着、注记必须留着。
+
+    签字盖章页上的投标人名称、法定代表人、日期、电话是审查要**逐字比对**的东西，被一段近似识别
+    换掉就成了拿错字去比（实测「有限」→「有眼」）；更糟的是那一页同时被算作「看见了」，
+    「无法核验」的注记随之消失——用户连提示都收不到。印章那 22 个字过得了 20 字的可读门槛，
+    所以光靠可读门槛拦不住它，判据必须再高过原页本身的字数。"""
+    from agent.parsing.parsers import visible_len
+
+    stub, run = ocr_env
+    stub.reply = lambda n, body: httpx.Response(200, json={"text": _STAMP_ONLY})
+    before, after = await run(_mixed_pdf())
+    assert before.image_pages == 1 and len(stub.requests) == 1   # 确实是被送去识别的混合页
+    n_page, n_ocr = visible_len(before.page_texts[0]), visible_len(_STAMP_ONLY)
+    assert 20 <= n_ocr < n_page < 100                            # 半失败识别的形状：够读但不够全
+    assert "Anji Technology Co Ltd" in after.text                # 精确原文一个字都没丢
+    assert after.image_pages == 1 and after.image_page_flags == [True]      # 注记还在
+    assert "扫描件识别" not in after.text                         # 认不全的页一个字都不拼回
+
+
+async def test_a_fully_recognized_mixed_page_appends_instead_of_replacing(ocr_env):
+    """同一张混合页、这次整版都认出来了：识别文本**追加**在原文之后（原文仍在），
+    该页才算「看见了」、从注记里扣除。追加会让标题类文字重复一遍，比丢掉精确原文划算得多。"""
+    stub, run = ocr_env
+    stub.reply = lambda n, body: httpx.Response(200, json={"text": _FULL_PAGE})
+    _, after = await run(_mixed_pdf())
+    assert "Anji Technology Co Ltd" in after.text                  # 原文保留
+    assert "[第1页·扫描件识别]" in after.text and "qualification certificate" in after.text
+    assert after.image_pages == 0 and after.image_page_flags == [False]
+    # 原文与识别文本都要参与条款切分，否则两边有一边进不了审查材料
+    joined = " ".join(c["text"] for c in after.clauses)
+    assert "Anji Technology" in joined and "qualification certificate" in joined
 
 
 async def test_scanned_pages_come_back_line_by_line_not_squashed_into_one(ocr_env):
@@ -292,6 +354,27 @@ async def test_render_timeout_skips_those_pages_without_raising(ocr_env, monkeyp
     _, after = await run(_pdf(_TEXT_PAGE, "", ""))
     assert stub.requests == []             # 图都没渲出来，一次 HTTP 都不该发
     assert after.image_pages == 2          # 那两页照旧算「无法核验」
+
+
+async def test_repeated_render_timeouts_trip_the_breaker_instead_of_burning_the_budget(
+        ocr_env, monkeypatch):
+    """渲染侧的持续失败也要熔断。只数 HTTP 失败的话，卡在渲染上的文件会一块块重试到时长帽耗尽
+    （真实参数：30 块 × 40s = 20 分钟，识别页数 0），而 deadline 是**跨文件共享**的——
+    后面所有受审文件直接「预算已用光」跳过，整次审查退化成「全都无法核验」，用户还白等 20 分钟。"""
+    stub, run = ocr_env
+    monkeypatch.setattr(ocr_mod, "_PAGE_TIMEOUT_S", 0.05)
+    chunks: list[list[int]] = []
+
+    def _stuck(self, indices):
+        chunks.append(list(indices))
+        time.sleep(0.2)
+        return [(i, b"jpeg-bytes") for i in indices]
+
+    monkeypatch.setattr(ocr_mod.PdfPageRenderer, "render_many", _stuck)
+    _, after = await run(_pdf(_TEXT_PAGE, *[""] * 20))
+    assert len(chunks) == 3                # 2 页一块：第 3 块结束时连续失败 6 ≥ 5 → 放弃剩余 14 页
+    assert stub.requests == []
+    assert after.image_pages == 20         # 一页都没识别出来，全算「无法核验」
 
 
 class _DripStream(httpx.AsyncByteStream):

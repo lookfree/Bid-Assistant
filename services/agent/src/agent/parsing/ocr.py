@@ -47,8 +47,10 @@ _PAGE_TIMEOUT_S = 20
 # 连续失败几页就放弃该文件剩余页（熔断）。OCR 容器挂了/被打爆时，剩下的页只是把同一个错误
 # 重复几百遍：每页都要先渲染（CPU）再等满一个总帽，300 页就是几十分钟的白等，
 # 而结果与直接放弃完全一样（都不进正文 → 照旧算「还看不见」→ 审查说「无法核验」）。
-# 只数**请求真失败**的页；识别出空文本（真的是空白分隔页）不算故障，否则一叠空白页
-# 就能把后面真有内容的证照页全掐掉。5 次给零星抖动留了余量。
+# 口径 = **这一页什么都没拿到**：OCR 请求真失败（超时/非 200/连不上），或整块页图压根没渲出来
+# （渲染超时，见 _render_chunk）——两路都是「重复同一个错误」，都得让熔断看得见。
+# 识别出空文本（真的是空白分隔页）不算故障，否则一叠空白页就能把后面真有内容的证照页全掐掉。
+# 5 次给零星抖动留了余量。
 _MAX_CONSECUTIVE_FAILS = 5
 # 页数帽是**每文件**的。实测样本 139 页；300 封顶，挡的是"单份上千页的扫描册"这一种文件。
 _MAX_PAGES = 300
@@ -56,9 +58,11 @@ _MAX_PAGES = 300
 # 独立审查一次最多收 10 份标书（apps/api 的 keyList max(10)），若每份各开 20 分钟，
 # 最坏就是 200 分钟——用户在一个已预扣积分的步上干等几小时，而心跳泵还一直说它活着。
 # 20 分钟 = 300 页 × 2 路并发 × 单页数秒的量级，正常识别用不到，它是防挂死的兜底。
-# **口径是纯 OCR 时间，不含 MinIO 下载与解析**：那两段活单份就能顶到分钟级（.doc 走
-# LibreOffice 转换，单份最多 60s），从循环前起算的话，第一次识别还没发出去预算就被啃光了，
-# 日志却报「OCR 预算已用光」——张冠李戴。故起算点是**第一份真要发 OCR 的文件**（见 needs_ocr）。
+# **口径 = 识别本身 + 各扫描文件为识别做的二次下载**（ocr_scanned_pages 进门要把字节重新取一次），
+# 但**不含第一份要识别的文件到手之前的下载与解析**：那一段单份就能顶到分钟级（.doc 走
+# LibreOffice 转换，单份最多 60s），10 份文件从循环前起算的话，第一次识别还没发出去预算就被
+# 啃光了，日志却报「OCR 预算已用光」——张冠李戴。故起算点是**第一份真要发 OCR 的文件**（见
+# needs_ocr）；它之后的下载与识别一律吃在这条预算里。
 _TOTAL_BUDGET_S = 20 * 60
 # 单页取回字数上限。OCR 服务自身的上限就是 5000（services/ocr/app.py 的 max_chars le=5000）。
 _MAX_CHARS_PER_PAGE = 5000
@@ -78,14 +82,15 @@ def ocr_configured() -> bool:
 
 def needs_ocr(doc: ParsedDoc) -> bool:
     """这份文件要不要真发 OCR（部署了识别服务 + 确实有看不见的页）。
-    调用方据此**惰性**起算时长预算：预算口径是纯 OCR 时间，不含下载与解析（见 _TOTAL_BUDGET_S）。"""
+    调用方据此**惰性**起算时长预算：不含第一份要识别的文件到手之前的下载与解析
+    （之后的二次下载与识别都吃在预算内，见 _TOTAL_BUDGET_S）。"""
     return ocr_configured() and bool(scanned_page_indices(doc))
 
 
 def new_deadline() -> float:
     """OCR 的截止时刻（monotonic）。**一次审查建一次、其后所有受审文件共享**——
     见 _TOTAL_BUDGET_S 的注释：按文件各开一份，10 份标书就是 200 分钟。
-    建的时机是第一份真要识别的文件到手时，不是取文件之前（预算不含下载解析）。"""
+    建的时机是第一份真要识别的文件到手时，不是取文件之前（那一段下载解析不进预算）。"""
     return time.monotonic() + _TOTAL_BUDGET_S
 
 
@@ -98,6 +103,7 @@ async def ocr_scanned_pages(doc: ParsedDoc, key: str,
     deadline 缺省时自建一条（单文件直调/测试）；多文件必须由调用方传同一条进来。
     字节要重新取一次（解析时的 bytes 已经释放）：这条路本来就是几分钟量级的重活，
     多一次 MinIO 读取可以忽略，换来的是解析入口 read_and_parse 一个字都不用动。
+    这次重下载**吃在 deadline 里**（它建于本函数之前），预算口径见 _TOTAL_BUDGET_S。
     """
     indices = scanned_page_indices(doc)
     if not ocr_configured() or not indices:
@@ -138,7 +144,7 @@ async def _ocr_pages(data: bytes, indices: list[int],
         return {}
     base = (settings.ocr_base_url or "").strip().rstrip("/")
     out: dict[int, str] = {}
-    fails = 0                       # 连续失败页数（只数请求真失败的，见 _MAX_CONSECUTIVE_FAILS）
+    fails = 0                       # 连续失败页数（口径见 _MAX_CONSECUTIVE_FAILS）
     try:
         async with httpx.AsyncClient(timeout=_PAGE_TIMEOUT_S) as client:
             for start in range(0, len(indices), _CONCURRENCY):
@@ -151,6 +157,12 @@ async def _ocr_pages(data: bytes, indices: list[int],
                 chunk = indices[start:start + _CONCURRENCY]
                 done = start + len(chunk)
                 pages = await _render_chunk(renderer, chunk)
+                if not pages:
+                    # 整块一页都没渲出来（渲染超时/整块坏页）也是**连续失败**：不计的话熔断只认
+                    # HTTP 那一路，一份卡住的文件会逐块重试到时长帽耗尽——20 分钟一无所获，
+                    # 而 deadline 是跨文件共享的，后面所有受审文件直接「预算已用光」跳过。
+                    # 只数整块失败：块内单页坏图（render_many 自己跳过）是常态，不该攒成熔断。
+                    fails += len(chunk)
                 for idx, text in await asyncio.gather(
                         *[_ocr_one(client, base, i, img) for i, img in pages]):
                     if text is None:            # 请求本身失败（超时/非 200/连不上）
@@ -173,8 +185,8 @@ async def _ocr_pages(data: bytes, indices: list[int],
 async def _render_chunk(renderer: PdfPageRenderer, chunk: list[int]) -> list[tuple[int, bytes]]:
     """一块页图。渲染跑在线程里，**既不会自己超时也取消不掉**（pdfium 在原生代码里），
     所以外面绑一层单页口径的总帽把循环放出来；超时的这几页当渲染失败处理（不发 HTTP、
-    照旧算「还看不见」）。落单的那个线程仍会跑完，但页图有像素帽兜着（pdf_render._MAX_PIXELS），
-    不至于变成几小时的巨图。"""
+    照旧算「还看不见」，且由调用方计入连续失败——见 _MAX_CONSECUTIVE_FAILS）。落单的那个线程
+    仍会跑完，但页图有像素帽兜着（pdf_render._MAX_PIXELS），不至于变成几小时的巨图。"""
     try:
         return await asyncio.wait_for(asyncio.to_thread(renderer.render_many, chunk),
                                       _PAGE_TIMEOUT_S * len(chunk))

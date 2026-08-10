@@ -101,11 +101,16 @@ _MIN_VISIBLE_CHARS = 20
 _MIXED_PAGE_MAX_CHARS = 100
 
 
+def visible_len(text: str) -> int:
+    """「可见文字」字数：空白/换行不算字，否则满页空行的扫描页会被当成有内容。
+    页面扫描判定、OCR 识别结果的判定、read 的 docx 拒绝闸共用它，口径单点在此。"""
+    return len("".join(text.split()))
+
+
 def is_image_page(text: str) -> bool:
     """这一页是不是提不出可见文字（= 扫描图片页）。
-    数「可见文字」而不是原串长度：空白/换行不算字，否则满页空行的扫描页会被当成有内容。
     阈值**单点在此**——页数统计、OCR 选页与识别结果的可读判定共用同一判据，改一处全线生效。"""
-    return len("".join(text.split())) < _MIN_VISIBLE_CHARS
+    return visible_len(text) < _MIN_VISIBLE_CHARS
 
 
 def _has_image_xobject(page) -> bool:
@@ -130,7 +135,7 @@ def _scanned_flags(pages, texts: list[str]) -> list[bool]:
     """逐页「模型看不看得见这页」：纯字数门槛 → 灰区页再查有没有贴图（见 _has_image_xobject）。"""
     flags: list[bool] = []
     for pg, t in zip(pages, texts):
-        n = len("".join(t.split()))
+        n = visible_len(t)
         flags.append(n < _MIN_VISIBLE_CHARS
                      or (n < _MIXED_PAGE_MAX_CHARS and _has_image_xobject(pg)))
     return flags
@@ -163,6 +168,18 @@ def parse_pdf(data: bytes) -> ParsedDoc:
 _OCR_PAGE_MARK = "[第{n}页·扫描件识别]"
 
 
+def _recognized(ocr_text: str, page_text: str) -> bool:
+    """这一页的识别结果算不算「已看见」（可以从 image_pages / 注记里扣掉）。两道门槛取高的那个：
+
+    · **够读**（_MIN_VISIBLE_CHARS）：糊掉的章、被当成字符的花纹常常只出一两个字，
+      那种页用户实际上还是什么都看不见；
+    · **不少于原页本来就有的可见字数**：混合页（20–99 字真实文本 + 整版贴图）只认出一枚印章时，
+      那 22 个字并不代表整版图看见了——实质内容照旧提不出来，「无法核验」的注记必须留着。
+      纯扫描页原文≈0，max 取到的仍是前一条，行为与只有前一条时逐字节一致。
+    """
+    return visible_len(ocr_text) >= max(_MIN_VISIBLE_CHARS, visible_len(page_text))
+
+
 def splice_ocr_pages(doc: ParsedDoc, ocr_texts: dict[int, str]) -> ParsedDoc:
     """OCR 文本按页插回原位置 → 新的 ParsedDoc（{页序号: 识别文字}，0 基）。
 
@@ -170,18 +187,23 @@ def splice_ocr_pages(doc: ParsedDoc, ocr_texts: dict[int, str]) -> ParsedDoc:
     的话，下游按 clauses 聚章（nodes/common.py::parse_bid_docs），认出来的内容一个字都进不了
     审查材料。image_pages 扣掉已识别的页——剩下的才是真正还看不见的页（全部识别成功 → 注记消失）。
 
-    「已识别」按**认出来的字够不够读**算，不是「非空就算」：糊掉的章、被当成字符的花纹常常只出
-    一两个字，那种页用户实际上还是什么都看不见。这种页**既不扣 image_pages，也一个字都不拼回**：
+    「已识别」的判据见 _recognized；不够格的页**既不扣 image_pages，也一个字都不拼回**：
     拼回去的话，一份全扫描的废件会凭那几个「章」字切出条款、聚出非空 chapters，
     绕过 review 的「解析不出正文 → run 失败 + 全额退款」闸——用户为一份什么都看不见的文件
-    付了一次审查的钱。门槛与页面本身的扫描判定同源（is_image_page），改阈值两处同时生效。
+    付了一次审查的钱。
+
+    拼回的方式按页分两种：纯扫描页（原文提不出可见文字）**替换**；混合页（原页本来就有可见文字）
+    **追加**——原页那几十字是精确可选文本（投标人名称、法定代表人、日期、电话），审查要拿它逐字
+    比对，换成一段近似识别就成了拿错字去比（实测「有限」→「有眼」）。追加会让标题类文字重复一遍，
+    比丢掉原文划算得多。
     """
-    readable = {i: t for i, t in ocr_texts.items() if not is_image_page(t)}
+    readable = {i: t for i, t in ocr_texts.items() if _recognized(t, doc.page_texts[i])}
     if not readable:
         return doc
     pages = list(doc.page_texts)
     for i, text in readable.items():
-        pages[i] = f"{_OCR_PAGE_MARK.format(n=i + 1)}\n{text}"
+        mark = _OCR_PAGE_MARK.format(n=i + 1)
+        pages[i] = f"{mark}\n{text}" if is_image_page(pages[i]) else f"{pages[i]}\n{mark}\n{text}"
     full = "\n".join(pages)
     clauses, headings = _split_clauses(full.split("\n"))
     # 逐页判定同步扣掉已识别的页：留着旧值的话，谁再拿这份 doc 问「哪几页看不见」都会拿到

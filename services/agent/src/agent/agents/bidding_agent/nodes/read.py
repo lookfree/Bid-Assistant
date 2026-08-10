@@ -5,6 +5,7 @@ import json
 import logging
 from agent.config import settings
 from agent.framework.create_agent import run_submit_agent
+from agent.parsing.parsers import visible_len
 from agent.parsing.service import read_and_parse, DocumentUnavailable
 from agent.parsing.types import UnsupportedDocument
 from agent.parsing.merge import merge_parsed
@@ -294,8 +295,26 @@ def _fail_if_all_permanent(failed: list[dict]) -> None:
     raise RuntimeError(f"招标文件无法解析，读标终止：{detail}")
 
 
+# docx 「整本贴成图片」的判据：正文内嵌图片非零、可见文字却少于这么多字。
+# 门槛给得极低（正常招标 docx 动辄上万字，连封面页都不止一百字），宁可漏判也绝不误伤有正文的文件——
+# 误伤的代价是把一份能读的招标文件当场拒掉。
+_DOCX_MIN_VISIBLE_CHARS = 100
+
+
+def _is_scanned_doc(d) -> bool:
+    """这一份是不是「提不出文字」的招标文件。两种形态同一个病，只是计量单位不同：
+    · pdf：每一页都提不出可见文字（image_pages >= pages）；
+    · docx：正文里贴了图（embedded_images > 0）、可见文字却几乎没有——.doc 转档后
+      「整本扫成图片贴进 Word」很常见，而 docx 没有「页」的口径，只认 pages 的话一律放行。
+    """
+    if getattr(d, "pages", None):
+        return d.image_pages >= d.pages
+    return (getattr(d, "embedded_images", 0) > 0
+            and visible_len(getattr(d, "text", "") or "") < _DOCX_MIN_VISIBLE_CHARS)
+
+
 def _fail_if_all_scanned(docs: list[tuple[str, object]]) -> None:
-    """每一份招标文件都是扫描件（每页都提不出文字）⇒ 当场诚实拒绝。
+    """每一份招标文件都提不出文字（全扫描 PDF / 整本贴图的 docx）⇒ 当场诚实拒绝。
 
     这类文件「解析成功」却零有效条款：页码/页眉还能刮出几条残渣，够让节点一路放行到烧模型那一步，
     最后以「模型未提交结构化结果」收场——钱烧了，报错还把排查方向指向模型（同 _fail_if_all_permanent
@@ -304,8 +323,7 @@ def _fail_if_all_scanned(docs: list[tuple[str, object]]) -> None:
     **读标故意不复用审查那套 OCR**：读标产出的 clause_id 是全链路（提纲/正文/审查/前端左栏定位）
     的锚点，必须逐字对得上招标原文；OCR 是逐页近似识别，切出来的条款既不稳定也回指不到原文位置，
     拿它当锚点等于让下游全部引用悬空。看不见就说看不见，让用户换一份可复制文字的版本。"""
-    if not docs or not all(getattr(d, "pages", None) and d.image_pages >= d.pages
-                           for _, d in docs):
+    if not docs or not all(_is_scanned_doc(d) for _, d in docs):
         return
     names = "、".join(f"《{n}》" for n, _ in docs)
     raise RuntimeError(f"招标文件为扫描件，无法提取文字，请上传可复制文字的版本：{names}")
