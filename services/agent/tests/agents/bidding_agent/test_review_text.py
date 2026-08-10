@@ -59,7 +59,7 @@ class TestImages:
         assert "营业执照.png" in out and "913100" in out
 
     def test_generic_alt_collapses(self):
-        assert html_to_review_text('<p><img src="x" alt="插图"></p>') == "［图片］"
+        assert html_to_review_text('<p><img src="x" alt="插图"></p>') == "【系统注记·图片】"
 
 
 class TestEdges:

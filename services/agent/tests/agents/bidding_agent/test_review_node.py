@@ -299,4 +299,4 @@ def test_review_feeds_everything_when_it_fits(submit_gateway):
         {"read": {"risk_summary": []}, "outline": {},
          "chapters": {"b1": "<p>" + "正文" * 500 + "结尾标记</p>"}}))
     user_msg = gw.chats[-1].last_messages[1].content
-    assert "结尾标记" in user_msg and "（截断）" not in user_msg
+    assert "结尾标记" in user_msg and "【系统注记·截断】" not in user_msg

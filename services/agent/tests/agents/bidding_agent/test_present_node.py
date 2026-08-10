@@ -449,7 +449,7 @@ def test_present_keeps_every_chapter_visible(monkeypatch):
     user = _run_present_with_chapters(monkeypatch, chapters)
     assert "短章内容" in user
     assert "长章" in user
-    assert "（截断）" in user      # 长章被截了，且标记出来让模型知道后面还有
+    assert "【系统注记·截断】" in user      # 长章被截了，且标记出来让模型知道后面还有
 
 
 def test_present_feeds_everything_when_it_fits(monkeypatch):
@@ -457,4 +457,4 @@ def test_present_feeds_everything_when_it_fits(monkeypatch):
     chapters = {"sec-1": "<p>" + "正文" * 500 + "结尾标记</p>"}
     user = _run_present_with_chapters(monkeypatch, chapters)
     assert "结尾标记" in user
-    assert "（截断）" not in user
+    assert "【系统注记·截断】" not in user

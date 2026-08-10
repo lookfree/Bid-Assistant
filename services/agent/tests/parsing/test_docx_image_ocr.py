@@ -17,8 +17,10 @@ from agent.parsing import ocr as ocr_mod
 from agent.parsing.parsers import parse_bytes
 
 _KEY = "uploads/u/x/商务文件-安几科技.docx"
-# 内嵌图的可读标记（与扫描页的「[第N页·扫描件识别]」同族）
-_MARK = "[内嵌图片·识别]"
+# 内嵌图的来源注记（与扫描页的页首注记同族，统一以「【系统注记」开头——裸标记会被审查模型
+# 当成用户文件里的编辑残留报成风险，见 parsing/types.SYSTEM_NOTE_PREFIX）。**带图序号**。
+_MARK = "【系统注记·图片识别 第{n}张】"
+_ANY_MARK = "【系统注记·图片识别 第"        # 数张数/判有无：不关心是第几张时用它
 
 
 def _png(w: int = 900, h: int = 700, color: str = "white") -> bytes:
@@ -97,7 +99,7 @@ async def test_embedded_images_are_recognized_and_spliced_back_where_they_sit(do
 
     lines = after.text.split("\n")
     i = lines.index("营业执照扫描件如下：")
-    assert lines[i + 1] == _MARK                                  # 就插在这张图原来的位置
+    assert lines[i + 1] == _MARK.format(n=1)                                  # 就插在这张图原来的位置
     assert "识别文字1" in lines[i + 2]
     assert lines.index("以上为营业执照。") == i + 3               # 后文原样跟在识别文字之后
     assert any("识别文字1" in c["text"] for c in after.clauses)   # 参与条款切分
@@ -112,7 +114,7 @@ async def test_failed_images_stay_counted_as_invisible(docx_env):
                                   if n == 1 else httpx.Response(500, text="boom"))
     _, after = await run(_docx("正文", _png(), _png(880, 660, "ivory")))
     assert len(stub.requests) == 2
-    assert "识别成功" in after.text and after.text.count(_MARK) == 1
+    assert "识别成功" in after.text and after.text.count(_ANY_MARK) == 1
     assert after.embedded_images == 1
 
 
@@ -151,7 +153,7 @@ async def test_an_image_written_as_alternate_content_counts_once(docx_env):
     before, after = await run(_as_alternate_content(_docx("正文", _png())))
     assert before.embedded_images == 1          # 不是 2
     assert len(stub.requests) == 1
-    assert after.text.count(_MARK) == 1
+    assert after.text.count(_ANY_MARK) == 1
 
 
 async def test_the_same_image_is_recognized_once_and_reused(docx_env):
@@ -163,7 +165,7 @@ async def test_the_same_image_is_recognized_once_and_reused(docx_env):
     stamp = _png()
     _before, after = await run(_docx("第一处", stamp, "第二处", stamp, "第三处", stamp))
     assert len(stub.requests) == 1              # 只识别一次
-    assert after.text.count(_MARK) == 3         # 三处都拼回了
+    assert after.text.count(_ANY_MARK) == 3         # 三处都拼回了
     assert after.embedded_images == 0
 
 
@@ -173,7 +175,7 @@ async def test_a_file_whose_images_are_all_skipped_sends_nothing(docx_env):
     stub, run = docx_env
     _before, after = await run(_docx("正文", _png(60, 60), _png(80, 40, "ivory")))
     assert stub.requests == [] and stub.clients == 0
-    assert after.embedded_images == 2 and _MARK not in after.text
+    assert after.embedded_images == 2 and _ANY_MARK not in after.text
 
 
 async def test_recognized_lines_never_become_chapter_titles(docx_env):
@@ -182,7 +184,7 @@ async def test_recognized_lines_never_become_chapter_titles(docx_env):
     证照 OCR 出来的行大量长成「1、法定代表人：张三」「一、企业基本情况」——正是启发式回退
     （文档自己一个大纲层级都没有时走的那条路）眼里的章节标题。放行的三重伤害都实测过：
     ① 被判成标题的那一行**被丢出 clauses**，等于识别内容一个字进不了审查材料；
-    ② `[内嵌图片·识别]` 标记留在上一节、识别正文被切到下一节，模型看不出这段字来自同一张图；
+    ② 图片来源注记留在上一节、识别正文被切到下一节，模型看不出这段字来自同一张图；
     ③ 图**后面的原文**被重挂到一个由 OCR 噪声命名的假节下——原文档结构被识别误差改写。"""
     stub, run = docx_env
     lines = ["1、法定代表人：张三", "统一社会信用代码 91310000MA1K3XXXXX", "营业执照正副本齐全有效"]
@@ -209,7 +211,7 @@ async def test_images_that_only_yield_a_few_characters_are_not_spliced_back(docx
     before, after = await run(_docx("正文", _png()))
     assert len(stub.requests) == 1                    # 图确实送去识别了
     assert after.embedded_images == 1                 # 认不出来 → 张数不扣，注记照旧
-    assert _MARK not in after.text and after.text == before.text
+    assert _ANY_MARK not in after.text and after.text == before.text
 
 
 async def test_unconfigured_ocr_changes_nothing(monkeypatch, ocr_stub):
@@ -241,7 +243,7 @@ async def test_vector_and_tiny_images_are_skipped_but_still_counted(docx_env):
     assert before.embedded_images == 3
     assert len(stub.requests) == 1           # 只有那张够大的位图被送去识别
     assert after.embedded_images == 2        # 小图 + 矢量图仍算看不见
-    assert after.text.count(_MARK) == 1
+    assert after.text.count(_ANY_MARK) == 1
 
 
 async def test_progress_is_reported_over_the_images_actually_sent(docx_env):

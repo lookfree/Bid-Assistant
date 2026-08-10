@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from agent.parsing.docx_sections import (
     Block, heading_style_levels, paragraph_level, split_docx_blocks,
 )
-from agent.parsing.types import ParsedDoc, UnsupportedDocument
+from agent.parsing.types import SYSTEM_NOTE_PREFIX, ParsedDoc, UnsupportedDocument
 
 # 章节标题启发式：第N章/第N节/第N篇/第N部分，或「一、二、」式顶层编号（标题一般较短）。
 _HEADING = re.compile(r"^(第\s*[一二三四五六七八九十百零〇\d]+\s*[章节篇部分]|[一二三四五六七八九十]+\s*[、．.])")
@@ -244,9 +244,11 @@ def parse_pdf(data: bytes) -> ParsedDoc:
                      page_texts=pages, image_page_flags=flags, clauses=clauses, headings=headings)
 
 
-# 识别文本插回正文时的页首标记：既告诉模型这段字是从扫描页认出来的（可能带识别误差），
+# 识别文本插回正文时的页首注记：既告诉模型这段字是从扫描页认出来的（可能带识别误差），
 # 也让它知道这一页**确实有内容**，不再当成看不见。
-_OCR_PAGE_MARK = "[第{n}页·扫描件识别]"
+# 写成「【系统注记·…】」而不是从前的「[第N页·扫描件识别]」：后者混在正文里像是文档自带的编辑
+# 残留，模型会据此判用户的标书「有多余标记、未作清理」（2026-08-11 生产实测，见 SYSTEM_NOTE_PREFIX）。
+_OCR_PAGE_MARK = SYSTEM_NOTE_PREFIX + "·扫描页识别 第{n}页】"
 
 
 def _recognized(ocr_text: str, page_text: str) -> bool:
@@ -295,9 +297,11 @@ def splice_ocr_pages(doc: ParsedDoc, ocr_texts: dict[int, str]) -> ParsedDoc:
                    image_pages=max(0, doc.image_pages - len(readable)))
 
 
-# 内嵌图片识别文字的段首标记（与扫描页的「[第N页·扫描件识别]」同族）：既告诉模型这段字是从
-# 图里认出来的（可能带识别误差），也让它知道这张图**确实有内容**，不再当成看不见。
-_DOCX_IMAGE_MARK = "[内嵌图片·识别]"
+# 内嵌图片识别文字的段首注记（与扫描页的页首注记同族）：既告诉模型这段字是从图里认出来的
+# （可能带识别误差），也让它知道这张图**确实有内容**，不再当成看不见。
+# **带图序号**：从前只写「[内嵌图片·识别]」，一份标书里几十处一模一样，模型分不清哪段字来自
+# 哪张图——而识别文字的可信度判断（这是 OCR 读出来的，不是投标人写下的承诺）正要靠这个归属。
+_DOCX_IMAGE_MARK = SYSTEM_NOTE_PREFIX + "·图片识别 第{n}张】"
 
 
 def splice_docx_images(doc: ParsedDoc, blocks: list[Block], images: list[DocxImage],
@@ -324,7 +328,7 @@ def splice_docx_images(doc: ParsedDoc, blocks: list[Block], images: list[DocxIma
     inserts: dict[int, list[Block]] = {}
     for i, text in readable.items():
         at = images[i].block_index
-        inserts.setdefault(at, []).append(Block(_DOCX_IMAGE_MARK, synthetic=True))
+        inserts.setdefault(at, []).append(Block(_DOCX_IMAGE_MARK.format(n=i + 1), synthetic=True))
         inserts[at].extend(Block(line, synthetic=True)
                            for line in text.split("\n") if line.strip())
     merged: list[Block] = []

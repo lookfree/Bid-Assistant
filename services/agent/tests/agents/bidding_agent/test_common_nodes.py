@@ -153,7 +153,7 @@ async def test_parse_bid_docs_feeds_ocr_text_into_the_chapters(monkeypatch):
     「看不见的页」统计里——注记随之消失。OCR 段本身见 tests/parsing/test_scanned_ocr.py。"""
     scanned_doc = _Parsed([{"id": "sec-1-c1", "text": "投标函"}], pages=3, image_pages=2)
     recognized = _Parsed([{"id": "sec-1-c1", "text": "投标函"},
-                          {"id": "sec-1-c2", "text": "[第2页·扫描件识别]"},
+                          {"id": "sec-1-c2", "text": "【系统注记·扫描页识别 第2页】"},
                           {"id": "sec-1-c3", "text": "法定代表人身份证 张三"}],
                          pages=3, image_pages=0)
     seen = {}
@@ -168,7 +168,7 @@ async def test_parse_bid_docs_feeds_ocr_text_into_the_chapters(monkeypatch):
     assert seen["key"] == "uploads/u/x/投标文件.pdf"
     assert scanned == []                                   # 全识别出来了 → 没有「看不见的页」
     assert "法定代表人身份证 张三" in chapters["sec-1"]
-    assert "[第2页·扫描件识别]" in chapters["sec-1"]
+    assert "【系统注记·扫描页识别 第2页】" in chapters["sec-1"]
 
 
 async def test_parse_bid_docs_shares_one_ocr_deadline_across_files(monkeypatch):

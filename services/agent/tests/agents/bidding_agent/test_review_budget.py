@@ -8,6 +8,8 @@
 from agent.agents.bidding_agent.nodes.common import allocate_chapter_budget
 
 TOTAL, FLOOR = 80_000, 1_000
+# 截断处补的系统注记（裸「（截断）」会被审查模型当成用户文件里的残留物，见 SYSTEM_NOTE_PREFIX）
+_NOTE = "…【系统注记·截断】"
 
 
 class TestBudget:
@@ -15,7 +17,7 @@ class TestBudget:
         """线下标书常常整本一章。按每章固定上限截断时它只进去 5%——这正是误报的来源。"""
         out = allocate_chapter_budget({"sec-1": "字" * 75_425}, TOTAL, FLOOR)
         assert len(out["sec-1"]) == 75_425
-        assert "（截断）" not in out["sec-1"]
+        assert _NOTE not in out["sec-1"]
 
     def test_short_chapters_are_never_truncated(self):
         out = allocate_chapter_budget({f"c{i}": "字" * 500 for i in range(10)}, TOTAL, FLOOR)
@@ -24,7 +26,7 @@ class TestBudget:
     def test_total_stays_within_budget(self):
         """预算是硬的：再多的内容也不能顶穿上下文窗。"""
         out = allocate_chapter_budget({f"c{i}": "字" * 50_000 for i in range(10)}, TOTAL, FLOOR)
-        assert sum(len(v) for v in out.values()) <= TOTAL + 10 * len("…（截断）")
+        assert sum(len(v) for v in out.values()) <= TOTAL
 
     def test_budget_holds_when_short_and_long_are_mixed(self):
         """混合场景才走得到"短章释放额度"那条路：短章吃掉的额度必须从余量里扣，
@@ -32,7 +34,7 @@ class TestBudget:
         texts = {f"s{i}": "字" * 7_000 for i in range(10)}
         texts["big"] = "字" * 200_000
         out = allocate_chapter_budget(texts, TOTAL, FLOOR)
-        assert sum(len(v) for v in out.values()) <= TOTAL + len("…（截断）")
+        assert sum(len(v) for v in out.values()) <= TOTAL
 
     def test_slack_from_short_chapters_goes_to_long_ones(self):
         """短章占不满份额，省下的要匀给长章——否则长章白白被砍。"""
@@ -43,7 +45,7 @@ class TestBudget:
     def test_truncation_is_marked(self):
         """截断处要留记号，否则模型会把半截当成写完了。"""
         out = allocate_chapter_budget({"c": "字" * 200_000}, TOTAL, FLOOR)
-        assert out["c"].endswith("…（截断）")
+        assert out["c"].endswith(_NOTE)
 
     def test_empty_input(self):
         assert allocate_chapter_budget({}, TOTAL, FLOOR) == {}

@@ -5,6 +5,8 @@ docx 渲染时 head/style 文本会被当正文吐出。收稿与渲染入口统
 from __future__ import annotations
 import re
 
+from agent.parsing.types import SYSTEM_NOTE_PREFIX
+
 _HEAD = re.compile(r"<head[\s>].*?</head>", re.I | re.S)
 _STYLE = re.compile(r"<style[\s>].*?</style>", re.I | re.S)
 _SCRIPT = re.compile(r"<script[\s>].*?</script>", re.I | re.S)
@@ -234,3 +236,21 @@ def clean_internal_ids(text: str) -> str:
     out = re.sub(r"(?<=[，。；、：])[ 　]+", "", out)
     out = _EMPTY_SHELL.sub(_empty_shell_repl, out)
     return out.strip(" 　·、，,")
+
+
+# 模型把**我们自己**加进送审材料里的辅助信息当成了投标文件的内容。2026-08-11 生产实测（康恒环境）：
+# 「[中风险] 投标文件多处出现章节编号(如 sec-xxx)和内嵌图片标记，未作清理，影响文件整洁性和专业性」
+# ——用户的 .docx 里没有任何这类东西，是我们拼识别文字时加的注记和自己的章节键。
+# 提示词里已明令这些不属于投标文件（见 prompts/review.SYSTEM_NOTE_RULE），但那是"请模型配合"；
+# 弱模型上失效过不止一次，确定性识别才是能保证的那一半。
+# 判据只认两样，都是正常中文标书结论里不该出现的：
+#   · 「系统注记」——注记的统一前缀（SYSTEM_NOTE_PREFIX），模型要么原样抄、要么复述；
+#   · 裸的「sec-」——真的 sec-8-c95 已被 clean_internal_ids 抹掉，还剩下的是模型自己写的泛指
+#     （sec-xxx / sec-N）。左边界 (?<![A-Za-z]) 同 _ID：「IPsec-3DES」是技术方案原文，不是内部编号。
+_NOTE_WORD = SYSTEM_NOTE_PREFIX.lstrip("【")
+_SYSTEM_NOTE_MENTION = re.compile(rf"{_NOTE_WORD}|(?<![A-Za-z])sec-")
+
+
+def mentions_system_note(*texts: str) -> bool:
+    """这几段文字里有没有在谈论系统注记 / 内部章节编号（即：模型把我们的辅助信息当成了文件内容）。"""
+    return any(_SYSTEM_NOTE_MENTION.search(t) for t in texts if t)

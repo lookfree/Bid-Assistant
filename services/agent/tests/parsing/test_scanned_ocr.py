@@ -89,10 +89,10 @@ async def test_ocr_hits_only_scanned_pages_and_splices_text_back(ocr_env):
     assert len(stub.requests) == 2                       # 文本页一次都没送 OCR
     assert all(r["max_chars"] == 5000 for r in stub.requests)
     assert after.image_pages == 0
-    assert "[第2页·扫描件识别]" in after.text and "[第3页·扫描件识别]" in after.text
+    assert "【系统注记·扫描页识别 第2页】" in after.text and "【系统注记·扫描页识别 第3页】" in after.text
     assert "识别文字1" in after.text and "识别文字2" in after.text
     assert "threshold" in after.text                     # 文本页原样保留在原位
-    assert after.page_texts[1].startswith("[第2页·扫描件识别]")   # 纯扫描页仍是**替换**语义
+    assert after.page_texts[1].startswith("【系统注记·扫描页识别 第2页】")   # 纯扫描页仍是**替换**语义
     # 识别文本必须重新参与条款切分，否则按 clauses 聚章时一个字都进不了审查材料
     assert any("识别文字1" in c["text"] for c in after.clauses)
 
@@ -114,7 +114,7 @@ async def test_a_stamp_only_read_never_replaces_the_real_text_of_a_mixed_page(oc
     assert 20 <= n_ocr < n_page < 100                            # 半失败识别的形状：够读但不够全
     assert "Anji Technology Co Ltd" in after.text                # 精确原文一个字都没丢
     assert after.image_pages == 1 and after.image_page_flags == [True]      # 注记还在
-    assert "扫描件识别" not in after.text                         # 认不全的页一个字都不拼回
+    assert "扫描页识别" not in after.text                         # 认不全的页一个字都不拼回
 
 
 async def test_a_fully_recognized_mixed_page_appends_instead_of_replacing(ocr_env):
@@ -124,7 +124,7 @@ async def test_a_fully_recognized_mixed_page_appends_instead_of_replacing(ocr_en
     stub.reply = lambda n, body: httpx.Response(200, json={"text": _FULL_PAGE})
     _, after = await run(_mixed_pdf())
     assert "Anji Technology Co Ltd" in after.text                  # 原文保留
-    assert "[第1页·扫描件识别]" in after.text and "qualification certificate" in after.text
+    assert "【系统注记·扫描页识别 第1页】" in after.text and "qualification certificate" in after.text
     assert after.image_pages == 0 and after.image_page_flags == [False]
     # 原文与识别文本都要参与条款切分，否则两边有一边进不了审查材料
     joined = " ".join(c["text"] for c in after.clauses)
@@ -266,7 +266,7 @@ async def test_barely_recognized_pages_are_not_spliced_back_at_all(ocr_env):
     stub.reply = lambda n, body: httpx.Response(200, json={"text": "章"})
     _, after = await run(_pdf(_TEXT_PAGE, "", ""))
     assert after.image_pages == 2                 # 两页都还算看不见
-    assert "扫描件识别" not in after.text          # 垃圾识别一个字都不许进正文
+    assert "扫描页识别" not in after.text          # 垃圾识别一个字都不许进正文
     assert "章" not in after.text
 
 
@@ -277,7 +277,7 @@ async def test_mixed_quality_pages_splice_only_the_readable_one(ocr_env):
                                   else httpx.Response(200, json={"text": "章"}))
     _, after = await run(_pdf(_TEXT_PAGE, "", "", ""))
     assert after.image_pages == 2                  # 3 页扫描 − 1 页真读得动
-    assert after.text.count("扫描件识别") == 1
+    assert after.text.count("扫描页识别") == 1
     assert "识别成功" in after.text
 
 

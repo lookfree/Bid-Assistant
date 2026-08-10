@@ -5,7 +5,7 @@ from agent.framework.create_agent import run_submit_agent
 from agent.agents.bidding_agent.nodes.common import (
     slim_read, filter_read_by_package, parse_bid_docs, publish_phase, html_to_review_text,
     allocate_chapter_budget, chapters_budget, chapters_in_outline, compress_read,
-    MIN_CHAPTER_CHARS,
+    strip_clause_ids, MIN_CHAPTER_CHARS,
 )
 from agent.agents.bidding_agent.nodes.classify import classify_from_chapters, empty_category
 from agent.agents.bidding_agent.schemas import RiskReport
@@ -143,12 +143,16 @@ def make_review_node(ctx):
         category, self_detected = await _resolve_category(ctx, run_input, read_state, texts)
         # 读标结论先压进额度的一半：实测最大一份 210311 tokens（2747 个条目），
         # 单它一个就是窗口的两倍，这种项目光截正文没有用。★条款与废标风险条一条不动。
+        # 提纲与构成清单**必须过 strip_clause_ids**：两者的条目都挂着 clause_ids（sec-19-c129…），
+        # 而审查的产出里没有任何承载 id 的字段——给了只会被抄进报告，或者被当成"投标文件里的
+        # 多余编号"报成一条风险（2026-08-11 生产实测，见 prompts/review._SYSTEM_NOTE_RULE）。
+        # 读标那份已在 compress_read 里逐条剥过（_item_for_model）。
         payload = {"read": compress_read(slim_read(read_state), chapters_budget(ctx, "")),
-                   "outline": state.get("outline") or {},
+                   "outline": strip_clause_ids(state.get("outline") or {}),
                    "chapters": {}}     # chapters 占位保住键序，额度算完再填
         structure = read_state.get("required_structure") or []
         if structure:
-            payload["required_structure"] = structure
+            payload["required_structure"] = strip_clause_ids(structure)
         mode_note = "" if read_state else _SELF_CHECK_NOTE
         # 受审文件有扫描图片页时才加这两段：判定纪律进系统提示（与其它规则同处），
         # 页数说明进用户消息最前（紧挨着材料）。没有扫描页 → 两者皆为空串，提示词逐字节不变。

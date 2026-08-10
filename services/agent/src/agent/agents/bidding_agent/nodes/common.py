@@ -14,6 +14,7 @@ from agent.parsing.ocr import new_deadline as ocr_deadline
 from agent.parsing.ocr import ocr_docx_images, ocr_scanned_pages
 from agent.parsing.service import read_and_parse
 from agent.parsing.storage_read import storage      # spec106 MinIO 单例
+from agent.parsing.types import SYSTEM_NOTE_PREFIX  # 送审材料里「这是系统加的说明」的统一前缀
 from agent.runtime.progress import publish_phase     # 各节点推阶段事件（read/outline/review/present 共用）
 
 logger = logging.getLogger(__name__)
@@ -226,20 +227,28 @@ _GENERIC_ALT = {"", "插图", "图片", "image", "img"}
 
 
 def strip_inline_images(html: str | None) -> str:
-    """把 <img …> 换成 ［图片：alt］。alt 是默认值（插图）时只留「［图片］」——重复没有信息量。"""
+    """把 <img …> 换成系统注记。alt 是默认值（插图）时不带说明——重复没有信息量。
+
+    注记写成「【系统注记·图片…】」而不是从前的「［图片］」：后者混在正文里像是文档自带的
+    编辑残留，模型会据此判用户的标书「有多余标记、未作清理」（见 SYSTEM_NOTE_PREFIX）。"""
     if not html:
         return ""
 
     def _sub(m: re.Match) -> str:
         alt = (_ALT_RE.search(m.group(0)) or [None, ""])[1] if _ALT_RE.search(m.group(0)) else ""
         alt = (alt or "").strip()
-        return f"［图片：{alt}］" if alt and alt.lower() not in _GENERIC_ALT else "［图片］"
+        inner = f"·图片 {alt}】" if alt and alt.lower() not in _GENERIC_ALT else "·图片】"
+        return SYSTEM_NOTE_PREFIX + inner
 
     return _IMG_RE.sub(_sub, html)
 
 
 # 单章保底：再多的章也要让每章有点内容，否则等于没看
 MIN_CHAPTER_CHARS = 1_000
+
+# 章节正文喂不下、被额度截断处补的系统注记（见 allocate_chapter_budget）。
+# 短：150 节的线下标书每节都补一条，注记本身就是几千字的开销，它含义由提示词讲一次即可。
+_TRUNCATED_NOTE = "…" + SYSTEM_NOTE_PREFIX + "·截断】"
 
 
 def chapters_budget(ctx, fixed_text: str) -> int:
@@ -267,7 +276,8 @@ def allocate_chapter_budget(texts: dict[str, str], total: int, floor: int) -> di
 
     分配用注水法：短章按原样全给（它们占不满份额），省下的额度自动匀给长章。
     这样 1 章的文档能整本进去，多章文档也不会因为某一章特别长就把别人挤没。
-    截断处补「…（截断）」，让模型知道后面还有，而不是当成写完了。
+    截断处补一条系统注记，让模型知道后面还有，而不是当成写完了（写成注记而非「…（截断）」
+    的理由同 strip_inline_images：裸标记会被当成用户文件里的残留物报出来）。
     """
     if not texts:
         return {}
@@ -281,8 +291,11 @@ def allocate_chapter_budget(texts: dict[str, str], total: int, floor: int) -> di
         share = max(floor, remaining // len(pending))
         short = {k: v for k, v in pending.items() if len(v) <= share}
         if not short:                       # 剩下的都超额：按当前份额一刀切
+            # 注记的字数**从份额里扣**，不是加在份额之上：150 节的线下标书每节各加一条，
+            # 加法口径下总量会超出预算 150 条注记那么多——正是"缩多少轮都装不进去"的来源之一。
+            body = max(1, share - len(_TRUNCATED_NOTE))
             for k, v in pending.items():
-                out[k] = v[:share] + "…（截断）"
+                out[k] = v[:body] + _TRUNCATED_NOTE
             break
         for k, v in short.items():          # 短章全给，把省下的额度让给长章
             out[k] = v
