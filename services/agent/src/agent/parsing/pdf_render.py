@@ -63,6 +63,27 @@ def page_image(page, width_px: int, fmt: str = "PNG") -> tuple[bytes, int, int]:
     return buf.getvalue(), pil.width, pil.height
 
 
+def image_for_ocr(data: bytes, width_px: int) -> bytes:
+    """任意位图字节 → 送 OCR 的 JPEG（按宽收到 width_px 之内，绝不放大）。
+
+    放在这里而不是 parsing/ocr.py：「送 OCR 的位图长什么样」只该有一份定义——
+    扫描页走 page_image、docx 内嵌图走这里，质量口径同为 _JPEG_QUALITY。
+    重编码不是可选项：docx 正文里贴的原扫描图动辄十几 MB，而 OCR 服务单请求上限 8MB
+    （services/ocr/app.py 的 OCR_MAX_BYTES）；且 RapidOCR 的耗时随像素走，4000px 的原图
+    比 1600px 慢好几倍，而实测那份文件有 156 张图，必须落在 20 分钟总帽内。
+    缩放用 LANCZOS：证照上的小字缩过头会糊成一团，识别率直接塌。"""
+    from PIL import Image
+
+    with Image.open(io.BytesIO(data)) as raw:
+        im = raw.convert("RGB")             # 带 alpha / 调色板图 JPEG 不接受
+    if im.width > width_px:
+        im = im.resize((width_px, max(1, round(im.height * width_px / im.width))),
+                       Image.LANCZOS)
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=_JPEG_QUALITY, optimize=True)
+    return buf.getvalue()
+
+
 class PdfPageRenderer:
     """打开一次 PDF、按页序号挑页渲染成 JPEG。
 

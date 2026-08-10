@@ -22,10 +22,6 @@ _TEXT_PAGE = "Bid body text that is clearly longer than the visible threshold"
 _OK = "识别成功·法定代表人身份证明及授权委托书盖章页"
 
 
-def _recognized(n: int) -> str:
-    return f"识别文字{n}·法定代表人身份证明及授权委托书盖章页"
-
-
 def _pdf(*pages: str) -> bytes:
     """按页造 PDF：空串 = 无文字页（对文本提取而言与扫描图片页同义，第一步测试同款手法）。"""
     from fpdf import FPDF
@@ -66,41 +62,22 @@ def _mixed_pdf() -> bytes:
     return bytes(pdf.output())
 
 
-class _OcrStub:
-    """OCR 容器的 HTTP 桩：记录每次请求体，按到达序给答复（reply 可换成失败/超时）。"""
-
-    def __init__(self):
-        self.requests: list[dict] = []
-        self.reads: list[str] = []
-        self.reply = lambda n, body: httpx.Response(200, json={"text": _recognized(n)})
-
-    def __call__(self, request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/ocr"
-        body = json.loads(request.content)
-        self.requests.append(body)
-        return self.reply(len(self.requests), body)
-
-
 @pytest.fixture
-def ocr_env(monkeypatch):
-    """配上 OCR 地址 + 把传输层换成桩，返回 (桩, 跑一遍解析并 OCR 的协程)。
-    桩另记 `reads`：取字节的次数，供「该跳过时连字节都不该取」这类断言。"""
-    stub = _OcrStub()
-    real_client = httpx.AsyncClient
-    monkeypatch.setattr(ocr_mod.settings, "ocr_base_url", "http://ocr.test:8100/")
-    monkeypatch.setattr(ocr_mod.httpx, "AsyncClient",
-                        lambda **kw: real_client(transport=httpx.MockTransport(stub), **kw))
+def ocr_env(monkeypatch, ocr_stub):
+    """返回 (桩, 跑一遍解析并 OCR 的协程)。桩与 HTTP 打法见 conftest.ocr_stub
+    （docx 内嵌图那条链路共用同一个桩）。桩另记 `reads`：取字节的 key，
+    供「该跳过时连字节都不该取」这类断言。"""
 
     async def run(pdf: bytes, **kw):
         def _read(key):
-            stub.reads.append(key)
+            ocr_stub.reads.append(key)
             return pdf
 
         monkeypatch.setattr(ocr_mod, "read_bytes", _read)
         doc = parse_bytes(pdf, "投标文件.pdf")
         return doc, await ocr_mod.ocr_scanned_pages(doc, _KEY, **kw)
 
-    return stub, run
+    return ocr_stub, run
 
 
 async def test_ocr_hits_only_scanned_pages_and_splices_text_back(ocr_env):

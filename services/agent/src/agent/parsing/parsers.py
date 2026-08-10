@@ -6,7 +6,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from agent.parsing.docx_sections import (
     Block, heading_style_levels, is_bold_line, paragraph_level, split_docx_blocks,
@@ -53,8 +53,25 @@ def _split_clauses(lines: list[str]) -> tuple[list[dict], list[dict]]:
     return clauses, headings
 
 
-def _docx_lines_in_order(d) -> tuple[list[Block], int]:
-    """按文档顺序遍历正文块（段落与表格交错）→ (正文块, 正文内嵌图片张数)。表格行以 \t 连接单元格。
+def _image_rid(el) -> str | None:
+    """一处内嵌图 → 它指向的关系 id（现代 DrawingML 在 a:blip 的 r:embed，旧 VML 在
+    v:imagedata 的 r:id）。按**属性**找而不是按标签找：python-docx 的 nsmap 里压根没有
+    v（VML）这个前缀，qn("v:imagedata") 会直接抛。
+    r:embed 先整体找一遍再退回 r:id：图上可能还挂着超链接（a:hlinkClick 的 r:id），
+    那条关系指向的不是图片部件——先取 r:embed 才不会拿错。"""
+    from docx.oxml.ns import qn
+
+    for attr in (qn("r:embed"), qn("r:id")):
+        for node in el.iter():
+            rid = node.get(attr)
+            if rid:
+                return rid
+    return None
+
+
+def _docx_lines_in_order(d) -> tuple[list[Block], list[tuple[int, str | None]]]:
+    """按文档顺序遍历正文块（段落与表格交错）→ (正文块, 内嵌图片 [(插入块号, 关系id)])。
+    表格行以 \t 连接单元格。
 
     每个块随手记下 Word 自己标的大纲层级与加粗（见 parsing/docx_sections.py）：章节切分要用它，
     而层级只有在这里手里还攥着段落元素时问得到，事后拿着纯文本行再问已经问不到了。
@@ -62,15 +79,21 @@ def _docx_lines_in_order(d) -> tuple[list[Block], int]:
     旧实现条款分句只喂段落 → 格式章只剩标题占节号、模板正文整段缺失（sec 空洞），
     内容生成拿不到招标模板原文只能自创格式。
 
-    顺带数图片（w:drawing = 现代 DrawingML，w:pict = 旧 Word 的 VML）：正文里贴的证照/盖章
+    顺带把图片记下来（w:drawing = 现代 DrawingML，w:pict = 旧 Word 的 VML）：正文里贴的证照/盖章
     扫描图一个字都提不出来，不数出来的话审查会把印在图上的材料判成「缺少」（见
-    ParsedDoc.embedded_images）。**只走 body**，页眉页脚的 logo 天然不在其中。"""
+    ParsedDoc.embedded_images）。**只走 body**，页眉页脚的 logo 天然不在其中。
+
+    记的是「位置 + 关系 id」而不只是张数：识别出来的文字要插回这张图**原来所在的地方**
+    （见 splice_docx_images）。位置 = 该块的正文写完时已有的块数——图片自成一段（纯图片段落
+    没有文字、不产块）时就排在下一段之前，图片夹在段落中间时排在这段话之后。
+    关系 id 取不到（图表/OLE/外链这类没有位图部件的 drawing）→ None：仍计入张数，只是送不了识别。"""
     from docx.oxml.ns import qn
     from docx.table import Table
     from docx.text.paragraph import Paragraph
     body = d.element.body
     styles = heading_style_levels(d)
     blocks: list[Block] = []
+    images: list[tuple[int, str | None]] = []
     for child in body.iterchildren():
         if child.tag == qn("w:p"):
             p = Paragraph(child, d)
@@ -82,7 +105,8 @@ def _docx_lines_in_order(d) -> tuple[list[Block], int]:
                 line = "\t".join(c.text for c in r.cells)
                 if line.strip():
                     blocks.append(Block(line, table=True))
-    images = sum(1 for _ in body.iter(qn("w:drawing"))) + sum(1 for _ in body.iter(qn("w:pict")))
+        images.extend((len(blocks), _image_rid(el)) for el in child.iter()
+                      if el.tag in (qn("w:drawing"), qn("w:pict")))
     return blocks, images
 
 
@@ -96,7 +120,33 @@ def parse_docx(data: bytes) -> ParsedDoc:
     tables: list[list[list[str]]] = [[[c.text for c in r.cells] for r in t.rows] for t in d.tables]
     clauses, headings = split_docx_blocks(blocks)
     return ParsedDoc(text="\n".join(b.text for b in blocks), kind="docx", tables=tables,
-                     embedded_images=images, clauses=clauses, headings=headings)
+                     embedded_images=len(images), clauses=clauses, headings=headings)
+
+
+@dataclass
+class DocxImage:
+    """docx 正文里的一张内嵌图片。block_index = 识别文字要插回的块号（见 _docx_lines_in_order），
+    data = 原始字节，ext = 媒体部件的扩展名（png/jpeg/emf…，格式过滤按它，见 parsing/ocr.py）。"""
+    block_index: int
+    data: bytes
+    ext: str
+
+
+def docx_body_images(data: bytes) -> tuple[list[Block], list[DocxImage]]:
+    """重解析 .docx 字节 → (正文块, 带位置的内嵌图片)。识别链路专用（见 parsing/ocr.py）。
+
+    **重解析而不是解析时就把字节留着**：156 张图的标书，图片字节留在 ParsedDoc 里就是几十上百 MB
+    跟着整个 run 的状态走；而识别本来就是分钟量级的重活，多解一次 docx 可以忽略。
+    正文块一并返回：识别文字按 block_index 插回的正是**这一份块序列**，与解析时同源同序。
+    取不到位图部件的图（图表/OLE/外链）跳过——它们仍计在 embedded_images 里，只是送不了识别。"""
+    from docx import Document
+    d = Document(io.BytesIO(data))
+    blocks, refs = _docx_lines_in_order(d)
+    parts = d.part.related_parts
+    images = [DocxImage(block_index=at, data=parts[rid].blob,
+                        ext=(parts[rid].partname.ext or "").lower())
+              for at, rid in refs if rid and rid in parts]
+    return blocks, images
 
 
 # 一页可见文字少于这么多字就当扫描图片页：正文页随便一段都远超，扫描页至多剩页眉页码。
@@ -222,6 +272,46 @@ def splice_ocr_pages(doc: ParsedDoc, ocr_texts: dict[int, str]) -> ParsedDoc:
     return replace(doc, text=full, page_texts=pages, clauses=clauses, headings=headings,
                    image_page_flags=flags,
                    image_pages=max(0, doc.image_pages - len(readable)))
+
+
+# 内嵌图片识别文字的段首标记（与扫描页的「[第N页·扫描件识别]」同族）：既告诉模型这段字是从
+# 图里认出来的（可能带识别误差），也让它知道这张图**确实有内容**，不再当成看不见。
+_DOCX_IMAGE_MARK = "[内嵌图片·识别]"
+
+
+def splice_docx_images(doc: ParsedDoc, blocks: list[Block], images: list[DocxImage],
+                       texts: dict[int, str]) -> ParsedDoc:
+    """内嵌图片的识别文字按图片位置插回 → 新的 ParsedDoc（texts: {图序号: 识别文字}）。
+
+    「已识别」的判据与扫描页共用 _recognized（比对基准是空串：图片本身一个字都提不出来）——
+    只认出一枚印章、几个花纹字的图不算看见，**既不扣 embedded_images，也一个字都不拼回**：
+    拼回去的话，一份全是图的废件会凭那几个字切出条款、聚出非空 chapters，绕过 review
+    的「解析不出正文 → run 失败 + 全额退款」闸（口径同 splice_ocr_pages）。
+
+    识别文本**按行**各成一块（OCR 按 mode=lines 取回）：整版证照/盖章表格拼成一块的话，
+    审查再也判不出「★条款有没有逐条登进偏离表」这类按行的结论。
+    这些块一律是普通正文（level=None、非表格）：识别文字不该参与 Word 大纲层级的章节切分，
+    章节结构以文档自己标注的为准（见 parsing/docx_sections.py）。
+    条款与标题**必须重算**：认出来的字要和正文一样参与切分与预算，只改 text 不改 clauses 的话，
+    下游按 clauses 聚章（nodes/common.py::parse_bid_docs），识别内容一个字都进不了审查材料。
+    """
+    readable = {i: t for i, t in texts.items() if _recognized(t, "")}
+    if not readable:
+        return doc
+    inserts: dict[int, list[Block]] = {}
+    for i, text in readable.items():
+        at = images[i].block_index
+        inserts.setdefault(at, []).append(Block(_DOCX_IMAGE_MARK))
+        inserts[at].extend(Block(line) for line in text.split("\n") if line.strip())
+    merged: list[Block] = []
+    for n in range(len(blocks) + 1):
+        merged.extend(inserts.get(n, ()))
+        if n < len(blocks):
+            merged.append(blocks[n])
+    clauses, headings = split_docx_blocks(merged)
+    return replace(doc, text="\n".join(b.text for b in merged), clauses=clauses,
+                   headings=headings,
+                   embedded_images=max(0, doc.embedded_images - len(readable)))
 
 
 def parse_xlsx(data: bytes) -> ParsedDoc:

@@ -11,7 +11,7 @@ from agent.parsing import storage_read
 # 扫描页识别（OCR 未配置时是恒等变换）；deadline 由本模块起一次，跨受审文件共享
 from agent.parsing.ocr import needs_ocr
 from agent.parsing.ocr import new_deadline as ocr_deadline
-from agent.parsing.ocr import ocr_scanned_pages
+from agent.parsing.ocr import ocr_docx_images, ocr_scanned_pages
 from agent.parsing.service import read_and_parse
 from agent.parsing.storage_read import storage      # spec106 MinIO 单例
 from agent.runtime.progress import publish_phase     # 各节点推阶段事件（read/outline/review/present 共用）
@@ -80,7 +80,11 @@ async def parse_bid_docs(keys: str | list[str], ctx=None) -> tuple[dict[str, str
         parsed = await asyncio.to_thread(read_and_parse, key)
         if deadline is None and needs_ocr(parsed):
             deadline = ocr_deadline()          # 第一份真要识别的文件到手,此刻才开表
+        # 先扫描页后内嵌图：一份文件只会走其中一条（PDF 有页、docx 有图），顺序在实际数据上
+        # 无差别；写成固定顺序是为了让"预算怎么花的"可预期——真要有既有扫描页又有内嵌图的
+        # 格式出现，页是整版材料、图是零散贴图，先花在页上更划算。
         parsed = await ocr_scanned_pages(parsed, key, _ocr_progress(ctx, name), deadline)
+        parsed = await ocr_docx_images(parsed, key, _ocr_progress(ctx, name, "内嵌图片"), deadline)
         if parsed.image_pages:
             scanned.append({"name": name,
                             "pages": parsed.pages or parsed.image_pages,
@@ -91,15 +95,16 @@ async def parse_bid_docs(keys: str | list[str], ctx=None) -> tuple[dict[str, str
     return out, scanned
 
 
-def _ocr_progress(ctx, name: str):
+def _ocr_progress(ctx, name: str, what: str = "扫描页"):
     """扫描件识别的阶段播报（长识别期间前端横幅不能一动不动）。ctx 缺省 → 不播报。
+    what 是识别的东西（扫描页 / 内嵌图片），两条链路各自报自己的进度。
     run 的**存活心跳**与此无关：runtime/executor.py 的 _heartbeat_pump 是独立泵，
     节点内不产事件也照样续期，OCR 段天然被覆盖，不会被清道夫当孤儿回收。"""
     if ctx is None:
         return None
 
     async def _report(done: int, total: int) -> None:
-        await publish_phase(ctx, f"识别《{name}》的扫描页 {done}/{total}")
+        await publish_phase(ctx, f"识别《{name}》的{what} {done}/{total}")
 
     return _report
 

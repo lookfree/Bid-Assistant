@@ -1,0 +1,202 @@
+"""docx 正文内嵌图片的 OCR（扫描件治理第三步）。
+
+前两步治的是 PDF 扫描页；线下标书更常见的形态是 **.docx 正文里贴着证照图**。
+2026-08-10 生产实测（康恒环境那单三份 .docx，内嵌图 156/106/5 张，商务文件正文只有 11950 字）：
+营业执照、银行资信证明、审计报告全在图里，解析结果一个字都不留，审查便把**实际提供了的**材料
+判成「未提供」的高风险。这一步让内嵌图走与扫描页**同一条**链路：同一个进程级并发闸、
+同一条 run 级 deadline、同一套单请求总帽与熔断，识别文字按图片在正文里的位置插回。
+"""
+import io
+import time
+import zipfile
+
+import httpx
+import pytest
+
+from agent.parsing import ocr as ocr_mod
+from agent.parsing.parsers import parse_bytes
+
+_KEY = "uploads/u/x/商务文件-安几科技.docx"
+# 内嵌图的可读标记（与扫描页的「[第N页·扫描件识别]」同族）
+_MARK = "[内嵌图片·识别]"
+
+
+def _png(w: int = 900, h: int = 700, color: str = "white") -> bytes:
+    """一张位图。尺寸/颜色各不相同才会被 python-docx 存成**不同**的媒体部件
+    （它按内容哈希去重），矢量化改写那一步要按文件名精确挑一张。"""
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _docx(*items) -> bytes:
+    """按给定顺序拼 docx：str = 段落，bytes = 贴在此处的内嵌图片。"""
+    from docx import Document
+
+    d = Document()
+    for it in items:
+        if isinstance(it, str):
+            d.add_paragraph(it)
+        else:
+            d.add_picture(io.BytesIO(it))
+    buf = io.BytesIO()
+    d.save(buf)
+    return buf.getvalue()
+
+
+def _as_vector(data: bytes, media: str) -> bytes:
+    """把 docx 里指定的一张媒体图换成矢量图（.emf）：Word 里粘贴 Visio/流程图就是这个形态。
+    python-docx 造不出来（add_picture 只认位图头），只能在 zip 层改名 + 改关系与内容类型。"""
+    src = zipfile.ZipFile(io.BytesIO(data))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        for item in src.infolist():
+            body, name = src.read(item.filename), item.filename
+            if name == f"word/media/{media}":
+                name = name.replace(".png", ".emf")
+            elif name == "word/_rels/document.xml.rels":
+                body = body.replace(media.encode(), media.replace(".png", ".emf").encode())
+            elif name == "[Content_Types].xml":
+                body = body.replace(b'<Default Extension="png"',
+                                    b'<Default Extension="emf" ContentType="image/x-emf"/>'
+                                    b'<Default Extension="png"')
+            z.writestr(name, body)
+    return out.getvalue()
+
+
+@pytest.fixture
+def docx_env(monkeypatch, ocr_stub):
+    """(桩, 跑一遍解析并识别内嵌图的协程)。桩与 HTTP 打法见 conftest.ocr_stub。"""
+
+    async def run(docx: bytes, key: str = _KEY, **kw):
+        def _read(k):
+            ocr_stub.reads.append(k)
+            return docx
+
+        monkeypatch.setattr(ocr_mod, "read_bytes", _read)
+        doc = parse_bytes(docx, key.rsplit("/", 1)[-1])
+        return doc, await ocr_mod.ocr_docx_images(doc, key, **kw)
+
+    return ocr_stub, run
+
+
+async def test_embedded_images_are_recognized_and_spliced_back_where_they_sit(docx_env):
+    """三张内嵌位图：每张都送 OCR，识别文字按**图片在正文中的位置**插回并带可读标记，
+    全部识别成功后「看不见的内嵌图」归零——审查那条注记随之消失。
+    识别出来的字必须重新参与条款切分，否则下游按 clauses 聚章时一个字都进不了审查材料。"""
+    stub, run = docx_env
+    before, after = await run(_docx("第一章 资格证明", "营业执照扫描件如下：", _png(),
+                                    "以上为营业执照。", _png(880, 660, "ivory"),
+                                    _png(1000, 800, "azure")))
+    assert before.embedded_images == 3          # 第一步的判定：三张图一个字都提不出来
+    assert len(stub.requests) == 3
+    assert all(r["mode"] == "lines" and r["max_chars"] == 5000 for r in stub.requests)
+    assert after.embedded_images == 0
+
+    lines = after.text.split("\n")
+    i = lines.index("营业执照扫描件如下：")
+    assert lines[i + 1] == _MARK                                  # 就插在这张图原来的位置
+    assert "识别文字1" in lines[i + 2]
+    assert lines.index("以上为营业执照。") == i + 3               # 后文原样跟在识别文字之后
+    assert any("识别文字1" in c["text"] for c in after.clauses)   # 参与条款切分
+
+
+async def test_failed_images_stay_counted_as_invisible(docx_env):
+    """部分识别失败：成功的拼回正文，失败的**仍计入 embedded_images**——
+    审查对那几张照旧说「无法核验」，而不是当成已经看过（诚实注记不缩水）。"""
+    stub, run = docx_env
+    ok = "识别成功·营业执照正副本·统一社会信用代码 91310000MA1K3XXXXX"   # 够读（≥20 字）
+    stub.reply = lambda n, body: (httpx.Response(200, json={"text": ok})
+                                  if n == 1 else httpx.Response(500, text="boom"))
+    _, after = await run(_docx("正文", _png(), _png(880, 660, "ivory")))
+    assert len(stub.requests) == 2
+    assert "识别成功" in after.text and after.text.count(_MARK) == 1
+    assert after.embedded_images == 1
+
+
+async def test_unconfigured_ocr_changes_nothing(monkeypatch, ocr_stub):
+    """OCR_BASE_URL 未配置 = 这套环境没部署识别服务：零 HTTP、零取字节，输出与改前逐字节一致。
+
+    绊线走**调用记录**而不是在桩里抛异常：ocr_docx_images 最外层有一道 except 兜底，
+    桩抛的 AssertionError 会被它吞掉再 return doc，断言结果和「压根没调用」一模一样。"""
+    calls: list[str] = []
+    docx = _docx("第一章 资格证明", "营业执照扫描件如下：", _png())
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(ocr_mod.settings, "ocr_base_url", None)
+    monkeypatch.setattr(ocr_mod, "read_bytes", lambda key: (calls.append("read_bytes"), docx)[1])
+    monkeypatch.setattr(ocr_mod.httpx, "AsyncClient",
+                        lambda **kw: (calls.append("http"), real_client(**kw))[1])
+    doc = parse_bytes(docx, "商务文件.docx")
+    after = await ocr_mod.ocr_docx_images(doc, _KEY)
+    assert calls == []                      # 判据被挪走 → 这里必红（不再被兜底吞掉）
+    assert after is doc and after.embedded_images == 1 and after.text == doc.text
+
+
+async def test_vector_and_tiny_images_are_skipped_but_still_counted(docx_env):
+    """矢量图（emf/wmf，OCR 服务解不出来）与页眉 logo 那种小图一律不发请求：
+    156 张图的文件里装饰图占大半，每张都识别就是把 20 分钟的预算烧在没有信息量的图上。
+    跳过的图**仍计入 embedded_images**——它们照旧是「看不见」的东西，注记不该因此缩水。"""
+    stub, run = docx_env
+    docx = _as_vector(_docx("正文", _png(), _png(60, 60, "ivory"), _png(1000, 800, "azure")),
+                      "image3.png")          # 第三张（azure）改成矢量图
+    before, after = await run(docx)
+    assert before.embedded_images == 3
+    assert len(stub.requests) == 1           # 只有那张够大的位图被送去识别
+    assert after.embedded_images == 2        # 小图 + 矢量图仍算看不见
+    assert after.text.count(_MARK) == 1
+
+
+async def test_progress_is_reported_over_the_images_actually_sent(docx_env):
+    """长识别期间前端横幅不能一动不动：进度按**真正送出去的**张数播报（跳过的图不进分母）。"""
+    stub, run = docx_env
+    frames: list[tuple[int, int]] = []
+
+    async def _on_progress(done, total):
+        frames.append((done, total))
+
+    await run(_docx("正文", _png(), _png(880, 660, "ivory"), _png(60, 60, "azure")),
+              on_progress=_on_progress)
+    assert len(stub.requests) == 2
+    assert frames[-1] == (2, 2)
+
+
+async def test_exhausted_budget_skips_the_file_without_even_fetching_it(docx_env):
+    """预算是**一次审查**的：前面的文件把它用光后，这份连字节都不再取
+    （几百 MB 的下载 + 上百张图的解码，白干一遍代价太大），张数照第一步口径原样保留。"""
+    stub, run = docx_env
+    _, after = await run(_docx("正文", _png()), deadline=time.monotonic() - 1)
+    assert stub.requests == [] and stub.reads == []
+    assert after.embedded_images == 1
+
+
+async def test_both_ocr_paths_share_one_run_level_deadline(monkeypatch, ocr_stub):
+    """PDF 扫描页与 docx 内嵌图**共享同一条 deadline**，不是各开一份 20 分钟。
+
+    各开一份的话，一次审查最多 10 份文件 = 最坏 200 分钟——用户在一个已预扣积分的步上
+    干等几小时，而心跳泵还一直说这个 run 活着。判据是 new_deadline 全程只起一次表。"""
+    import agent.agents.bidding_agent.nodes.common as common_mod
+    from agent.agents.bidding_agent.nodes.common import parse_bid_docs
+    from fpdf import FPDF
+
+    pdf = FPDF()
+    pdf.add_page()                                    # 一页扫描件（提不出文字）
+    scanned_pdf = bytes(pdf.output())
+    docx = _docx("第一章 资格证明", _png())
+    blobs = {"a.pdf": scanned_pdf, "b.docx": docx}
+    starts: list[float] = []
+
+    def _deadline():
+        starts.append(time.monotonic())
+        return time.monotonic() + ocr_mod._TOTAL_BUDGET_S
+
+    monkeypatch.setattr(common_mod, "ocr_deadline", _deadline)
+    monkeypatch.setattr(common_mod, "read_and_parse",
+                        lambda key: parse_bytes(blobs[key], key))
+    monkeypatch.setattr(ocr_mod, "read_bytes", lambda key: blobs[key])
+    chapters, scanned = await parse_bid_docs(["a.pdf", "b.docx"])
+    assert len(ocr_stub.requests) == 2                # 两条链路都真发了请求
+    assert len(starts) == 1                           # 预算只起了一次表
+    assert scanned == []                              # 都识别出来了 → 注记消失
+    assert "识别文字" in "".join(chapters.values())    # 识别文字真进了审查材料
