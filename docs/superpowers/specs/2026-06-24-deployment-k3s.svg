@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="724" viewBox="0 0 1100 724" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="788" viewBox="0 0 1100 788" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', Helvetica, Arial, sans-serif">
   <defs>
     <filter id="sh" x="-4%" y="-4%" width="108%" height="120%">
       <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.10"/>
@@ -8,7 +8,7 @@
     </marker>
   </defs>
 
-  <rect x="0" y="0" width="1100" height="724" fill="#f8fafc"/>
+  <rect x="0" y="0" width="1100" height="788" fill="#f8fafc"/>
 
   <text x="40" y="40" font-size="24" font-weight="700" fill="#0f172a">k3s 部署架构 · 多节点 / 自动负载</text>
   <text x="40" y="62" font-size="13" fill="#64748b">无状态层进集群（Service 发现 + kube-proxy 自动 LB + HPA/KEDA 扩缩）· 有状态留集群外 · 无需 Nacos　|　最后更新 2026-08-10</text>
@@ -55,11 +55,11 @@
     <text x="571" y="239" font-size="9.5" text-anchor="middle" fill="#64748b">队列消费</text>
     <text x="571" y="257" font-size="10" text-anchor="middle" fill="#16a34a">KEDA(队列)</text>
 
-    <rect x="633" y="186" width="107" height="80" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
-    <text x="686" y="208" font-size="11.5" text-anchor="middle" font-weight="700" fill="#5b21b6">bge-embed</text>
-    <text x="686" y="225" font-size="9.5" text-anchor="middle" fill="#64748b">Deployment</text>
-    <text x="686" y="239" font-size="9.5" text-anchor="middle" fill="#64748b">嵌入 · CPU 推理</text>
-    <text x="686" y="257" font-size="10" text-anchor="middle" fill="#2563eb">×1 → N</text>
+    <rect x="633" y="186" width="107" height="80" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-dasharray="5 4"/>
+    <text x="686" y="208" font-size="11.5" text-anchor="middle" font-weight="600" fill="#94a3b8">bge-embed</text>
+    <text x="686" y="228" font-size="9.5" text-anchor="middle" fill="#94a3b8">2026-08 迁至</text>
+    <text x="686" y="242" font-size="9.5" text-anchor="middle" fill="#94a3b8">中间件机（OCR 旁）</text>
+    <text x="686" y="259" font-size="9.5" text-anchor="middle" fill="#94a3b8">↓ 见下方</text>
   </g>
   <!-- App→Agent 箭头 -->
   <line x1="396" y1="200" x2="404" y2="200" stroke="#326ce5" stroke-width="1.6" marker-end="url(#arr)"/>
@@ -85,8 +85,8 @@
   <text x="58" y="392" font-size="10.5" fill="#475569">队列竞争消费 + ClusterIP 发现 → 起步无需独立注册中心；规模化按需再上 Nacos。</text>
 
   <!-- 有状态层（集群外） -->
-  <rect x="40" y="428" width="720" height="132" rx="14" fill="#fff7ed" stroke="#fb923c" stroke-width="1.5"/>
-  <text x="58" y="452" font-size="13" font-weight="700" fill="#9a3412">中间件（有状态）· 固定单独裸机部署 · 不进 k3s（备份/调优/可控性最优）</text>
+  <rect x="40" y="428" width="720" height="196" rx="14" fill="#fff7ed" stroke="#fb923c" stroke-width="1.5"/>
+  <text x="58" y="452" font-size="13" font-weight="700" fill="#9a3412">中间件（有状态）+ 本地推理服务 · 固定单独裸机部署 · 不进 k3s（备份/调优/可控性最优）</text>
   <rect x="58" y="462" width="165" height="58" rx="9" fill="#ffffff" stroke="#fed7aa"/>
   <text x="140" y="480" font-size="11" text-anchor="middle" font-weight="600" fill="#1e293b">PostgreSQL + pgvector</text>
   <text x="140" y="495" font-size="9.5" text-anchor="middle" fill="#64748b">4c/16g/200G SSD · 加备 HA</text>
@@ -103,8 +103,14 @@
   <text x="659" y="480" font-size="11" text-anchor="middle" font-weight="600" fill="#1e293b">本地 OCR 服务</text>
   <text x="659" y="495" font-size="9.5" text-anchor="middle" fill="#64748b">≤3c/3g · CPU 推理 · 自建容器</text>
   <text x="659" y="509" font-size="9.5" text-anchor="middle" fill="#64748b">App + agent 共用 · 不出内网</text>
-  <text x="58" y="538" font-size="10.5" fill="#9a3412">决策：中间件始终单独裸机（含规模化）；k3s 只跑无状态层，二者经集群内网/固定地址互通，互不耦合。</text>
-  <text x="58" y="552" font-size="10.5" fill="#9a3412">OCR 本身无状态，随数据机部署只因它是 CPU 尖峰负载、而应用节点已被应用与嵌入服务占满；需要时也可移进集群按 replicas 扩。</text>
+  <rect x="577" y="528" width="165" height="58" rx="9" fill="#ffffff" stroke="#fed7aa"/>
+  <text x="659" y="546" font-size="11" text-anchor="middle" font-weight="600" fill="#1e293b">嵌入服务 bge-embed</text>
+  <text x="659" y="561" font-size="9.5" text-anchor="middle" fill="#64748b">4c/8g · BGE-M3 · CPU 推理</text>
+  <text x="659" y="575" font-size="9.5" text-anchor="middle" fill="#64748b">8200 → 容器 8000 · 权重挂卷</text>
+  <text x="58" y="548" font-size="10.5" fill="#9a3412">本地推理服务（OCR + 嵌入）与中间件同机：CPU/内存尖峰集中在此机，</text>
+  <text x="58" y="565" font-size="10.5" fill="#9a3412">集群节点不常驻模型权重（2026-08 起 bge-embed 自应用节点迁入，与 OCR 天然错峰）。</text>
+  <text x="58" y="600" font-size="10.5" fill="#9a3412">决策：中间件始终单独裸机（含规模化）；k3s 只跑无状态层，二者经集群内网/固定地址互通，互不耦合。</text>
+  <text x="58" y="614" font-size="10.5" fill="#9a3412">OCR 与嵌入本身无状态，随中间件机部署只因它们是 CPU/内存尖峰的本地推理；需要时也可移进集群按 replicas 扩。</text>
 
   <!-- 右列：外部 SaaS -->
   <rect x="800" y="80" width="260" height="232" rx="12" fill="#ffffff" stroke="#94a3b8" stroke-width="1.3" filter="url(#sh)"/>
@@ -129,12 +135,12 @@
   <text x="816" y="430" font-size="11" font-weight="700" fill="#047857">起步不需独立注册中心</text>
 
   <!-- 三档同源 -->
-  <rect x="40" y="576" width="1020" height="60" rx="12" fill="#ecfdf5" stroke="#10b981" stroke-width="1.3"/>
-  <text x="56" y="598" font-size="12.5" font-weight="700" fill="#065f46">三档同源（同一套 manifest，仅改 replicas + 加节点）</text>
-  <text x="56" y="618" font-size="11.5" fill="#047857">单副本 replicas:1（HPA 关·有状态留外）　→　起步生产 replicas:2–3 + HPA　→　扩节点 k3s agent join + KEDA/HPA + MinIO 分布式</text>
+  <rect x="40" y="640" width="1020" height="60" rx="12" fill="#ecfdf5" stroke="#10b981" stroke-width="1.3"/>
+  <text x="56" y="662" font-size="12.5" font-weight="700" fill="#065f46">三档同源（同一套 manifest，仅改 replicas + 加节点）</text>
+  <text x="56" y="682" font-size="11.5" fill="#047857">单副本 replicas:1（HPA 关·有状态留外）　→　起步生产 replicas:2–3 + HPA　→　扩节点 k3s agent join + KEDA/HPA + MinIO 分布式</text>
 
   <!-- 底注 -->
-  <rect x="40" y="648" width="1020" height="52" rx="12" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.2"/>
-  <text x="56" y="670" font-size="11.5" font-weight="700" fill="#92400e">一句话</text>
-  <text x="56" y="688" font-size="11.5" fill="#78350f">App→Agent 多节点负载 = ClusterIP Service + kube-proxy（kubectl scale 即自动，Agent API 无状态无需粘连）；Worker 扩并发 = 队列竞争消费 + KEDA。</text>
+  <rect x="40" y="712" width="1020" height="52" rx="12" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="56" y="734" font-size="11.5" font-weight="700" fill="#92400e">一句话</text>
+  <text x="56" y="752" font-size="11.5" fill="#78350f">App→Agent 多节点负载 = ClusterIP Service + kube-proxy（kubectl scale 即自动，Agent API 无状态无需粘连）；Worker 扩并发 = 队列竞争消费 + KEDA。</text>
 </svg>

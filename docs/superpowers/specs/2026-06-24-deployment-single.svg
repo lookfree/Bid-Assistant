@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="848" viewBox="0 0 1100 848" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="900" viewBox="0 0 1100 900" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', Helvetica, Arial, sans-serif">
   <defs>
     <filter id="sh" x="-4%" y="-4%" width="108%" height="120%">
       <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.10"/>
@@ -8,7 +8,7 @@
     </marker>
   </defs>
 
-  <rect x="0" y="0" width="1100" height="848" fill="#f8fafc"/>
+  <rect x="0" y="0" width="1100" height="900" fill="#f8fafc"/>
 
   <!-- Title -->
   <text x="40" y="40" font-size="24" font-weight="700" fill="#0f172a">起步推广部署 · 单副本（无冗余 / 无主备）· 两台机</text>
@@ -52,13 +52,13 @@
   <rect x="288" y="338" width="224" height="58" rx="9" fill="#ffffff" stroke="#c4b5fd"/>
   <text x="302" y="360" font-size="12" font-weight="700" fill="#1e293b">Agent Worker ×1</text>
   <text x="302" y="380" font-size="10.5" fill="#475569">4c · 8 GB · 20 GB 临时盘 · 解析+工作流</text>
-  <rect x="520" y="338" width="224" height="58" rx="9" fill="#ffffff" stroke="#c4b5fd"/>
-  <text x="534" y="360" font-size="12" font-weight="700" fill="#1e293b">bge-embed ×1（嵌入服务）</text>
-  <text x="534" y="380" font-size="10.5" fill="#475569">2 vCPU · 4 GB · CPU 推理 · 自建</text>
+  <rect x="520" y="338" width="224" height="58" rx="9" fill="#f8fafc" stroke="#cbd5e1" stroke-dasharray="5 4"/>
+  <text x="534" y="360" font-size="12" font-weight="600" fill="#94a3b8">bge-embed → 已迁至数据机</text>
+  <text x="534" y="380" font-size="10.5" fill="#94a3b8">2026-08 移出应用机 → 见 ④</text>
 
   <!-- ④ 数据/存储层 -->
-  <rect x="40" y="424" width="720" height="214" rx="12" fill="#f1f5f9" stroke="#475569" stroke-width="1.3"/>
-  <text x="56" y="446" font-size="13" font-weight="700" fill="#0f172a">④ 数据 / 存储层 · 有状态 · 数据机</text>
+  <rect x="40" y="424" width="720" height="266" rx="12" fill="#f1f5f9" stroke="#475569" stroke-width="1.3"/>
+  <text x="56" y="446" font-size="13" font-weight="700" fill="#0f172a">④ 数据 / 存储层 + 本地推理服务 · 数据机</text>
   <text x="744" y="446" text-anchor="end" font-size="11" font-weight="700" fill="#0891b2">现单实例 · 无主备</text>
   <rect x="56" y="454" width="330" height="56" rx="9" fill="#ffffff" stroke="#cbd5e1"/>
   <text x="72" y="474" font-size="12.5" font-weight="600" fill="#1e293b">PostgreSQL + pgvector ×1 · 三 schema</text>
@@ -76,6 +76,9 @@
   <rect x="56" y="580" width="688" height="46" rx="9" fill="#ffffff" stroke="#94a3b8"/>
   <text x="72" y="600" font-size="12.5" font-weight="700" fill="#1e293b">本地 OCR 服务 ×1（自建容器 · CPU 推理 · 线程数设死 + 容器 CPU 限额 ≤3c / 3 GB）</text>
   <text x="72" y="618" font-size="10.5" fill="#475569">两个消费方：App API（资料库图片附件前置识别 → 插图 alt）· agent 审查流（扫描页逐页识别拼回正文）　|　业务数据不出内网，故本地识别</text>
+  <rect x="56" y="632" width="688" height="46" rx="9" fill="#ffffff" stroke="#94a3b8"/>
+  <text x="72" y="652" font-size="12.5" font-weight="700" fill="#1e293b">嵌入服务 bge-embed ×1（自建容器 · BGE-M3 · CPU 推理 · 4 vCPU / 8 GB · 实测常驻 7.2 GB）</text>
+  <text x="72" y="670" font-size="10.5" fill="#475569">OpenAI 兼容 /v1/embeddings · 8200（对外）→ 8000（容器内）· 模型权重挂外部卷　|　2026-08 自应用机迁入，与 OCR 错峰</text>
 
   <!-- 纵向箭头 -->
   <line x1="400" y1="164" x2="400" y2="178" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#arrv)"/>
@@ -105,27 +108,28 @@
   <text x="816" y="427" font-size="10.5" fill="#047857">配置不变，只加副本/主备 → §13.2</text>
 
   <!-- 右列：落地拓扑（两台机） -->
-  <rect x="800" y="452" width="260" height="186" rx="12" fill="#ffffff" stroke="#94a3b8" stroke-width="1.3" filter="url(#sh)"/>
+  <rect x="800" y="452" width="260" height="202" rx="12" fill="#ffffff" stroke="#94a3b8" stroke-width="1.3" filter="url(#sh)"/>
   <text x="816" y="476" font-size="13" font-weight="700" fill="#334155">落地拓扑 · 两台机（§13.7 档 A）</text>
   <rect x="816" y="488" width="228" height="66" rx="9" fill="#eff6ff" stroke="#bfdbfe"/>
-  <text x="832" y="507" font-size="11.5" font-weight="700" fill="#1e3a8a">① 应用机　16 vCPU / 32 GB</text>
+  <text x="832" y="507" font-size="11.5" font-weight="700" fill="#1e3a8a">① 应用机　12 vCPU / 24 GB</text>
   <text x="832" y="524" font-size="10" fill="#475569">Nginx · C 端前端 · 运营后台 · App API</text>
-  <text x="832" y="539" font-size="10" fill="#475569">Agent API · Agent Worker · bge-embed</text>
-  <rect x="816" y="562" width="228" height="66" rx="9" fill="#f1f5f9" stroke="#cbd5e1"/>
-  <text x="832" y="581" font-size="11.5" font-weight="700" fill="#0f172a">② 数据机　12 vCPU / 32 GB</text>
+  <text x="832" y="539" font-size="10" fill="#475569">Agent API · Agent Worker</text>
+  <rect x="816" y="562" width="228" height="82" rx="9" fill="#f1f5f9" stroke="#cbd5e1"/>
+  <text x="832" y="581" font-size="11.5" font-weight="700" fill="#0f172a">② 数据机　16 vCPU / 40 GB</text>
   <text x="832" y="598" font-size="10" fill="#475569">PostgreSQL + pgvector（三 schema）</text>
   <text x="832" y="613" font-size="10" fill="#475569">Redis · MinIO · 本地 OCR 服务</text>
+  <text x="832" y="628" font-size="10" fill="#475569">bge-embed 嵌入服务（2026-08 迁入）</text>
 
   <!-- 资源合计 -->
-  <rect x="40" y="660" width="1020" height="68" rx="12" fill="#ecfdf5" stroke="#10b981" stroke-width="1.3"/>
-  <text x="56" y="684" font-size="13" font-weight="700" fill="#065f46">起步推广合计（单副本，不含外部 SaaS）</text>
-  <text x="56" y="706" font-size="12.5" font-weight="700" fill="#047857">≈ 25 vCPU　·　≈ 51 GB 内存　·　≈ 1 TB 磁盘起步（按存量加盘）</text>
-  <text x="56" y="722" font-size="11" fill="#475569">约为起步生产档（§13.2）的一半：去掉前端/App API/Agent 的冗余副本 + 去掉 PG/Redis 主备；单服务规格完全不变（含 bge-embed 与本地 OCR）</text>
+  <rect x="40" y="712" width="1020" height="68" rx="12" fill="#ecfdf5" stroke="#10b981" stroke-width="1.3"/>
+  <text x="56" y="736" font-size="13" font-weight="700" fill="#065f46">起步推广合计（单副本，不含外部 SaaS）</text>
+  <text x="56" y="758" font-size="12.5" font-weight="700" fill="#047857">≈ 27 vCPU　·　≈ 55 GB 内存　·　≈ 1 TB 磁盘起步（按存量加盘）</text>
+  <text x="56" y="774" font-size="11" fill="#475569">约为起步生产档（§13.2）的一半：去掉前端/App API/Agent 的冗余副本 + 去掉 PG/Redis 主备；单服务规格完全不变（含数据机上的 bge-embed 与本地 OCR）</text>
 
   <!-- 取舍 -->
-  <rect x="40" y="744" width="1020" height="80" rx="12" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.2"/>
-  <text x="56" y="766" font-size="12.5" font-weight="700" fill="#92400e">取舍（推广初期可接受）</text>
-  <text x="56" y="785" font-size="11.5" fill="#78350f">⚠ 单副本无 HA：某服务/某机故障期间该能力短暂不可用；有状态层靠定时快照（pg_dump + MinIO 同步外部盘）兜底，故障后重建。</text>
-  <text x="56" y="803" font-size="11.5" fill="#78350f">✓ 不浪费：用户少时不为冗余买单；并发/SLA 要求上来，按上表「升生产档」加副本与主备即可，同一套镜像、不改代码。</text>
-  <text x="56" y="819" font-size="10.5" fill="#92400e">注：OCR 与嵌入服务分居两机——应用机已扛全部应用 + 嵌入服务（模型常驻内存），数据机相对空闲；两侧各自限额，一次识别不拖慢数据库。</text>
+  <rect x="40" y="796" width="1020" height="80" rx="12" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="56" y="818" font-size="12.5" font-weight="700" fill="#92400e">取舍（推广初期可接受）</text>
+  <text x="56" y="837" font-size="11.5" fill="#78350f">⚠ 单副本无 HA：某服务/某机故障期间该能力短暂不可用；有状态层靠定时快照（pg_dump + MinIO 同步外部盘）兜底，故障后重建。</text>
+  <text x="56" y="855" font-size="11.5" fill="#78350f">✓ 不浪费：用户少时不为冗余买单；并发/SLA 要求上来，按上表「升生产档」加副本与主备即可，同一套镜像、不改代码。</text>
+  <text x="56" y="871" font-size="10.5" fill="#92400e">注：本地推理（OCR + 嵌入）统一归数据机——应用机不再常驻模型权重（省 ≈7.2 GB）；两者天然错峰（嵌入在录入/检索、OCR 在审查），各自限额，不拖慢数据库。</text>
 </svg>

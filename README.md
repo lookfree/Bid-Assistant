@@ -5,9 +5,11 @@ Bun workspaces 单仓多包，**钱与鉴权严格隔离在 App API 一层**，�
 
 ## 总体架构
 
-![投标智能体 SaaS 总体架构](docs/architecture.svg)
+![投标智能体 SaaS 总体架构](docs/superpowers/specs/2026-06-24-architecture.svg)
 
-三层各持独立职责：前端只渲染、App API 独占钱与身份、智能体只跑工作流并上报用量。**铁律：钱只在 App API 动。**
+三层服务 + 一层数据，职责严格隔离：两套前端只渲染、App API 独占钱与身份、智能体服务只跑工作流并上报用量；数据层一库三 schema（业务+账本 / 执行检查点 / 观测+向量）。**铁律：钱只在 App API 动。**
+
+智能体层旁挂两个**内网自建推理旁路**（数据不出网）：本地 OCR 与 bge-embed 嵌入服务。
 
 ## 核心功能模块
 
@@ -29,16 +31,35 @@ Bun workspaces 单仓多包，**钱与鉴权严格隔离在 App API 一层**，�
 
 **运营后台（`apps/admin`）** — 建设中（spec309/310）：RBAC + 审计 + 对账差异工作台 + 退款 + 充值包/定价配置
 
+**本地推理旁路（`services/ocr` · `services/bge-embed`）** — 内网自建容器、CPU 推理、数据不出网
+- **本地 OCR**：资料库图片附件前置识别（拼插图 `alt`）+ 审查流扫描页逐页识别拼回正文
+- **bge-embed 嵌入服务**：BGE-M3，OpenAI 兼容 `/v1/embeddings`；向量落 pgvector（资料库条目 + 读标切出的招标条款）
+- 两者都**只降级不阻断**：慢或不可达仅告警，绝不挡 CRUD 响应与用户花钱买的结果交付
+
 ## 结构
 
 ```
-apps/web        C 端前端（Next.js 16 / React 19 / Tailwind v4 / shadcn）
-apps/admin      运营后台（Next.js，:3001）
-apps/api        App API（Hono + Bun + Drizzle，PostgreSQL public schema）
-services/agent  智能体服务（Python 3.12 + uv + FastAPI + LangGraph）
-packages/shared 跨端共享类型/契约
-docs/           架构方案（docs/superpowers/specs）+ 分阶段实现计划（plans/phase-0..3）
+apps/web            C 端前端（Next.js 16 / React 19 / Tailwind v4 / shadcn）
+apps/admin          运营后台（Next.js，:3001）
+apps/api            App API（Hono + Bun + Drizzle，PostgreSQL public schema）
+services/agent      智能体服务（Python 3.12 + uv + FastAPI + LangGraph）
+services/ocr        本地 OCR 服务（自建容器 · CPU 推理）
+services/bge-embed  嵌入服务（BGE-M3 · OpenAI 兼容 /v1/embeddings）
+packages/shared     跨端共享类型/契约
+deploy/             裸机 Docker Compose 编排（应用机 / 数据机两份 compose + Nginx）
+docs/               架构方案（docs/superpowers/specs）+ 分阶段实现计划（plans/phase-0..3）
 ```
+
+## 部署拓扑
+
+![起步推广部署 · 单副本 · 两台机](docs/superpowers/specs/2026-06-24-deployment-single.svg)
+
+裸机 + Docker Compose 全自托管，起步推广档 = **两台机**（编排见 `deploy/`）：
+
+- **应用机**：Nginx · C 端前端 · 运营后台 · App API · Agent API · Agent Worker
+- **数据机**：PostgreSQL+pgvector（三 schema）· Redis · MinIO · 本地 OCR · bge-embed 嵌入服务
+
+**本地推理（OCR + 嵌入）统一归数据机**：模型权重常驻内存是内存大头，卸给相对空闲的数据机；嵌入在录入/检索时用、OCR 在审查时用，天然错峰。用户量上来只加副本与主备即升起步生产档，再要多节点/自动扩缩走 k3s——同一套镜像，不改代码。详见架构文档 §13。
 
 ## 开发
 

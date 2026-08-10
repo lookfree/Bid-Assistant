@@ -327,6 +327,7 @@ RAG 检索的**向量化后端**：自建 BGE-M3 服务，OpenAI 兼容的 `/v1/
 - **索引一律后台 fire-and-forget**：资料库条目建/改/删后异步重建该条向量；读标切完条款后另起后台任务建索引。嵌入服务慢或不可达只告警——**绝不挡 CRUD 响应，更绝不挡用户花钱买的结果交付**。
 - 资料库只索引条目的**文本字段**（标题/摘要/结构化字段/正文）；附件本身不入索引。
 - 检索超时即降级（拿不到向量结果就少一段参考资料，不让整步失败）。
+- **部署位置：与本地 OCR 同机（数据机），不随应用节点**（2026-08 起）。理由是三条：本地推理统一归数据机；模型权重常驻 ≈7.2 GB，压在应用机上挤占应用与 Agent Worker；嵌入（录入/检索时用）与 OCR（审查时用）天然错峰，同机不打架。对外端口 `8200` → 容器内 `8000`，模型权重挂外部卷（不在运行时联网拉取）；调用侧只认 `RAG_EMBED_ENDPOINT`，换机器不改代码（§13.5、§14）。
 
 ### 4.5 执行面 —— 不给智能体开 shell
 
@@ -756,14 +757,14 @@ Phase 4 · 加固            文件加密、对账、限流、监控告警、并
 | 应用 | App API (Hono+Bun) | ×3 | 2 vCPU | 2 GB | — | 钱的权威；Redis 锁单例 Cron |
 | 智能体 | Agent API (FastAPI) | ×2 | 2 vCPU | 4 GB | — | run 管理 + SSE，无状态 |
 | 智能体 | Agent Worker | ×2 | 4 vCPU | 8 GB | 20 GB 临时盘 | 文档解析 + OCR 调度 + 工作流执行（CPU/内存重） |
-| 智能体 | bge-embed（BGE-M3 嵌入） | ×2 | 2 vCPU | 4 GB | 2 GB（模型权重卷） | 自建服务，CPU 推理，OpenAI 兼容 `/v1/embeddings`；无状态，**随应用节点部署**，不占用独立机器；供 Agent Worker/API 索引与检索调用（§4.4.3） |
+| 智能体 | bge-embed（BGE-M3 嵌入） | ×2 | 4 vCPU | 8 GB | ≈5 GB（模型权重外部卷） | 自建服务，CPU 推理，OpenAI 兼容 `/v1/embeddings`；无状态但**随数据机部署**（与本地 OCR 同机，本地推理集中数据机，应用节点不常驻 ≈7.2 GB 模型权重）；对外 `8200` → 容器内 `8000`；供 Agent Worker/API 索引与检索调用（§4.4.3） |
 | 数据 | PostgreSQL + pgvector | 主+备 | 4 vCPU | 16 GB | 200 GB SSD ×2 | 业务+账本+检查点+观测+向量（三 schema）；流复制热备 |
 | 数据 | Redis | 主+备 | 2 vCPU | 4 GB | 20 GB SSD ×2 | 会话/队列/分布式锁/节点内断点缓存；AOF 持久化 |
-| 数据 | 本地 OCR 服务 | ×1 | ≤3 vCPU（限额） | 3 GB | — | 自建容器，CPU 推理、线程数设死；**随数据机部署**（应用机已扛全部应用 + 嵌入服务）；供 App 与 agent 共用（§4.4.2） |
+| 数据 | 本地 OCR 服务 | ×1 | ≤3 vCPU（限额） | 3 GB | — | 自建容器，CPU 推理、线程数设死；**随数据机部署**（与 bge-embed 同机，两者错峰）；供 App 与 agent 共用（§4.4.2） |
 | 存储 | MinIO（S3） | 起步 1 / HA 4 | 2–4 vCPU | 4–8 GB | **2 TB+ 起步** | 文件大头：招标/标书/PPT/附件 |
 
-**合计（起步生产，不含外部 SaaS）**：**≈ 47 vCPU · ≈ 99 GB 内存 · ≈ 2.6 TB 磁盘**（MinIO 为磁盘大头，含 bge-embed 与本地 OCR）。
-**裸机落地**：2–3 台应用/智能体节点（8c/16–32g）+ PG 主+备各 1 台（8c/32g/SSD）+ 1 台大盘 MinIO，每台 Docker Compose 编排。
+**合计（起步生产，不含外部 SaaS）**：**≈ 51 vCPU · ≈ 107 GB 内存 · ≈ 2.6 TB 磁盘**（MinIO 为磁盘大头，含数据机上的 bge-embed 与本地 OCR）。
+**裸机落地**：2–3 台应用/智能体节点（8c/16–32g）+ PG 主+备各 1 台（8c/32g/SSD）+ 1 台大盘 MinIO，每台 Docker Compose 编排；**本地 OCR 与 bge-embed 随数据机**。
 
 **外部依赖（SaaS，不占我方资源、按量计费）**：收钱吧（聚合支付）、阿里云短信、国产大模型 API（DeepSeek/通义/智谱，经 Model Gateway）。
 
@@ -802,19 +803,19 @@ Phase 4 · 加固            文件加密、对账、限流、监控告警、并
 | 应用 | App API (Hono+Bun) | ×1 | 2 vCPU · 2 GB | 生产 ×3 → ×1 |
 | 智能体 | Agent API (FastAPI) | ×1 | 2 vCPU · 4 GB | 生产 ×2 → ×1 |
 | 智能体 | Agent Worker | ×1 | 4 vCPU · 8 GB · 20 GB | 生产 ×2 → ×1 |
-| 智能体 | bge-embed（BGE-M3 嵌入） | ×1 | 2 vCPU · 4 GB | 生产 ×2 → ×1；无状态，随**应用机**部署 |
+| 智能体 | bge-embed（BGE-M3 嵌入） | ×1 | 4 vCPU · 8 GB | 生产 ×2 → ×1；无状态，随**数据机**部署（与本地 OCR 同机，模型权重挂外部卷） |
 | 数据 | PostgreSQL + pgvector | ×1 | 4 vCPU · 16 GB · 200 GB SSD | **去掉热备**（生产主+备）；三 schema：业务+账本 / 检查点 / 观测+向量 |
 | 数据 | Redis | ×1 | 2 vCPU · 4 GB · 20 GB SSD | **去掉副本** |
-| 数据 | 本地 OCR 服务 | ×1 | ≤3 vCPU（限额）· 3 GB | 与生产档同；随**数据机**部署，与数据层各自限额、互不挤占 |
+| 数据 | 本地 OCR 服务 | ×1 | ≤3 vCPU（限额）· 3 GB | 与生产档同；随**数据机**部署，与数据层、bge-embed 各自限额、互不挤占 |
 | 存储 | MinIO（S3） | ×1 | 2–4 vCPU · 4–8 GB | 单节点；磁盘按存量起（**500 GB–1 TB 起步，按真实增长加盘**） |
 
-**合计**：**≈ 25 vCPU · ≈ 51 GB 内存 · ≈ 1 TB 磁盘起步**（含 bge-embed 与本地 OCR）——约为起步生产档（§13.2）的一半：省掉的是冗余副本与 PG/Redis 主备，**单服务规格完全不变**。
+**合计**：**≈ 27 vCPU · ≈ 55 GB 内存 · ≈ 1 TB 磁盘起步**（含数据机上的 bge-embed 与本地 OCR）——约为起步生产档（§13.2）的一半：省掉的是冗余副本与 PG/Redis 主备，**单服务规格完全不变**。
 
 **落地拓扑 = 两台机（§13.7 档 A）**：
-- **应用机**：Nginx · C 端前端 · 运营后台 · App API · Agent API · Agent Worker · bge-embed
-- **数据机**：PostgreSQL+pgvector（三 schema）· Redis · MinIO · 本地 OCR 服务
+- **应用机**：Nginx · C 端前端 · 运营后台 · App API · Agent API · Agent Worker
+- **数据机**：PostgreSQL+pgvector（三 schema）· Redis · MinIO · 本地 OCR 服务 · bge-embed 嵌入服务
 
-> OCR 放数据机而非应用机：应用机已扛着全部应用 + 嵌入服务（模型常驻内存是内存大头），数据机相对空闲；两者各自设 CPU/内存限额，一次识别不会把数据库拖慢。
+> **本地推理（OCR + 嵌入）统一归数据机**（bge-embed 于 2026-08 自应用机迁入）：应用机已扛着全部应用与 Agent Worker，模型权重常驻内存（bge-embed ≈7.2 GB）是内存大头，卸给相对空闲的数据机；嵌入在录入/检索时用、OCR 在审查时用，天然错峰；两者各自设 CPU/内存限额，一次识别或一轮索引不会把数据库拖慢。
 
 **取舍（推广初期可接受）**：
 - ⚠ **单副本无 HA**：某服务/某机故障期间该能力短暂不可用；有状态层靠**定时快照**（`pg_dump` + MinIO 同步外部盘/异地）兜底，故障后重建。
@@ -855,8 +856,8 @@ Phase 4 · 加固            文件加密、对账、限流、监控告警、并
 
 | 台 | 规格 | 磁盘 | 承载（每服务 ×1，单服务规格照 §13.5 不变） |
 |---|---|---|---|
-| ① 应用/智能体机 | **16 vCPU / 32 GB** | 系统盘 100 GB SSD + 临时盘 50 GB SSD | Nginx + C 端前端 + 运营后台 + App API + Agent API + Agent Worker（20 GB 临时盘）+ bge-embed（合计 ≈13 vCPU/21 GB，留操作系统与峰值余量） |
-| ② 数据机 | **12 vCPU / 32 GB** | 系统盘 100 GB + **SSD 数据盘 500 GB**（PG 200 GB 起 + Redis 20 GB，在线扩容）+ **大容量盘 1 TB 起**（MinIO，按增长加盘）+ **备份盘 1 TB** | PostgreSQL+pgvector（三 schema）、Redis、MinIO、**本地 OCR 服务**（全容器自建；OCR 与数据层各自限额，互不挤占） |
+| ① 应用/智能体机 | **12 vCPU / 24 GB** | 系统盘 100 GB SSD + 临时盘 50 GB SSD | Nginx + C 端前端 + 运营后台 + App API + Agent API + Agent Worker（20 GB 临时盘）（合计 ≈11 vCPU/17 GB，留操作系统与峰值余量） |
+| ② 数据机 | **16 vCPU / 40 GB** | 系统盘 100 GB + **SSD 数据盘 500 GB**（PG 200 GB 起 + Redis 20 GB，在线扩容）+ **大容量盘 1 TB 起**（MinIO，按增长加盘）+ **备份盘 1 TB** | PostgreSQL+pgvector（三 schema）、Redis、MinIO、**本地 OCR 服务**、**bge-embed 嵌入服务**（模型权重外部卷 ≈5 GB）（全容器自建；限额之和 ≈15–17 vCPU/39 GB，两项本地推理与数据层错峰、不同时打满） |
 
 **档 B · 起步生产档（§13.2）→ 5–6 台**
 
@@ -886,7 +887,7 @@ Phase 4 · 加固            文件加密、对账、限流、监控告警、并
 | **Redis** | 7（**当前复用同机原生实例**） | 6379 | 用 `REDIS_DB=3` + key 前缀 `bid:` 做命名空间隔离；用途：队列/锁/pub-sub/会话/节点内断点缓存 | `REDIS_HOST/REDIS_PORT/REDIS_DB/REDIS_PASSWORD` |
 | **MinIO** | S3 兼容（**当前复用同机原生实例**） | 9000 / 9001(控制台) | 独立 bucket `bidsaas` 隔离；预签名 URL 直传/直下 | `MINIO_ENDPOINT/MINIO_ACCESS_KEY/MINIO_SECRET_KEY/MINIO_BUCKET` |
 | **本地 OCR 服务** | 自建容器（`services/ocr`） | 8100（对外）→ 8000（容器内） | App 与 agent **共用同一地址**；线程数设死 + 容器 CPU 限额；留空 = 不启用（两侧降级见 §4.4.2） | `OCR_BASE_URL` |
-| **嵌入服务 bge-embed** | 自建容器（`services/bge-embed`） | 8000 | OpenAI 兼容 `/v1/embeddings`（dense 1024 维），`/health` 供探活降级；模型权重挂卷，不在运行时联网拉取 | `RAG_EMBED_ENDPOINT`、`EMBED_MODEL`（容器侧） |
+| **嵌入服务 bge-embed** | 自建容器（`services/bge-embed`） | 8200（对外）→ 8000（容器内） | OpenAI 兼容 `/v1/embeddings`（dense 1024 维），`/health` 供探活降级；模型权重挂**外部卷**，不在运行时联网拉取；**与本地 OCR 同机（数据机）部署**，调用侧只认 `RAG_EMBED_ENDPOINT` | `RAG_EMBED_ENDPOINT`、`EMBED_MODEL`（容器侧） |
 
 **接入约定与注意**：
 1. **PG 是本 SaaS 专建**（`bidsaas` 库 + 角色 + 三 schema），可直接用；**Redis/MinIO 当前复用同机已有实例**，靠 DB index / key 前缀 / 独立 bucket 做隔离，生产阶段再按 §13 拆独立实例。

@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="866" viewBox="0 0 1100 866" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="918" viewBox="0 0 1100 918" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', Helvetica, Arial, sans-serif">
   <defs>
     <filter id="sh" x="-4%" y="-4%" width="108%" height="120%">
       <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.10"/>
@@ -11,7 +11,7 @@
     </marker>
   </defs>
 
-  <rect x="0" y="0" width="1100" height="866" fill="#f8fafc"/>
+  <rect x="0" y="0" width="1100" height="918" fill="#f8fafc"/>
 
   <!-- Title -->
   <text x="40" y="40" font-size="24" font-weight="700" fill="#0f172a">生产部署架构 · 资源规划</text>
@@ -56,13 +56,13 @@
   <rect x="288" y="364" width="224" height="64" rx="9" fill="#ffffff" stroke="#c4b5fd"/>
   <text x="302" y="386" font-size="12" font-weight="700" fill="#1e293b">Agent Worker ×2</text>
   <text x="302" y="406" font-size="10" fill="#475569">4c · 8 GB · 20 GB 临时盘 ×2 · 解析+工作流</text>
-  <rect x="520" y="364" width="224" height="64" rx="9" fill="#ffffff" stroke="#c4b5fd"/>
-  <text x="534" y="386" font-size="12" font-weight="700" fill="#1e293b">bge-embed ×2（嵌入服务）</text>
-  <text x="534" y="406" font-size="10" fill="#475569">2 vCPU · 4 GB ×2 · CPU 推理 · 随应用节点</text>
+  <rect x="520" y="364" width="224" height="64" rx="9" fill="#f8fafc" stroke="#cbd5e1" stroke-dasharray="5 4"/>
+  <text x="534" y="386" font-size="12" font-weight="600" fill="#94a3b8">bge-embed → 已迁至数据机</text>
+  <text x="534" y="406" font-size="10" fill="#94a3b8">2026-08 移出应用节点 → 见 ④</text>
 
   <!-- ④ 数据/存储层 -->
-  <rect x="40" y="462" width="720" height="220" rx="12" fill="#f1f5f9" stroke="#475569" stroke-width="1.3"/>
-  <text x="56" y="484" font-size="13" font-weight="700" fill="#0f172a">④ 数据 / 存储层 · 有状态（HA · 带磁盘）· 数据机</text>
+  <rect x="40" y="462" width="720" height="272" rx="12" fill="#f1f5f9" stroke="#475569" stroke-width="1.3"/>
+  <text x="56" y="484" font-size="13" font-weight="700" fill="#0f172a">④ 数据 / 存储层（有状态 · HA · 带磁盘）+ 本地推理服务 · 数据机</text>
   <text x="744" y="484" text-anchor="end" font-size="11" font-weight="700" fill="#059669">⤢ 副本/分片/加盘扩节点</text>
   <rect x="56" y="494" width="330" height="58" rx="9" fill="#ffffff" stroke="#cbd5e1"/>
   <text x="72" y="513" font-size="12.5" font-weight="600" fill="#1e293b">PostgreSQL + pgvector（主 + 备）· 三 schema</text>
@@ -80,6 +80,9 @@
   <rect x="56" y="624" width="688" height="46" rx="9" fill="#ffffff" stroke="#94a3b8"/>
   <text x="72" y="644" font-size="12.5" font-weight="700" fill="#1e293b">本地 OCR 服务 ×1（自建容器 · CPU 推理 · 线程数设死 + 容器 CPU 限额 ≤3c / 3 GB）</text>
   <text x="72" y="662" font-size="10.5" fill="#475569">两个消费方：App API（资料库图片附件前置识别 → 插图 alt）· agent 审查流（扫描页逐页识别拼回正文）　|　业务数据不出内网，故本地识别</text>
+  <rect x="56" y="676" width="688" height="46" rx="9" fill="#ffffff" stroke="#94a3b8"/>
+  <text x="72" y="696" font-size="12.5" font-weight="700" fill="#1e293b">嵌入服务 bge-embed ×2（自建容器 · BGE-M3 · CPU 推理 · 4 vCPU / 8 GB ×2 · 实测常驻 7.2 GB/实例）</text>
+  <text x="72" y="714" font-size="10.5" fill="#475569">OpenAI 兼容 /v1/embeddings · 8200（对外）→ 8000（容器内）· 权重挂外部卷　|　随数据机部署，与本地 OCR 错峰</text>
 
   <!-- 主列纵向箭头 -->
   <line x1="400" y1="176" x2="400" y2="190" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#arrv)"/>
@@ -115,14 +118,14 @@
   <line x1="760" y1="410" x2="800" y2="398" stroke="#a78bfa" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#arrv)"/>
 
   <!-- ===== 资源合计 ===== -->
-  <rect x="40" y="702" width="1020" height="68" rx="12" fill="#ecfdf5" stroke="#10b981" stroke-width="1.3"/>
-  <text x="56" y="726" font-size="13" font-weight="700" fill="#065f46">起步生产合计（不含外部 SaaS）</text>
-  <text x="56" y="748" font-size="12.5" font-weight="700" fill="#047857">≈ 47 vCPU　·　≈ 99 GB 内存　·　≈ 2.6 TB 磁盘（MinIO 为大头，含 bge-embed 与本地 OCR）</text>
-  <text x="56" y="764" font-size="11" fill="#475569">落地：裸机若干台，每台 Docker Compose 编排 —— 2–3 台应用/智能体节点（8c/16–32g，含 bge-embed）+ PG 主+备各 1 台（8c/32g/SSD）+ 1 台大盘 MinIO；OCR 随数据机；Nginx 做 LB</text>
+  <rect x="40" y="754" width="1020" height="68" rx="12" fill="#ecfdf5" stroke="#10b981" stroke-width="1.3"/>
+  <text x="56" y="778" font-size="13" font-weight="700" fill="#065f46">起步生产合计（不含外部 SaaS）</text>
+  <text x="56" y="800" font-size="12.5" font-weight="700" fill="#047857">≈ 51 vCPU　·　≈ 107 GB 内存　·　≈ 2.6 TB 磁盘（MinIO 为大头，含数据机上的 bge-embed 与本地 OCR）</text>
+  <text x="56" y="816" font-size="11" fill="#475569">落地：裸机若干台，每台 Docker Compose 编排 —— 2–3 台应用/智能体节点（8c/16–32g）+ PG 主+备各 1 台（8c/32g/SSD）+ 1 台大盘 MinIO；OCR 与 bge-embed 随数据机；Nginx 做 LB</text>
 
   <!-- ===== 扩节点策略 ===== -->
-  <rect x="40" y="782" width="1020" height="72" rx="12" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.2"/>
-  <text x="56" y="804" font-size="12.5" font-weight="700" fill="#92400e">扩节点策略（Scale-out · 全链路支持加节点）</text>
-  <text x="56" y="823" font-size="11" fill="#78350f">无状态层（前端 / App API / Agent API·Worker / bge-embed / OCR）：加一台裸机起 Docker → Nginx upstream 加一行（或 Docker Swarm join）即扩容（Cron 由 Redis 锁保证单实例，扩节点不重复跑）</text>
-  <text x="56" y="839" font-size="11" fill="#78350f">有状态层：PG 加只读副本扩读、再大走分库/Citus　·　Redis 主备→Cluster 分片扩节点　·　MinIO 加节点扩容量与吞吐（分布式纠删码）　·　沙箱池按 run 弹性（§4.5.1）</text>
+  <rect x="40" y="834" width="1020" height="72" rx="12" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="56" y="856" font-size="12.5" font-weight="700" fill="#92400e">扩节点策略（Scale-out · 全链路支持加节点）</text>
+  <text x="56" y="875" font-size="11" fill="#78350f">无状态层（前端 / App API / Agent API·Worker / bge-embed / OCR）：加一台裸机起 Docker → Nginx upstream 加一行（或 Docker Swarm join）即扩容（Cron 由 Redis 锁保证单实例，扩节点不重复跑）</text>
+  <text x="56" y="891" font-size="11" fill="#78350f">有状态层：PG 加只读副本扩读、再大走分库/Citus　·　Redis 主备→Cluster 分片扩节点　·　MinIO 加节点扩容量与吞吐（分布式纠删码）　·　沙箱池按 run 弹性（§4.5.1）</text>
 </svg>
