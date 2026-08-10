@@ -39,6 +39,40 @@ def _repair_submit_args(raw: Any) -> dict | None:
         return None
 
 
+def _incomplete_args(msg: Any, tool_name: str) -> bool:
+    """这次提交的 args 原文是不是**没写完**（模型输出被长度上限截断）。
+
+    流式下 langchain 用 parse_partial_json 把没写完的 args 补成"看似合法"的 dict，
+    于是截断的提交照样落进 msg.tool_calls，与正常提交长得一模一样。
+    2026-08-11 生产实测（康恒环境审查报告）：一条发现的标题是
+    「…项目名称与投标产品名称不一致（如合同写的是」——句子断在半截、括号没闭合，
+    正是模型要写引号里的项目名时被截断、被补全器收了尾；截断点之后的发现整批丢失。
+    唯一的挡板本是 finish_reason == "length"，但那要**服务商回**才有：本地复现三种收尾
+    （length / tool_calls / 干脆不回）下 tool_calls 都被补成合法 dict，只有第一种拦得住。
+
+    判据改成看 args 原文能不能 json.loads——聚合消息的 tool_call_chunks 里存的是逐片
+    拼起来的**原文**，没写完就必然是非法 JSON，与服务商回不回 finish_reason 无关。
+    误伤担心两处，都不成立：
+      · 中文串值里未转义的英文双引号（读标高频）——那种 parse_partial_json 直接抛，消息落进
+        invalid_tool_calls、msg.tool_calls 为空，被下面第一行挡掉（仍由 _repair_submit_args 兜）；
+      · 非流式 ainvoke（思考模型）——AIMessage 没有 tool_call_chunks，恒回 False，
+        仍由 finish_reason 那条挡板负责。
+    """
+    if not any(c.get("name") == tool_name for c in (getattr(msg, "tool_calls", None) or [])):
+        return False        # 压根没解析出提交调用（非法 JSON / 没提交）——那是别的分支的事
+    for tc in getattr(msg, "tool_call_chunks", None) or []:
+        if tc.get("name") not in (tool_name, None):
+            continue
+        raw = tc.get("args") or ""
+        if not raw.strip():
+            continue
+        try:
+            json.loads(raw)
+        except ValueError:
+            return True
+    return False
+
+
 async def _log_submit(ctx: Any, tool_name: str, label: str | None, outcome: str,
                       *, role: str, content: Any = None, reason: Any = None) -> None:
     """把每次 submit 的输入/输出记入 agent.agent_event_log：
@@ -137,6 +171,15 @@ async def run_submit_agent(ctx, prompt: str, user_msg: str,
     return result
 
 
+# 提交被截断后喂回去的重试指令。**必须对所有 submit 节点都成立**：这条路以前只有服务商
+# 明说 finish_reason=length 时才走得到（几乎只在读标那几轮），现在审查/提纲/述标一并会走到，
+# 只讲读标字段的话，别的节点收到的是一段与自己无关的指令。读标专属的量化要求留在括注里。
+_TRUNCATED_RETRY = (
+    "你上一次的提交因输出超过长度上限被截断，未能送达。请大幅压缩后重新提交同一结构："
+    "每条的文字逐条精炼、长引用只留关键句，但条目本身一条都不能少。"
+    "（读标：value ≤50字；source_quote 只保留★/▲/废标风险条目的关键句、≤40字，其余条目留空。）")
+
+
 def _reject_msg(msg, call_id: str, reason: str) -> list:
     """把一次被拒绝的提交（Pydantic 校验失败 / JSON 非法）追加进对话，供下一轮模型修正。"""
     return [msg, ToolMessage(content=reason, tool_call_id=call_id)]
@@ -162,13 +205,11 @@ async def _forced_submit(ctx, prompt: str, user_msg: str, submit, tool_name: str
         # 补成"看似合法"的 dict → 截断输出也会落进 tool_calls。若先接受，要么校验失败空耗预算、
         # 要么静默把残缺结果当成功交付（大标书读标漏条款）。故 finish_reason=length 一律走压缩重试。
         finish = (getattr(msg, "response_metadata", None) or {}).get("finish_reason")
-        if finish == "length":
+        if finish == "length" or _incomplete_args(msg, tool_name):
             await _log_submit(ctx, tool_name, label, "truncated", role="ai",
-                              reason="finish_reason=length，输出超长被截断")
-            messages = [*messages, HumanMessage(content=(
-                "你上一次的提交因输出超过长度上限被截断，未能送达。请大幅压缩后重新提交同一结构："
-                "value 逐条精炼（≤50字）；source_quote 只保留★/▲/废标风险条目的关键句（≤40字），"
-                "其余条目一律留空；不要遗漏条目本身。"))]
+                              reason=("finish_reason=length，输出超长被截断" if finish == "length"
+                                      else "提交的 JSON 没写完，输出被长度上限截断（服务商未回 finish_reason）"))
+            messages = [*messages, HumanMessage(content=_TRUNCATED_RETRY)]
             continue
         call = next((c for c in (getattr(msg, "tool_calls", None) or []) if c["name"] == tool_name), None)
         if call is not None:

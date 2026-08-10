@@ -24,6 +24,11 @@ def _as_chunk(msg: AIMessage) -> AIMessageChunk:
     kw: dict = {"content": msg.content or ""}
     if getattr(msg, "response_metadata", None):
         kw["response_metadata"] = msg.response_metadata
+    raw = (msg.additional_kwargs or {}).get("_raw_args")
+    if raw is not None:   # args 原文由用例给定（截断形态：原文没写完，见 _truncated_stream_call）
+        kw["tool_call_chunks"] = [{"name": msg.additional_kwargs["_raw_tool"], "args": raw,
+                                   "id": "ct", "index": 0}]
+        return AIMessageChunk(**kw)
     tcc = [{"name": tc["name"], "args": json.dumps(tc["args"]), "id": tc.get("id"), "index": 0}
            for tc in (msg.tool_calls or [])]
     tcc += [{"name": ic.get("name"), "args": ic.get("args"), "id": ic.get("id"), "index": 0}
@@ -229,3 +234,57 @@ async def test_length_truncation_beats_salvaged_tool_call():
 
     assert result.x == 2      # 来自压缩重试，而非被接受的截断结果（x==1）
     assert chat.n == 2
+
+
+# 2026-08-11 生产实测（康恒环境审查报告）：一条发现的标题是
+# 「类似项目案例合同中的项目名称与投标产品名称不一致（如合同写的是」——句子断在半截、
+# 括号没闭合，正是模型要写引号里的项目名时撞上长度上限、被 parse_partial_json 收了尾；
+# 截断点之后的发现整批丢失，而用户拿到的是一份看起来正常的报告。
+_CUT_TITLE = "类似项目案例合同中的项目名称与投标产品名称不一致（如合同写的是"
+
+
+def _truncated_stream_call(tool: str = "submit_s") -> AIMessage:
+    """输出被长度上限截断、而**服务商没回 finish_reason** 的提交：args 原文没写完。
+    流式下 langchain 用 parse_partial_json 把它补成"看似合法"的 dict，于是照样落进 tool_calls。"""
+    return AIMessage(content="", tool_calls=[],
+                     additional_kwargs={"_raw_tool": tool, "_raw_args": '{"s": "' + _CUT_TITLE})
+
+
+async def test_truncated_args_without_finish_reason_are_not_delivered():
+    """回归（本次生产缺陷）：服务商不回 finish_reason 时，唯一的挡板失效——截断的提交被当成
+    正常提交交付，用户拿到半截标题的风险条。判据改成看 args 原文能否 json.loads 之后：
+    这一轮必须走压缩重试，绝不把半截结果交出去。
+
+    反向变异：把 _incomplete_args 从判定里拿掉，本用例会拿到 ToyS(s=半截标题) 而不是抛错。"""
+    chat = _ScriptedChat([_truncated_stream_call()] * 3)
+    ctx, rec = _ctx_rec(_ScriptedGateway(chat))
+
+    with pytest.raises(RuntimeError, match="未通过.*提交"):
+        await run_submit_agent(ctx, "sys", "user", "submit_s", ToyS, "审查")
+
+    assert chat.n == 3        # 三轮都判成截断并重试，而不是首轮就"成功"
+    outcomes = [e["event_meta"].get("outcome") for e in rec.events
+                if e["event_type"] == "submit" and e["role"] == "ai"]
+    assert outcomes == ["truncated"] * 3
+
+
+async def test_truncated_first_round_then_a_complete_one_is_accepted():
+    """压缩重试真能救回来：第二轮写完了就照常交付，内容是完整那一份。"""
+    full = _CUT_TITLE + "“XX市智慧园区平台”）"
+    chat = _ScriptedChat([_truncated_stream_call(),
+                          AIMessage(content="", tool_calls=[{"name": "submit_s",
+                                                             "args": {"s": full}, "id": "c2"}])])
+    ctx = _ctx(_ScriptedGateway(chat))
+
+    result = await run_submit_agent(ctx, "sys", "user", "submit_s", ToyS, "审查")
+
+    assert result.s == full and chat.n == 2
+
+
+async def test_a_complete_submission_is_never_mistaken_for_truncated():
+    """误伤检验：写完的提交（args 原文是合法 JSON）首轮即过，不进重试。"""
+    chat = _ScriptedChat([_valid_call(x=3)])
+    ctx = _ctx(_ScriptedGateway(chat))
+
+    assert (await run_submit_agent(ctx, "sys", "user", "submit_x", Toy, "desc")).x == 3
+    assert chat.n == 1
