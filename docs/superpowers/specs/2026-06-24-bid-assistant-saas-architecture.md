@@ -1,6 +1,7 @@
 # 投标智能体 SaaS · 整体架构设计方案
 
 > 版本：v1.0　|　日期：2026-06-24　|　状态：架构基线（待逐子系统细化）
+> **最后更新：2026-08-10**（同步正文代码编排引擎、本地 OCR 服务、嵌入服务、解析层能力与部署拓扑）
 > 范围：本文档为"整体架构方案"，定义服务边界、技术选型、数据模型与建设顺序。各子系统的详细设计（spec → plan → 实现）在后续单独迭代。
 
 ---
@@ -21,7 +22,7 @@
 基于该原型开发一个**面向 C 端的投标智能体 SaaS**，包含：
 1. 账号与会员体系、订阅与支付（**收钱吧聚合扫码，无自动续费**）、积分计费
 2. 投标全流程的真实 AI 能力
-3. **智能体做成独立服务**：一个服务内按"智能体类型"注册多个 deepagent，投标是第一个；未来新增其它智能体只在该服务内扩展，不动骨架
+3. **智能体做成独立服务**：一个服务内按"智能体类型"注册多条工作流，投标是第一个；未来新增其它智能体只在该服务内扩展，不动骨架
 4. **运营管理后台（必建，基于 `docs/admin-front` 原型开发）**：用户/会员/订单管理、积分账本审计、支付对账、套餐与积分口径配置、邀请奖励、智能体/模型配置、数据看板、退款/客服处理（工作流模板配置暂不支持，§8）。**没有它系统无法运营**——配置、对账、退款、风控都依赖后台，故列为第一级必建范围。计费/邀请/配置的详细需求见《支付与计费系统 · 开发需求规格》（`docs/支付与计费系统 · 开发需求规格.md`）。
 
 ### 1.3 关键决策（已拍板）
@@ -29,8 +30,8 @@
 |---|---|
 | 部署/合规区域 | 中国大陆 + 云厂商（阿里云/腾讯云），ICP 备案、国内短信、国产大模型 |
 | 应用层技术栈 | **已选 A：Hono + Bun (TS) + Drizzle ORM**（与前端同栈、类型端到端、迭代快；原型已埋 hono）。备选 B/C/D 见 §2.4 |
-| 智能体层技术栈 | **Python + FastAPI + LangGraph（骨架）+ deepagents（正文等开放式节点）** |
-| 智能体形态 | 单服务 + AgentRegistry，按 `agent_type` 注册多个 deepagent |
+| 智能体层技术栈 | **Python + FastAPI + 自研工作流编排（状态图骨架 + 持久化检查点）**；节点内部一律代码编排，不把编排权交给模型 |
+| 智能体形态 | 单服务 + AgentRegistry，按 `agent_type` 注册多条工作流 |
 | 支付 | **收钱吧聚合支付（C 扫 B 跳转支付）**：商家侧只对接收钱吧一家，用户用微信/支付宝扫码均可付；**不做自动续费/周期代扣**（产品决策，2026-07 调整） |
 | 运营主体 | 已有企业主体（营业执照）→ 收钱吧商户入网（商户号/门店/激活码由收钱吧商务提供） |
 | 交付节奏 | 先整体架构（本文档）→ 再逐子系统细化 |
@@ -46,8 +47,11 @@
              · 运营管理后台（基于 `docs/admin-front` 原型·RBAC 权限）★必建
 应用层     【已选 A】Hono + Bun + Drizzle ORM（TS）
              备选见 §2.4：B.Java/Spring · C.Go/Gin · D.全 Python/FastAPI
-智能体层   Python + FastAPI + deepagents（LangGraph）
-产物渲染   docx（标书导出 Word，App 层 TS）· python-pptx（述标导出 .pptx，Agent Service Python 侧）
+智能体层   Python + FastAPI + 自研工作流编排（状态图骨架 + 持久化检查点）
+             · 节点内部全部代码编排（正文 = 逐章流水线，§4.2.1）
+自建旁路   本地 OCR 服务（services/ocr，扫描页/证照识别，数据不出内网，§4.4.2）
+             · 嵌入服务 bge-embed（services/bge-embed，RAG 向量化后端，§4.4.3）
+产物渲染   docx（标书导出 Word）· python-pptx（述标导出 .pptx）——均在 Agent Service Python 侧
 数据       PostgreSQL（业务+账本）· Redis（会话/队列/限流）· MinIO（S3 兼容对象存储·文件）· pgvector（向量检索）
 支付       收钱吧聚合支付（C 扫 B 跳转支付；HTTPS+JSON 直连网关，无 SDK 依赖）
 基础设施   MinIO 自托管对象存储（文件，S3 API）· 阿里云：短信服务、国产大模型 API、容器部署
@@ -143,17 +147,23 @@
 └───────────────┬──────────────────────────────────────────────┘
                 │ 内部 REST（服务间鉴权）+ 任务回调
 ┌───────────────▼──────────────────────────────────────────────┐
-│  Agent Service · 智能体层 (Python / FastAPI + deepagents)      │
-│  ┌─ AgentRegistry   按 agent_type 注册多个 deepagent ★可扩展核心 │
+│  Agent Service · 智能体层 (Python / FastAPI · 自研工作流编排)   │
+│  ┌─ AgentRegistry   按 agent_type 注册多条工作流 ★可扩展核心    │
 │  ┌─ Runtime         统一 run API、异步执行、SSE 流式产出         │
-│  ┌─ Capabilities    文档解析(docx/pdf/xlsx)、RAG检索、HITL      │
+│  ┌─ Capabilities    文档解析(docx/pdf/xlsx)、OCR、RAG检索、HITL │
 │  ┌─ Model Gateway   DeepSeek/通义/智谱 可切换、用量上报         │
 │  └─ 不碰钱：只上报 token/usage，计费回 App API                  │
-└───────────────┬──────────────────────────────────────────────┘
+└──────┬────────────────────────────────────┬──────────────────┘
+       │ 内网 HTTP                          │
+┌──────▼──────────────────┐   ┌─────────────▼──────────────────┐
+│ 本地 OCR 服务(自建容器)  │   │ 嵌入服务 bge-embed(自建容器)     │
+│ 扫描页/证照识别·不出内网 │   │ 资料库 RAG 向量化后端            │
+└─────────────────────────┘   └────────────────────────────────┘
                 │
 ┌───────────────▼──────────────────────────────────────────────┐
-│  数据层  PostgreSQL(业务+账本) · Redis(会话/队列/限流)          │
-│         · MinIO(S3兼容对象存储·文件) · pgvector(招标文件向量检索) │
+│  数据层  PostgreSQL(业务+账本 / 检查点 / 观测，三 schema)       │
+│         · Redis(会话/队列/限流) · MinIO(S3兼容对象存储·文件)     │
+│         · pgvector(招标文件与资料库向量检索)                    │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -181,46 +191,72 @@ C 端前端与运营后台是**两个独立部署的 Next.js 应用**（`apps/we
 
 ## 4. 智能体服务详设（可扩展核心）
 
-形态：**一个 Python 服务，以 LangGraph 为骨架按 `agent_type` 注册多条工作流；节点按需用 `create_agent` / deepagent / 普通服务（异构）。** 即 **LangGraph + deepagents 混合**：LangGraph 管确定性骨架，deepagents 管开放式节点（正文生成）。
+形态：**一个 Python 服务，以状态图为骨架按 `agent_type` 注册多条工作流；每个节点内部一律由代码编排，模型只负责"写/判"这一件事，不负责决定"下一步做什么"。**
 
 ### 4.1 注册式架构 —— 新增智能体 = 注册一个新类型
-每个 `agent_type` 对外是一个 **`CompiledStateGraph`**（LangGraph 的编译图）；它**可以是一条显式 LangGraph 工作流，也可以整体是一个 deepagent**——对 App 都是统一 run 契约（§4.3），App 无感。
+每个 `agent_type` 对外是一条**编译后的状态图**：节点、边、路由条件都写在代码里，对 App 是统一 run 契约（§4.3），App 无感。
 
 ```python
-# agent_type → CompiledStateGraph（LangGraph 工作流 / deepagent，统一对外）
+# agent_type → 编译后的状态图（统一对外）
 AGENT_REGISTRY = {
-  "bidding_agent": build_bidding_workflow(),   # 投标 = LangGraph 显式工作流，节点异构（见 §4.2）
+  "bidding_agent": build_bidding_workflow(),   # 投标 = 显式工作流，节点异构（见 §4.2）
   # 未来扩展：加一行即可，服务骨架不动
   # "contract_review": build_contract_workflow(),
   # "proposal": build_proposal_workflow(),
 }
 ```
 
-> **为什么投标是"工作流"而非"一个大 deepagent"**：投标流程已知且固定、平台预制（§10）、要按步计费与可观测——骨架交给**显式 LangGraph** 更可控、低风险；只在确需开放式规划的节点（正文生成）才用 deepagent。详见 §4.2 的逐节点框架选型与 §10.2 两层编排。
+> **为什么投标是"代码编排的工作流"而非"一个大规划型智能体"**：投标流程已知且固定、平台预制（§10）、要按步计费与可观测——骨架交给显式状态图更可控、低风险。2026-08 的生产实测把这条铁律又验证了一遍（§4.2.1）：那天一个下午没能完整交付一份标书，**全部事故同一个根**——正文是全流程唯一把编排权交给模型的一步；现已改回代码编排。详见 §4.2 的逐节点实现方式与 §10.2 编排模型。
 
-### 4.2 投标工作流的节点（异构：create_agent / deepagent / 普通服务）
-`bidding_agent` 是一条 **LangGraph 显式工作流**，节点对应 PRD 全流程；**每个节点按性质选最合适的框架**——不强行都用 deepagent：
+### 4.2 投标工作流的节点（异构：模型节点 / 代码流水线 / 普通服务）
+`bidding_agent` 是一条**显式工作流**，节点对应 PRD 全流程；**每个节点按性质选最合适的实现方式**：
 
-| 节点 | 页面 | 输入 → 产出 | 框架选型 | 为何 |
+| 节点 | 页面 | 输入 → 产出 | 实现方式 | 为何 |
 |---|---|---|---|---|
-| 读标 `read` | `/read` | 招标文件 → 六大分类解读 + 废标风险点 | **LangGraph `create_agent`** + 工具 | 结构化抽取/分类，确定性强 |
-| 提纲 `outline` | `/outline` | 解读结果 → 技术标/商务标大纲 | **LangGraph `create_agent`** | 结构化生成，可加轻量规划 |
-| **正文 `content`** | `/content` | 大纲+RAG → 逐章正文 + 章节级 AI 对话改写 | **deepagent** | 长文/多章/需规划+子agent+草稿，开放式（deepagents 甜点） |
-| 审查 `risk` | `/risk` | 招标+投标文件 → 废标风险体检 | **LangGraph**（规则+RAG 比对） | 要可解释、流程别飘 |
-| 查重 `dedup` | `/risk` | 多份投标文件 → 多维指纹相似度 | **普通服务** + 少量 LLM 辅助 | 指纹/相似度算法，基本非 LLM agent |
-| 述标 `present` | `/present` | 标书 → **`DeckSpec`（大纲+口播稿+问答）** → 渲染层产 **.pptx** | **LangGraph `create_agent`** | 产结构化 DeckSpec；要多轮打磨再上 deepagent |
+| 读标 `read` | `/read` | 招标文件 → 六大分类解读 + 废标风险点 | **分段并行模型节点** + 工具（结构化提交） | 结构化抽取/分类，确定性强；长文件按块并行、每轮结果落 Redis 断点 |
+| 提纲 `outline` | `/outline` | 解读结果 → 技术标/商务标大纲 | **模型节点**（结构化提交） | 结构化生成，一次调用产整棵大纲树 |
+| **正文 `content`** | `/content` | 大纲+RAG → 逐章正文 + 章节级 AI 对话改写 | **代码编排流水线**（§4.2.1） | 章节清单在代码手里、每章一次独立调用，长文任务的可靠性全靠它 |
+| 审查 `review` | `/risk` | 招标+投标文件 → 废标风险体检 | **模型节点**（规则 + 解析/OCR 取材） | 要可解释、流程别飘 |
+| 查重 `dedupe` | `/risk` | 多份投标文件 → 多维指纹相似度 | **普通服务**（独立同步路由，不进工作流） | 指纹/相似度算法，非 LLM 任务，也就不需要 run/检查点 |
+| 述标 `present` | `/present` | 标书 → **`DeckSpec`（大纲+口播稿+问答）** → 渲染层产 **.pptx** | **模型节点**（结构化提交） | 产结构化 DeckSpec，渲染归确定性代码（§4.2.2） |
+| 导出 `export` | `/content` | 章节正文 + DeckSpec → docx / pdf / pptx 产物 | **确定性代码**（非 LLM） | 渲染与上传，可复现 |
 
-> **deepagent 只在「正文生成」节点用**：它自带的规划(todo)/虚拟文件系统/子智能体/HITL 契合"写整本标书"——主 agent 规划章节、子 agent 并行写、虚拟 FS 暂存草稿、关键处回审；配虚拟 FS 还能随 checkpoint 续跑（§4.7）。其余节点用更确定的 `create_agent` / 普通服务，便于**按步计费**与**可解释**。
-> **关键**：`deepagents = create_agent + middleware(Filesystem/SubAgent/TodoList)`，所以骨架统一 LangGraph，哪个节点真需要就叠 deepagent 的 middleware——**一个节点一个决定，可增量、可回退**；deepagents 的不确定性与版本风险（#573/#1251，§4.7）**关在单个节点内**，对 App 的统一 run 契约不变。
+> **所有节点的编排权都在代码里**：节点之间是显式边与显式路由条件（哪一步可跳过、哪一步可独立进入，都是代码判定），节点内部要么是"一次调用 + 结构化提交"，要么是代码写的循环/并发流水线。**没有任何一处让模型临场决定下一步做什么**——按步计费、可观测、可续跑都建立在这一点上。
 
-#### 4.2.1 述标 PPT 生成：「智能体产稿 + 渲染层产文件」两段式
+#### 4.2.1 正文生成：代码编排流水线（2026-08-08 起）
+正文是全书最长、最贵、最容易半途而废的一步。它曾经是全流程**唯一**把编排权交给模型的节点（一个长命规划者揣着几万 token 连跑几十分钟、几十章清单全凭它的记忆），生产实测暴露出四类都会导致"一整天交付不出一份标书"的故障：**上下文压缩即失忆**（同一章连写四遍、凭空生出不存在的章）、**规划工具一拼坏就毒化整段历史**（端点持续 400 循环）、**一次性全派把模型端点打满**（进度横幅十几分钟不动）、**挂死一次全盘皆输**（几十分钟白等且无任何可复用中间产物）。
+
+2026-08-08 起改为与分段读标同构的确定性流水线（`nodes/content_pipeline.py`），编排权全部回到代码：
+
+```
+提纲章节清单（代码持有，不可能忘）
+   │
+   ├─ 系统章节（如资质附录）结构化跳过：不发调用、不占进度、不分字数预算
+   │
+   ├─ 每章一次独立模型调用（无工具、直出章节 HTML）
+   │   · 并发用信号量限流（上限走配置）——不再自己打满模型端点
+   │   · 每章简报只带本章相关内容并按章精确投递：本章定位/写作说明/整棵子项子树/
+   │     相邻章去重提示/本章须响应的招标要求（★ 全量不截）/篇幅目标/偏离表条目/格式模板/
+   │     命中关键词时定向注入的人员与业绩资料
+   │   · 写完即落 Redis 断点（键含提示词版本哈希 → 改提示词自动失效；刻意不含易变的检索段，
+   │     否则"重试只补缺章"会静默退化成全量重跑）
+   │   · 模型调用走韧性通道：流式 + 空闲超时 + 单轮总时长盖 + 降级链重试（§4.4）
+   │
+   ├─ 短章扩写兜底：首稿明显短于本章预算时追一轮扩写，产出不长于首稿/被截断则整份弃用回落首稿
+   ├─ 缺章补写兜底：主轮收尾仍缺章 → 等待一段时间（让瞬时抖动过去）再各补一次
+   └─ 证照定向插章 post-pass：统一在收稿后跑一次（纯追加、不写回章节缓存）
+```
+
+**收益是结构性的**：① 章节清单来自提纲、由代码持有，"漏章/重复章"这一类故障整体消失；② 没有规划工具与子任务派发，那两类毒化历史的故障随之消失；③ 单章失败被隔离（脏提纲数据、清洗异常只废本章，不连累其余章），缺章如实上报并由前端"免费补齐"兜底；④ 断点让重试只补缺章，不重烧已成稿的 token；⑤ 配置/鉴权类**永久性错误**按类型识别后直接整步失败并带出根因（失败步自动退款），不做无意义的逐章重试。
+
+#### 4.2.2 述标 PPT 生成：「智能体产稿 + 渲染层产文件」两段式
 让 LLM 直接吐 PPT 二进制必然不稳。把生成拆成两层，职责清晰、结果可复现：
 
 ```
 全流程标书 chapters
    │
    ▼
-① 述标智能体（deepagent，LLM）        ② PPT 渲染器（确定性代码，非 LLM）
+① 述标节点（LLM，产结构化稿）          ② PPT 渲染器（确定性代码，非 LLM）
    · 评分点导向大纲                       · 套企业模板/母版/配色
    · 每页要点 + 口播稿(notes)     ──→     · python-pptx 渲染
    · 述标问答预演(QA)              DeckSpec  · 输出 .pptx
@@ -246,81 +282,105 @@ POST /runs/{run_id}/resume        HITL 恢复（用户确认后继续）
 ```
 
 ### 4.4 横切能力（所有智能体共享，不重复造）
-文档解析（docx/pdf/xlsx）、RAG 向量检索（招标文件入 pgvector）、Model Gateway（国产大模型可切换 + 故障转移）、用量埋点、限流。
+文档解析（docx/pdf/xlsx，§4.4.1）、本地 OCR（§4.4.2）、RAG 向量检索（§4.4.3）、Model Gateway（国产大模型可切换 + 故障转移）、用量埋点、限流。
 
 **智能体编写框架**：把智能体服务做成**可复用框架**，新增智能体 = 写一个 `BaseAgent` 子类 + 注册，复用以下框架层：
 - **BaseAgent 基类** + agent_type 注册 + 统一 `astream` 契约（§4.3）。
-- **Hook/中间件管线**：上下文注入、输出契约校验、丢弃畸形 tool call、工具强制（force tool_choice）、可扩展插点。
-- **可插拔 Backend 协议**（`create_backend_tools` 长出文件工具）：in-state 虚拟 FS（§4.5）/ DB / MinIO 持久后端三选。
-- **健壮性层**：resilient tool node（工具重试）、幻觉守卫、错误自救路由。
-- **上下文压缩节点**（token 窗口管理，长标书生成必需）。
-- **结构化输出 submit-tool**（Pydantic 强约束 schema → 前端事件 / DeckSpec / 标书章节）。
+- **Hook/中间件管线**：上下文注入、输出契约校验、丢弃畸形工具调用、工具强制、可扩展插点。
+- **模型调用韧性通道**：流式 + 空闲超时 + 单轮总时长盖 + 降级链重试，三层缺一不可；瞬断判定沿异常链下钻，不按错误文案猜。**模型唯一来自运营后台配置**，未配置直接报错（不占步位、不预扣），严禁静默回退默认模型。
+- **健壮性层**：工具重试、幻觉守卫、错误自救路由、敏感内容扫描。
+- **上下文压缩节点**（token 窗口管理）。
+- **结构化输出 submit-tool**（Pydantic 强约束 schema → 前端事件 / DeckSpec / 标书章节）。**承载内容的字段必须 required 且带 description**，否则模型会只提交标题、正文整页丢空。
 
 > 复用效果：未来做"合同审查""方案撰写"智能体，复用 Runtime + 上述框架层 + 横切能力 + 统一 API，只写新 agent_type 的 `BaseAgent` 子类 + 节点定义 + App 层业务编排即可。框架与具体智能体解耦。
 
-### 4.5 执行后端（Backend）选型 —— 不给 agent 开 shell
+#### 4.4.1 文档解析层
+解析层是"模型能看见什么"的唯一入口，因此它的职责不止抽文字，还要**如实交代看不见的部分**：
 
-deepagents 把"执行能力"抽象成 **backend protocol**：`BaseSandbox` 只要求实现一个 `execute()`，框架就用 shell 命令 + Python 小脚本把 `ls/read/write/edit` 等文件工具「长」出来；只有 backend 实现了 `SandboxBackendProtocol`，`execute` 工具才真正可用，否则返回错误。优点是接入成本低（Modal/Daytona/Runloop 包一层 `execute()` 即可）、框架边界干净。**但 deepagents 只提供抽象层，不提供强制隔离（enforcement）**——隔离责任甩给 backend provider。`LocalShellBackend` 源码注释明确：unrestricted local shell，无 sandboxing / 无进程隔离 / 无资源限制，**仅本地开发**。
+| 能力 | 说明 |
+|---|---|
+| PDF 逐页文字 | 除整篇文本外另存**逐页文本**——扫描页识别要知道是哪一页看不见，并把识别结果插回该页原位 |
+| 扫描页统计与判定 | 逐页判"这页有没有可见文字"，并结合**页内是否贴图**识别混合页；产出「提不出文字的页数」供下游诚实分级 |
+| docx 内嵌图计数 | docx 里贴的证照/盖章扫描图在解析结果里一个字都不留，与扫描 PDF 同病；**只数正文，不数页眉页脚**（否则每份 docx 都会挂上一条"有图看不见"） |
+| 魔数拦截 | 按扩展名校验文件头：命中文档透明加密（DLP）软件封装头 → 明确提示走解密/外发流程；头与扩展名不符 → 提示可能被封装、传输未完成或改过扩展名。**只对魔数无歧义的格式生效** |
+| 条款与标题 | 切出稳定的 `clause_id`（读标/提纲/正文/审查/前端左栏定位的共同锚点）；章节标题与条款**并列**存放，不混入条款序号 |
+| 表格 / 旧格式 | 表格结构化保留；doc/xls 先转换再解析 |
 
-**关键澄清：「部署到 Docker」≠「agent 执行隔离」。**
+**读标对全扫描招标文件当场诚实拒绝**：招标文件每一份都提不出文字（全扫描 PDF / 整本贴图的 docx）时，读标步直接失败并提示上传可复制文字的版本，而不是让模型去读一堆页码。**读标故意不复用审查那套 OCR**——读标产出的 `clause_id` 是全链路锚点，必须逐字对得上招标原文；OCR 是逐页近似识别，切出来的条款既不稳定也回指不到原文位置。
+
+#### 4.4.2 本地 OCR 服务（`services/ocr`，独立容器）
+**为什么本地**：客户不允许业务数据出内网——送出去的会是营业执照、法人身份证、资质证书这类材料。这是合规约束，不是网络不通。
+**为什么独立容器**：OCR 是 CPU 尖峰负载，智能体是跑长任务的异步进程，同进程会互相抢核（本仓栽过同类跟头：一处 CPU 密集解析烧满单核，症状表现成"模型变慢"）。独立容器可单独限额、单独扩缩；线程数在服务内设死，容器层再叠一道 CPU 限额。
+
+两个消费方：
+
+| 消费方 | 用法 | 降级 |
+|---|---|---|
+| **App API** | 资料库**图片附件保存后前置识别**，识别文字随附件存为 `ocrText`；下游用它拼证照/附录插图的 `alt`——审查侧会把 `alt` 透出给模型，于是「［图片：营业执照.png］」变成带识别文字的版本，材料在不在才判得出 | 未配置 = 插图照常，只是不带识别文字 |
+| **agent 审查流** | 解析线下标书时把**扫描图片页逐页转成图送识别**（按行拼接，保住表格/条目的行结构——拼成一行后再也判不出「★条款有没有逐条登进偏离表」这类按行结论），文本按页拼回该文件正文 | 未配置 = 扫描页只报「无法核验（扫描件）」；**整份都是扫描件**的标书当场失败并全额退款（拿空文档跑计费审查是骗钱） |
+
+工程纪律：全局并发闸门是**进程级**的（按 run 各开一份等于没开闸）；单页有独立总超时（分相超时挡不住慢滴响应）；连续多页失败即熔断放弃该文件剩余页；每文件页数帽 + 每次审查跨文件共享一条时长 deadline；**识别不落库不缓存**，重跑就重识别。**述标任何时候都不做 OCR**——证照/签字页对讲标 PPT 没有信息量，不值那个时间。识别结果始终是加分项，不是前置条件：取不到字节、文件打不开、某页超时或报错，一律只是少识别几页，绝不抛穿审查节点。
+
+#### 4.4.3 嵌入服务（`services/bge-embed`，独立容器）
+RAG 检索的**向量化后端**：自建 BGE-M3 服务，OpenAI 兼容的 `/v1/embeddings` 契约，CPU 推理，`/health` 供调用侧探活降级。向量落 PostgreSQL 的 `agent` schema（`rag_chunks` 表，pgvector + HNSW 索引，按 `user_id + source_type + source_id` 归属与检索），来源分两类：`library`（资料库条目）与 `tender`（读标切出的招标条款）。
+
+- **索引一律后台 fire-and-forget**：资料库条目建/改/删后异步重建该条向量；读标切完条款后另起后台任务建索引。嵌入服务慢或不可达只告警——**绝不挡 CRUD 响应，更绝不挡用户花钱买的结果交付**。
+- 资料库只索引条目的**文本字段**（标题/摘要/结构化字段/正文）；附件本身不入索引。
+- 检索超时即降级（拿不到向量结果就少一段参考资料，不让整步失败）。
+
+### 4.5 执行面 —— 不给智能体开 shell
+
+**关键澄清：「部署到 Docker」≠「智能体执行隔离」。**
 
 | | 解决 | 不解决 |
 |---|---|---|
 | Docker 包整个服务 | 服务 ↔ 宿主机隔离（部署单元） | **租户 A 的 run ↔ 租户 B 的 run** |
 | per-run sandbox | 每次执行之间的隔离 | — |
 
-`LocalShellBackend` 是在**服务自己的容器内**开不受限 shell。本产品是 C 端多租户 SaaS，同一 Agent Service 容器同时跑大量用户 run，**共享文件系统与进程空间**：张三的 agent `cat` 就能读到李四上传的标书、`rm -rf`/fork 炸弹会拖垮所有人、逃逸即打内网。Docker 隔的是服务与宿主机，**不隔 run 与 run**。故 **`LocalShellBackend` 严禁上生产**。
+若给智能体开一个不受限 shell，那是在**服务自己的容器内**开的。本产品是 C 端多租户 SaaS，同一 Agent Service 容器同时跑大量用户 run，**共享文件系统与进程空间**：张三的智能体一条 `cat` 就能读到李四上传的标书、`rm -rf`/fork 炸弹会拖垮所有人、逃逸即打内网。Docker 隔的是服务与宿主机，**不隔 run 与 run**。
 
-**本产品的正解：投标管线根本不需要 `execute()`。** 读标/提纲/正文/审查/查重/述标全是**确定性工具**（文档解析、RAG 检索、LLM 生成、`python-pptx` 渲染），无一处需执行 LLM 临场生成的代码。因此：
+**本产品的正解：投标管线根本不需要"执行任意命令"这个能力。** 读标/提纲/正文/审查/查重/述标/导出全是**确定性工具**（文档解析、OCR、RAG 检索、LLM 生成、docx/pptx 渲染），无一处需要执行模型临场生成的代码。因此：
 
 ```
-默认 backend = FilesystemBackend（state 内虚拟文件系统）+ 自定义工具
-  · 不挂 SandboxBackendProtocol → execute 工具按设计「不可用」
-  · agent 无 shell 执行面，攻击面仅剩自写工具代码
-  · 服务本身仍跑容器（纵深防御），但那是部署，不是 agent 隔离
+智能体可用的只有我们自己写的工具（解析 / 检索 / 结构化提交 / 产物上传）
+  · 不提供任何「执行命令」类工具 → 智能体没有 shell 执行面
+  · 攻击面仅剩自写工具代码，逐个可审
+  · 服务本身仍跑容器（纵深防御），但那是部署隔离，不是智能体隔离
 ```
 
 **三条决策铁律**：
-1. **投标管线默认 `FilesystemBackend`（虚拟 FS）+ 自定义工具，关闭 `execute`**，不挂 sandbox backend。
-2. **`LocalShellBackend` 仅限本地开发，禁止上生产。**
-3. **架构预留 —— 选定 OpenSandbox 做每 run 一次性沙箱**：未来若有需执行不可信代码的智能体（典型：数据分析智能体跑用户上传表格），隔离粒度是**「每次 run」而非「整个服务一个容器」**，用完即焚。选定 **OpenSandbox**（阿里云开源，2026-03 开源、Apache 2.0、gVisor 内核级隔离、自托管 Docker(开发)/Kubernetes(生产)、多语言 SDK 含 Python），通过 `SandboxBackendProtocol` 接入，不污染现有管线。
+1. **投标管线只挂自写的确定性工具，不提供任何命令执行能力。**
+2. **本地开发用的不受限 shell 一律不上生产。**
+3. **架构预留 —— 每 run 一次性沙箱**：未来若有需执行不可信代码的智能体（典型：数据分析智能体跑用户上传表格），隔离粒度是**「每次 run」而非「整个服务一个容器」**，用完即焚（§4.5.1），不污染现有管线。
 
-> 一句话：execution 隔离的粒度是「每次 run」，不是「整个服务一个容器」。本产品当前阶段连 execution 面都不开。
+> 一句话：执行隔离的粒度是「每次 run」，不是「整个服务一个容器」。本产品当前阶段连执行面都不开。
 
-#### 4.5.1 OpenSandbox 接入契约（未来需 execution 时启用）
-**为什么是它**：① gVisor 内核级隔离 + 每 sandbox 网络出口策略/资源限额，满足多租户「run 与 run 互隔」的硬要求；② Apache 2.0，商用无授权顾虑（对比 n8n Embed 需商业授权）；③ 自托管 K8s 部署，契合「数据不出境 + 自主可控」基线（与自托管 MinIO 同一思路）；④ 阿里云出品，与短信/大模型生态衔接顺。
+#### 4.5.1 沙箱预留（未来需执行不可信代码时启用）
+**选型口径**：① 内核级隔离 + 每沙箱网络出口策略/资源限额，满足多租户「run 与 run 互隔」的硬要求；② 授权方式对商用无顾虑；③ 可自托管（Kubernetes 调度），契合「数据不出境 + 自主可控」基线（与自托管 MinIO 同一思路）；④ 与国内短信/大模型生态衔接顺。按此口径选定 **OpenSandbox**（gVisor 内核级隔离、Apache 2.0、自托管 Docker(开发)/Kubernetes(生产)、含 Python SDK）。
 
-**接入方式**：deepagents 只要一个可靠的 `execute()`，把 OpenSandbox 的 `commands.run()` 包一层即成 `SandboxBackendProtocol` 实现——其 `Sandbox.create()/async with` 天然就是「每 run 创建、用完销毁」的生命周期。
+**接入方式**：沙箱只需向上暴露一个可靠的"执行一条命令"入口；其「创建 → 使用 → 销毁」的生命周期天然对齐「每 run 一个沙箱」。
 
-```python
-# 把 OpenSandbox 适配成 deepagents 的 sandbox backend（示意）
-class OpenSandboxBackend:                     # 实现 SandboxBackendProtocol
-    async def __aenter__(self):
-        self._sb = await Sandbox.create(IMAGE, timeout=timedelta(minutes=10))
-        await self._sb.__aenter__()           # per-run 生命周期：开
-        return self
-    async def execute(self, command: str):    # deepagents 用它长出 ls/read/write/edit
-        return await self._sb.commands.run(command)
-    async def __aexit__(self, *exc):
-        await self._sb.__aexit__(*exc)        # per-run 生命周期：用完即焚
-# 文件进出：sandbox.files.write_files() 喂输入、read_file() 取产物
-# 部署：生产用 OpenSandbox 的 Kubernetes runtime 调度，每 run 一个隔离沙箱
+```
+每次 run：创建沙箱（限时/限额/限出口）
+   → 写入输入文件 → 在沙箱内执行 → 取回产物
+   → 无论成败一律销毁（用完即焚）
+生产用 Kubernetes 调度沙箱池，按 run 弹性起停
 ```
 
 **仍不变的边界**：① 沙箱只在「确有不可信代码执行」的智能体启用，投标管线不挂；② 沙箱内仍只上报 usage，不碰钱（计费回 App API）；③ 沙箱镜像/网络出口走最小权限白名单。
 
 ### 4.6 Agent API 与 Worker 拆分 —— 一仓两角色 + 一条缝
 
-deepagent 一次 run 是**分钟级、CPU/内存重**的长任务（解析 + 规划 + 子智能体）。结论：**同一代码库/镜像，跑成两个进程（API 角色 + Worker 角色），用队列 + pub/sub 解耦——不把 deepagent 执行塞进 API 进程。**
+一次 run 是**分钟级到小时级、CPU/内存重**的长任务（文档解析 + OCR 调度 + 几十轮模型调用）。结论：**同一代码库/镜像，跑成两个进程（API 角色 + Worker 角色），用队列 + pub/sub 解耦——不把工作流执行塞进 API 进程。**
 
 **为什么不合进一个进程**：① 长执行阻塞同进程的大量 SSE 长连接，尾延迟爆炸；② API 按连接数扩、Worker 按队列深度扩，资源画像不同（部署图 API 2c/4g vs Worker 4c/8g），合一只能一种规格扩；③ 一个跑飞的 run（OOM/死循环）会连带打掉给所有人推流的 API。
-**为什么不拆两个代码库**：二者共享 `AgentRegistry`/deepagent 定义/工具/Model Gateway/文档解析，拆仓必漂移、重复维护。
+**为什么不拆两个代码库**：二者共享 `AgentRegistry`/工作流定义/工具/Model Gateway/文档解析，拆仓必漂移、重复维护。
 
 ```
 一个 Agent Service 代码库/镜像
   ├─ 入口 A：agent-api    (uvicorn)   建 run、查状态、SSE 推流   [无状态, 按连接扩]
-  └─ 入口 B：agent-worker (consumer)  真正跑 deepagent           [重计算, 按队列扩]
-       共享：AgentRegistry / deepagent 定义 / 工具 / Model Gateway / 文档解析
+  └─ 入口 B：agent-worker (consumer)  真正跑工作流                [重计算, 按队列扩]
+       共享：AgentRegistry / 工作流定义 / 工具 / Model Gateway / 文档解析
 
 缝（都在现有 Redis 上，零新组件）：
   · 派发：API 建 run → 入队(Redis Stream/队列) → Worker 消费
@@ -331,32 +391,31 @@ deepagent 一次 run 是**分钟级、CPU/内存重**的长任务（解析 + 规
 
 **关键：这条缝（队列派发 + pub/sub 回传）从第一天就设计进去。** Phase 1 可把 API/Worker 跑同机甚至同进程快速验证；上生产拆开只是改启动命令 + 加副本，不重写编排代码。与部署图 ③ 智能体层 `Agent API ×2` + `Agent Worker ×2`、Worker 单独扩并发一致。
 
-### 4.7 状态持久化 · LangGraph Checkpointer（配 deepagents）
-LangGraph 用 **checkpointer（`BaseCheckpointSaver`）**在每个 super-step 存盘图状态——这是「Agent 无状态 + 任意 Worker 续跑 + HITL 恢复」的底座。deepagents 建在 LangGraph 上，**checkpointer 直接传给 `create_deep_agent`**。
+### 4.7 状态持久化 · 检查点（Checkpoint）
+工作流每推进一步就把图状态**存盘**——这是「Agent 无状态 + 任意 Worker 续跑 + HITL 恢复」的底座，也是"跨步状态"的地基：投标是多步流程，上一步的产物要作为下一步的输入，靠的就是同一 `thread_id` 下的检查点。
 
-**选型**：用 **`PostgresSaver`**（`langgraph-checkpoint-postgres`），落在已有中间件 PG（裸机）的**单独 schema/库**，归 Agent Service 自管。
-```python
-from langgraph.checkpoint.postgres import PostgresSaver
-agent = create_deep_agent(..., checkpointer=PostgresSaver(...))   # deepagents 直接吃
-# 每次执行带 thread_id：
-agent.invoke(input, config={"configurable": {"thread_id": run_id}})
+**落点**：PostgreSQL 的**独立 schema**，归 Agent Service 自管（与 App 业务库同一实例、不同 schema，§14）。
+
+```
+每次执行带 thread_id（= 我们的 run_id 维度，按项目/线程隔离）
+  节点执行完 → 写检查点（图状态整份存盘）
+  续跑 / HITL 恢复 → 按 thread_id 读回最近检查点，从断点继续
 ```
 
 **带来什么（对应已设计的能力）**：
-1. **HITL interrupt/resume** —— §4.3 的 `POST /runs/{run_id}/resume` 就靠它：节点 `interrupt` → 用户确认 → 从 checkpoint 续跑（**HITL 必须有 checkpointer**）。
-2. **崩溃恢复（durable execution）** —— Worker 跑一半挂了，换个 Worker 从最近 checkpoint 接着跑（§4.6 队列接管的前提）。
-3. **Agent 无状态** —— §13 说的「run 状态在 PG」具体就是 PostgresSaver 的 checkpoint，状态不在进程内，故 k3s 纯轮询不用粘连。
-4. **time-travel** —— 回放某步状态，调长流程。
+1. **HITL 中断/恢复** —— §4.3 的 `POST /runs/{run_id}/resume` 就靠它：节点中断 → 用户确认 → 从检查点续跑（**HITL 必须有检查点**）。
+2. **崩溃恢复（durable execution）** —— Worker 跑一半挂了，换个 Worker 从最近检查点接着跑（§4.6 队列接管的前提）。
+3. **Agent 无状态** —— §13 说的「run 状态在 PG」具体就是这些检查点，状态不在进程内，故 k3s 纯轮询不用粘连。
+4. **跨步产物传递与重跑** —— 独立入口（如直接跑审查/述标）与重跑某一步，都建立在"图状态还在"之上。
 
-**deepagents 专属要点（必须讲清）**：
-- **`thread_id` = 我们的 `run_id`**（按 run 开 thread，天然隔离）；通过 `config.configurable.thread_id` 传。
-- **虚拟文件系统会被一起 checkpoint**：我们用 §4.5 的 **`FilesystemBackend`（state 内虚拟 FS）**，所以 deepagents 的**虚拟文件 + 规划 todos + 消息历史全在图 state 里 → 全部进 checkpoint → 可完整续跑**。⚠ 反之若用 sandbox/外部 backend，文件落在 state 之外、**不进 checkpoint**——这是选 backend 时的隐藏差异，我们选虚拟 FS 正好规避。
-- **⚠ 子智能体的 checkpoint 短板（deepagents #573，已修但版本相关）**：历史上**主 agent 有 checkpointer、子 agent 编译时没传**，导致：① 子 agent 中间过程（工具调用/推理）不被持久化，只把**最终文本**回传主 agent；② 崩溃时只能从主 agent 的「派子任务前/后」最近 checkpoint 恢复，**不能从子 agent 执行中途续跑**。落地时**锁定 deepagents 版本并验证该修复是否生效**；若用到受影响版本，按官方建议「先建 checkpointer 再建 agent / 给子 agent 显式传 checkpointer」处理（与之前记录的 config 不向子 agent 传播是同源问题）。
-
-**两层状态别混**（把 §13 措辞说精确）：
-- **进度/增量产出 → Redis pub/sub**（易失，仅推流 SSE 用，§4.6）。
-- **可靠执行状态 → PG checkpointer**（持久，续跑/HITL 用）。
-- checkpointer 表是「智能体执行状态」，与 App 的 `agent_runs`（业务桥接：run_id/usage/积分关联）**分两处**，守边界②。
+**工程要点**：
+- **检查点连接必须池化**：单连接一旦因网络瞬断 / 空闲超时 / 失败转移而断开就"一断永死"，此后所有检查点读写恒抛错直到进程重启——在途 run 收尾写不进检查点 = 结果丢失 + 已耗 token 白费 + run 卡 `running`。用连接池（借出前探活、剔坏连重连、定期换血）后，网络抖动可自愈。
+- **检查点表是"跨步状态地基"，不能随手清理或迁移**。
+- **两层状态别混**：
+  - **进度/增量产出 → Redis pub/sub + Stream**（易失，仅推流 SSE 用，§4.6）。
+  - **可靠执行状态 → PG 检查点**（持久，续跑/HITL 用）。
+  - **节点内的细粒度断点 → Redis 缓存**（如正文逐章缓存、读标逐轮缓存，键含提示词版本哈希，改提示词自动失效）——它比检查点更细，用来"重试只补没成的那一部分"。
+- 检查点表是「智能体执行状态」，与 App 的 `agent_runs`（业务桥接：run_id/usage/积分关联）**分两处**，守边界②。
 
 ---
 
@@ -531,14 +590,14 @@ vendor_sn + vendor_key + app_id（开发者身份，仅"激活"接口签名用�
 1. Web /content 点「AI 生成本章」
 2. App API：校验登录 → 校验积分余额 → 写 hold(-80) 预扣 → 建 agent_run → 入队
 3. App API → Agent Service：POST /agents/bidding_agent/runs（input=章节+大纲+RAG上下文）
-4. Agent Service：deepagent 执行（解析→RAG检索→生成），SSE 流式吐增量正文
+4. Agent Service：正文流水线执行（解析→RAG 检索→逐章并发生成，每章落 Redis 断点），SSE 流式吐进度与增量正文
 5. 增量经 App API/SSE 回传 Web，实时渲染
 6. 完成 → Agent Service 上报 usage → App API：settle 结算积分（多退少补）
         → project_artifacts 落库新版本 → agent_run 置 done
 7. 失败 → release(+80) 全额退还积分 → agent_run 置 failed
 ```
 
-**以「述标出 PPT」为例（智能体产稿 + 渲染层产文件，见 §4.2.1）：**
+**以「述标出 PPT」为例（智能体产稿 + 渲染层产文件，见 §4.2.2）：**
 ```
 1. Web /present 选时长(10/15/20)+企业模板 → 点「生成述标 PPT」
 2. App API：校验登录 → 校验/预扣积分 → 建 agent_run → 入队
@@ -609,21 +668,17 @@ Phase 4 · 加固            文件加密、对账、限流、监控告警、并
 - **前期不对用户开放**可视化编排：因此**现在不需要**可视化编辑器、用户态工作流隔离、节点市场、按用户工作流计费。
 - 未来若开放给用户自建，作为**纯增量**演进，前期留好两点即不返工。
 
-### 10.2 deepagents 的两层编排模型（核实结论）
-deepagents 建在 LangGraph 上，`create_deep_agent()` 返回一个编译好的 `CompiledStateGraph`（Runnable）。编排分两层，性质不同：
+### 10.2 两层编排模型（编排权全在代码）
+编排分两层，性质不同——但**两层都由代码定义**，没有一层交给模型临场决定：
 
 | 层 | 编排方式 | 用途 |
 |---|---|---|
-| **② 工作流层（外层 · 骨架）** | **平台预制的显式 LangGraph 编排**：节点异构（`create_agent` / deepagent / 普通服务），按已知流程串接 | 投标全流程：读标→提纲→正文→审查→查重→述标 |
-| **① 节点内部（内层 · 仅开放式节点）** | **动态、LLM 驱动**（`write_todos` 规划 + `task` 子智能体 + 虚拟 FS），非静态 DAG | **只有「正文生成」**这类需 AI 临场规划的节点用 deepagent |
+| **② 工作流层（外层 · 骨架）** | **平台预制的显式状态图**：节点异构（模型节点 / 代码流水线 / 普通服务），显式边 + 显式路由条件串接 | 投标全流程：读标→提纲→正文→审查→述标→导出 |
+| **① 节点内部（内层）** | **代码写的循环与并发**：逐单元独立调用、信号量限流、断点缓存、兜底重试（§4.2.1） | 正文逐章生成、读标分段并行提取 |
 
-> **逐节点框架选型（§4.2）**：读标/提纲/述标 = `create_agent`；正文 = deepagent；审查 = LangGraph（可解释）；查重 = 普通服务。外层始终是显式 LangGraph 工作流——**确定性、按步计费、可观测、低风险都靠它**；deepagent 的动态性只关在正文节点内。
+> **逐节点实现方式（§4.2）**：读标 = 分段并行模型节点；提纲/述标 = 单次模型节点（结构化提交）；正文 = 代码编排流水线；审查 = 模型节点 + 解析/OCR 取材；查重 = 普通服务（独立同步路由）；导出 = 确定性渲染代码。**确定性、按步计费、可观测、低风险全靠"编排权在代码"这一条**。
 
-> 官方支持组合：任意 `CompiledStateGraph` 可作为 subagent/节点；`create_agent` 与 deepagent 产出的都是 `CompiledStateGraph`，故可在同一外层 LangGraph 图里**混插异构节点**。deepagents 自身**不含可视化编辑器**（图可视化由独立的 LangGraph Studio 提供，面向开发者调试，非 C 端拖拽编排）。
-
-**两条诚实的边界（实现时注意）**：
-1. "deepagent 当外层图节点 / 互相嵌套"靠类型契约成立，但**官方缺逐字示例**，这部分拼装需自行在 LangGraph 层实现。
-2. 已知 open issue（deepagents #1251）：主 agent 的 `config` 不传播到 subagent，可能影响子 agent 工具的注入参数；封装时需处理。
+**一条诚实的边界（实现时注意）**：外层图路由必须写成**条件边**而非静态边——停在某个检查点的线程若用静态边续跑，会无条件执行下一节点（用户点的是"导出"，实际跑的是一轮审查大模型，费照扣、产物错位），这是生产上已复现过两次的同类事故。
 
 ### 10.3 架构预留（前期零成本，避免未来返工）
 | 预留点 | 现在怎么做 | 未来收益 |
@@ -635,7 +690,7 @@ deepagents 建在 LangGraph 上，`create_deep_agent()` 返回一个编译好的
 
 ### 10.4 分阶段
 ```
-前期（现在）   平台方用代码/声明式定义预制工作流，deepagent/工具作节点
+前期（现在）   平台方用代码/声明式定义预制工作流，模型节点/代码流水线/工具作节点
               · 投标全流程 = 第一个预制工作流模板
               · 只做预留 10.3 的 ①②；不碰可视化UI/用户隔离/工作流市场
 
@@ -655,7 +710,7 @@ deepagents 建在 LangGraph 上，`create_deep_agent()` 返回一个编译好的
 | 收钱吧商户入网/激活码 | 商户号、门店、正式激活码由收钱吧商务提供，有办理周期 | Phase 3 前提早对接商务；开发期先用测试激活码（对应测试商户号）联调 |
 | Bun + 支付 SDK 验签 | 公开资料无大量成功案例 | 上线前沙箱端到端冒烟（见 2.2 纪律2） |
 | 大模型成本与质量 | 国产大模型生成长标书的质量/成本需实测 | Phase 1 用读标场景验证；Model Gateway 支持切换比选 |
-| deepagents 框架成熟度 | LangGraph/deepagents 版本演进 | Phase 1 锁版本，封装在 Runtime 内，可替换 |
+| 长文生成的可靠性 | 整本标书数十章、跨数十分钟，任一环节失手就是"交付不出" | 编排权收回代码（§4.2.1）：逐章独立调用 + 断点缓存 + 短章扩写/缺章补写兜底；单章失败被隔离，重试只补缺章 |
 | 档位最终方案 | 代码 3 档 vs PRD 5 档不一致 | 产品决策；`plans` 表配置化，不影响架构 |
 | ~~项目非 git 仓库~~（已解决） | 已 `git init` 并推送 GitHub `lookfree/Bid-Assistant`（含本设计文档） | ✅ 完成 |
 
@@ -700,13 +755,14 @@ deepagents 建在 LangGraph 上，`create_deep_agent()` 返回一个编译好的
 | 应用 | 运营后台 Next.js | ×1 | 1 vCPU | 1 GB | — | 内部低流量 |
 | 应用 | App API (Hono+Bun) | ×3 | 2 vCPU | 2 GB | — | 钱的权威；Redis 锁单例 Cron |
 | 智能体 | Agent API (FastAPI) | ×2 | 2 vCPU | 4 GB | — | run 管理 + SSE，无状态 |
-| 智能体 | Agent Worker | ×2 | 4 vCPU | 8 GB | 20 GB 临时盘 | 文档解析 + deepagent 执行（CPU/内存重） |
-| 智能体 | bge-embed（BGE-M3 嵌入） | ×2 | 2 vCPU | 4 GB | 2 GB（模型权重卷） | 自建服务，CPU 推理，OpenAI 兼容 `/v1/embeddings`；无状态，随应用节点部署，不占用独立机器；供 Agent Worker/API 索引与检索调用（§4.4 RAG 向量检索） |
-| 数据 | PostgreSQL + pgvector | 主+备 | 4 vCPU | 16 GB | 200 GB SSD ×2 | 业务+账本+向量；流复制热备 |
-| 数据 | Redis | 主+备 | 2 vCPU | 4 GB | 20 GB SSD ×2 | 会话/队列/分布式锁；AOF 持久化 |
+| 智能体 | Agent Worker | ×2 | 4 vCPU | 8 GB | 20 GB 临时盘 | 文档解析 + OCR 调度 + 工作流执行（CPU/内存重） |
+| 智能体 | bge-embed（BGE-M3 嵌入） | ×2 | 2 vCPU | 4 GB | 2 GB（模型权重卷） | 自建服务，CPU 推理，OpenAI 兼容 `/v1/embeddings`；无状态，**随应用节点部署**，不占用独立机器；供 Agent Worker/API 索引与检索调用（§4.4.3） |
+| 数据 | PostgreSQL + pgvector | 主+备 | 4 vCPU | 16 GB | 200 GB SSD ×2 | 业务+账本+检查点+观测+向量（三 schema）；流复制热备 |
+| 数据 | Redis | 主+备 | 2 vCPU | 4 GB | 20 GB SSD ×2 | 会话/队列/分布式锁/节点内断点缓存；AOF 持久化 |
+| 数据 | 本地 OCR 服务 | ×1 | ≤3 vCPU（限额） | 3 GB | — | 自建容器，CPU 推理、线程数设死；**随数据机部署**（应用机已扛全部应用 + 嵌入服务）；供 App 与 agent 共用（§4.4.2） |
 | 存储 | MinIO（S3） | 起步 1 / HA 4 | 2–4 vCPU | 4–8 GB | **2 TB+ 起步** | 文件大头：招标/标书/PPT/附件 |
 
-**合计（起步生产，不含外部 SaaS）**：**≈ 44 vCPU · ≈ 96 GB 内存 · ≈ 2.6 TB 磁盘**（MinIO 为磁盘大头，含 bge-embed）。
+**合计（起步生产，不含外部 SaaS）**：**≈ 47 vCPU · ≈ 99 GB 内存 · ≈ 2.6 TB 磁盘**（MinIO 为磁盘大头，含 bge-embed 与本地 OCR）。
 **裸机落地**：2–3 台应用/智能体节点（8c/16–32g）+ PG 主+备各 1 台（8c/32g/SSD）+ 1 台大盘 MinIO，每台 Docker Compose 编排。
 
 **外部依赖（SaaS，不占我方资源、按量计费）**：收钱吧（聚合支付）、阿里云短信、国产大模型 API（DeepSeek/通义/智谱，经 Model Gateway）。
@@ -746,12 +802,19 @@ deepagents 建在 LangGraph 上，`create_deep_agent()` 返回一个编译好的
 | 应用 | App API (Hono+Bun) | ×1 | 2 vCPU · 2 GB | 生产 ×3 → ×1 |
 | 智能体 | Agent API (FastAPI) | ×1 | 2 vCPU · 4 GB | 生产 ×2 → ×1 |
 | 智能体 | Agent Worker | ×1 | 4 vCPU · 8 GB · 20 GB | 生产 ×2 → ×1 |
-| 智能体 | bge-embed（BGE-M3 嵌入） | ×1 | 2 vCPU · 4 GB | 生产 ×2 → ×1；无状态，随应用节点部署 |
-| 数据 | PostgreSQL + pgvector | ×1 | 4 vCPU · 16 GB · 200 GB SSD | **去掉热备**（生产主+备） |
+| 智能体 | bge-embed（BGE-M3 嵌入） | ×1 | 2 vCPU · 4 GB | 生产 ×2 → ×1；无状态，随**应用机**部署 |
+| 数据 | PostgreSQL + pgvector | ×1 | 4 vCPU · 16 GB · 200 GB SSD | **去掉热备**（生产主+备）；三 schema：业务+账本 / 检查点 / 观测+向量 |
 | 数据 | Redis | ×1 | 2 vCPU · 4 GB · 20 GB SSD | **去掉副本** |
+| 数据 | 本地 OCR 服务 | ×1 | ≤3 vCPU（限额）· 3 GB | 与生产档同；随**数据机**部署，与数据层各自限额、互不挤占 |
 | 存储 | MinIO（S3） | ×1 | 2–4 vCPU · 4–8 GB | 单节点；磁盘按存量起（**500 GB–1 TB 起步，按真实增长加盘**） |
 
-**合计**：**≈ 22 vCPU · ≈ 48 GB 内存 · ≈ 1 TB 磁盘起步**（含 bge-embed）——约为起步生产档（§13.2）的一半：省掉的是冗余副本与 PG/Redis 主备，**单服务规格完全不变**。可单机承载，也可按服务散到 2–3 台小机；关键是「每样 1 个」，不是缩规格。
+**合计**：**≈ 25 vCPU · ≈ 51 GB 内存 · ≈ 1 TB 磁盘起步**（含 bge-embed 与本地 OCR）——约为起步生产档（§13.2）的一半：省掉的是冗余副本与 PG/Redis 主备，**单服务规格完全不变**。
+
+**落地拓扑 = 两台机（§13.7 档 A）**：
+- **应用机**：Nginx · C 端前端 · 运营后台 · App API · Agent API · Agent Worker · bge-embed
+- **数据机**：PostgreSQL+pgvector（三 schema）· Redis · MinIO · 本地 OCR 服务
+
+> OCR 放数据机而非应用机：应用机已扛着全部应用 + 嵌入服务（模型常驻内存是内存大头），数据机相对空闲；两者各自设 CPU/内存限额，一次识别不会把数据库拖慢。
 
 **取舍（推广初期可接受）**：
 - ⚠ **单副本无 HA**：某服务/某机故障期间该能力短暂不可用；有状态层靠**定时快照**（`pg_dump` + MinIO 同步外部盘/异地）兜底，故障后重建。
@@ -793,7 +856,7 @@ deepagents 建在 LangGraph 上，`create_deep_agent()` 返回一个编译好的
 | 台 | 规格 | 磁盘 | 承载（每服务 ×1，单服务规格照 §13.5 不变） |
 |---|---|---|---|
 | ① 应用/智能体机 | **16 vCPU / 32 GB** | 系统盘 100 GB SSD + 临时盘 50 GB SSD | Nginx + C 端前端 + 运营后台 + App API + Agent API + Agent Worker（20 GB 临时盘）+ bge-embed（合计 ≈13 vCPU/21 GB，留操作系统与峰值余量） |
-| ② 数据机 | **12 vCPU / 32 GB** | 系统盘 100 GB + **SSD 数据盘 500 GB**（PG 200 GB 起 + Redis 20 GB，在线扩容）+ **大容量盘 1 TB 起**（MinIO，按增长加盘）+ **备份盘 1 TB** | PostgreSQL+pgvector、Redis、MinIO（全容器自建） |
+| ② 数据机 | **12 vCPU / 32 GB** | 系统盘 100 GB + **SSD 数据盘 500 GB**（PG 200 GB 起 + Redis 20 GB，在线扩容）+ **大容量盘 1 TB 起**（MinIO，按增长加盘）+ **备份盘 1 TB** | PostgreSQL+pgvector（三 schema）、Redis、MinIO、**本地 OCR 服务**（全容器自建；OCR 与数据层各自限额，互不挤占） |
 
 **档 B · 起步生产档（§13.2）→ 5–6 台**
 
@@ -819,12 +882,14 @@ deepagents 建在 LangGraph 上，`create_deep_agent()` 返回一个编译好的
 
 | 组件 | 版本/实例 | 端口 | 关键约定 | 环境变量 |
 |---|---|---|---|---|
-| **PostgreSQL** | 16.1 + pgvector 0.5.1（**本 SaaS 专建库**） | 5432 | 库 `bidsaas`；schema `public`(业务+账本) / `langgraph`(checkpointer)；pgvector 已启用 | `PG_HOST/PG_PORT/PG_DB/PG_USER/PG_PASSWORD`、`DATABASE_URL` |
-| **Redis** | 7（**当前复用同机原生实例**） | 6379 | 用 `REDIS_DB=3` + key 前缀 `bid:` 做命名空间隔离；用途：队列/锁/pub-sub/会话 | `REDIS_HOST/REDIS_PORT/REDIS_DB/REDIS_PASSWORD` |
+| **PostgreSQL** | 16.1 + pgvector 0.5.1（**本 SaaS 专建库**） | 5432 | 库 `bidsaas`；**三 schema**：业务+账本（App 侧 ORM 迁移）/ 执行检查点（§4.7，Agent 自管）/ 观测+向量（`agent`：请求·事件·用量·工具调用·`rag_chunks`）；pgvector 已启用 | `PG_HOST/PG_PORT/PG_DB/PG_USER/PG_PASSWORD`、`DATABASE_URL` |
+| **Redis** | 7（**当前复用同机原生实例**） | 6379 | 用 `REDIS_DB=3` + key 前缀 `bid:` 做命名空间隔离；用途：队列/锁/pub-sub/会话/节点内断点缓存 | `REDIS_HOST/REDIS_PORT/REDIS_DB/REDIS_PASSWORD` |
 | **MinIO** | S3 兼容（**当前复用同机原生实例**） | 9000 / 9001(控制台) | 独立 bucket `bidsaas` 隔离；预签名 URL 直传/直下 | `MINIO_ENDPOINT/MINIO_ACCESS_KEY/MINIO_SECRET_KEY/MINIO_BUCKET` |
+| **本地 OCR 服务** | 自建容器（`services/ocr`） | 8100（对外）→ 8000（容器内） | App 与 agent **共用同一地址**；线程数设死 + 容器 CPU 限额；留空 = 不启用（两侧降级见 §4.4.2） | `OCR_BASE_URL` |
+| **嵌入服务 bge-embed** | 自建容器（`services/bge-embed`） | 8000 | OpenAI 兼容 `/v1/embeddings`（dense 1024 维），`/health` 供探活降级；模型权重挂卷，不在运行时联网拉取 | `RAG_EMBED_ENDPOINT`、`EMBED_MODEL`（容器侧） |
 
 **接入约定与注意**：
-1. **PG 是本 SaaS 专建**（`bidsaas` 库 + 角色 + langgraph schema），可直接用；**Redis/MinIO 当前复用同机已有实例**，靠 DB index / key 前缀 / 独立 bucket 做隔离，生产阶段再按 §13 拆独立实例。
+1. **PG 是本 SaaS 专建**（`bidsaas` 库 + 角色 + 三 schema），可直接用；**Redis/MinIO 当前复用同机已有实例**，靠 DB index / key 前缀 / 独立 bucket 做隔离，生产阶段再按 §13 拆独立实例。
 2. **Redis 密码含全角字符** → 用 host/port/password 分离参数连接，勿拼进 `redis://` URL（编码易错）。
 3. ⚠ **MinIO bucket `bidsaas` 待创建**（首次使用前 `mc mb` 或控制台建好）。
 4. ⚠ **安全**：联调期三者 pg_hba/bind 对公网可达（均有密码）。生产务必收窄到内网/安全组白名单（呼应 §13.1「中间件走内网」决策）。
