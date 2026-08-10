@@ -19,7 +19,7 @@ import { RejectUploadPanel } from "./reject-upload-panel"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { StepRunCta } from "@/components/tool/step-run-cta"
 import { AiNotice } from "@/components/tool/ai-notice"
-import { deriveRisk, scanNotice, type RealRisk } from "@/lib/risk-derive"
+import { deriveRisk, scanNotice, scanFileLabel, type RealRisk } from "@/lib/risk-derive"
 import { stepPrereq, useStep } from "@/lib/use-step"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
@@ -218,16 +218,26 @@ function RejectReview() {
     <div className="flex flex-col gap-6">
         <EntryBar onOpen={goEntry} />
         <AiNotice />
-        {/* 扫描页横条：这些页的内容一个字都没进过比对（识别不出来或没部署识别服务），
-            报告里与它们有关的结论——尤其是「缺少某材料」——必须由人再看一眼。
-            不说的话，一份大半是扫描件的标书看起来和一份完整审查过的标书一模一样。 */}
+        {/* 扫描页/内嵌图横条：这些内容一个字都没进过比对（pdf 识别不出来，或没部署识别服务；
+            docx 内嵌图片本身没有文字，1a09214 加），报告里与它们有关的结论——尤其是「缺少某材料」
+            ——必须由人再看一眼。不说的话，一份大半是扫描件/内嵌图的标书看起来和一份完整审查过的标书一模一样。 */}
         {scan && (
           <div className="flex items-start gap-2 rounded-2xl border border-warning/40 bg-warning/10 px-4 py-3 text-xs leading-relaxed text-foreground">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
             <p>
-              本标书有 <span className="font-semibold">{scan.pages}</span> 页为扫描件且未能识别出文字
-              （{scan.files.map((f) => `《${f.name}》${f.imagePages}/${f.pages} 页`).join("、")}），
-              这些页的内容未参与本次比对，相关结论请人工复核。
+              本标书
+              {scan.pages > 0 && (
+                <>
+                  有 <span className="font-semibold">{scan.pages}</span> 页为扫描件且未能识别出文字
+                </>
+              )}
+              {scan.pages > 0 && scan.images > 0 && "，"}
+              {scan.images > 0 && (
+                <>
+                  含 <span className="font-semibold">{scan.images}</span> 张 docx 内嵌图片内容不可见
+                </>
+              )}
+              （{scan.files.map(scanFileLabel).join("、")}），这些内容未参与本次比对，相关结论请人工复核。
             </p>
           </div>
         )}

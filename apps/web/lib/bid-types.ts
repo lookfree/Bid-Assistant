@@ -90,9 +90,13 @@ export type RiskFinding = {
   anchorText?: string
 }
 
-/** 受审文件里**识别之后仍看不见**的页（扫描件 OCR 之后还提不出文字的那些）。
- *  imagePages = 看不见的页数，pages = 该文件总页数。 */
-export type ScannedFileStat = { name: string; pages: number; imagePages: number }
+/** 受审文件里**识别之后仍看不见**的内容：pdf 是扫描页（OCR 之后还提不出文字），
+ *  docx 是内嵌图片（1a09214 加；docx 没有「页」的口径，贴进正文的证照只报张数）。
+ *  两个变体互斥，按 embeddedImages 是否存在区分。
+ *  imagePages = 看不见的页数，pages = 该文件总页数；embeddedImages = 内嵌图片张数。 */
+export type ScannedFileStat =
+  | { name: string; pages: number; imagePages: number }
+  | { name: string; embeddedImages: number }
 
 /** review 步结果（agent RiskReport，camelCase）。整改建议对所有用户免费下发（2026-08-01 产品口径）。 */
 export type RiskReport = {

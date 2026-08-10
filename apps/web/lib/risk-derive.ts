@@ -19,13 +19,23 @@ export function deriveRisk(f: RealRisk) {
   }
 }
 
-/** 报告头部的扫描页提示：受审文件里**识别之后仍看不见**的页有多少、都在哪几份文件里。
- *  null = 没有这样的页（老报告没有这个字段、或扫描页全部识别成功）→ 横条不画，页面一如既往。
- *  这些页的内容没进过比对，基于它们的结论（尤其是「缺少某材料」）必须由人再看一眼。 */
-export function scanNotice(f: RealRisk): { pages: number; files: ScannedFileStat[] } | null {
-  const files = (f.scannedFiles ?? []).filter((x) => x.imagePages > 0)
-  const pages = files.reduce((n, x) => n + x.imagePages, 0)
-  return pages > 0 ? { pages, files } : null
+/** 报告头部的扫描页提示：受审文件里**识别之后仍看不见**的内容有多少、都在哪几份文件里。
+ *  pdf 按页数（pages）、docx 按内嵌图片张数（images，1a09214 加）分开计数，两者互不相加——
+ *  「页」和「张」不是同一个口径，混在一起报数字会误导。
+ *  null = 没有这样的内容（老报告没有这个字段、或全部识别成功）→ 横条不画，页面一如既往。
+ *  这些内容没进过比对，基于它们的结论（尤其是「缺少某材料」）必须由人再看一眼。 */
+export function scanNotice(f: RealRisk): { pages: number; images: number; files: ScannedFileStat[] } | null {
+  const files = (f.scannedFiles ?? []).filter((x) => ("embeddedImages" in x ? x.embeddedImages > 0 : x.imagePages > 0))
+  const pages = files.reduce((n, x) => n + ("embeddedImages" in x ? 0 : x.imagePages), 0)
+  const images = files.reduce((n, x) => n + ("embeddedImages" in x ? x.embeddedImages : 0), 0)
+  return pages > 0 || images > 0 ? { pages, images, files } : null
+}
+
+/** scanNotice 横条明细里单个文件的文案：pdf 报「看不见页数/总页数」，docx 报「内嵌图片张数」。 */
+export function scanFileLabel(x: ScannedFileStat): string {
+  return "embeddedImages" in x
+    ? `《${x.name}》${x.embeddedImages} 张内嵌图片`
+    : `《${x.name}》${x.imagePages}/${x.pages} 页`
 }
 
 /** /content 页体检条目：带定位目标（标书 tab 与章节 id），chapter 取标书章节名。 */
