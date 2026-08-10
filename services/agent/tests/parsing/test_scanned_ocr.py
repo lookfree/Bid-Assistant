@@ -92,6 +92,21 @@ async def test_ocr_hits_only_scanned_pages_and_splices_text_back(ocr_env):
     assert any("识别文字1" in c["text"] for c in after.clauses)
 
 
+async def test_scanned_pages_come_back_line_by_line_not_squashed_into_one(ocr_env):
+    """整页扫描件必须按**行**取回。OCR 服务的默认口径是把识别行用空格拼成一行——那是给
+    App 侧写 `<img alt>` 用的（一张小图一句话），整页表格照这么拼就成了一坨连续文字，
+    审查再也判不出「★条款有没有逐条登进偏离表」这类**按行**的结论。
+    故请求必须带 mode=lines；拼回正文后每一行仍是独立条款（下游按 clauses 聚章）。"""
+    stub, run = ocr_env
+    page = "序号\t条款\t响应\n1\t质保三年\t完全响应\n2\t7×24 小时响应\t完全响应"
+    stub.reply = lambda n, body: httpx.Response(200, json={"text": page})
+    _, after = await run(_pdf(_TEXT_PAGE, ""))
+    assert [r["mode"] for r in stub.requests] == ["lines"]   # 不带参数 → 服务端退回一行文本
+    texts = [c["text"] for c in after.clauses]
+    assert "1\t质保三年\t完全响应" in texts
+    assert "2\t7×24 小时响应\t完全响应" in texts
+
+
 async def test_failed_pages_stay_counted_as_unverifiable(ocr_env):
     """OCR 部分失败：成功的页拼回正文，失败的页仍计入「还看不见的页数」——
     审查对那几页照旧说「无法核验」，而不是当成已经看过。"""

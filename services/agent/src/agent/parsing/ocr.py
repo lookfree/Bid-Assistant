@@ -56,6 +56,9 @@ _MAX_PAGES = 300
 # 独立审查一次最多收 10 份标书（apps/api 的 keyList max(10)），若每份各开 20 分钟，
 # 最坏就是 200 分钟——用户在一个已预扣积分的步上干等几小时，而心跳泵还一直说它活着。
 # 20 分钟 = 300 页 × 2 路并发 × 单页数秒的量级，正常识别用不到，它是防挂死的兜底。
+# **口径是纯 OCR 时间，不含 MinIO 下载与解析**：那两段活单份就能顶到分钟级（.doc 走
+# LibreOffice 转换，单份最多 60s），从循环前起算的话，第一次识别还没发出去预算就被啃光了，
+# 日志却报「OCR 预算已用光」——张冠李戴。故起算点是**第一份真要发 OCR 的文件**（见 needs_ocr）。
 _TOTAL_BUDGET_S = 20 * 60
 # 单页取回字数上限。OCR 服务自身的上限就是 5000（services/ocr/app.py 的 max_chars le=5000）。
 _MAX_CHARS_PER_PAGE = 5000
@@ -73,9 +76,16 @@ def ocr_configured() -> bool:
     return bool((settings.ocr_base_url or "").strip())
 
 
+def needs_ocr(doc: ParsedDoc) -> bool:
+    """这份文件要不要真发 OCR（部署了识别服务 + 确实有看不见的页）。
+    调用方据此**惰性**起算时长预算：预算口径是纯 OCR 时间，不含下载与解析（见 _TOTAL_BUDGET_S）。"""
+    return ocr_configured() and bool(scanned_page_indices(doc))
+
+
 def new_deadline() -> float:
-    """本次审查的 OCR 截止时刻（monotonic）。**一次审查建一次、所有受审文件共享**——
-    见 _TOTAL_BUDGET_S 的注释：按文件各开一份，10 份标书就是 200 分钟。"""
+    """OCR 的截止时刻（monotonic）。**一次审查建一次、其后所有受审文件共享**——
+    见 _TOTAL_BUDGET_S 的注释：按文件各开一份，10 份标书就是 200 分钟。
+    建的时机是第一份真要识别的文件到手时，不是取文件之前（预算不含下载解析）。"""
     return time.monotonic() + _TOTAL_BUDGET_S
 
 
@@ -177,7 +187,12 @@ async def _post_ocr(client: httpx.AsyncClient, base: str, image: bytes) -> str:
     """一次 /ocr 调用 → 识别文字。"""
     resp = await client.post(f"{base}/ocr", json={
         "image": base64.b64encode(image).decode(),
-        "max_chars": _MAX_CHARS_PER_PAGE})
+        "max_chars": _MAX_CHARS_PER_PAGE,
+        # 整页扫描件按**行**取回。服务端默认口径是把识别行用空格拼成一行——那是给 App 侧
+        # 写 <img alt> 用的（一张小图一句话）；整页表格照这么拼就成了一坨连续文字，
+        # 审查再也判不出「★条款有没有逐条登进偏离表」这类按行的结论。
+        # 旧版 OCR 服务不认这个键会原样忽略（pydantic 丢弃多余字段）→ 退回一行文本，不报错。
+        "mode": "lines"})
     resp.raise_for_status()
     return (resp.json().get("text") or "").strip()
 

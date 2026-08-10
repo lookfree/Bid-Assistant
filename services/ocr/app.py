@@ -17,6 +17,7 @@
 import io
 import logging
 import os
+from typing import Literal
 
 from fastapi import FastAPI, Response
 from pydantic import BaseModel, Field
@@ -53,10 +54,24 @@ def health(response: Response):
 
 
 class OcrRequest(BaseModel):
-    """image: 图片的 base64（可带 data:image/...;base64, 前缀）。"""
+    """image: 图片的 base64（可带 data:image/...;base64, 前缀）。
+
+    mode: 识别行怎么拼成文本。
+      · text（默认，**旧口径不变**）——空格拼成一行。调用方是 App 侧的正文插图识别：
+        一张小图配一句 alt 文字，行结构没有意义。
+      · lines——按行换行拼。调用方是 agent 侧的整页扫描件识别：那是一整页表格/条目，
+        拼成一行后审查再也判不出「★条款有没有逐条登进偏离表」这类**按行**的结论。
+    旧版服务收到 mode 会原样忽略（pydantic 默认丢弃多余字段）→ 退回一行文本，不报错。
+    """
 
     image: str = Field(..., min_length=16)
     max_chars: int = Field(default=400, ge=1, le=5000)
+    mode: Literal["text", "lines"] = "text"
+
+
+def _join(lines: list[str], mode: str) -> str:
+    """识别行 → 文本（口径见 OcrRequest.mode）。整页扫描件按行拼才留得住表格/条目的行结构。"""
+    return ("\n" if mode == "lines" else " ").join(lines).strip()
 
 
 def _decode(image: str) -> bytes:
@@ -94,5 +109,5 @@ def ocr(req: OcrRequest):
     result, _elapse = _engine(arr)
     # RapidOCR 返回 [[框, 文字, 置信度], ...]；置信度过低的丢掉（证照上的花纹常被误识成字符）
     lines = [t for _box, t, score in (result or []) if t and score >= 0.5]
-    text = " ".join(lines).strip()
+    text = _join(lines, req.mode)
     return {"text": text[: req.max_chars], "lines": len(lines)}
