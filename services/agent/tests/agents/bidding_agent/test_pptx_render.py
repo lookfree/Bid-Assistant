@@ -32,28 +32,62 @@ def test_slide_is_16_by_9():
     assert prs.slide_height == Emu(6858000)   # Inches(7.5)
 
 
-def test_cover_uses_a_gradient_band_and_fills_the_lower_strip():
-    """封面此前是「纯色块 + 文字」，下部 38% 一片死白——最像"代码画的"的一页。
-    现在色带走渐变（同面积观感立刻靠近设计稿），下部由投标人信息条铺满。"""
+def _solid_rgb(shape):
+    """形状的纯色填充色；渐变/无填充/非图形一律给 None（直接取 fore_color 会抛错）。"""
+    try:
+        return shape.fill.fore_color.rgb
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def test_blue_cover_is_a_full_bleed_gradient_with_the_title_in_the_lower_half():
+    """商务提案的封面是满幅色块（走渐变——纯色大块最像"代码画的"），标题压在下半页，
+    投标人信息跟在标题下方：整页没有一块无意义的白。"""
     from pptx.enum.dml import MSO_FILL
-    deck = _deck()
-    prs = Presentation(io.BytesIO(render_pptx(deck, template="blue")))
+    prs = Presentation(io.BytesIO(render_pptx(_deck(), template="blue")))
     cover = prs.slides[0]
     grads = [sh for sh in cover.shapes
              if sh.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE and sh.fill.type == MSO_FILL.GRADIENT]
-    assert grads, "封面色带没有用渐变"
-    stops = grads[0].fill.gradient_stops
-    assert stops[1].color.rgb == _TEMPLATE_TOKENS["blue"]["primary"]
+    assert grads, "封面色块没有用渐变"
+    full = grads[0]
+    assert full.width == prs.slide_width and full.height == prs.slide_height, "封面色块没有铺满整页"
+    assert full.fill.gradient_stops[1].color.rgb == _TEMPLATE_TOKENS["blue"]["primary"]
 
     title_box = next(sh for sh in cover.shapes if sh.has_text_frame and sh.text_frame.text == "封面")
     run = title_box.text_frame.paragraphs[0].runs[0]
-    assert run.font.size.pt == 38
+    assert run.font.size.pt == 40
     assert run.font.bold is True
     assert run.font.color.rgb == RGBColor(0xFF, 0xFF, 0xFF)
-
-    # 下部信息条：_deck() 的封面带 bullets，必须落在色带下方且不是白底
+    assert title_box.top > prs.slide_height * 0.5, "满幅封面的标题要压在下半页"
     meta = next(sh for sh in cover.shapes if sh.has_text_frame and "客户：某局" in sh.text_frame.text)
-    assert meta.top > prs.slide_height * 0.6
+    assert meta.top > title_box.top
+
+
+def test_tech_cover_is_split_into_two_columns():
+    """技术方案的封面是左右分栏：左栏一块主色实底压标题，右栏整片留白放投标人信息。"""
+    prs = Presentation(io.BytesIO(render_pptx(_deck(), template="tech")))
+    cover = prs.slides[0]
+    col = next(sh for sh in cover.shapes
+               if sh.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE and sh.height == prs.slide_height
+               and _solid_rgb(sh) == _TEMPLATE_TOKENS["tech"]["primary"])
+    assert prs.slide_width * 0.3 < col.width < prs.slide_width * 0.6, "左栏不是分栏宽度"
+    title_box = next(sh for sh in cover.shapes if sh.has_text_frame and sh.text_frame.text == "封面")
+    assert title_box.left + title_box.width <= col.width, "标题要落在左栏里"
+    meta = next(sh for sh in cover.shapes if sh.has_text_frame and "客户：某局" in sh.text_frame.text)
+    assert meta.left >= col.width, "投标人信息要落在右栏留白里"
+
+
+def test_gov_cover_is_a_full_width_banner():
+    """党政庄重的封面是通栏横幅：一条横贯页面的主色带压住标题，上下留白。"""
+    prs = Presentation(io.BytesIO(render_pptx(_deck(), template="gov")))
+    cover = prs.slides[0]
+    banner = next(sh for sh in cover.shapes
+                  if sh.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE and sh.width == prs.slide_width
+                  and _solid_rgb(sh) == _TEMPLATE_TOKENS["gov"]["primary"])
+    assert banner.top > 0, "横幅不该贴着页顶——上方要留白"
+    assert banner.height < prs.slide_height * 0.5, "横幅是一条带子，不是满幅色块"
+    title_box = next(sh for sh in cover.shapes if sh.has_text_frame and sh.text_frame.text == "封面")
+    assert banner.top <= title_box.top <= banner.top + banner.height, "标题要压在横幅里"
 
 
 def test_content_slide_bullets_and_scoring_chip():
@@ -356,20 +390,67 @@ def _deck_for_style():
     ])
 
 
+def _layout_signature(prs: Presentation, idx: int) -> tuple:
+    """某一页的版式指纹：所有图形的尺寸集合。只换配色不换版式的话三套会撞成同一个指纹。"""
+    return tuple(sorted((sh.width, sh.height) for sh in prs.slides[idx].shapes
+                        if sh.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE))
+
+
 def test_three_templates_differ_in_layout_not_only_colour():
     """模板此前只差三个配色、版式完全一样，用户选来选去每页长得一模一样，等于没得选。
-    这条锁住「换模板必须换版式」：三套的正文页形状数/结构不能全都一致。"""
-    shapes = {}
+    这条锁住「换模板必须换版式」：封面（满幅/分栏/横幅）与正文页（overline/numeral/corner
+    标题 + numbered/hairline/elevated 卡片）在三套之间都不能撞。"""
+    covers, contents = {}, {}
     for tpl in ("blue", "gov", "tech"):
         prs = Presentation(io.BytesIO(render_pptx(_deck_for_style(), template=tpl)))
-        content = prs.slides[2]
-        shapes[tpl] = {
-            "n": len(content.shapes),
-            # 标题行处理：sidebar/band/rule 画出来的矩形数与尺寸不同
-            "rects": tuple(sorted((sh.width, sh.height) for sh in content.shapes
-                                  if sh.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE)),
+        covers[tpl] = _layout_signature(prs, 0)
+        contents[tpl] = _layout_signature(prs, 2)
+    assert len(set(covers.values())) == 3, f"三套封面版式没有区分：{covers}"
+    assert len(set(contents.values())) == 3, f"三套正文版式没有区分：{contents}"
+
+
+def test_unknown_layout_switches_fall_back_to_the_default_painters(monkeypatch):
+    """结构开关是枚举：token 里写了渲染层不认识的取值（改名/手写脏数据/未来新模板漏登记画法），
+    必须静默回退到默认那套画法，而不是 KeyError 让整份述标导不出来。"""
+    from agent.agents.bidding_agent.render import styles
+    bogus = dict(_TEMPLATE_TOKENS["blue"], header="???", card="???", cover="???")
+    monkeypatch.setitem(styles.TEMPLATE_TOKENS, "bogus", bogus)
+    prs = Presentation(io.BytesIO(render_pptx(_deck_for_style(), template="bogus")))
+    ref = Presentation(io.BytesIO(render_pptx(_deck_for_style(), template="blue")))
+    assert len(prs.slides) == len(ref.slides)
+    for idx in range(len(ref.slides)):
+        assert _layout_signature(prs, idx) == _layout_signature(ref, idx), f"第 {idx} 页没有回退到默认版式"
+
+
+def _rel_luminance(rgb: RGBColor) -> float:
+    def channel(v: int) -> float:
+        c = v / 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = rgb
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+
+
+def _contrast(a: RGBColor, b: RGBColor) -> float:
+    la, lb = _rel_luminance(a), _rel_luminance(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def test_every_template_keeps_its_text_readable_on_its_own_ground():
+    """三套模板的每一对「字色 × 它实际压着的底色」都要过 4.5:1（正文/弱化字/主色块反白/
+    卡片与角标）。投影仪比屏幕更不宽容，浅底那套颜色搬到深底上就是一团糊——深色模板的
+    on_primary 不是白色正是为了这条。"""
+    from agent.agents.bidding_agent.render.styles import on_primary
+    for name, t in _TEMPLATE_TOKENS.items():
+        pairs = {
+            "正文/页底": (t["text"], t["bg"]),
+            "弱化字/页底": (t["muted"], t["bg"]),
+            "主色块反白": (on_primary(t), t["primary"]),
+            "强调色/卡片底": (t["accent"], t["tint"]),
+            "正文/卡片底": (t["text"], t["tint"]),
         }
-    assert len({v["rects"] for v in shapes.values()}) == 3, f"三套模板版式没有区分：{shapes}"
+        for label, (fg, bg) in pairs.items():
+            ratio = _contrast(fg, bg)
+            assert ratio >= 4.5, f"{name} 的「{label}」对比度只有 {ratio:.2f}:1，投影上会糊"
 
 
 def test_dark_template_paints_a_background_and_light_text():
@@ -389,10 +470,95 @@ def test_dark_template_paints_a_background_and_light_text():
 
 
 def test_light_templates_do_not_paint_a_background():
-    """浅色模板不铺整页底色：空白版式本来就是白底，多画一层只会让文件变大、还可能盖住母版元素。"""
+    """浅色模板不铺整页底色：空白版式本来就是白底，多画一层只会让文件变大、还可能盖住母版元素。
+    （封面是例外：满幅/横幅封面本来就要一块自己的底，所以只看正文页。）"""
     for tpl in ("blue", "gov"):
         prs = Presentation(io.BytesIO(render_pptx(_deck_for_style(), template=tpl)))
         content = prs.slides[2]
         full = [sh for sh in content.shapes
                 if sh.width == prs.slide_width and sh.height == prs.slide_height]
         assert not full, f"{tpl} 不该铺整页底色"
+
+
+def _full_deck():
+    """一份把所有版式都用上的 deck：封面/分隔页/要点页/饼图页/多系列柱图页/对比页/结束页。"""
+    return DeckSpec(title="某市政务云平台运维服务项目", slides=[
+        {"id": "c", "kind": "cover", "title": "某市政务云平台运维服务项目",
+         "bullets": ["投标人：某科技股份有限公司", "述标时长 15 分钟"]},
+        {"id": "sec", "kind": "section", "title": "项目理解与总体方案", "bullets": ["逐条对应评分办法"]},
+        {"id": "b", "kind": "content", "title": "核心需求理解", "scoring": "★服务范围 20 分",
+         "bullets": ["7×24 驻场值守", "一级故障 2 小时恢复", "全部★条款无偏离"], "notes": "口播稿"},
+        {"id": "p", "kind": "content", "title": "团队构成", "layout": "chart", "scoring": "团队 15 分",
+         "bullets": ["中级及以上职称占比 60%"],
+         "chart": {"type": "pie", "categories": ["高级", "中级", "初级"],
+                   "series": [{"name": "人数", "values": [3, 6, 4]}]}},
+        {"id": "col", "kind": "content", "title": "三年投入", "layout": "chart",
+         "chart": {"type": "column", "categories": ["2024", "2025", "2026"],
+                   "series": [{"name": "人月", "values": [96, 132, 156]},
+                              {"name": "巡检", "values": [48, 60, 72]}]}},
+        {"id": "cmp", "kind": "content", "title": "承诺优于要求", "layout": "comparison",
+         "scoring": "★服务承诺 15 分", "bullets": ["恢复时限提前 50%", "质保 3 年"],
+         "stats": [{"value": "2 小时", "label": "一级故障恢复"}, {"value": "0 起", "label": "质量投诉"}]},
+        {"id": "e", "kind": "end", "title": "感谢聆听"},
+    ])
+
+
+def test_every_template_renders_every_layout_and_reopens():
+    """三套 × 全版式（图表/对比/要点/分隔/封面/结束）都要能渲出来、能被重新打开、每页有形状。
+    这是模板改版的兜底回归：换了骨架不能有哪一套在某个版式上画不出东西或直接抛异常。"""
+    for tpl in ("blue", "tech", "gov"):
+        data = render_pptx(_full_deck(), template=tpl)
+        assert data[:2] == b"PK"
+        prs = Presentation(io.BytesIO(data))
+        assert len(prs.slides) == 7
+        for i, slide in enumerate(prs.slides):
+            assert len(slide.shapes) > 0, f"{tpl} 第 {i} 页是空页"
+        assert sum(1 for sl in prs.slides for sh in sl.shapes if sh.has_chart) == 2
+        texts = " ".join(_all_texts(prs))
+        assert "核心需求理解" in texts and "承诺优于要求" in texts
+
+
+def _master_without_placeholders(width_in: float = 10.0, height_in: float = 7.5) -> bytes:
+    """把首个版式的占位符全部摘掉的迷你母版：客户母版里这种「纯图形版式」很常见，
+    此时封面/结束页会退回我们自己的画法——新封面骨架正是在这条路径上才会被画出来。"""
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = Inches(width_in), Inches(height_in)
+    layout = prs.slide_layouts[0]
+    for ph in list(layout.placeholders):
+        ph._element.getparent().remove(ph._element)
+    out = io.BytesIO()
+    prs.save(out)
+    return out.getvalue()
+
+
+def test_covers_fall_back_to_our_own_painting_on_a_placeholderless_master():
+    """母版没有标题占位符时，封面/结束页整页退回我们自己的画法——三套的新封面骨架
+    （满幅/分栏/横幅）都得在客户自己的页面尺寸里画完，一寸都不能出界。"""
+    master = _master_without_placeholders(width_in=10.0, height_in=7.5)
+    for tpl in ("blue", "tech", "gov"):
+        prs = Presentation(io.BytesIO(render_pptx(_full_deck(), template=tpl, master_bytes=master)))
+        cover = prs.slides[0]
+        assert any(sh.has_text_frame and "某市政务云平台运维服务项目" in sh.text_frame.text
+                   for sh in cover.shapes), f"{tpl} 封面没画出来"
+        slop = Emu(9144)
+        over = [(sh.left, sh.width) for sh in cover.shapes
+                if sh.left + sh.width > prs.slide_width + slop or sh.left < -slop]
+        assert over == [], f"{tpl} 的封面在窄母版上画出界：{over}"
+
+
+def test_every_template_fits_inside_a_narrow_enterprise_master():
+    """企业母版路径 × 三套模板：新骨架（角标/分栏封面/横幅封面）一律按真实页宽页高定位，
+    在 4:3 母版（10in 宽）上不许有任何形状越过页边——死写 16:9 常量就会每页被裁掉一截。"""
+    master = _tiny_master(width_in=10.0, height_in=7.5)
+    for tpl in ("blue", "tech", "gov"):
+        prs = Presentation(io.BytesIO(render_pptx(_full_deck(), template=tpl, master_bytes=master)))
+        assert prs.slide_width == Inches(10.0)
+        assert len(prs.slides) == 7
+        slop = Emu(9144)      # 0.01in：形状边框宽度级别的容差
+        over = [(i, sh.shape_type, sh.left + sh.width, sh.top + sh.height)
+                for i, sl in enumerate(prs.slides) for sh in sl.shapes
+                if sh.left is not None and sh.width is not None
+                and (sh.left + sh.width > prs.slide_width + slop
+                     or sh.top + sh.height > prs.slide_height + slop
+                     or sh.left < -slop or sh.top < -slop)]
+        assert over == [], f"{tpl} 在 4:3 母版上画出界：{over}"

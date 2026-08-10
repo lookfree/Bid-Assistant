@@ -52,7 +52,7 @@ PRESENT_SKELETON_PROMPT = """你是述标演示专家。基于标书正文与评
 
 四、其它
 5. 附 3–6 条评委问答预演 qa（q/a），覆盖方案里可能被追问的薄弱环节/需要澄清的承诺。
-6. 选择合适 template（blue 商务蓝 / tech 科技感 / gov 政务红）；若客户指定企业自有模板则置
+6. 选择合适 template（blue 商务提案 / tech 技术方案 / gov 党政庄重）；若客户指定企业自有模板则置
    enterprise_template_id（如 pe1/pe2）。
 
 **content 页一条内容都不能少**——bullets 版式没有 bullets、chart 版式没有 chart 数据、
