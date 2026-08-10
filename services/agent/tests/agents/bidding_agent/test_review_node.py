@@ -215,6 +215,29 @@ def test_review_result_carries_the_scanned_stats_for_the_report_banner(submit_ga
     assert "scanned_files" not in clean
 
 
+def test_docx_embedded_images_get_the_same_honest_notice_as_scanned_pages(
+        submit_gateway, monkeypatch):
+    """docx 正文里贴的证照/盖章图对模型同样是"看不见的材料"，只是没有「页」的口径。
+    不告诉模型的话，docx 版标书照旧被判「缺少某材料」——扫描 PDF 那条治理白做了一半。
+    要求：张数说明进用户消息、判定纪律（无法核验/中风险）进系统提示、统计随结果落库。"""
+    import agent.agents.bidding_agent.nodes.common as common_mod
+    from agent.parsing.types import ParsedDoc
+
+    monkeypatch.setattr(common_mod, "read_and_parse", lambda key: ParsedDoc(
+        text="投标函", kind="docx", embedded_images=7,
+        clauses=[{"id": "sec-1-c1", "text": "投标函正文"}]))
+    gw = submit_gateway({"submit_risk_report": _RISK_ARGS})
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
+    risk = asyncio.run(make_review_node(ctx)(
+        {"run_input": {"bid_file_key": "uploads/u/x/商务标.docx"}}))["risk"]
+    system_msg = gw.chats[-1].last_messages[0].content
+    user_msg = gw.chats[-1].last_messages[-1].content
+    assert "商务标.docx" in user_msg and "7" in user_msg and "内嵌图片" in user_msg
+    assert "无法核验（扫描件）" in system_msg
+    assert "embedded_images" not in system_msg and "embedded_images" not in user_msg
+    assert risk["scanned_files"] == [{"name": "商务标.docx", "embedded_images": 7}]
+
+
 def test_review_node_with_tender_and_bid_file_uses_compare_mode(submit_gateway, monkeypatch):
     """带招标文件（read 非空）时即便 chapters 来自解析,也走对照口径（不注入通用自查说明）。"""
     import agent.agents.bidding_agent.nodes.common as common_mod

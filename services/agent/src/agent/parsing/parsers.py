@@ -50,16 +50,21 @@ def _split_clauses(lines: list[str]) -> tuple[list[dict], list[dict]]:
     return clauses, headings
 
 
-def _docx_lines_in_order(d) -> list[str]:
-    """按文档顺序遍历正文块（段落与表格交错）→ 文本行。表格行以 \t 连接单元格。
+def _docx_lines_in_order(d) -> tuple[list[str], int]:
+    """按文档顺序遍历正文块（段落与表格交错）→ (文本行, 正文内嵌图片张数)。表格行以 \t 连接单元格。
     2026-07-22 生产实测根因：招标文件的格式模板（授权委托书/应答一览表等）几乎都排在**表格**里，
     旧实现条款分句只喂段落 → 格式章只剩标题占节号、模板正文整段缺失（sec 空洞），
-    内容生成拿不到招标模板原文只能自创格式。"""
+    内容生成拿不到招标模板原文只能自创格式。
+
+    顺带数图片（w:drawing = 现代 DrawingML，w:pict = 旧 Word 的 VML）：正文里贴的证照/盖章
+    扫描图一个字都提不出来，不数出来的话审查会把印在图上的材料判成「缺少」（见
+    ParsedDoc.embedded_images）。**只走 body**，页眉页脚的 logo 天然不在其中。"""
     from docx.oxml.ns import qn
     from docx.table import Table
     from docx.text.paragraph import Paragraph
+    body = d.element.body
     lines: list[str] = []
-    for child in d.element.body.iterchildren():
+    for child in body.iterchildren():
         if child.tag == qn("w:p"):
             t = Paragraph(child, d).text
             if t.strip():
@@ -69,18 +74,19 @@ def _docx_lines_in_order(d) -> list[str]:
                 line = "\t".join(c.text for c in r.cells)
                 if line.strip():
                     lines.append(line)
-    return lines
+    images = sum(1 for _ in body.iter(qn("w:drawing"))) + sum(1 for _ in body.iter(qn("w:pict")))
+    return lines, images
 
 
 def parse_docx(data: bytes) -> ParsedDoc:
     """解析 .docx 字节 → 段落文本 + 表格 + 条款 id（条款按文档顺序含表格行，见 _docx_lines_in_order）。"""
     from docx import Document
     d = Document(io.BytesIO(data))
-    lines = _docx_lines_in_order(d)
+    lines, images = _docx_lines_in_order(d)
     tables: list[list[list[str]]] = [[[c.text for c in r.cells] for r in t.rows] for t in d.tables]
     clauses, headings = _split_clauses(lines)
     return ParsedDoc(text="\n".join(lines), kind="docx", tables=tables,
-                     clauses=clauses, headings=headings)
+                     embedded_images=images, clauses=clauses, headings=headings)
 
 
 # 一页可见文字少于这么多字就当扫描图片页：正文页随便一段都远超，扫描页至多剩页眉页码。

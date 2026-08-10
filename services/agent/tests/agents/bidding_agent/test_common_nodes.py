@@ -2,11 +2,17 @@ import agent.agents.bidding_agent.nodes.common as common_mod
 from agent.agents.bidding_agent.nodes.common import (
     html_to_review_text, parse_bid_chapters, parse_bid_docs)
 from agent.agents.bidding_agent.nodes.present import _plain
+from agent.parsing import ocr as ocr_mod
 from agent.parsing.types import ParsedDoc
 
 
-def _Parsed(clauses, pages=None, image_pages=0):
-    return ParsedDoc(text="", kind="pdf", pages=pages, image_pages=image_pages, clauses=clauses)
+def _Parsed(clauses, pages=None, image_pages=0, embedded_images=0):
+    """image_pages 顺带造出逐页判定：「这份文件要不要真发 OCR」认的是 image_page_flags
+    （scanned_page_indices），只填个数字的话惰性预算判据看不到有扫描页。"""
+    total = pages or image_pages
+    flags = [i >= total - image_pages for i in range(total)] if image_pages else []
+    return ParsedDoc(text="", kind="pdf", pages=pages, image_pages=image_pages,
+                     image_page_flags=flags, clauses=clauses, embedded_images=embedded_images)
 
 
 def test_parse_bid_chapters_single_file_keeps_section_order(monkeypatch):
@@ -110,13 +116,14 @@ async def test_parse_bid_docs_feeds_ocr_text_into_the_chapters(monkeypatch):
 async def test_parse_bid_docs_shares_one_ocr_deadline_across_files(monkeypatch):
     """OCR 的时长帽是**一次审查**的，不是每份文件各一份：独立审查一次最多收 10 份标书，
     每份各开 20 分钟 → 最坏 200 分钟，用户在一个已预扣积分的步上干等几小时。
-    故 deadline 在 parse_bid_docs 里建一次、原样传给每一份文件（第二份继承的是剩余预算）。"""
+    故 deadline 建**一次**、原样传给后续每一份文件（第二份继承的是剩余预算）。"""
     seen: list[float | None] = []
 
     async def _fake_ocr(doc, key, on_progress=None, deadline=None):
         seen.append(deadline)
         return doc
 
+    monkeypatch.setattr(ocr_mod.settings, "ocr_base_url", "http://ocr.test:8100")
     monkeypatch.setattr(common_mod, "read_and_parse",
                         lambda key: _Parsed([{"id": "sec-1-c1", "text": "投标函"}],
                                             pages=9, image_pages=3))
@@ -124,6 +131,63 @@ async def test_parse_bid_docs_shares_one_ocr_deadline_across_files(monkeypatch):
     await parse_bid_docs(["uploads/u/x/一.pdf", "uploads/u/x/二.pdf"])
     assert len(seen) == 2
     assert seen[0] is not None and seen[0] == seen[1]     # 同一条 deadline，不是各开一份
+
+
+class _Clock:
+    """可推的单调时钟（换掉 parsing/ocr 里的 time，只影响该模块的取时）。"""
+
+    def __init__(self):
+        self.t = 0.0
+
+    def monotonic(self) -> float:
+        return self.t
+
+
+async def test_ocr_budget_starts_at_the_first_real_ocr_not_at_download_time(monkeypatch):
+    """20 分钟是**纯 OCR** 的预算，不含 MinIO 下载与解析。
+
+    从循环前起算的话，10 份大文件的下载 + 解析（.doc 走 LibreOffice 转换，单份就能顶到 60s）
+    先把预算啃掉，第一次识别还没发出去就报「OCR 预算已用光」——张冠李戴，用户以为识别超时，
+    真相是时间花在了取文件上。故 deadline **惰性起算**：第一份真要发 OCR 的文件到手时才建。"""
+    clock = _Clock()
+    monkeypatch.setattr(ocr_mod, "time", clock)
+    monkeypatch.setattr(ocr_mod.settings, "ocr_base_url", "http://ocr.test:8100")
+    docs = {
+        "uploads/u/x/纯文本.pdf": _Parsed([{"id": "sec-1-c1", "text": "正文"}], pages=9),
+        "uploads/u/x/扫描件.pdf": _Parsed([{"id": "sec-1-c1", "text": "投标函"}],
+                                       pages=9, image_pages=3),
+    }
+    seen: list[tuple[str, float | None]] = []
+
+    def _read(key):
+        clock.t += 25 * 60          # 下载 + 解析先花掉 25 分钟（比整条预算还长）
+        return docs[key]
+
+    async def _fake_ocr(doc, key, on_progress=None, deadline=None):
+        seen.append((key.rsplit("/", 1)[-1], deadline))
+        return doc
+
+    monkeypatch.setattr(common_mod, "read_and_parse", _read)
+    monkeypatch.setattr(common_mod, "ocr_scanned_pages", _fake_ocr)
+    await parse_bid_docs(list(docs))
+    assert seen[0] == ("纯文本.pdf", None)          # 没有扫描页 → 一秒预算都不起算
+    # 轮到真要识别的那份时，预算还是完整的 20 分钟（不是被下载解析吃剩的负数）
+    assert seen[1][0] == "扫描件.pdf"
+    assert seen[1][1] == clock.t + ocr_mod._TOTAL_BUDGET_S
+
+
+async def test_parse_bid_docs_owns_up_to_images_embedded_in_a_docx(monkeypatch):
+    """docx 里贴的证照/盖章图解析后一个字都不留：必须像扫描页一样进「看不见」统计，
+    否则 docx 版标书照旧被判「缺少」——治理只覆盖了 PDF，docx 直接回归。
+    没有「页」的口径，只能报张数（见 ParsedDoc.embedded_images）。"""
+    by_key = {
+        "uploads/u/x/商务标.docx": _Parsed([{"id": "sec-1-c1", "text": "投标函"}],
+                                        embedded_images=4),
+        "uploads/u/x/技术标.docx": _Parsed([{"id": "sec-1-c1", "text": "技术方案"}]),
+    }
+    monkeypatch.setattr(common_mod, "read_and_parse", lambda key: by_key[key])
+    _chapters, scanned = await parse_bid_docs(list(by_key))
+    assert scanned == [{"name": "商务标.docx", "embedded_images": 4}]
 
 
 def test_parse_bid_chapters_does_not_ocr(monkeypatch):

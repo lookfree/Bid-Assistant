@@ -110,6 +110,64 @@ def test_clauses_have_stable_ids(docgen):
     assert doc.clauses[0]["text"] == "招标文件正文"
 
 
+def _docx_bytes(d) -> bytes:
+    import io
+    buf = io.BytesIO()
+    d.save(buf)
+    return buf.getvalue()
+
+
+def _png_bytes():
+    """最小可用位图（python-docx 要读图头算尺寸，随手造的字节串不行）。"""
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), "white").save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+
+def test_docx_counts_the_images_embedded_in_the_body():
+    """docx 正文里贴的证照/盖章扫描图在解析结果里一个字都不留——与扫描 PDF 同一个病，
+    只是 docx 连「有多少页看不见」都没有，审查便把印在图上的材料判成「缺少」。
+    数出来（w:drawing 现代图 + w:pict 旧 VML 图），审查才有得诚实交代。
+    表格单元格里的图同样要数：授权委托书、报价一览表的盖章图几乎都贴在表格里。"""
+    from docx import Document
+    from docx.oxml import parse_xml
+    from agent.parsing.parsers import parse_docx
+
+    d = Document()
+    d.add_paragraph("第一章 资格证明")
+    d.add_paragraph("营业执照扫描件如下：")
+    d.add_picture(_png_bytes())                                  # 段落里的图
+    t = d.add_table(rows=1, cols=1)
+    t.rows[0].cells[0].paragraphs[0].add_run().add_picture(_png_bytes())   # 表格单元格里的图
+    run = d.add_paragraph().add_run()                            # 旧 Word 的 VML 图
+    run._r.append(parse_xml(
+        '<w:pict xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>'))
+
+    parsed = parse_docx(_docx_bytes(d))
+    assert parsed.embedded_images == 3
+    assert "营业执照扫描件如下：" in parsed.text     # 正文解析一如既往
+
+
+def test_docx_without_images_reports_zero(docgen):
+    """没贴图的 docx 一切照旧：计数为 0 → 审查不加任何注记，提示词逐字节不变。"""
+    assert parse_bytes(docgen.docx("招标文件正文", "第二段"), "t.docx").embedded_images == 0
+
+
+def test_docx_header_logo_is_not_counted_as_an_invisible_material():
+    """页眉页脚的公司 logo 每份文件都有，它不是"看不见的材料"。
+    只数 body 就天然排除了它们（页眉页脚不在 body 里）——误伤的话每份 docx 都会挂上注记。"""
+    from docx import Document
+    from agent.parsing.parsers import parse_docx
+
+    d = Document()
+    d.add_paragraph("第一章 技术方案")
+    d.sections[0].header.paragraphs[0].add_run().add_picture(_png_bytes())
+    assert parse_docx(_docx_bytes(d)).embedded_images == 0
+
+
 def test_unsupported_type_raises():
     with pytest.raises(UnsupportedDocument):
         parse_bytes(b"x", "a.zip")
