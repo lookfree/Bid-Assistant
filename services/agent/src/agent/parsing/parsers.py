@@ -8,6 +8,9 @@ import subprocess
 import tempfile
 from dataclasses import replace
 
+from agent.parsing.docx_sections import (
+    Block, heading_style_levels, is_bold_line, paragraph_level, split_docx_blocks,
+)
 from agent.parsing.types import ParsedDoc, UnsupportedDocument
 
 # 章节标题启发式：第N章/第N节/第N篇/第N部分，或「一、二、」式顶层编号（标题一般较短）。
@@ -50,8 +53,11 @@ def _split_clauses(lines: list[str]) -> tuple[list[dict], list[dict]]:
     return clauses, headings
 
 
-def _docx_lines_in_order(d) -> tuple[list[str], int]:
-    """按文档顺序遍历正文块（段落与表格交错）→ (文本行, 正文内嵌图片张数)。表格行以 \t 连接单元格。
+def _docx_lines_in_order(d) -> tuple[list[Block], int]:
+    """按文档顺序遍历正文块（段落与表格交错）→ (正文块, 正文内嵌图片张数)。表格行以 \t 连接单元格。
+
+    每个块随手记下 Word 自己标的大纲层级与加粗（见 parsing/docx_sections.py）：章节切分要用它，
+    而层级只有在这里手里还攥着段落元素时问得到，事后拿着纯文本行再问已经问不到了。
     2026-07-22 生产实测根因：招标文件的格式模板（授权委托书/应答一览表等）几乎都排在**表格**里，
     旧实现条款分句只喂段落 → 格式章只剩标题占节号、模板正文整段缺失（sec 空洞），
     内容生成拿不到招标模板原文只能自创格式。
@@ -63,29 +69,33 @@ def _docx_lines_in_order(d) -> tuple[list[str], int]:
     from docx.table import Table
     from docx.text.paragraph import Paragraph
     body = d.element.body
-    lines: list[str] = []
+    styles = heading_style_levels(d)
+    blocks: list[Block] = []
     for child in body.iterchildren():
         if child.tag == qn("w:p"):
-            t = Paragraph(child, d).text
-            if t.strip():
-                lines.append(t)
+            p = Paragraph(child, d)
+            if p.text.strip():
+                blocks.append(Block(p.text, level=paragraph_level(child, styles),
+                                    bold=is_bold_line(p)))
         elif child.tag == qn("w:tbl"):
             for r in Table(child, d).rows:
                 line = "\t".join(c.text for c in r.cells)
                 if line.strip():
-                    lines.append(line)
+                    blocks.append(Block(line, table=True))
     images = sum(1 for _ in body.iter(qn("w:drawing"))) + sum(1 for _ in body.iter(qn("w:pict")))
-    return lines, images
+    return blocks, images
 
 
 def parse_docx(data: bytes) -> ParsedDoc:
-    """解析 .docx 字节 → 段落文本 + 表格 + 条款 id（条款按文档顺序含表格行，见 _docx_lines_in_order）。"""
+    """解析 .docx 字节 → 段落文本 + 表格 + 条款 id（条款按文档顺序含表格行，见 _docx_lines_in_order）。
+    章节切分走 docx 专用口径（Word 大纲层级优先，见 parsing/docx_sections.py）——
+    pdf/xlsx 仍用 _split_clauses 的启发式。"""
     from docx import Document
     d = Document(io.BytesIO(data))
-    lines, images = _docx_lines_in_order(d)
+    blocks, images = _docx_lines_in_order(d)
     tables: list[list[list[str]]] = [[[c.text for c in r.cells] for r in t.rows] for t in d.tables]
-    clauses, headings = _split_clauses(lines)
-    return ParsedDoc(text="\n".join(lines), kind="docx", tables=tables,
+    clauses, headings = split_docx_blocks(blocks)
+    return ParsedDoc(text="\n".join(b.text for b in blocks), kind="docx", tables=tables,
                      embedded_images=images, clauses=clauses, headings=headings)
 
 
