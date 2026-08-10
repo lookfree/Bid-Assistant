@@ -63,6 +63,22 @@ def page_image(page, width_px: int, fmt: str = "PNG") -> tuple[bytes, int, int]:
     return buf.getvalue(), pil.width, pil.height
 
 
+def _flatten_on_white(raw):
+    """透明底先合成到**白底**再转 RGB。
+
+    直接 `convert("RGB")` 会把透明像素当成黑色：Word 里贴的印章、手写签名、抠好底的证照
+    大多是「透明底 + 深色笔画」，压出来就是黑底黑字，OCR 一个字都读不出来——图照旧计入
+    「看不见」的张数，那次请求与它占的并发/预算白烧。调色板图（P）带 transparency 同理。"""
+    from PIL import Image
+
+    if raw.mode in ("RGBA", "LA") or (raw.mode == "P" and "transparency" in raw.info):
+        rgba = raw.convert("RGBA")
+        white = Image.new("RGB", rgba.size, (255, 255, 255))
+        white.paste(rgba, mask=rgba.split()[-1])
+        return white
+    return raw.convert("RGB")
+
+
 def image_for_ocr(data: bytes, width_px: int) -> bytes:
     """任意位图字节 → 送 OCR 的 JPEG（按宽收到 width_px 之内，绝不放大）。
 
@@ -75,7 +91,7 @@ def image_for_ocr(data: bytes, width_px: int) -> bytes:
     from PIL import Image
 
     with Image.open(io.BytesIO(data)) as raw:
-        im = raw.convert("RGB")             # 带 alpha / 调色板图 JPEG 不接受
+        im = _flatten_on_white(raw)         # 带 alpha / 调色板图 JPEG 不接受
     if im.width > width_px:
         im = im.resize((width_px, max(1, round(im.height * width_px / im.width))),
                        Image.LANCZOS)

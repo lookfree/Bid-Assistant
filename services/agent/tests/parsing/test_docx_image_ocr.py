@@ -116,6 +116,66 @@ async def test_failed_images_stay_counted_as_invisible(docx_env):
     assert after.embedded_images == 1
 
 
+def _as_alternate_content(data: bytes) -> bytes:
+    """把 docx 里那张图改写成 Word 给「文本框/形状里的图」用的 mc:AlternateContent 写法：
+    mc:Choice 里放现代的 w:drawing、mc:Fallback 里放旧的 w:pict，**两者是同一张图**。"""
+    from docx import Document
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import qn
+    from lxml import etree
+
+    from agent.parsing.parsers import _image_rid
+
+    d = Document(io.BytesIO(data))
+    drawing = next(el for el in d.element.body.iter() if el.tag == qn("w:drawing"))
+    rid, run = _image_rid(drawing), drawing.getparent()
+    ns = ('xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+          'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+          'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+          'xmlns:v="urn:schemas-microsoft-com:vml"')
+    run.replace(drawing, parse_xml(
+        f"<mc:AlternateContent {ns}>"
+        f'<mc:Choice Requires="wps">{etree.tostring(drawing).decode()}</mc:Choice>'
+        f'<mc:Fallback><w:pict><v:shape><v:imagedata r:id="{rid}"/></v:shape></w:pict>'
+        f"</mc:Fallback></mc:AlternateContent>"))
+    buf = io.BytesIO()
+    d.save(buf)
+    return buf.getvalue()
+
+
+async def test_an_image_written_as_alternate_content_counts_once(docx_env):
+    """Word 给文本框/形状里的图常写成 mc:Choice(w:drawing) + mc:Fallback(w:pict)——
+    **同一张图的两种写法**。两支都数的话张数翻倍、OCR 请求翻倍，同一张证照的识别文字
+    还会插进正文两遍（用户看到的是重复的营业执照文字）。"""
+    stub, run = docx_env
+    before, after = await run(_as_alternate_content(_docx("正文", _png())))
+    assert before.embedded_images == 1          # 不是 2
+    assert len(stub.requests) == 1
+    assert after.text.count(_MARK) == 1
+
+
+async def test_the_same_image_is_recognized_once_and_reused(docx_env):
+    """同一张图（公章/抬头图/页脚二维码）贴在几十处：只识别一次，结果回填到每一处。
+
+    逐处各发一次请求，就是把 300 张的单文件额度和 20 分钟里的位子让给同一张图——
+    真正要紧的证照被挤到帽子外面。python-docx 那边本来就只存一份媒体部件。"""
+    stub, run = docx_env
+    stamp = _png()
+    _before, after = await run(_docx("第一处", stamp, "第二处", stamp, "第三处", stamp))
+    assert len(stub.requests) == 1              # 只识别一次
+    assert after.text.count(_MARK) == 3         # 三处都拼回了
+    assert after.embedded_images == 0
+
+
+async def test_a_file_whose_images_are_all_skipped_sends_nothing(docx_env):
+    """筛完一张都不够格（全是矢量图/装饰小图）：一次请求都不发、不构造客户端，
+    也不打「识别 0/0 张」的假完成日志。张数照第一步口径原样保留。"""
+    stub, run = docx_env
+    _before, after = await run(_docx("正文", _png(60, 60), _png(80, 40, "ivory")))
+    assert stub.requests == [] and stub.clients == 0
+    assert after.embedded_images == 2 and _MARK not in after.text
+
+
 async def test_recognized_lines_never_become_chapter_titles(docx_env):
     """识别文字是**正文**，一个字都不许参与章节切分的标题判定。
 

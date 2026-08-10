@@ -67,6 +67,30 @@ async def test_chapter_titles_travel_with_their_own_section(monkeypatch):
     assert _plain(chapters["sec-1"]).startswith("1.技术偏离表")   # 述标那条消费路
 
 
+async def test_a_parent_title_travels_with_the_child_that_carries_its_text(monkeypatch):
+    """父级标题（正文全在子节里、自己不产章）必须并进子节的标题。
+
+    本次的样板文档就是这个形状：`1.技术偏离表` → `1.1 总体技术规范偏离表` →
+    `1.1.2 核心架构要求偏离表`，正文只挂在最深那一层。只给叶子标题的话，模型不知道这段
+    归属「技术偏离表」——与「把节名给模型」的目的正好相抵。
+    自己有正文的父级不重复：它本来就自成一章，再抄一遍只是白花预算。"""
+    parsed = _Parsed([{"id": "sec-3-c1", "text": "3 身份集成：支持对接统一身份认证平台。"},
+                      {"id": "sec-4-c1", "text": "项目位于上海。"},
+                      {"id": "sec-5-c1", "text": "工期 90 日历天。"}],
+                     headings=[{"sec": "sec-1", "title": "1.技术偏离表", "level": 1},
+                               {"sec": "sec-2", "title": "1.1 总体技术规范偏离表", "level": 2},
+                               {"sec": "sec-3", "title": "1.1.2 核心架构要求偏离表", "level": 3},
+                               {"sec": "sec-4", "title": "2.项目概况", "level": 1},
+                               {"sec": "sec-5", "title": "2.1 工期", "level": 2}])
+    monkeypatch.setattr(common_mod, "read_and_parse", lambda key: parsed)
+    chapters, _scanned = await parse_bid_docs(["uploads/u/技术文件.docx"])
+    assert (html_to_review_text(chapters["sec-1"]).splitlines()[0]
+            == "1.技术偏离表 / 1.1 总体技术规范偏离表 / 1.1.2 核心架构要求偏离表")
+    # 2.项目概况 自己有正文 → 自成一章，其子节只带自己的标题
+    assert html_to_review_text(chapters["sec-2"]).splitlines()[0] == "2.项目概况"
+    assert html_to_review_text(chapters["sec-3"]).splitlines()[0] == "2.1 工期"
+
+
 def test_chapter_title_with_angle_brackets_is_escaped_like_the_body(monkeypatch):
     """标题走的是与条款原文同一套转义：「响应时间<30分钟」这类写法在标题里同样出现，
     裸拼的话下游剥标签时把半句话吃掉（同 test_clause_text_with_angle_brackets_survives）。"""

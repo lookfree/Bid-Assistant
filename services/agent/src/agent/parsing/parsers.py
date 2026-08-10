@@ -69,6 +69,23 @@ def _image_rid(el) -> str | None:
     return None
 
 
+# `mc:AlternateContent` 的备选分支。Word 给文本框/形状里的图常写成
+# `<mc:Choice><w:drawing/></mc:Choice><mc:Fallback><w:pict/></mc:Fallback>`——**同一张图的两种写法**。
+# 两个都数就是张数翻倍、同一张证照的识别文字插两遍。只认 Choice（现代写法），Fallback 整支跳过。
+# 命名空间常量写死：python-docx 的 nsmap 里没有 mc 前缀，qn("mc:Fallback") 会直接抛。
+_MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+
+
+def _in_fallback(el, root) -> bool:
+    """这处图是不是落在 mc:Fallback 里（= 另一支已经数过的同一张图）。"""
+    node = el.getparent()
+    while node is not None and node is not root:
+        if node.tag == _MC_FALLBACK:
+            return True
+        node = node.getparent()
+    return False
+
+
 def _docx_lines_in_order(d) -> tuple[list[Block], list[tuple[int, str | None]]]:
     """按文档顺序遍历正文块（段落与表格交错）→ (正文块, 内嵌图片 [(插入块号, 关系id)])。
     表格行以 \t 连接单元格。
@@ -101,11 +118,16 @@ def _docx_lines_in_order(d) -> tuple[list[Block], list[tuple[int, str | None]]]:
                 blocks.append(Block(p.text, level=paragraph_level(child, styles)))
         elif child.tag == qn("w:tbl"):
             for r in Table(child, d).rows:
-                line = "\t".join(c.text for c in r.cells)
+                cells = r.cells
+                line = "\t".join(c.text for c in cells)
                 if line.strip():
-                    blocks.append(Block(line, table=True))
+                    # 只有多单元格的行才算「表格数据行」（那种行里的编号是条目不是章节）。
+                    # 整行一个单元格的是**带框标题**：中文标书很常把「第一章 采购公告」套进
+                    # 一个单格表里排版，一律不判标题的话，这一族文档重新变成"整本一节"。
+                    blocks.append(Block(line, table=len(cells) > 1))
         images.extend((len(blocks), _image_rid(el)) for el in child.iter()
-                      if el.tag in (qn("w:drawing"), qn("w:pict")))
+                      if el.tag in (qn("w:drawing"), qn("w:pict"))
+                      and not _in_fallback(el, child))
     return blocks, images
 
 

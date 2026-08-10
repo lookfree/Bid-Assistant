@@ -19,6 +19,7 @@ class OcrStub:
     def __init__(self):
         self.requests: list[dict] = []
         self.reads: list[str] = []      # 取字节的 key，供「该跳过时连字节都不该取」这类断言
+        self.clients = 0                # 构造过几个 HTTP 客户端（该整段跳过时必须是 0）
         self.reply = lambda n, body: httpx.Response(200, json={"text": recognized_text(n)})
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -30,14 +31,24 @@ class OcrStub:
 
 @pytest.fixture
 def ocr_stub(monkeypatch):
-    """配上 OCR 地址 + 把传输层换成桩（仍真走 httpx 的请求/响应/异常路径）。"""
+    """配上 OCR 地址 + 把传输层换成桩（仍真走 httpx 的请求/响应/异常路径）。
+
+    换的是 **ocr 模块看到的那个 httpx**，不是 httpx 模块本身：`ocr_mod.httpx is httpx`，
+    往它身上 setattr 等于改全局——测试期间任何别的组件（RAG 嵌入、模型网关…）构造
+    AsyncClient 都会拿到这份 MockTransport，撞上桩首行的 `assert path == "/ocr"`，
+    炸出一个跟本次改动毫无关系的 AssertionError。"""
+    import types
+
     from agent.parsing import ocr as ocr_mod
 
     stub = OcrStub()
     real_client = httpx.AsyncClient
     monkeypatch.setattr(ocr_mod.settings, "ocr_base_url", "http://ocr.test:8100/")
-    monkeypatch.setattr(ocr_mod.httpx, "AsyncClient",
-                        lambda **kw: real_client(transport=httpx.MockTransport(stub), **kw))
+    def _client(**kw):
+        stub.clients += 1
+        return real_client(transport=httpx.MockTransport(stub), **kw)
+
+    monkeypatch.setattr(ocr_mod, "httpx", types.SimpleNamespace(AsyncClient=_client))
     return stub
 
 

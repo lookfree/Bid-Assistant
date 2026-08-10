@@ -187,3 +187,22 @@ def test_normal_page_scale_is_untouched_by_the_cap():
 def test_pixel_cap_is_a_named_constant():
     """帽是常量、不许悄悄放大：2000 万像素 ≈ 5000×4000，够任何真实页面用。"""
     assert pdf_render._MAX_PIXELS == 20_000_000
+
+
+def test_transparent_images_are_flattened_onto_white():
+    """透明底的图先合成到白底再送 OCR。
+
+    印章、手写签名、抠掉底的证照在 Word 里大多是「透明底 + 深色笔画」，直接
+    `convert("RGB")` 会把透明像素当成黑色 —— 出来是黑底黑字，RapidOCR 一个字都读不出，
+    而这张图照旧计入「看不见」的张数，那次请求与它占的并发/预算全白烧。
+    笔画本身必须还是深色：合成过头（连笔画一起冲白）等于另一种读不出。"""
+    import io
+
+    src = Image.new("RGBA", (400, 400), (0, 0, 0, 0))          # 整张透明
+    src.paste((10, 10, 10, 255), (100, 100, 300, 300))         # 中间一块深色"笔画"
+    buf = io.BytesIO()
+    src.save(buf, "PNG")
+
+    out = Image.open(io.BytesIO(pdf_render.image_for_ocr(buf.getvalue(), 1600)))
+    assert min(out.getpixel((5, 5))) > 240, "透明底没有合成到白底（会变成黑底）"
+    assert max(out.getpixel((200, 200))) < 60, "笔画被冲白了"

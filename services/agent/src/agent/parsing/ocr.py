@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import io
 import logging
 import time
@@ -66,7 +67,9 @@ _MAX_PAGES = 300
 # docx 内嵌图能送 OCR 的格式：OCR 服务吃的是位图（PIL 解码 → RapidOCR）。emf/wmf 是矢量
 # （Word 里粘贴的 Visio/流程图/公式常见），服务端解不出来，白花一个请求还占着并发闸。
 # 跳过的图**仍计入 embedded_images**——它们照旧是"看不见"的东西，诚实注记不该因此缩水。
-_OCR_IMAGE_EXTS = {"png", "jpg", "jpeg", "bmp"}
+# tiff/gif/webp 一并收下：扫描仪默认存 TIFF 的不少，PIL 解得开、image_for_ocr 也转得成 JPEG，
+# 在扩展名这关丢掉就是「营业执照仍然看不见」而日志里查不出原因。
+_OCR_IMAGE_EXTS = {"png", "jpg", "jpeg", "bmp", "tif", "tiff", "gif", "webp"}
 # 送识别的最小像素面积。页眉 logo、项目符号、装饰线、签章角标都落在这条线以下，而证照/资信证明/
 # 审计报告的扫描图没有这么小的（A4 按 96dpi 缩到最小也有 800×1100）。按**面积**而不是按宽高各判：
 # 宽而扁的签字条（1200×150）是有信息量的，按最小边判会把它误杀。
@@ -182,29 +185,66 @@ async def ocr_docx_images(doc: ParsedDoc, key: str,
     try:
         data = await asyncio.to_thread(read_bytes, key)
         blocks, images = await asyncio.to_thread(docx_body_images, data)
-        picks = _ocr_image_indices(images)
-        texts = await _ocr_stream(lambda chunk: _encode_chunk(images, chunk),
-                                  picks, on_progress, deadline, "内嵌图片")
+        reps, groups = _ocr_image_indices(images)
+        if not reps:
+            # 全是矢量图/装饰小图：一次请求都不该发，也别打「识别 0/0 张」的假完成日志
+            logger.info("内嵌图片无一张够格送识别 key=%s（正文共 %d 张）", key, doc.embedded_images)
+            return doc
+        _release_unused(images, groups)
+        picked = await _ocr_stream(lambda chunk: _encode_chunk(images, chunk),
+                                   reps, on_progress, deadline, "内嵌图片")
+        # 去重的结果回填给共用同一张图的每一处，正文各处照样有字
+        texts = {j: t for i, t in picked.items() for j in groups[i]}
         spliced = splice_docx_images(doc, blocks, images, texts)
     except Exception:  # noqa: BLE001 兜到最外层：识别是加分项，出什么意外都不该让审查步失败
         logger.warning("内嵌图片 OCR 失败，退回「无法核验」口径 key=%s", key, exc_info=True)
         return doc
-    logger.info("内嵌图片 OCR 完成 key=%s 识别 %d/%d 张（正文共 %d 张）",
-                key, len(texts), len(picks), doc.embedded_images)
+    # 张数按**真正进了正文**的算：拿到文字不等于够读（见 parsers._recognized，那道门槛挂着退款闸），
+    # 报 len(texts) 的话，全是印章碎字时日志写「识别 N/N 张」而文档里一个字都没多，
+    # 事后查起来会把方向引到模型上去。
+    logger.info("内嵌图片 OCR 完成 key=%s 识别 %d/%d 张（发出 %d 张，正文共 %d 张）",
+                key, doc.embedded_images - spliced.embedded_images, len(texts),
+                len(reps), doc.embedded_images)
     return spliced
 
 
-def _ocr_image_indices(images: list[DocxImage]) -> list[int]:
-    """哪些内嵌图值得送 OCR：位图格式（_OCR_IMAGE_EXTS）+ 够大（_MIN_IMAGE_PIXELS）。
-    跳过的图仍计在 embedded_images 里，只是不花识别预算。
-    超过单文件识别数帽的部分同样不发（口径与扫描页共用 _MAX_PAGES）。"""
+def _ocr_image_indices(images: list[DocxImage]) -> tuple[list[int], dict[int, list[int]]]:
+    """哪些内嵌图值得送 OCR → (要发请求的图, {它 → 共用这次结果的所有图})。
+
+    筛：位图格式（_OCR_IMAGE_EXTS）+ 够大（_MIN_IMAGE_PIXELS）。跳过的图仍计在
+    embedded_images 里，只是不花识别预算。
+    **同一张图只识别一次**：公章、抬头图、页脚二维码会贴在几十处，python-docx 那边本来就
+    只存一份媒体部件（几处指向同一份字节），逐处各发一次请求就是把 300 张的额度和 20 分钟里的
+    位子让给同一张图，真正要紧的证照被挤掉。识别结果回填给它的每一处，正文各处照样有字。
+    数帽按**去重后的张数**算（口径与扫描页共用 _MAX_PAGES）。"""
     picks = [i for i, img in enumerate(images)
              if img.ext in _OCR_IMAGE_EXTS and _big_enough(img.data)]
-    if len(picks) > _MAX_PAGES:
-        logger.warning("内嵌图片 %d 张超过单文件帽 %d，只识别前 %d 张",
-                       len(picks), _MAX_PAGES, _MAX_PAGES)
-        picks = picks[:_MAX_PAGES]
-    return picks
+    reps: list[int] = []
+    groups: dict[int, list[int]] = {}
+    first: dict[bytes, int] = {}
+    for i in picks:
+        key = hashlib.blake2b(images[i].data, digest_size=16).digest()
+        if key in first:
+            groups[first[key]].append(i)
+            continue
+        first[key] = i
+        reps.append(i)
+        groups[i] = [i]
+    if len(reps) > _MAX_PAGES:
+        logger.warning("内嵌图片 %d 张（去重后）超过单文件帽 %d，只识别前 %d 张",
+                       len(reps), _MAX_PAGES, _MAX_PAGES)
+        reps = reps[:_MAX_PAGES]
+    return reps, {i: groups[i] for i in reps}
+
+
+def _release_unused(images: list[DocxImage], groups: dict[int, list[int]]) -> None:
+    """不送识别的图立刻放掉字节。156 张图的标书原始字节几十上百 MB，而这份列表要在整段
+    识别（分钟量级）里一直活着；worker 一次跑 5 个审查，全留着就是几百 MB 常驻。
+    留下的只有真要发出去的那些——拼回只用得到它们的 block_index。"""
+    keep = {j for g in groups.values() for j in g}
+    for i, img in enumerate(images):
+        if i not in keep:
+            img.data = b""
 
 
 def _big_enough(data: bytes) -> bool:

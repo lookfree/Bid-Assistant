@@ -204,6 +204,35 @@ class TestTablesAndDegradation:
         assert parsed.headings == []
         assert _sec_of(parsed, "身份集成") == "sec-1" and _sec_of(parsed, "终端接入") == "sec-1"
 
+    def test_a_chapter_title_in_its_own_bordered_cell_is_still_a_title(self):
+        """中文标书很常把章节标题套进一个**带边框的单格表**里排版。
+
+        「表格行一律不判标题」这条一刀切会把这一族文档打回「整本一节」——改前的
+        `_split_clauses` 只看文本、根本不知道有表格，反而处理得了。守卫要收窄到
+        **多单元格的数据行**（偏离表首列那种编号才是真噪声）。"""
+        d = Document()
+        for title, body in (("第一章 采购公告", "采购内容：渗透测试服务。"),
+                            ("第二章 评审办法", "综合评分法。")):
+            box = d.add_table(rows=1, cols=1)
+            box.rows[0].cells[0].text = title
+            d.add_paragraph(body)
+        parsed = parse_docx(_bytes(d))
+        assert _titles(parsed) == ["第一章 采购公告", "第二章 评审办法"]
+        assert _sec_of(parsed, "综合评分法") == "sec-2"
+
+    def test_amounts_and_dates_are_not_chapter_titles(self):
+        """金额与日期不许成节：幻影节会顺移它之后所有条款的 id，而 clause id 是前端定位与
+        偏离表引用的键。真实语料实测「2016 年1月20日」被切成过一个节。
+        顿号后面接数字的真标题不能误杀（「2、2012年以来…类似项目案例」）。"""
+        d = Document()
+        for t in ("100.00元", "2026.08 完成", "2016 年1月20日"):
+            d.add_paragraph(t)
+        assert parse_docx(_bytes(d)).headings == []
+        d2 = Document()
+        d2.add_paragraph("2、2012年以来合同金额10万元以上类似项目案例")
+        d2.add_paragraph("详见业绩表。")
+        assert _titles(parse_docx(_bytes(d2))) == ["2、2012年以来合同金额10万元以上类似项目案例"]
+
     def test_document_without_any_heading_stays_one_section(self):
         """纯扫描件式/无任何结构的文档退回今天的单节行为，逐字节不变。"""
         d = Document()
@@ -231,16 +260,45 @@ class TestTablesAndDegradation:
 
     def test_tiny_sections_are_merged_when_the_heuristic_shatters_the_document(self):
         """启发式误把成百上千条编号列表项当标题时，过小的节并入前一节——
-        把粒度拉回「几十节」的量级，而不是让每条列表项独占一节。"""
+        把粒度拉回「几十节」的量级，而不是让每条列表项独占一节。
+
+        **上下界都要断言**：只卡上界的话，一路级联把整篇并成 1 节也算通过——而那正是本次
+        要治的故障形态（实测过：合并只看待并入的那一节、不看已经攒了多少，400 条列表项
+        坍成 1 节）。攒够 `_MIN_SECTION_CHARS` 就该另起一节。"""
         d = Document()
         d.add_paragraph("第一章 技术需求")
         for i in range(400):
             d.add_paragraph(f"{i + 1}.需求项")
             d.add_paragraph("略。")
         parsed = parse_docx(_bytes(d))
-        assert len(parsed.headings) < 50, "过小的节没有并入前一节"
-        # 内容一个字都不能丢：并节只改归属，不删文本
-        assert sum("需求项" in c["text"] for c in parsed.clauses) == 400
+        secs = {c["id"].rsplit("-c", 1)[0] for c in parsed.clauses}
+        assert 5 <= len(secs) <= 50, f"粒度失控：{len(secs)} 节"
+        assert 5 <= len(parsed.headings) <= 50
+        # 内容一个字都不能丢：并节只改归属（标题要么留在 headings，要么转成前一节的条款）
+        assert (sum("需求项" in c["text"] for c in parsed.clauses)
+                + sum("需求项" in h["title"] for h in parsed.headings)) == 400
+
+    def test_the_authors_own_headings_are_never_merged_away(self):
+        """作者标了大纲层级的章**任何模式下都不许被并掉**（docx_sections 模块的不变量）。
+
+        实证形态（真实标书常见）：正文 20 章用了 Heading 1，后面跟一大片**没标样式**的附件
+        清单（几百条手打编号）。附件那片把大纲覆盖度压到一半以下 → 走两种信号并用的模式 →
+        几百个小节 → 触发合并。合并若不认 `styled`，20 个作者标注的章只剩 2 个（实测）：
+        把 Word 的大纲认出来了又扔掉，等于换个入口重造「整本一节」。"""
+        d = Document()
+        for i in range(20):
+            d.add_heading(f"第{i + 1}章 章节", level=1)
+            d.add_paragraph("本章概述。")
+            for j in range(3):
+                d.add_paragraph(f"{j + 1}.要点{j + 1}")
+                d.add_paragraph("本要点正文若干字。")
+        for k in range(200):                       # 作者没标样式的附件清单
+            d.add_paragraph(f"{k + 1}.附件项")
+            d.add_paragraph("略。")
+        parsed = parse_docx(_bytes(d))
+        authored = [h for h in parsed.headings if h["title"].startswith("第")]
+        assert len(authored) == 20, f"作者标注的章只剩 {len(authored)} 个"
+        assert len({c["id"].rsplit("-c", 1)[0] for c in parsed.clauses}) >= 20
 
 
 class TestDownstreamContracts:

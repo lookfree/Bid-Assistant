@@ -26,15 +26,35 @@ __all__ = ["publish_phase", "upload_artifact", "fetch_master_bytes", "package_sc
            "MIN_CHAPTER_CHARS"]
 
 
+def _section_titles(parsed, with_body: set[str]) -> dict[str, str]:
+    """{节号: 喂给模型的标题}。**父级标题并进它子节的标题**（`1.技术偏离表 / 1.1.2 …偏离表`）。
+
+    父级往往只有标题、正文全在子节里（`1.技术偏离表` → `1.1 总体技术规范偏离表` →
+    `1.1.2 核心架构要求偏离表`）,这种节不产章,标题就此丢掉——模型只拿到叶子标题,
+    不知道它归属哪一类要求,与"把节名给模型"的目的正好相抵。
+    只补**自己不产章**的父级：有正文的父级本来就自成一章,再重复给它一遍只是白花预算。"""
+    titles: dict[str, str] = {}
+    pending: list[tuple[int, str]] = []          # 还没被任何一章带上的父级标题
+    for h in parsed.headings or []:
+        level, title = h.get("level") or 0, (h.get("title") or "").strip()
+        pending = [(lv, t) for lv, t in pending if lv < level]   # 同级/更深的到此为止
+        if h.get("sec") in with_body:
+            titles[h["sec"]] = " / ".join([t for _lv, t in pending] + [title]) if title else ""
+        elif title:
+            pending.append((level, title))
+    return titles
+
+
 def _aggregate(parsed, out: dict[str, str]) -> None:
     """一份解析结果按节聚合进 out（追加成 sec-1..N 的连续键）。**节号全局重排**——
     每份文件的节号都从 sec-1 起,直接合并会让后一份把前一份的同号节整节覆盖（静默丢半本标书）。
 
-    **章节标题随它自己那一节的正文一起进去**（节首一个 <h3>）：解析层的口径是「标题另存
-    headings、不进 clauses」,只吃 clauses 的话模型拿到的是一堆没有名字的正文块。docx 认出
-    Word 大纲层级之后一份文件动辄几百条标题,而「1.1.2 核心架构要求偏离表」这种标题正是模型
-    判断这一段在答什么的唯一线索——丢了它,审查就会把文档里明明写着的条款报成「未响应」
-    （2026-08-10 用户实例）。headings 本身照常产出,供 _clause_source 与前端定位使用。
+    **章节标题随它自己那一节的正文一起进去**（节首一个 <h3>,父级标题见 _section_titles）：
+    解析层的口径是「标题另存 headings、不进 clauses」,只吃 clauses 的话模型拿到的是一堆
+    没有名字的正文块。docx 认出 Word 大纲层级之后一份文件动辄几百条标题,而「1.1.2 核心架构
+    要求偏离表」这种标题正是模型判断这一段在答什么的唯一线索——丢了它,审查就会把文档里
+    明明写着的条款报成「未响应」（2026-08-10 用户实例）。headings 本身照常产出,
+    供 _clause_source 与前端定位使用。
     只有标题、没有正文的节仍不产章：那种节没有可体检的内容,凭空多出来只会挤掉别的章的额度。
 
     条款原文与标题**必须转义**再放进标签：标书里"响应时间<30分钟，可用率>99.9%"这类写法在
@@ -42,12 +62,12 @@ def _aggregate(parsed, out: dict[str, str]) -> None:
     下游剥标签时被整段吃掉——模型读到的是"响应时间99.9%",SLA 承诺正好读反。
     喂模型前的还原由消费方各自做（html_to_review_text / present._plain 都会 unescape）。
     quote=False：这里是元素文本不是属性值,引号原样留着更省字数也更贴近原文。"""
-    titles = {h.get("sec"): h.get("title") for h in (parsed.headings or [])}
     by_sec: dict[str, list[str]] = {}
     for c in parsed.clauses:
         m = re.match(r"^(sec-\d+)-", c.get("id") or "")
         if m:
             by_sec.setdefault(m.group(1), []).append(c.get("text") or "")
+    titles = _section_titles(parsed, set(by_sec))
     for sec, texts in by_sec.items():
         html = "".join(f"<p>{escape(t, quote=False)}</p>" for t in texts if t)
         if html:

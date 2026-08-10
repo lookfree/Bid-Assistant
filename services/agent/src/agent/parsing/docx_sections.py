@@ -39,7 +39,13 @@ _CHAPTER = re.compile(r"^第\s*[一二三四五六七八九十百零〇\d]+\s*[�
 _CN_NUMBER = re.compile(r"^[一二三四五六七八九十]+\s*[、．.]")
 # `1.` / `1.1` / `1.1.2` 式多级编号：层级 = 编号段数。分隔符后必须真有标题文字，
 # 否则「100.00」这类金额也会被当成标题。
-_DOTTED_NUMBER = re.compile(r"^(\d+(?:\.\d+)*)\s*[.、\s]\s*(.+)$")
+# 两道防回溯的约束，都是实测出来的（无它则金额/日期成节，幻影节还会顺移其后所有 clause id）：
+# · 每段最多 3 位——章节号不会有四位数，而「2026.08 完成」这类日期会（贪婪匹配到 2026.08 后，
+#   分隔符是空格、后面「完成」有字，整行就成了二级标题）；
+# · **小数点**后面不许再接数字——「100.00元」会退而求其次匹配成「100」+「.」+「00元」，
+#   而「00元」是有字的，照样过关。这一条只卡小数点：「2、2012年以来…类似项目案例」是真标题，
+#   顿号后面接数字很正常，一并卡掉会误杀（真实语料实测有这种行）。
+_DOTTED_NUMBER = re.compile(r"^(\d{1,3}(?:\.\d{1,3})*)\s*(?:[、\s]|\.(?!\d))\s*(.+)$")
 _HAS_WORD = re.compile(r"[一-鿿A-Za-z]")
 # 标题不会以句读收尾。实测真实标书里「1、提供投标须知规定的全部投标文件：正本1份，副本4份。」
 # 这类编号**列表项**短得过得了长度门槛，不看收尾就会被当成章节。
@@ -50,10 +56,14 @@ _SENTENCE_END = "。；;，,、：:."
 class Block:
     """文档顺序上的一个正文块（段落或表格行）。
 
-    level 是 Word 自己标的大纲层级（1..9），None = 正文；table 标记它来自表格
-    （表格块永不参与标题判定）；synthetic 标记这块不是文档自己的内容，而是我们插进去的
-    （内嵌图片的识别文字，见 parsers.splice_docx_images）——识别误差不该改写文档结构，
-    故与表格行同待遇：永不成标题。"""
+    level 是 Word 自己标的大纲层级（1..9），None = 正文；synthetic 标记这块不是文档自己的
+    内容，而是我们插进去的（内嵌图片的识别文字，见 parsers.splice_docx_images）——识别误差
+    不该改写文档结构，故永不成标题。
+
+    table 标记它来自表格的**数据行**（一行多个单元格）：偏离表首列全是「1.1 xxx」这样的编号，
+    放行的话一张表就能切出几十个假节。**整行只有一个单元格的不算数据行**——中文标书很常把
+    章节标题套在一个带边框的单格表里，一刀切会让那一族文档重新变成"整本一节"
+    （见 parsers._docx_lines_in_order）。"""
 
     text: str
     level: int | None = None
@@ -156,11 +166,14 @@ _MERGE_SECTIONS_OVER = 100
 
 
 def _group(blocks: list[Block], levels: list[int | None]) -> list[dict]:
-    """按标题把块分组 → [{title, level, texts}]。标题前的正文自成第一组（无标题）。"""
-    secs: list[dict] = [{"title": None, "level": 0, "texts": []}]
+    """按标题把块分组 → [{title, level, styled, texts}]。标题前的正文自成第一组（无标题）。
+    styled 记住这个标题是不是**作者自己标的**大纲层级——那种标题任何模式下都不许被并掉
+    （见 _merge_tiny_sections）。"""
+    secs: list[dict] = [{"title": None, "level": 0, "styled": False, "texts": []}]
     for b, lv in zip(blocks, levels):
         if lv:
-            secs.append({"title": b.text.strip(), "level": lv, "texts": []})
+            secs.append({"title": b.text.strip(), "level": lv,
+                         "styled": bool(b.level), "texts": []})
         else:
             # 条款文本去首尾空白：与既有 _split_clauses 同口径。前端把审查发现定位回原文时
             # 拿的就是这段文本去比对，留着首行缩进的全角空格会比对不上。
@@ -172,16 +185,28 @@ def _group(blocks: list[Block], levels: list[int | None]) -> list[dict]:
 
 def _merge_tiny_sections(secs: list[dict]) -> list[dict]:
     """过小的节并入前一节；标题文字转成前一节的条款，一个字都不丢。
-    空节（下面直接是子标题）不并——它本来就不产出章，留着标题还能给前端定位。"""
+
+    三条守则，每条都是实测出来的：
+    · **作者自己标的标题永不被并掉**（`styled`）——那是他的意图，而且并掉就等于把大纲层级
+      认出来了又扔了：实测 30 个 Heading 1 的文档一路并成 1 节，正是本次要治的故障形态；
+    · **并到够大就收手**：只看待并入的那一节、不看已经攒了多少，会一路级联——第一次合并之后
+      每一节都往同一节里倒，整篇坍成 1 节（实测 400 条编号列表项 → 1 节）。攒够
+      `_MIN_SECTION_CHARS` 就另起一节，粒度落在 docstring 承诺的「几十节」；
+    · 空节（下面直接是子标题）不并——它本来就不产出章，留着标题还能给前端定位。"""
     if len(secs) <= _MERGE_SECTIONS_OVER:
         return secs
     out: list[dict] = []
+    sizes: list[int] = []                       # 与 out 同步：每节已累积的正文字数
     for s in secs:
         size = sum(len(t) for t in s["texts"])
-        if out and 0 < size < _MIN_SECTION_CHARS:
-            out[-1]["texts"].extend(([s["title"]] if s["title"] else []) + s["texts"])
+        if (out and not s["styled"] and 0 < size < _MIN_SECTION_CHARS
+                and sizes[-1] < _MIN_SECTION_CHARS):
+            extra = ([s["title"]] if s["title"] else []) + s["texts"]
+            out[-1]["texts"].extend(extra)
+            sizes[-1] += sum(len(t) for t in extra)
             continue
         out.append(s)
+        sizes.append(size)
     return out
 
 
@@ -201,24 +226,37 @@ def _emit(secs: list[dict]) -> tuple[list[dict], list[dict]]:
 # 「作者自己把结构标好了」的认定门槛。按**覆盖度**判而不是 any()：中文标书的封面常用内置
 # 「标题 1」排一两行、正文章节却是手打的「第一章」，按 any() 判的话整本就为了那一行封面放弃
 # 编号启发式——构造实证 11 节塌成 1 节，正是本次要治的故障形态换了扇门进来。
-# 判据两条都要过：带层级的段落既要够多（一两条可能只是封面/页眉套了个样式），
-# 也不能被启发式命中数压倒（差得太远说明作者只标了零头）。
+# 判据两条都要过：
+# · 带层级的段落够多（一两条可能只是封面/页眉套了个样式）；
+# · 这些标题**覆盖到全文**——相邻两条标题之间（含开头与结尾）最大的一段空档不超过全文的一半。
+#   空档大过这条线，说明作者只标了前面几页，正文那一大片还得靠编号去切。
+# 覆盖不够就两种信号并用（段落自己标了层级的照用，没标的才猜），而不是整份退回猜——
+# 作者标的那几条照样作数。
 _MIN_STYLED_HEADINGS = 3
-# 4 倍是拿真实语料挑的：仓库 18 份标书里样式标题相对最少的两份（49 条样式 vs 114 条启发式、
-# 29 vs 85）仍判为 styled——它们的启发式命中大半是目录行（「一、磋商响应函\t5」）与日期落款，
-# 认了只会把目录切成几十个假节。倍数再小就会把这两份翻到并用模式上去。
-_STYLED_OVER_HEURISTIC = 4
+# 0.5 是拿真实语料挑的：仓库 18 份标书里带 ≥3 条样式标题的 7 份，最大空档 2.3%–46.4%，
+# 全都在线以内（最松的那份是 110 块的合同只标了 3 条标题）；而「封面套样式、正文手打章」
+# 那种排版的空档在 90% 以上，两者之间没有重叠。
+_MAX_UNCOVERED_SHARE = 0.5
+
+
+def _largest_gap(blocks: list[Block]) -> int:
+    """相邻两条样式标题之间最长的一段普通块（含首条之前、末条之后）。
+    衡量的是「作者的大纲覆盖到哪儿」——只标了封面的文档，这个数就是整篇正文。"""
+    at = [i for i, b in enumerate(blocks) if b.level]
+    if not at:
+        return len(blocks)
+    spans = [at[0], len(blocks) - 1 - at[-1]]
+    spans += [at[i + 1] - at[i] - 1 for i in range(len(at) - 1)]
+    return max(spans)
 
 
 def split_docx_blocks(blocks: list[Block]) -> tuple[list[dict], list[dict]]:
-    """docx 正文块 → ([{id, text}], [{sec, title, level}])。见模块头的判据顺序。
-    覆盖度不够时两种信号并用：段落自己标了层级的照用，没标的才拿编号去猜。"""
-    guesses = [_fallback_level(b) for b in blocks]
+    """docx 正文块 → ([{id, text}], [{sec, title, level}])。见模块头的判据顺序。"""
     n_styled = sum(1 for b in blocks if b.level)
     styled = (n_styled >= _MIN_STYLED_HEADINGS
-              and n_styled * _STYLED_OVER_HEURISTIC >= sum(1 for g in guesses if g))
+              and _largest_gap(blocks) < len(blocks) * _MAX_UNCOVERED_SHARE)
     levels = ([b.level for b in blocks] if styled
-              else [b.level or g for b, g in zip(blocks, guesses)])
+              else [b.level or _fallback_level(b) for b in blocks])
     secs = _group(blocks, levels)
     if not styled:
         secs = _merge_tiny_sections(secs)
