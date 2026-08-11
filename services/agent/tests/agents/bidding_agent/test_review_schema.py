@@ -8,7 +8,7 @@ _SAMPLE = {
     "items": [{"level": "高风险", "tone": "destructive", "title": "缺少 ISO27001 认证",
                "chapter_title": "企业资质与信誉证明", "tender_ref": "对应：第二章 资格要求（★不可偏离）",
                "advice": "补 ISO27001 证书并附商务标第四章，否则废标", "target_tab": "business", "target_id": "b4",
-               "anchor_text": "ISO27001 认证证书复印件", "clause_ids": ["sec-2-c1"]}],
+               "anchor_text": "ISO27001 认证证书复印件"}],
     "passed_items": ["投标报价未超最高限价", "投标函格式与签章合规"],
 }
 
@@ -56,7 +56,7 @@ def test_findings_and_passed_items_are_required_in_the_tool_schema():
 def _item(**over):
     base = {"level": "高风险", "tone": "destructive", "title": "缺少 ISO27001",
             "advice": "补证书并附商务标第四章", "target_tab": "business", "target_id": "b4",
-            "anchor_text": "ISO27001 认证证书复印件", "clause_ids": []}
+            "anchor_text": "ISO27001 认证证书复印件"}
     return {**base, **over}
 
 
@@ -88,18 +88,26 @@ def test_different_items_are_kept():
     assert len(r.items) == 2
 
 
-def test_items_with_different_clause_ids_are_not_collapsed():
-    """标题/建议撞车，但引用的是不同★条款——是两条不同的发现（同类问题在多个条款上
-    各出现一次），去重键不带 clause_ids 会把它们错误地塌缩成一条，漏报剩下的条款。"""
+def test_items_at_different_locations_are_not_collapsed():
+    """标题/建议撞车，但指向的位置不同——是两条不同的发现（同类问题在多处各出现一次），
+    去重键分不开就会把它们错误地塌缩成一条，漏报剩下的那些位置。
+
+    位置是唯一能分辨它们的东西：审查载荷里没有任何内部条款 id（见 RiskFinding 上的说明），
+    模型能给的只有章（target_id）与章内锚点（anchor_text）。
+    反向变异：把 target_id 或 anchor_text 从去重键里拿掉，本用例变红。"""
     r = RiskReport(score=80, items=[
-        _item(clause_ids=["sec-8-c95"]), _item(clause_ids=["sec-9-c12"])], passed_items=[])
+        _item(target_id="t1"), _item(target_id="b2")], passed_items=[])
+    assert len(r.items) == 2
+    r = RiskReport(score=80, items=[
+        _item(anchor_text="技术偏离表"), _item(anchor_text="商务偏离表")], passed_items=[])
     assert len(r.items) == 2
 
 
-def test_identical_items_with_same_clause_ids_still_collapse():
-    """引用条款也一样才是真重复——去重不能因为加了 clause_ids 就失效。"""
+def test_identical_items_at_the_same_location_still_collapse():
+    """位置也一样才是真重复——去重不能因为键里加了位置就整个失效。"""
     r = RiskReport(score=80, items=[
-        _item(clause_ids=["sec-8-c95"]), _item(clause_ids=["sec-8-c95"])], passed_items=[])
+        _item(target_id="b4", anchor_text="资质证书"),
+        _item(target_id="b4", anchor_text="资质证书")], passed_items=[])
     assert len(r.items) == 1
 
 
@@ -132,7 +140,7 @@ def test_anchor_text_is_required_but_may_be_empty():
     from agent.agents.bidding_agent.schemas import RiskFinding
 
     base = dict(level="高风险", tone="destructive", title="缺 ISO27001",
-                advice="补证书", target_tab="business", target_id="b4", clause_ids=[])
+                advice="补证书", target_tab="business", target_id="b4")
     try:
         RiskFinding(**base)
     except ValidationError:
@@ -144,28 +152,28 @@ def test_anchor_text_is_required_but_may_be_empty():
     assert RiskFinding(**base, anchor_text="采购需求偏离表（附件5-1）").anchor_text == "采购需求偏离表（附件5-1）"
 
 
-def test_clause_ids_is_required_but_may_be_empty_in_the_tool_schema():
-    """clause_ids 进了去重键（见 test_items_with_different_clause_ids_are_not_collapsed）：
-    弱模型对可选且无描述的字段整个省略（2026-08-01 教训）——一旦省略，全部发现的 clause_ids
-    都落回 []，去重键退化成 (title, advice)，同类问题在不同★条款上各出现一次会被误判重复
-    塌缩掉，漏报剩下的条款。字段必须进 required（可空数组，不强求非空）。"""
-    from pydantic import ValidationError
-    from agent.agents.bidding_agent.schemas import RiskFinding
-
+def test_the_tool_schema_no_longer_asks_for_clause_ids():
+    """审查载荷已剥光所有内部条款 id（nodes/common.strip_clause_ids），模型无从引用——
+    工具 schema 里不能再出现 clause_ids：留着只会逼模型凭空编一个，编出来的 id 不展示、
+    不清洗，却会落库并让去重键假装更"唯一"。
+    反向变异：把 RiskFinding.clause_ids 加回去，本用例变红。"""
     tool, _ = make_submit_tool("submit_risk_report", RiskReport, "提交审查报告")
     from langchain_core.utils.function_calling import convert_to_openai_tool
     params = convert_to_openai_tool(tool)["function"]["parameters"]
     item = params["properties"]["items"]["items"]   # RiskFinding 被内联在数组项里
-    assert "clause_ids" in item["required"], "clause_ids 不是必填，模型可以整个省掉 → 去重键退化"
-    assert item["properties"]["clause_ids"].get("description")
+    assert "clause_ids" not in item["properties"], "工具 schema 里还在向模型要条款 id"
+    assert "clause_ids" not in item.get("required", [])
+    # 定位口径还在：去重与前端跳转都靠它们，摘 clause_ids 不能顺手带走这两个
+    assert {"target_id", "anchor_text"} <= set(item["required"])
 
-    base = dict(level="高风险", tone="destructive", title="缺 ISO27001", advice="补证书",
-                target_tab="business", target_id="b4", anchor_text="")
-    try:
-        RiskFinding(**base)
-    except ValidationError:
-        pass
-    else:
-        raise AssertionError("clause_ids 缺席竟然通过了校验——弱模型会直接省略它")
 
-    assert RiskFinding(**base, clause_ids=[]).clause_ids == []
+def test_legacy_findings_carrying_clause_ids_still_validate():
+    """向后兼容实证：字段摘掉之前落库的审查结果，每条发现都带 clause_ids。
+
+    这些结果以 JSON 存在 project_steps.result 里、前端直接吃，本仓没有把它们反序列化回
+    RiskFinding 的路径（review 节点只从模型当场提交的结果构造 RiskReport）。万一将来有人
+    这么做，也不能炸——pydantic 默认 extra="ignore"，多余的键被丢掉而不是报错。"""
+    legacy = _item(clause_ids=["sec-8-c95"], evidence_clause_ids=["sec-9-c1"])
+    r = RiskReport(score=80, items=[legacy], passed_items=[])
+    assert len(r.items) == 1 and r.items[0].target_id == "b4"
+    assert "clause_ids" not in r.items[0].model_dump()      # 旧键被丢掉，不会跟着新结果落库

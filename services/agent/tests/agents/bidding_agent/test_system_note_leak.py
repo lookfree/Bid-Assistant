@@ -122,8 +122,7 @@ class TestPayload:
 
 def _finding(title: str, advice: str = "补齐相应材料", **kw) -> dict:
     return {"level": "中风险", "tone": "warning", "title": title, "advice": advice,
-            "target_tab": "business", "target_id": "b4", "anchor_text": "",
-            "clause_ids": [], **kw}
+            "target_tab": "business", "target_id": "b4", "anchor_text": "", **kw}
 
 
 class TestReportFilter:
@@ -213,8 +212,8 @@ class TestReportFilter:
 
 
 class TestDedupeKey:
-    """审查载荷里已经没有任何内部条款 id（提纲/构成清单/读标三处都剥过），模型无从填
-    RiskFinding.clause_ids → 去重键不能只靠它，否则同类问题会塌缩成一条、漏报其余条款。"""
+    """审查载荷里已经没有任何内部条款 id（提纲/构成清单/读标三处都剥过），发现本身也就不带
+    条款 id → 去重键只能靠位置分辨，否则同类问题会塌缩成一条、漏报其余位置。"""
 
     def test_same_wording_on_different_chapters_stays_two_findings(self):
         a = _finding("★条款未登入偏离表", "在偏离表中逐条登记", target_id="t1", anchor_text="技术偏离表")

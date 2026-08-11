@@ -11,7 +11,7 @@ _RISK_ARGS = {
     "items": [{"level": "高风险", "tone": "destructive", "title": "缺少 ISO27001 认证",
                "chapter_title": "企业资质与信誉证明", "tender_ref": "对应：第二章 资格要求（★）",
                "advice": "补证书否则废标", "target_tab": "business", "target_id": "b4",
-               "anchor_text": "ISO27001 认证证书复印件", "clause_ids": []}],
+               "anchor_text": "ISO27001 认证证书复印件"}],
     "passed_items": ["报价未超限价"],
 }
 

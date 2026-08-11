@@ -232,20 +232,15 @@ class RiskFinding(BaseModel):
             "必须是正文里真实出现的文字，不可改写、不可自己编；实在没有可摘的就给空字符串。"
         ),
     )
-    # 去重键要用它区分"标题/建议撞车但引用条款不同"的两条发现（同类问题在多条★条款上
-    # 各出现一次，是不同的发现，不能被去重塌缩成一条）。字段本身是内部键，不清洗、不展示。
-    # required（不是 default_factory）：字段进了去重键（见 RiskReport._derive_counts），
-    # 弱模型对"可选且无描述"的字段整个省略（2026-08-01 教训）——一旦省略，全部发现的
-    # clause_ids 都落回 []，去重键退化成 (title, advice)，不同条款上的同类问题会被误判重复
-    # 塌缩成一条，漏报剩下的条款。与 advice/anchor_text 同一模式：required 但允许空数组。
-    # 2026-08-11：审查载荷已不再携带任何内部条款 id（那正是"模型把 sec-xxx 抄进结论、
-    # 又被自己的过滤当成用户文件的毛病"那轮要治的面），模型**无从引用**——原描述还在要它
-    # "填对应的条款 id"，只会逼它凭空编；编出来的 id 不展示、不清洗却会落库，并让去重键
-    # 变得更"唯一"，把去重放宽面再放宽一档。故改成明令交空数组：**schema 形状与 required
-    # 一个字节不动**（避免 2026-08-01 弱模型省字段那类风险），只换描述文字堵掉幻觉来源。
-    # 恢复条款级引用要另排活：给载荷带回可引用的定位口径，再把描述改回去。
-    clause_ids: list[str] = Field(
-        ..., description="本步不提供可引用的条款 id，一律提交空数组 []（该字段仍必填）")
+    # 【这里为什么没有条款 id 字段】审查载荷在喂给模型之前，clause_ids / evidence_clause_ids
+    # 两个键已被整个剥掉（提纲、构成清单、读标三处，见 nodes/review 与 nodes/common.strip_clause_ids）。
+    # 起因：模型把 sec-8-c95 这类内部编号抄进给评委看的结论，转头又被我们自己的过滤当成
+    # "投标文件里的多余编号"报成一条风险（2026-08-11 生产实测）。模型手上既然没有 id 可引用，
+    # 留一个 clause_ids 字段只有两种结局——恒为空（毫无用处），或者被逼着凭空编一个
+    # （不展示、不清洗，却会落库，还让去重键假装更"唯一"、把去重放宽）。故整个摘掉。
+    # 章节 id（target_id）不在此列：它是模型能看见、也必须填的定位键，前端靠它跳转。
+    # 将来若要恢复条款级引用：**先给审查载荷带回一套模型看得见、能对上原文的定位口径**
+    # （可引用的编号或摘录），再据此加字段——而不是先加一个模型填不出来的字段。
 
     @model_validator(mode="after")
     def _strip_blank(self):
@@ -284,7 +279,7 @@ class RiskReport(BaseModel):
         # 判据与风险项共用，同样只认注记前缀与编号占位符，不认真条款 id。
         self.passed_items = [c for c in (clean_internal_ids(p) for p in self.passed_items)
                              if c and not mentions_system_note(c)]
-        seen: set[tuple[str, str, tuple[str, ...], str, str]] = set()
+        seen: set[tuple[str, str, str, str]] = set()
         uniq = []
         for i in self.items:
             # 标题清洗前非空、清洗后变空——说明整个标题就是个内部 id/字段名（如「sec-8-c95」），
@@ -304,14 +299,11 @@ class RiskReport(BaseModel):
                 logger.warning("risk finding dropped: 该发现指向系统注记/编号占位符而非投标文件内容 (title=%r)",
                                i.title[:60])
                 continue
-            # 引用条款不同的两条发现，标题/建议文字可能撞车（同类问题分别命中不同★条款）——
-            # 去重键要能分得开，否则会把它们错误地塌缩成一条，漏报剩下的条款。
-            # **不能只靠 clause_ids**：审查载荷里已经没有任何内部条款 id 了（提纲/构成清单/读标
-            # 三处都剥过，见 nodes/review 与 common._item_for_model），模型无从填起，这一项恒为
-            # 空元组，去重键就退化成 (title, advice) ——正是上面这句注释要防的那种塌缩。
-            # 补上位置：同一条问题落在不同章、或章内不同处，就是不同的发现。
-            key = (i.title.strip(), i.advice.strip(), tuple(sorted(set(i.clause_ids))),
-                   i.target_id.strip(), i.anchor_text.strip())
+            # 位置不同的两条发现，标题/建议文字可能撞车（同类问题分别命中多处）——去重键要能
+            # 分得开，否则会把它们错误地塌缩成一条，漏报剩下的那些位置。
+            # 能分辨它们的**只有位置**：审查载荷里没有任何内部条款 id（见 RiskFinding 上的说明），
+            # 发现本身也就不带条款 id；同一条问题落在不同章、或同章内不同处，就是不同的发现。
+            key = (i.title.strip(), i.advice.strip(), i.target_id.strip(), i.anchor_text.strip())
             if key in seen:
                 continue
             seen.add(key)
