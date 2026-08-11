@@ -205,16 +205,34 @@ class RiskFinding(BaseModel):
     # 「响应文件构成缺漏——缺少」，整改建议一片空白——这样的卡片对用户毫无价值。
     # 此前 advice 是可选带默认值（顾虑"漏填让整单被拒"多一种失败模式），代价是空建议直接发给
     # 付费用户。_forced_submit 会把校验错误喂回模型重试 3 轮，正是为这种漏填准备的。
+    # 描述里**不举被禁格式的例子**：曾经写着"不得出现 …、sec-8-c95 这类内部字段名与编号"，
+    # 而工具 schema 是随每次审查请求一起发出去的——那两处字面量是整个请求里仅剩的内部编号样例
+    # （系统提示与用户消息都已剥干净）。给模型看一个被禁格式的样例，本身就是在示范它
+    # （本仓守则，见 test_clause_id_boundary.TestDeviationTable）：2026-08-11 线上那条
+    # 「投标文件多处出现章节编号(如 sec-xxx)…未作清理」，模型很可能就是照着这里学的写法。
+    # 禁令保留，只是改成不带样例的说法。
     title: str = Field(
         ..., min_length=2,
-        description=("风险点标题：一句话说清缺什么/哪里不符，必须写完整。"
-                     "用业务语言，**不得出现 required_structure、clause_ids、sec-8-c95 这类内部字段名与编号**"))
-    chapter_title: str = Field(default="", description="对应的标书章节标题，用于把问题落到具体章节")
+        description=("风险点标题：一句话说清缺什么/哪里不符，必须写完整。**点名具体是哪一条要求/哪一份材料**"
+                     "（照抄材料里的名称），不写「★条款未登入偏离表」这种笼统标题——同一处的多条问题"
+                     "各写各的名称，否则会被当成重复的一条。用业务语言，不得出现内部字段名或内部编号"))
+    # 这两个字段 required（允许空串）：同类里 title/advice/target_id/anchor_text 都因 2026-08-01
+    # 那次教训提成了必填（Qwen3.6-35B 把"可选且无描述"的字段整个省略），唯独这两个漏了。一旦省略，
+    # 风险卡与导出 docx 的「所在章节 / 风险出处」两列全是「—」——报告说有问题，却不说在哪。
+    chapter_title: str = Field(
+        ..., description="对应的标书章节标题，用于把问题落到具体章节；确实对不上给空字符串（**不可省略本字段**）")
+    # 出处**只许引用材料里确实出现过的名称**。这个字段直接渲染成风险卡的「所在章节」、还印进导出的
+    # 废标体检报告 docx——编造的引用就是拿假出处糊付费用户。而审查载荷里根本没有招标文件的章节号：
+    # slim_read 的白名单只留 project_meta/categories/scoring/risk_summary，doc_headings（招标章节标题）
+    # 与 packages 都不在其中（2026-08-11 实测转储确认）。原描述却命令模型「写成"对应：第X章 xxx"」——
+    # 模型手上没有第X章可查，只能编。可引用的名称是有的：读标条目标题、废标红线原句、构成清单条目名、
+    # 评分项名称，故收敛到"照抄其一"，并明令不得自造章节号。
     tender_ref: str = Field(
-        default="",
-        description=('对应的招标条款，写成"对应：第X章 xxx（★不可偏离）"。'
-                     "**只写人看得懂的条款出处**：不要带 sec-8-c95 这类内部条款 id，"
-                     "也不要出现 required_structure、clause_ids 这类字段名——用户看不懂，只会以为是乱码"))
+        ...,
+        description=("对应的招标要求出处：**只能照抄材料里确实出现过的名称**——读标条目的标题、"
+                     "废标红线原句、构成清单条目名、评分项名称，取其一写成「对应：xxx（★不可偏离）」。"
+                     "材料里没有给出招标文件的章节号，**不得自造「第X章」这类编号**，"
+                     "也不得写内部字段名或内部编号；找不到可照抄的名称就给空字符串（**不可省略本字段**）"))
     advice: str = Field(..., min_length=2,
                         description="整改建议**必填**：具体怎么改、补什么材料、放到哪一章，一句话讲清；不得留空")
     target_tab: Literal["tech", "business"]
@@ -232,12 +250,15 @@ class RiskFinding(BaseModel):
             "必须是正文里真实出现的文字，不可改写、不可自己编；实在没有可摘的就给空字符串。"
         ),
     )
-    # 【这里为什么没有条款 id 字段】审查载荷在喂给模型之前，clause_ids / evidence_clause_ids
-    # 两个键已被整个剥掉（提纲、构成清单、读标三处，见 nodes/review 与 nodes/common.strip_clause_ids）。
-    # 起因：模型把 sec-8-c95 这类内部编号抄进给评委看的结论，转头又被我们自己的过滤当成
-    # "投标文件里的多余编号"报成一条风险（2026-08-11 生产实测）。模型手上既然没有 id 可引用，
-    # 留一个 clause_ids 字段只有两种结局——恒为空（毫无用处），或者被逼着凭空编一个
-    # （不展示、不清洗，却会落库，还让去重键假装更"唯一"、把去重放宽）。故整个摘掉。
+    # 【这里为什么没有条款 id 字段】审查载荷在喂给模型之前，内部条款 id 已被剥干净，三处各走各的路：
+    #   · 提纲、构成清单 —— nodes/review 显式过 common.strip_clause_ids（剥 clause_ids/evidence_clause_ids）；
+    #   · 读标结论   —— 走 compress_read 内的 common._item_for_model（条目与评分行都按白名单丢键）。
+    # 别把读标那一路也记成 strip_clause_ids：照着错的记忆往 slim_read 的白名单里加个新子表，
+    # sec-19-c129 就会重新泄回审查提示词。
+    # 起因：模型把内部编号抄进给评委看的结论，转头又被我们自己的过滤当成"投标文件里的多余编号"
+    # 报成一条风险（2026-08-11 生产实测）。模型手上既然没有 id 可引用，留一个 clause_ids 字段只有
+    # 两种结局——恒为空（毫无用处），或者被逼着凭空编一个（不展示、不清洗，却会落库，还让去重键
+    # 假装更"唯一"、把去重放宽）。故整个摘掉。
     # 章节 id（target_id）不在此列：它是模型能看见、也必须填的定位键，前端靠它跳转。
     # 将来若要恢复条款级引用：**先给审查载荷带回一套模型看得见、能对上原文的定位口径**
     # （可引用的编号或摘录），再据此加字段——而不是先加一个模型填不出来的字段。
@@ -279,7 +300,7 @@ class RiskReport(BaseModel):
         # 判据与风险项共用，同样只认注记前缀与编号占位符，不认真条款 id。
         self.passed_items = [c for c in (clean_internal_ids(p) for p in self.passed_items)
                              if c and not mentions_system_note(c)]
-        seen: set[tuple[str, str, str, str]] = set()
+        seen: set[tuple[str, str, str, str, str]] = set()
         uniq = []
         for i in self.items:
             # 标题清洗前非空、清洗后变空——说明整个标题就是个内部 id/字段名（如「sec-8-c95」），
@@ -299,11 +320,26 @@ class RiskReport(BaseModel):
                 logger.warning("risk finding dropped: 该发现指向系统注记/编号占位符而非投标文件内容 (title=%r)",
                                i.title[:60])
                 continue
-            # 位置不同的两条发现，标题/建议文字可能撞车（同类问题分别命中多处）——去重键要能
-            # 分得开，否则会把它们错误地塌缩成一条，漏报剩下的那些位置。
-            # 能分辨它们的**只有位置**：审查载荷里没有任何内部条款 id（见 RiskFinding 上的说明），
-            # 发现本身也就不带条款 id；同一条问题落在不同章、或同章内不同处，就是不同的发现。
-            key = (i.title.strip(), i.advice.strip(), i.target_id.strip(), i.anchor_text.strip())
+            # anchor_text 抄到了我们自己的注记 → 清空它，但**这条发现照留**。
+            # 喂模型的章节文本里混着注记（strip_inline_images 把 <img> 换成「【系统注记·图片】」，
+            # 预算截断也会追加一条），而落库的是**未经处理的原始 HTML**：模型照"摘抄邻近原文"抄了
+            # 注记，前端（lib/anchor.ts）在原文里永远匹配不到，静默退化成"跳到章顶"——正是
+            # 2026-08-07 那条「点哪条都跳同一个地方」的投诉。清空锚点只是退回章顶跳转（难用），
+            # 丢掉整条发现却可能是废标（保命优先级：宁可留噪音，绝不删真发现）。
+            # 去重仍用**清空前**的原值：两条各自抄了不同注记的发现，清空后位置判据会凭空撞车，
+            # 清理动作本身就成了塌缩的来源。原值只进键、不出现在任何交付物里。
+            anchor_key = i.anchor_text.strip()
+            if mentions_system_note(i.anchor_text):
+                logger.warning("risk finding anchor cleared: 锚点抄到了系统注记 (title=%r)", i.title[:60])
+                i.anchor_text = ""
+            # 同一处的多条发现，标题/建议文字可能撞车——去重键要能分得开，否则会塌缩成一条，
+            # 漏报其余。位置（target_id/anchor_text）之外**必须再有一个内容级判据**：提示词第 7 条
+            # 要求偏离表里每条漏登的★条款各出一条发现，而锚点说明又要求缺失类问题摘抄"邻近原文
+            # （如表头行）"——于是十条漏登★条款的 target_id 相同、anchor_text 同为表头行，
+            # 只要标题写得笼统就会十条并一条。tender_ref 是每条发现各自的招标依据（照抄材料里的
+            # 名称，见字段描述），补的就是这个判据；title 那边也已明令点名具体条款。
+            key = (i.title.strip(), i.advice.strip(), i.tender_ref.strip(),
+                   i.target_id.strip(), anchor_key)
             if key in seen:
                 continue
             seen.add(key)

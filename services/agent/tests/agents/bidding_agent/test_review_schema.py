@@ -55,6 +55,7 @@ def test_findings_and_passed_items_are_required_in_the_tool_schema():
 # _forced_submit 会把校验错误喂回模型重试 3 轮，正是为这种情况准备的。
 def _item(**over):
     base = {"level": "高风险", "tone": "destructive", "title": "缺少 ISO27001",
+            "chapter_title": "企业资质与信誉证明", "tender_ref": "对应：ISO27001 认证（★不可偏离）",
             "advice": "补证书并附商务标第四章", "target_tab": "business", "target_id": "b4",
             "anchor_text": "ISO27001 认证证书复印件"}
     return {**base, **over}
@@ -111,6 +112,59 @@ def test_identical_items_at_the_same_location_still_collapse():
     assert len(r.items) == 1
 
 
+def test_many_star_clauses_missing_from_one_table_stay_separate_findings():
+    """同一张偏离表里漏登的十条★条款：target_id 相同、anchor_text 同为表头行，
+    只有 tender_ref（各自的招标依据）不同——十条必须各留一条。
+
+    这是废标级漏报的形态：提示词第 7 条要求每条漏登的★条款各出一条发现，锚点说明又要求
+    缺失类问题摘抄"邻近原文（如表头行）"，位置判据于是全部撞车。去重键少了内容级判据，
+    十条就并成一条、漏报其余九条。
+    断言写成**下界**：宁可多留噪音，也不许少一条真发现。
+    反向变异：把 tender_ref 从去重键里拿掉，本用例立刻变红（10 → 1）。"""
+    items = [_item(title="★条款未登入偏离表", advice="在偏离表中逐条登记",
+                   target_id="t5", anchor_text="采购需求偏离表（附件5-1）",
+                   tender_ref=f"对应：★技术要求{n}（★不可偏离）") for n in range(10)]
+    r = RiskReport(score=40, items=items, passed_items=[])
+    assert len(r.items) >= 10, f"十条漏登★条款塌缩成了 {len(r.items)} 条，其余全部漏报"
+    assert r.high >= 10
+
+
+def test_an_anchor_quoting_a_system_note_is_cleared_but_the_finding_survives():
+    """锚点抄到我们自己的注记 → 清空锚点、**保留发现**。
+
+    喂模型的章节文本里 <img> 已被换成「【系统注记·图片】」，模型照"摘抄邻近原文"抄了它；
+    而落库的是未经处理的原始 HTML，前端拿这种锚点永远匹配不到，静默退化成跳章顶。
+    清空只是退回章顶跳转，删掉整条发现却可能让用户带着一份要废标的标书去投。
+    反向变异：去掉 _derive_counts 里对 anchor_text 的注记判定，本用例变红。"""
+    from agent.parsing.types import SYSTEM_NOTE_PREFIX
+
+    noted = _item(title="缺少法定代表人身份证明", advice="补身份证复印件并盖章",
+                  anchor_text=f"{SYSTEM_NOTE_PREFIX}·图片】")
+    r = RiskReport(score=60, items=[noted], passed_items=[])
+    assert len(r.items) == 1, "发现被整条丢掉了——锚点脏不是删真发现的理由"
+    assert r.items[0].anchor_text == ""
+    assert r.items[0].title == "缺少法定代表人身份证明"
+
+
+def test_clearing_dirty_anchors_does_not_collapse_two_findings():
+    """清理锚点不许**制造**塌缩：两条发现各自抄了不同的注记，清空后位置判据会凭空撞车。
+    去重用清空前的原值，两条都得留下（宁可留噪音，绝不删真发现）。
+    反向变异：把去重键改回读清空后的 i.anchor_text，本用例变红（2 → 1）。"""
+    from agent.parsing.types import SYSTEM_NOTE_PREFIX
+
+    a = _item(anchor_text=f"{SYSTEM_NOTE_PREFIX}·图片识别 第1张】")
+    b = _item(anchor_text=f"{SYSTEM_NOTE_PREFIX}·图片识别 第7张】")
+    r = RiskReport(score=60, items=[a, b], passed_items=[])
+    assert len(r.items) >= 2, "清空脏锚点顺带把两条发现并成了一条"
+    assert [x.anchor_text for x in r.items] == ["", ""]
+
+
+def test_a_real_anchor_is_never_touched():
+    """误伤检验：正文里真摘出来的锚点原样保留（否则等于把定位功能整个关了）。"""
+    r = RiskReport(score=60, items=[_item(anchor_text="采购需求偏离表（附件5-1）")], passed_items=[])
+    assert r.items[0].anchor_text == "采购需求偏离表（附件5-1）"
+
+
 def test_title_emptied_by_cleanup_is_dropped_not_shipped():
     """标题清洗前非空、清洗后变空——整个标题就是个内部 id，不是真发现。
     min_length 只挡清洗前的原值，挡不住这种；必须丢弃这一条，不能连累整份报告失败。"""
@@ -139,8 +193,8 @@ def test_anchor_text_is_required_but_may_be_empty():
     from pydantic import ValidationError
     from agent.agents.bidding_agent.schemas import RiskFinding
 
-    base = dict(level="高风险", tone="destructive", title="缺 ISO27001",
-                advice="补证书", target_tab="business", target_id="b4")
+    base = dict(level="高风险", tone="destructive", title="缺 ISO27001", chapter_title="企业资质",
+                tender_ref="对应：ISO27001 认证", advice="补证书", target_tab="business", target_id="b4")
     try:
         RiskFinding(**base)
     except ValidationError:
@@ -152,28 +206,66 @@ def test_anchor_text_is_required_but_may_be_empty():
     assert RiskFinding(**base, anchor_text="采购需求偏离表（附件5-1）").anchor_text == "采购需求偏离表（附件5-1）"
 
 
-def test_the_tool_schema_no_longer_asks_for_clause_ids():
-    """审查载荷已剥光所有内部条款 id（nodes/common.strip_clause_ids），模型无从引用——
-    工具 schema 里不能再出现 clause_ids：留着只会逼模型凭空编一个，编出来的 id 不展示、
-    不清洗，却会落库并让去重键假装更"唯一"。
-    反向变异：把 RiskFinding.clause_ids 加回去，本用例变红。"""
+def test_the_tool_schema_neither_asks_for_clause_ids_nor_shows_one():
+    """工具 schema 随每次审查请求一起发给模型，里面**一个内部条款 id 都不许有**——
+    不许有 clause_ids 这个字段，也不许在任何字段说明里举 sec-8-c95 这类样例。
+
+    读标条目、提纲、构成清单在载荷里都已剥干净（见 RiskFinding 上的说明），schema 曾是整个
+    请求里仅剩的内部编号样例；而本仓守则是"给模型看一个被禁格式的样例，本身就是在示范它"
+    （test_clause_id_boundary.TestDeviationTable 同款）。禁令保留，样例不留。
+    反向变异：把 clause_ids 字段或描述里的 sec-8-c95 加回去，本用例变红。"""
+    import json
+    import re
+
     tool, _ = make_submit_tool("submit_risk_report", RiskReport, "提交审查报告")
     from langchain_core.utils.function_calling import convert_to_openai_tool
-    params = convert_to_openai_tool(tool)["function"]["parameters"]
-    item = params["properties"]["items"]["items"]   # RiskFinding 被内联在数组项里
-    assert "clause_ids" not in item["properties"], "工具 schema 里还在向模型要条款 id"
-    assert "clause_ids" not in item.get("required", [])
-    # 定位口径还在：去重与前端跳转都靠它们，摘 clause_ids 不能顺手带走这两个
-    assert {"target_id", "anchor_text"} <= set(item["required"])
+    schema = convert_to_openai_tool(tool)
+    text = json.dumps(schema, ensure_ascii=False)          # 发出去的是序列化后的全文
+    assert "clause_ids" not in text, "工具 schema 全文里还有 clause_ids"
+    assert not re.search(r"sec-\d+-c\d+", text), \
+        f"工具 schema 全文里还有内部条款 id 样例：{re.findall(r'sec-[0-9]+-c[0-9]+', text)}"
+
+    item = schema["function"]["parameters"]["properties"]["items"]["items"]  # RiskFinding 内联在数组项里
+    assert "clause_ids" not in item["properties"]
+    # 定位与出处口径还在：去重、前端跳转、导出报告都靠它们，摘 clause_ids 不能顺手带走
+    assert {"target_id", "anchor_text", "tender_ref", "chapter_title"} <= set(item.get("required", []))
 
 
-def test_legacy_findings_carrying_clause_ids_still_validate():
-    """向后兼容实证：字段摘掉之前落库的审查结果，每条发现都带 clause_ids。
+def test_chapter_title_and_tender_ref_are_required_but_may_be_empty():
+    """「所在章节」与「风险出处」两列：必填、可空。
 
-    这些结果以 JSON 存在 project_steps.result 里、前端直接吃，本仓没有把它们反序列化回
-    RiskFinding 的路径（review 节点只从模型当场提交的结果构造 RiskReport）。万一将来有人
-    这么做，也不能炸——pydantic 默认 extra="ignore"，多余的键被丢掉而不是报错。"""
-    legacy = _item(clause_ids=["sec-8-c95"], evidence_clause_ids=["sec-9-c1"])
-    r = RiskReport(score=80, items=[legacy], passed_items=[])
-    assert len(r.items) == 1 and r.items[0].target_id == "b4"
-    assert "clause_ids" not in r.items[0].model_dump()      # 旧键被丢掉，不会跟着新结果落库
+    必填——弱模型对"可选"的字段的做法是整个省略（2026-08-01 Qwen3.6-35B 实测），而这两个字段
+    直接渲染成风险卡与导出 docx 的两列；一旦省略，报告说有问题却不说在哪。
+    可空——确实对不上时给空串，好过逼模型编一个出处（那正是 tender_ref 描述收敛要治的病）。
+    反向变异：把任一字段改回 default=""，本用例变红。"""
+    from pydantic import ValidationError
+    from agent.agents.bidding_agent.schemas import RiskFinding
+
+    base = dict(level="高风险", tone="destructive", title="缺 ISO27001", advice="补证书",
+                target_tab="business", target_id="b4", anchor_text="")
+    for missing in ("chapter_title", "tender_ref"):
+        kw = {k: v for k, v in
+              dict(chapter_title="企业资质", tender_ref="对应：ISO27001 认证").items() if k != missing}
+        try:
+            RiskFinding(**base, **kw)
+        except ValidationError:
+            pass
+        else:
+            raise AssertionError(f"{missing} 缺席竟然通过了校验——弱模型会直接省略它")
+
+    f = RiskFinding(**base, chapter_title="", tender_ref="")
+    assert f.chapter_title == "" and f.tender_ref == ""
+
+
+def test_tender_ref_description_bans_inventing_chapter_numbers():
+    """出处只许照抄材料里出现过的名称。载荷里根本没有招标文件的章节号（slim_read 的白名单
+    只留 project_meta/categories/scoring/risk_summary，doc_headings 不在其中），而这个字段
+    直接印进风险卡与导出的 docx——描述里若还命令模型「写成"对应：第X章 xxx"」，它只能编，
+    编出来的假出处会被当成权威引用展示给付费用户。
+    反向变异：把"不得自造「第X章」"从描述里删掉，本用例变红。"""
+    from agent.agents.bidding_agent.schemas import RiskFinding
+
+    desc = RiskFinding.model_fields["tender_ref"].description
+    assert "第X章" in desc and "不得自造" in desc
+    assert "照抄" in desc                       # 正面指路：抄材料里有的名称
+    assert "空字符串" in desc                   # 抄不到时的出路，而不是编一个

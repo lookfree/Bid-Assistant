@@ -108,7 +108,7 @@ class TestAppliedEverywhere:
 
     def test_review_finding(self):
         f = RiskFinding(level="高风险", tone="destructive", title="缺件（sec-8-c95）",
-                        advice="补齐", target_tab="business", target_id="b1",
+                        advice="补齐", target_tab="business", target_id="b1", chapter_title="",
                         anchor_text="", tender_ref="对应：构成要求（sec-8-c95）")
         assert "sec-8-c95" not in f.title and "sec-8-c95" not in f.tender_ref
 

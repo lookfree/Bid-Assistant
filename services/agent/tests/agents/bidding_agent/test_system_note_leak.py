@@ -122,6 +122,7 @@ class TestPayload:
 
 def _finding(title: str, advice: str = "补齐相应材料", **kw) -> dict:
     return {"level": "中风险", "tone": "warning", "title": title, "advice": advice,
+            "chapter_title": "企业资质", "tender_ref": "对应：资格要求",
             "target_tab": "business", "target_id": "b4", "anchor_text": "", **kw}
 
 
