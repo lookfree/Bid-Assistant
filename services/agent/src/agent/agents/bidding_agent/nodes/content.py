@@ -62,13 +62,30 @@ def _has_deviation_chapters(outline: dict, structure: list[dict]) -> bool:
 
 
 # 招标自带格式章节识别关键词（响应函/投标函/声明函/证明/一览表/简历表/报价表/授权委托等格式类文书）
-_FORM_KEYWORDS = ("格式", "响应函", "投标函", "声明", "承诺函", "证明", "一览表", "简历表", "报价表", "授权", "委托")
+# 表单类章节的识别：**按构词法判，不靠穷举**。平表穷举栽过——「报价函」不在表里
+# （表里只有「响应函」「投标函」「承诺函」「报价表」），于是整章拿不到招标格式原文，
+# 模型只能自己编一份出来，用户看到的就是「格式跟招标书对不上、条款都被改写了」
+# （2026-08-11 潍坊那单实测：招标 7 条固定条款 → 生成 6 条全新措辞）。
+# 中文投标表单的名字高度规律：以「函/表/书/证明/声明/承诺」收尾，或标题里明说是格式。
+_FORM_SUFFIXES = ("函", "表", "书", "证明", "声明", "承诺")
+_FORM_KEYWORDS = ("格式", "一览表", "简历表", "授权", "委托")
+
+
+def _looks_like_form_title(title: str) -> bool:
+    """标题像不像表单：显式关键词，或**去掉编号/括注后以表单后缀收尾**。
+    去括注是因为章标题常写成「报价函（商务标）」「投标函(附件1)」——直接看结尾会漏掉。"""
+    if any(k in title for k in _FORM_KEYWORDS):
+        return True
+    core = re.sub(r"[（(].*?[）)]", "", title).strip()          # 去括注
+    core = re.sub(r"^[第一二三四五六七八九十\d]+[章节、.\s]+", "", core).strip()  # 去章节编号
+    core = re.sub(r"[（(].*$", "", core).strip()                 # 去未闭合的括注残尾
+    return core.endswith(_FORM_SUFFIXES)
 _TEMPLATE_CHAPTER_CHARS = 8000    # 单章模板原文上限（格式类文书通常很短，超限截断保上下文）
 
 
 def _is_form_item(s: dict) -> bool:
     """构成项是否为格式类：读标已把表单类标为 kind=form；标题含格式关键词的也算（读标标漏兜底）。"""
-    return s.get("kind") == "form" or any(k in (s.get("title") or "") for k in _FORM_KEYWORDS)
+    return s.get("kind") == "form" or _looks_like_form_title(s.get("title") or "")
 
 
 def _sec_of(clause_id: str) -> str | None:
@@ -95,7 +112,7 @@ def _template_entries(read: dict, outline: dict) -> dict[str, str]:
     for chapter in outline.get("chapters", []):
         struct = form_items.get(chapter.get("structure_ref"))
         title = chapter.get("title") or ""
-        if struct is None and not any(k in title for k in _FORM_KEYWORDS):
+        if struct is None and not _looks_like_form_title(title):
             continue
         # 模板原文定位：优先构成项的 clause_ids，回退章内 items 的 clause_ids；取所属节全文
         clause_ids = list((struct or {}).get("clause_ids") or [])

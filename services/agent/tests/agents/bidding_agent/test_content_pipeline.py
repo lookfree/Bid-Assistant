@@ -323,6 +323,34 @@ class TestBriefTargeting:
         assert "招标格式模板" in _brief_of(chat, "投标函格式")
         assert "招标格式模板" not in _brief_of(chat, "章节2"), "格式模板发给了无关章"
 
+    def test_a_form_chapter_gets_the_template_even_if_nobody_listed_its_name(self, monkeypatch):
+        """表单章的识别不能靠穷举词表。「报价函」曾不在表里（表里只有响应函/投标函/承诺函/
+        报价表），于是整章拿不到招标格式原文，模型只能自己编——用户实测:招标 7 条固定条款
+        被写成 6 条全新措辞，抬头、开场白、落款全变（2026-08-11 潍坊那单）。
+        这里刻意**不给 structure_ref**，只靠标题走构词法判定。"""
+        state = _state(2)
+        state["outline"]["chapters"][0]["title"] = "第一章 报价函（商务标）"
+        state["outline"]["chapters"][0]["items"] = [
+            {"id": "i1", "label": "一、报价函", "clause_ids": ["sec-8-c1"]}]
+        state["read"] = {"doc_sections": [
+            {"id": "sec-8-c1", "text": "潍坊环境工程职业学院：\n1、根据已收到的项目编号____的采购项目"}]}
+        chat = _FakeChat()
+        _run(state, chat, monkeypatch=monkeypatch)
+        brief = _brief_of(chat, "第一章 报价函（商务标）")
+        assert "招标格式模板" in brief, "报价函章没拿到招标格式原文"
+        assert "潍坊环境工程职业学院：" in brief, "模板原文没进简报"
+
+    def test_a_prose_chapter_is_not_mistaken_for_a_form(self, monkeypatch):
+        """构词法不能宽到把正文章也当表单——那会把无关的招标原文塞进技术方案章。"""
+        state = _state(2)
+        state["outline"]["chapters"][0]["title"] = "技术方案"
+        state["outline"]["chapters"][0]["items"] = [
+            {"id": "i1", "label": "总体设计", "clause_ids": ["sec-8-c1"]}]
+        state["read"] = {"doc_sections": [{"id": "sec-8-c1", "text": "致：（招标人名称）"}]}
+        chat = _FakeChat()
+        _run(state, chat, monkeypatch=monkeypatch)
+        assert "招标格式模板" not in _brief_of(chat, "技术方案")
+
 
 class TestPackageScope:
     """选包时每章简报追加范围约束（spec324，与 outline 同款）——#85 删旧规划者引擎时随它
