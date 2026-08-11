@@ -148,8 +148,13 @@ const PDF_PAGES_MAX_BYTES = 20 * 1024 * 1024 // 证书类不会这么大；防�
 // 2026-08-11 生产实测：6 页扫描版信用报告渲染 22s（约 3.7s/页，1600px 全页 PNG），
 // 上限从 5 提到 10 却漏改这里 → 10 页需 35~40s > 30s，用户看到的是「转换失败，请稍后再试」
 // （nginx 记的是 502 upstream prematurely closed，不是可读的业务错误）。
-// 120s = 10 页 × 4s + 页图写入 MinIO 的余量；改页数上限时**必须同步复核这个值**。
-const PDF_PAGES_TIMEOUT_MS = 120_000
+// 300s：10 页 × 4s 只是常见量，扫描件页面更重、并发时还要排 PDFIUM 全局锁（进程级非线程安全，
+// 见 parsing/pdf_render.py），给足余量比卡在边界上更划算——这条路径是用户点一次的显式动作，
+// 等待期间前端有转换中态，宁可慢也不要让用户拿到「转换失败，请稍后再试」。
+// 与 nginx 的 proxy_read_timeout 配套：那边必须**大于**这里，否则 nginx 先切断，
+// 用户拿到的是 502 而不是我们可读的业务错误（deploy/nginx-ip/_proxy.inc 已设 360s）。
+// 改页数上限时**必须同步复核这两个值**。
+const PDF_PAGES_TIMEOUT_MS = 300_000
 
 export class PdfPagesRejectedError extends Error {
   constructor(public code: "not_pdf" | "too_large" | "too_many_pages" | "unrenderable") {
