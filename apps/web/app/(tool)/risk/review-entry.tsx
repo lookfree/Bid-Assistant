@@ -16,7 +16,9 @@ export function ReviewEntry({ onBack }: { onBack?: () => void } = {}) {
       emptyHint="暂无可直接体检的标书（需同时有招标文件与投标文件），可点下方按钮上传后审查"
       isSelectable={reviewable}
       switchToUploadLabel="没有合适的项目？改为上传线下标书 + 对应招标文件"
-      uploadHref="/risk"
+      // 不能是裸 /risk：当前项目已有审查报告时那个地址只渲染报告，上传面板在「没有报告」的分支
+      // 里，于是这条路径永远走不到——用户点了「改为上传线下标书」却弹回报告页（2026-08-12 实测）。
+      uploadHref="/risk?view=upload"
       doneStep="review"
       doneLabel="已审查 · 可重跑"
       readyLabel="可审查"

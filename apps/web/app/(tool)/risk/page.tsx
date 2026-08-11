@@ -103,6 +103,17 @@ function RejectReview() {
         onBack={projectId && info && !stepPrereq(info, "review") ? () => { window.location.href = "/risk?view=project" } : undefined}
       />
     )
+  // ?view=upload：用户在选择列表里点了「没有合适的项目？改为上传线下标书」。**必须排在报告分支
+  // 之前**——当前项目已有审查报告时，下面会直接渲染报告，那条上传路径就再也走不到（用户实测：
+  // 已体检的项目一点这个按钮就弹回报告页，线下标书永远传不上去）。
+  // 传完不能 reload：地址上还挂着 view=upload，会原地弹回上传面板，看着像没传成功。
+  if (viewParam === "upload")
+    return (
+      <RejectUploadPanel
+        onPickExisting={goEntry}
+        onCreated={() => { window.location.href = "/risk?view=project" }}
+      />
+    )
   // 没有当前项目：只能传文件（选项目那张卡在中转页里，由上面的次要入口进）
   if (!projectId) return <RejectUploadPanel onPickExisting={goEntry} onCreated={() => window.location.reload()} />
 
