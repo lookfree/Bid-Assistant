@@ -266,13 +266,14 @@ export class AgentHttpError extends Error {
   }
 }
 
-/** POST 到 agent 的同步路由（snake body），非 2xx 抛 AgentHttpError；解析/比对/渲染耗时较长 → 120s。 */
-async function postSync<T>(path: string, body: Record<string, unknown>): Promise<T> {
+/** POST 到 agent 的同步路由（snake body），非 2xx 抛 AgentHttpError；解析/比对/渲染耗时较长 → 120s。
+ *  timeoutMs 可覆盖：带 OCR 的附件解析是分钟量级的后台活（见 parseAttachmentText）。 */
+async function postSync<T>(path: string, body: Record<string, unknown>, timeoutMs = 120_000): Promise<T> {
   const r = await fetch(`${getEnv().AGENT_BASE_URL}${path}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120_000),
+    signal: AbortSignal.timeout(timeoutMs),
   })
   if (!r.ok) throw new AgentHttpError(r.status, await r.json().catch(() => undefined))
   return (await r.json()) as T
@@ -289,6 +290,25 @@ export async function dedupe(payload: {
   const body: Record<string, unknown> = { files: payload.files, dims: payload.dims, strategy: payload.strategy }
   if (payload.tenderKey !== undefined) body.tender_key = payload.tenderKey // 基线扣除用的招标文件
   return postSync("/dedupe", body)
+}
+
+/** 资料库文档附件正文解析（spec 2026-08-11）：无状态同步路由，agent 只回纯文本（扫描版 PDF
+ *  在 agent 侧走 OCR）。422（不支持的类型/解析失败）经 postSync 抛 AgentHttpError，
+ *  调用方按「这个附件没有可索引正文」处理，不影响条目保存。
+ *
+ *  720s 超时：agent 侧单附件 OCR 时长预算是 10 分钟（routes/parse_text._OCR_BUDGET_S），
+ *  这里必须**大于**它，否则识别刚要收尾就被我们自己掐断——改那个常量必须同步复核这里。
+ *  调用方是后台 fire-and-forget（services/library-text），没有用户在干等这条请求。 */
+export async function parseAttachmentText(payload: { key: string; maxChars: number }): Promise<{
+  text: string
+  kind: string
+  chars: number
+  truncated: boolean
+  image_pages: number
+  ocr_pages: number
+  no_text: boolean
+}> {
+  return postSync("/tools/parse-text", { key: payload.key, max_chars: payload.maxChars }, 720_000)
 }
 
 /** 审核表渲染（spec315b）：无状态——App 把 groups+状态灌给 agent，agent 出 docx 落 MinIO 返 {key}。

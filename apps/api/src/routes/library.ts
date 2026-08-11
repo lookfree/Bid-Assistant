@@ -9,6 +9,8 @@ import { getUserId } from "../lib/auth-user"
 import { isUuid } from "../lib/uuid"
 import { deleteObject } from "../storage/s3"
 import { backfillAttachmentOcr } from "../services/library-ocr"
+import { backfillAttachmentText, ATTACHMENT_TEXT_MAX_CHARS } from "../services/library-text"
+import type { parseAttachmentText } from "../services/agent-client"
 import * as client from "../services/agent-client"
 
 // CRUD 钩子可注入（测试 mock agent-client，断言被调 + best-effort 不阻塞响应），默认真实 agent-client。
@@ -24,11 +26,14 @@ const fieldSchema = z.object({ label: z.string(), value: z.string() })
 // 漏写会导致该字段静默丢失（保存后 hasDerivedPages 恒 false，「转为图片」按钮重现、PDF 被重复列出）。
 // ocrText：图片附件的前置 OCR 识别文字（spec 2026-08-09 基建）；同 sourceFileId 的教训，
 // 漏写会导致该字段静默丢失（回填写回后再保存一次就把已识别的文字冲掉）。
+// text：文档附件（docx/pdf/xlsx…）解析出的正文（spec 2026-08-11），后台回填、进 RAG 索引；
+// 同上教训——漏写这一键，解析好的正文会在用户下次保存时被剥掉，条目又变回「只看得见标题」。
 const attachmentSchema = z.object({
   fileId: z.string().uuid(),
   name: z.string(),
   sourceFileId: z.string().uuid().optional(),
   ocrText: z.string().max(500).optional(),
+  text: z.string().max(ATTACHMENT_TEXT_MAX_CHARS).optional(),
 })
 const itemSchema = z.object({
   category: z.enum(LIBRARY_CATEGORIES),
@@ -75,12 +80,17 @@ async function cleanupAttachments(atts: { fileId: string }[] | null, userId: str
   }
 }
 
-// 条目可检索文本（spec316）：title + meta + 结构化字段 + 正文；附件不入（只索引文本字段）。
-function indexText(item: Pick<LibraryItem, "title" | "meta" | "fields" | "body">): string {
+// 条目可检索文本（spec316）：title + meta + 结构化字段 + 正文 + **附件正文**。
+// 附件正文由 services/library-text 后台解析后写回 attachments[].text（扫描版 PDF 走 OCR），
+// spec 2026-08-11：在此之前系统只看得见附件的标题，用户上传的 docx/pdf 内容完全不进检索。
+// 每份附件带上文件名再拼正文——文件名本身就是强检索信号（「零信任统一身份认证技术方案.docx」），
+// 且切块后每块都还认得出自己来自哪份附件。没有附件正文时输出与改前逐字节一致。
+function indexText(item: Pick<LibraryItem, "title" | "meta" | "fields" | "body" | "attachments">): string {
   const parts = [item.title]
   if (item.meta) parts.push(item.meta)
   if (item.fields?.length) parts.push(item.fields.map((f) => `${f.label}：${f.value}`).join("；"))
   if (item.body) parts.push(item.body)
+  for (const a of item.attachments ?? []) if (a.text) parts.push(`${a.name}\n${a.text}`)
   return parts.join("\n")
 }
 
@@ -88,12 +98,41 @@ function indexText(item: Pick<LibraryItem, "title" | "meta" | "fields" | "body">
 async function bestEffortIndex(
   ragIndex: LibraryDeps["ragIndex"],
   userId: string,
-  item: Pick<LibraryItem, "id" | "title" | "meta" | "fields" | "body">,
+  item: Pick<LibraryItem, "id" | "title" | "meta" | "fields" | "body" | "attachments">,
 ): Promise<void> {
   try {
     await ragIndex({ userId, sourceId: item.id, title: item.title, text: indexText(item) })
   } catch (e) {
     console.warn(`library rag 索引失败 itemId=${item.id}:`, e)
+  }
+}
+
+/**
+ * 条目保存后的附件后台加工（导出供测试直调；路由层 fire-and-forget 调用，绝不阻塞 CRUD）。
+ *
+ * **串行**跑 OCR（图片附件的 ocrText）与正文解析（文档附件的 text）：两者都整列覆写
+ * attachments 且各带一道乐观锁，并行跑就是后写的那个撞上「列已变」而静默丢弃自己的成果。
+ *
+ * 解析完成才重建索引：解析是分钟量级的慢活（扫描版 PDF 还要逐页 OCR），保存那一刻建的索引里
+ * 没有附件正文——不在这里补一次，用户就得再保存一遍才被检索到。没解析出新正文则不重建
+ * （省一次 embed）。全程不抛：调用方是 fire-and-forget，没人接得住异常。
+ */
+export async function enrichAttachments(
+  ragIndex: LibraryDeps["ragIndex"],
+  userId: string,
+  itemId: string,
+  parse?: typeof parseAttachmentText,
+): Promise<void> {
+  try {
+    await backfillAttachmentOcr(itemId, userId)
+    if (!(await backfillAttachmentText(itemId, userId, parse))) return
+    const [row] = await getDb()
+      .select()
+      .from(libraryItems)
+      .where(and(eq(libraryItems.id, itemId), eq(libraryItems.userId, userId)))
+    if (row) await bestEffortIndex(ragIndex, userId, row)
+  } catch (e) {
+    console.warn(`library 附件后台加工失败 itemId=${itemId}:`, e)
   }
 }
 
@@ -135,7 +174,7 @@ export function libraryRoutes(deps: Partial<LibraryDeps> = {}) {
       .returning()
     if (!row) return c.json({ error: "insert_failed" }, 500)
     void bestEffortIndex(ragIndex, userId, row) // fire-and-forget：agent 慢/挂也不阻塞响应（30s 超时不拖住用户）
-    void backfillAttachmentOcr(row.id, userId) // fire-and-forget：图片附件 OCR 前置存储，不阻塞保存响应
+    void enrichAttachments(ragIndex, userId, row.id) // fire-and-forget：附件 OCR + 正文解析，完事再重建索引
     return c.json(row, 201)
   })
 
@@ -159,7 +198,7 @@ export function libraryRoutes(deps: Partial<LibraryDeps> = {}) {
       .returning()
     if (!row) return c.json({ error: "not_found" }, 404)
     void bestEffortIndex(ragIndex, userId, row) // fire-and-forget 重建该条向量：agent 慢/挂不阻塞响应
-    void backfillAttachmentOcr(row.id, userId) // fire-and-forget：图片附件 OCR 前置存储，不阻塞保存响应
+    void enrichAttachments(ragIndex, userId, row.id) // fire-and-forget：附件 OCR + 正文解析，完事再重建索引
     return c.json(row)
   })
 
