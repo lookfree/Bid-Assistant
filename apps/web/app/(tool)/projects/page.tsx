@@ -20,7 +20,14 @@ import {
 } from "lucide-react"
 import { Trash2 } from "lucide-react"
 import { ApiError } from "@/lib/api-client"
-import { listProjects, setCurrentProjectId, deleteProject, BID_CATEGORY_LABEL, type ProjectListItem } from "@/lib/project"
+import {
+  listProjects,
+  setCurrentProjectId,
+  currentProjectId,
+  deleteProject,
+  BID_CATEGORY_LABEL,
+  type ProjectListItem,
+} from "@/lib/project"
 
 type CurrentStep = ProjectListItem["currentStep"]
 
@@ -142,6 +149,11 @@ export default function ProjectsPage() {
     return q ? projects.filter((p) => p.name.toLowerCase().includes(q)) : projects
   }, [projects, query])
 
+  // 当前项目（工具页共用的 localStorage 指向）：**只能在挂载后读**——渲染期读 localStorage
+  // 服务端拿到 null、客户端拿到 id，两边 HTML 不一致会触发 hydration 报错并整棵子树重渲。
+  const [currentId, setCurrentId] = useState<string | null>(null)
+  useEffect(() => setCurrentId(currentProjectId()), [])
+
   return (
     <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
       <PageHeader total={total || projects.length} />
@@ -158,7 +170,12 @@ export default function ProjectsPage() {
       {!loading && filtered.length > 0 && (
         <div className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-3">
           {filtered.map((p) => (
-            <ProjectCard key={p.id} project={p} onDelete={() => setDeleteTarget(p)} />
+            <ProjectCard
+              key={p.id}
+              project={p}
+              isCurrent={p.id === currentId}
+              onDelete={() => setDeleteTarget(p)}
+            />
           ))}
         </div>
       )}
@@ -324,8 +341,18 @@ function EmptyProjects() {
   )
 }
 
-/* 单个项目卡片：点击设为当前项目并跳到对应工具页续作 */
-function ProjectCard({ project: p, onDelete }: { project: ProjectListItem; onDelete: () => void }) {
+/* 单个项目卡片：点击设为当前项目并跳到对应工具页续作。
+   isCurrent = 各工具页（读标/提纲/正文/审查/述标）此刻正在操作的那一本：这个指向只存在
+   localStorage 里，页面上原先无处可见，用户一天开好几本就分不清点进工具页会打开哪一本。 */
+function ProjectCard({
+  project: p,
+  isCurrent,
+  onDelete,
+}: {
+  project: ProjectListItem
+  isCurrent: boolean
+  onDelete: () => void
+}) {
   const stage = stepMap[p.currentStep] ?? stepMap.read
   // 线下标书项目（spec328，kind=review）不进生成流水线,可审查/述标：读标阶段去读标页,其余默认回审查页
   //（述标产物经述标页「述标我的标书」选择器可达；此处不据 currentStep 判 present 有无，故默认落审查）。
@@ -336,7 +363,12 @@ function ProjectCard({ project: p, onDelete }: { project: ProjectListItem; onDel
     <Link
       href={href}
       onClick={() => setCurrentProjectId(p.id)}
-      className="group relative rounded-2xl border border-border bg-card p-4 transition-colors hover:border-primary/40"
+      aria-current={isCurrent ? "true" : undefined}
+      className={`group relative rounded-2xl border bg-card p-4 transition-colors ${
+        isCurrent
+          ? "border-primary ring-1 ring-primary/30"
+          : "border-border hover:border-primary/40"
+      }`}
     >
       <button
         type="button"
@@ -358,6 +390,14 @@ function ProjectCard({ project: p, onDelete }: { project: ProjectListItem; onDel
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <p className="truncate text-sm font-medium text-foreground" title={p.name}>{p.name}</p>
+            {isCurrent && (
+              <span
+                title="各工具页当前操作的就是这一本"
+                className="shrink-0 rounded-full gradient-brand px-2 py-0.5 text-xs font-medium text-white"
+              >
+                当前
+              </span>
+            )}
             <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${stage.tone}`}>
               {p.kind === "review" ? "线下标书" : p.status === "done" ? statusLabel.done : stage.label}
             </span>
