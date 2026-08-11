@@ -220,7 +220,9 @@ describe("backfillAttachmentOcr", () => {
     })
     expect(created.status).toBe(201)
     const row = (await created.json()) as { id: string; attachments: Attachment[] }
-    expect(row.attachments[0]?.ocrText).toBe("预置识别文字") // POST 响应即应保留
+    // 出参不再回传服务端自有字段（ocrText/text）——它们由后台管线写、前端从不产出，
+    // 回传只会被前端缓存下来、下次保存再传回（2026-08-11 审查）。落库与否下面查库验证。
+    expect(row.attachments[0]?.ocrText).toBeUndefined()
 
     // 查回（真正落库后重读，而非只信任 insert().returning() 的回显）。这条走的是路由层
     // fire-and-forget 默认的真实 ocrImage，但附件已带 ocrText，backfill 一开始就跳过它，

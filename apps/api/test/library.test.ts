@@ -173,12 +173,40 @@ describe("/api/library 资料库", () => {
     expect(shown!.attachments![0]!.name).toBeDefined()                          // 其余字段照旧
 
     // 前端把「没有 text 的附件」原样回传（真实场景）
-    await req(`/${itemId}`, tokenA, {
+    const put = await req(`/${itemId}`, tokenA, {
       method: "PUT",
       body: JSON.stringify({ attachments: shown!.attachments }),
     })
+    expect(put.status).toBe(200)   // 不断言状态的话，写入被拒时本用例会「因为没写成」而假绿
+    const putRow = (await put.json()) as Item
+    // 响应同样不带服务端自有字段：带了前端就会缓存下来、下次保存再传回，
+    // 等于把几 MB 从读挪到写（2026-08-11 审查实测指出，原修复只做了 GET 一半）。
+    expect((putRow.attachments![0] as { text?: string }).text).toBeUndefined()
+
     const [after] = await db.select().from(libraryItems).where(eq(libraryItems.id, itemId)).limit(1)
     expect((after!.attachments![0] as { text?: string }).text).toContain("解析出来的正文")
+  })
+
+  it("保存不会抹掉后台识别出的证照文字（ocrText 与 text 同为服务端自有字段）", async () => {
+    // ocrText 由 library-ocr 后台写回，前端同样看不到；只补 text 不补它，一次保存就把
+    // 附录图的说明退回成只剩文件名（credentialsRunInput 靠它给 alt）。
+    const db = getDb()
+    const [seeded] = await db.select().from(libraryItems).where(eq(libraryItems.id, itemId)).limit(1)
+    const atts = (seeded!.attachments ?? []).map((a, i) =>
+      i === 0 ? { ...a, ocrText: "统一社会信用代码 91310104MA" } : a)
+    await db.update(libraryItems).set({ attachments: atts }).where(eq(libraryItems.id, itemId))
+
+    const list = (await (await req("", tokenA)).json()) as { items: Item[] }
+    const shown = list.items.find((i) => i.id === itemId)!
+    expect((shown.attachments![0] as { ocrText?: string }).ocrText).toBeUndefined()
+
+    const put = await req(`/${itemId}`, tokenA, {
+      method: "PUT",
+      body: JSON.stringify({ attachments: shown.attachments }),
+    })
+    expect(put.status).toBe(200)
+    const [after] = await db.select().from(libraryItems).where(eq(libraryItems.id, itemId)).limit(1)
+    expect((after!.attachments![0] as { ocrText?: string }).ocrText).toContain("91310104MA")
   })
 
   it("GET：A 能看到自己的条目，B 看不到（属主隔离）", async () => {

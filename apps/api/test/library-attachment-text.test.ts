@@ -277,7 +277,9 @@ describe("indexText 并入附件正文", () => {
     })
     expect(created.status).toBe(201)
     const row = (await created.json()) as { id: string; attachments: Attachment[] }
-    expect(row.attachments[0]?.text).toBe("预置附件正文") // POST 响应即应保留
+    // 出参不再回传服务端自有字段（text/ocrText）——回传会被前端缓存、下次保存再传回，
+    // 等于把几 MB 从读挪到写（2026-08-11 审查）。落库与否下一行查库验证。
+    expect(row.attachments[0]?.text).toBeUndefined()
     expect((await loadAttachments(row.id))[0]?.text).toBe("预置附件正文") // 真正落库后重读
   })
 })

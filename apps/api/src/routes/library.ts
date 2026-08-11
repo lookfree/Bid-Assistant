@@ -1,6 +1,6 @@
 import { Hono } from "hono"
 import { z } from "zod"
-import { eq, and, desc, inArray } from "drizzle-orm"
+import { eq, and, desc, inArray, isNull } from "drizzle-orm"
 import { getDb } from "../db/client"
 import { libraryItems, projectFiles, LIBRARY_CATEGORIES, type LibraryItem } from "../db/schema"
 import type { User } from "../db/schema"
@@ -80,22 +80,43 @@ async function cleanupAttachments(atts: { fileId: string }[] | null, userId: str
   }
 }
 
-// 条目可检索文本（spec316）：title + meta + 结构化字段 + 正文 + **附件正文**。
-/** 列表出参剔掉附件正文（见 GET / 的注释）——只去 text，其余字段原样。 */
-function stripAttachmentText<T extends { attachments: LibraryItem["attachments"] }>(item: T): T {
+// 服务端自有的附件字段：由后台管线（library-text 解析正文 / library-ocr 识别图片文字）写回，
+// **前端从不产出、也不该回传**。出参一律剔掉、入参一律按 fileId 从库里补回——见 stripServerFields
+// 与 keepServerFields。text 尤其大（单附件上限 50k 字），留在出参里前端会缓存下来、下次保存再传回，
+// 等于把负担从读挪到写（2026-08-11 审查实测指出）。
+const SERVER_OWNED_ATTACHMENT_FIELDS = ["text", "ocrText"] as const
+
+/** 出参剔掉服务端自有字段（GET 列表与 POST/PUT 响应共用——只剔这几个键，其余原样）。 */
+function stripServerFields<T extends { attachments: LibraryItem["attachments"] }>(item: T): T {
   if (!item.attachments?.length) return item
-  return { ...item, attachments: item.attachments.map(({ text: _drop, ...rest }) => rest) }
+  return {
+    ...item,
+    attachments: item.attachments.map((a) => {
+      const copy = { ...a }
+      for (const k of SERVER_OWNED_ATTACHMENT_FIELDS) delete (copy as Record<string, unknown>)[k]
+      return copy
+    }),
+  }
 }
 
-/** 写入时保住库里已有的附件正文：前端拿不到 text（列表不返），原样回传就会把它抹掉。
- *  按 fileId 对齐——用户换了附件顺序、删了某个附件都不影响其余附件的正文。 */
-function keepAttachmentText(
+/** 写入时按 fileId 把服务端自有字段补回：前端拿不到它们，原样回传就会把已解析的正文与
+ *  已识别的证照文字一起抹掉（后者会让附录图的说明退回只剩文件名）。
+ *  按 fileId 对齐——用户换附件顺序、删掉某个附件都不影响其余附件。 */
+function keepServerFields(
   incoming: LibraryItem["attachments"],
   existing: LibraryItem["attachments"],
 ): LibraryItem["attachments"] {
   if (!incoming?.length) return incoming
-  const textById = new Map((existing ?? []).filter((a) => a.text).map((a) => [a.fileId, a.text!]))
-  return incoming.map((a) => (a.text ? a : { ...a, ...(textById.has(a.fileId) ? { text: textById.get(a.fileId) } : {}) }))
+  const byId = new Map((existing ?? []).map((a) => [a.fileId, a]))
+  return incoming.map((a) => {
+    const prev = byId.get(a.fileId)
+    if (!prev) return a
+    const merged = { ...a }
+    for (const k of SERVER_OWNED_ATTACHMENT_FIELDS) {
+      if (merged[k] === undefined && prev[k] !== undefined) merged[k] = prev[k]
+    }
+    return merged
+  })
 }
 
 // 附件正文由 services/library-text 后台解析后写回 attachments[].text（扫描版 PDF 走 OCR），
@@ -174,14 +195,14 @@ export function libraryRoutes(deps: Partial<LibraryDeps> = {}) {
   // 单条目 100k 字），而本接口是资料库页与正文页「从资料库插入」的共用数据源、在投标热路径上——
   // 带上它，一个重附件用户每次开页就要拉几 MB（同 content 步 ?slim=1 那类坑：SQL 层不选大列，
   // 实测 28ms vs 2788ms）。正文只有后台解析与建索引用得着，前端一处都不读。
-  // 保存时 PUT 不带 text 也不会丢：write 路径按 fileId 保留库里已有的正文（见 keepAttachmentText）。
+  // 保存时不带这些字段也不会丢：write 路径按 fileId 从库里补回（见 keepServerFields）。
   r.get("/", async (c) => {
     const items = await getDb()
       .select()
       .from(libraryItems)
       .where(eq(libraryItems.userId, getUserId(c)))
       .orderBy(desc(libraryItems.createdAt))
-    return c.json({ items: items.map(stripAttachmentText) })
+    return c.json({ items: items.map(stripServerFields) })
   })
 
   r.post("/", async (c) => {
@@ -197,7 +218,7 @@ export function libraryRoutes(deps: Partial<LibraryDeps> = {}) {
     if (!row) return c.json({ error: "insert_failed" }, 500)
     void bestEffortIndex(ragIndex, userId, row) // fire-and-forget：agent 慢/挂也不阻塞响应（30s 超时不拖住用户）
     void enrichAttachments(ragIndex, userId, row.id) // fire-and-forget：附件 OCR + 正文解析，完事再重建索引
-    return c.json(row, 201)
+    return c.json(stripServerFields(row), 201)
   })
 
   r.put("/:id", async (c) => {
@@ -212,25 +233,38 @@ export function libraryRoutes(deps: Partial<LibraryDeps> = {}) {
     const patch = Object.fromEntries(
       Object.entries(parsed.data).filter(([, v]) => v !== undefined),
     ) as Partial<typeof libraryItems.$inferInsert>
-    // 附件正文不随列表下发，前端原样回传就会把库里已解析的正文抹掉——按 fileId 补回来。
-    if (patch.attachments !== undefined && patch.attachments !== null) {
+    // 属主隔离：where 带 userId，非本人的条目等同不存在 → 404。
+    // 带附件时是「读快照 → 合并服务端自有字段 → 写」的读改写：**必须带乐观锁**，否则窗口里
+    // 后台解析/OCR 刚提交的成果会被这次保存覆盖掉，用户要等它重跑几分钟才恢复可检索
+    // （两个 backfill 自己都用 `eq(attachments, snapshot)` 守着，这里漏了就是单向的破坏）。
+    // 撞锁说明后台刚写完，重读一次再合并即可——最多一次，仍撞就让它按普通更新落地。
+    const writeOnce = async (guard: boolean) => {
+      if (patch.attachments === undefined || patch.attachments === null) {
+        return getDb().update(libraryItems).set({ ...patch, updatedAt: new Date() })
+          .where(and(eq(libraryItems.id, id), eq(libraryItems.userId, userId))).returning()
+      }
       const [before] = await getDb()
         .select({ attachments: libraryItems.attachments })
         .from(libraryItems)
         .where(and(eq(libraryItems.id, id), eq(libraryItems.userId, userId)))
         .limit(1)
-      patch.attachments = keepAttachmentText(patch.attachments, before?.attachments ?? null)
+      if (!before) return []
+      const merged = keepServerFields(patch.attachments, before.attachments)
+      const mine = and(eq(libraryItems.id, id), eq(libraryItems.userId, userId))
+      // 快照为 null 时用 IS NULL 比对——jsonb 列的 `= NULL` 恒不成立，会让守卫永远撞锁。
+      const snapshot = before.attachments === null
+        ? isNull(libraryItems.attachments)
+        : eq(libraryItems.attachments, before.attachments)
+      const where = guard ? and(mine, snapshot) : mine
+      return getDb().update(libraryItems)
+        .set({ ...patch, attachments: merged, updatedAt: new Date() }).where(where).returning()
     }
-    // 属主隔离：where 带 userId，非本人的条目等同不存在 → 404
-    const [row] = await getDb()
-      .update(libraryItems)
-      .set({ ...patch, updatedAt: new Date() })
-      .where(and(eq(libraryItems.id, id), eq(libraryItems.userId, userId)))
-      .returning()
+    let [row] = await writeOnce(true)
+    if (!row) [row] = await writeOnce(false)
     if (!row) return c.json({ error: "not_found" }, 404)
     void bestEffortIndex(ragIndex, userId, row) // fire-and-forget 重建该条向量：agent 慢/挂不阻塞响应
     void enrichAttachments(ragIndex, userId, row.id) // fire-and-forget：附件 OCR + 正文解析，完事再重建索引
-    return c.json(row)
+    return c.json(stripServerFields(row))
   })
 
   r.delete("/:id", async (c) => {
