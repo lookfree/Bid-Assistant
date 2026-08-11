@@ -49,6 +49,26 @@ describe("missingCerts", () => {
   })
 
   test("CERT_KEYWORDS 与 agent 侧 cert_placement.py 逐字同形", () => {
-    expect(CERT_KEYWORDS).toEqual(["营业执照", "资质证书", "授权书", "法定代表人身份证明", "检测证书", "许可证"])
+    expect(CERT_KEYWORDS).toEqual(["营业执照", "资质证书", "授权书", "法定代表人身份证明", "检测证书", "许可证",
+      "审计报告", "资产负债表", "利润表", "财务报表", "纳税证明", "完税证明",
+      "社保证明", "银行资信证明", "开户许可证"])
+  })
+
+  test("财务类要求同样出缺证预警", () => {
+    // 康恒那单实测：审查报「近三年经审计的资产负债表未提供」，而词表当时只覆盖资质类，
+    // 读标阶段一声不吭，用户直到正文生成完才知道缺料。
+    const categories = [
+      { key: "qualification", items: [{ title: "近三年经审计的资产负债表、损益表" }] },
+    ]
+    expect(missingCerts(categories, [])).toEqual(["资产负债表"])
+    expect(missingCerts(categories, ["2025年度资产负债表"])).toEqual([])
+  })
+
+  test("包含关系的两个词只报更具体的那个", () => {
+    // 「开户许可证」⊃「许可证」：两个都报会让预警条重复念同一件材料。
+    const categories = [
+      { key: "qualification", items: [{ title: "基本账户开户许可证" }] },
+    ]
+    expect(missingCerts(categories, [])).toEqual(["开户许可证"])
   })
 })

@@ -18,7 +18,12 @@ from agent.agents.bidding_agent.nodes.credentials_chapter import SYS_CREDS_ID, _
 
 # 证照词表字面量——与计划 Global Constraints、web 侧 lib/cert-keywords.ts 逐字同形（两端各自
 # 持有确定性实现,字面量一改就要同步改另一处，注释互指）。
-CERT_KEYWORDS = ("营业执照", "资质证书", "授权书", "法定代表人身份证明", "检测证书", "许可证")
+CERT_KEYWORDS = ("营业执照", "资质证书", "授权书", "法定代表人身份证明", "检测证书", "许可证",
+                 # 财务与资格类材料（2026-08-11 加）：康恒那单实测报出「近三年经审计的资产负债表
+                 # 未提供」「银行资信证明未提供」，而这些材料就躺在资料库「财务材料」分类里，
+                 # 既进不了附录章、也不会被定向插到要求它的章节——因为词表只覆盖资质类。
+                 "审计报告", "资产负债表", "利润表", "财务报表", "纳税证明", "完税证明",
+                 "社保证明", "银行资信证明", "开户许可证")
 
 # post-pass 定位只看 read 结论里资格/商务两类条目——技术类要求命中证照字样极罕见且易误报。
 _CERT_CATEGORY_KEYS = ("qualification", "commercial")
@@ -55,7 +60,10 @@ def _matched_keywords(read: dict, clause_ids: set[str]) -> list[str]:
         for it in cat.get("items") or []:
             if set(it.get("clause_ids") or []) & clause_ids:
                 hit_titles.append(str(it.get("title") or ""))
-    return [kw for kw in CERT_KEYWORDS if any(kw in t for t in hit_titles)]
+    hits = [kw for kw in CERT_KEYWORDS if any(kw in t for t in hit_titles)]
+    # 词表里存在包含关系（「开户许可证」⊃「许可证」）：两个都命中就会为同一份材料插两遍图。
+    # 保留更具体的那个——被别的命中词整个包含的词一律丢弃。
+    return [kw for kw in hits if not any(kw != other and kw in other for other in hits)]
 
 
 def place_certificates(out: dict[str, str], state: dict) -> dict[str, str]:

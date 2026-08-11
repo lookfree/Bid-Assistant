@@ -17,6 +17,10 @@ export type LibraryAttachment = {
   sourceFileId?: string
   /** 图片附件的前置 OCR 识别文字,后台回填,spec 2026-08-09 */
   ocrText?: string
+  /** 文档附件(docx/pdf/xlsx…)解析出的正文,后台回填并进 RAG 索引,spec 2026-08-11。
+   *  前端不展示,但**必须留在类型里**:编辑条目时附件整列回传,类型漏了这一键
+   *  = 保存时把已解析的正文剥掉,条目又变回「只看得见标题」。 */
+  text?: string
 }
 
 // 可空字段与后端契约一致：后端返回 null 表示"无/已清空"（PUT 缺键=不改、null=清空）。

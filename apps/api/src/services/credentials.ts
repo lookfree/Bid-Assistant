@@ -24,7 +24,12 @@ export async function credentialsRunInput(userId: string): Promise<CredentialInp
   const items = await getDb()
     .select({ title: libraryItems.title, attachments: libraryItems.attachments })
     .from(libraryItems)
-    .where(and(eq(libraryItems.userId, userId), eq(libraryItems.category, "qualification")))
+    .where(and(eq(libraryItems.userId, userId),
+      // 「财务材料」与「企业资质」同池（2026-08-11）：招标常把审计报表、纳税/社保证明、
+      // 银行资信证明一并编进「资格证明文件」分册，用户也确实把它们放在财务分类下。
+      // 此前只取 qualification，导致这些材料既进不了附录章、也不会被定向插到要求它的章节
+      // （康恒那单实测报「近三年经审计的资产负债表未提供」，而文件就在资料库里）。
+      inArray(libraryItems.category, ["qualification", "finance"])))
 
   const fileIds = items.flatMap((i) => (i.attachments ?? []).map((a) => a.fileId))
   if (fileIds.length === 0) return undefined

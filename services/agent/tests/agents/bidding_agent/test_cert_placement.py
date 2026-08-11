@@ -119,9 +119,39 @@ class TestPlaceCertificates:
         assert result["t1"].count("【营业执照】见下图：") == 1
 
     def test_word_list_matches_global_constraints_literal(self):
-        """词表字面量必须与计划 Global Constraints 逐字同形（双端同表约定的锚点）。"""
+        """词表字面量必须与 web 侧 lib/cert-keywords.ts 逐字同形（双端同表约定的锚点）。
+        2026-08-11 扩入财务与资格类材料——康恒那单实测报「近三年经审计的资产负债表未提供」，
+        而文件就在资料库「财务材料」分类里，此前词表只覆盖资质类，插不进去。"""
         assert CERT_KEYWORDS == ("营业执照", "资质证书", "授权书", "法定代表人身份证明",
-                                 "检测证书", "许可证")
+                                 "检测证书", "许可证",
+                                 "审计报告", "资产负债表", "利润表", "财务报表", "纳税证明",
+                                 "完税证明", "社保证明", "银行资信证明", "开户许可证")
+
+    def test_financial_requirement_inserts_the_financial_document(self):
+        """招标要求「近三年经审计的资产负债表」→ 资料库里那条（财务分类的条目同样进 credentials）
+        被插到定位到的章里。此前这类要求一个词都不命中，材料躺在库里也进不了标书。"""
+        out = {"t1": "<h3>资格证明</h3>"}
+        state = {"outline": {"chapters": [_chapter("t1", "资格证明文件", ["sec-4-c1"])]},
+                 "read": _read_with("近三年经审计的资产负债表、损益表", ["sec-4-c1"]),
+                 "run_input": {"credentials": [
+                     {"title": "2025年度资产负债表", "images": [
+                         {"fileId": "f9", "key": "k9", "name": "bs.png", "ocrText": "资产总计"}]}]}}
+        result = place_certificates(out, state)
+        assert "【资产负债表】见下图：" in result["t1"]
+        assert 'data-file-id="f9"' in result["t1"]
+
+    def test_a_more_specific_keyword_wins_over_the_one_it_contains(self):
+        """词表存在包含关系（「开户许可证」⊃「许可证」）：两个都命中就会为同一份材料插两遍图。
+        只留更具体的那个。"""
+        out = {"t1": "<h3>资格证明</h3>"}
+        state = {"outline": {"chapters": [_chapter("t1", "资格证明文件", ["sec-4-c1"])]},
+                 "read": _read_with("基本账户开户许可证", ["sec-4-c1"]),
+                 "run_input": {"credentials": [
+                     {"title": "开户许可证", "images": [
+                         {"fileId": "f8", "key": "k8", "name": "acc.png"}]}]}}
+        result = place_certificates(out, state)
+        assert result["t1"].count("见下图：") == 1, "包含关系的两个词各插了一次"
+        assert "【开户许可证】见下图：" in result["t1"]
 
     def test_pure_function_does_not_mutate_input(self):
         """纯函数：返回新 dict,不改动入参 out（缓存回写路径依赖这一点不被污染）。"""
