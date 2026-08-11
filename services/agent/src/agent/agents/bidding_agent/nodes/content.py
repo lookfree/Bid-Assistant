@@ -67,7 +67,9 @@ def _has_deviation_chapters(outline: dict, structure: list[dict]) -> bool:
 # 模型只能自己编一份出来，用户看到的就是「格式跟招标书对不上、条款都被改写了」
 # （2026-08-11 潍坊那单实测：招标 7 条固定条款 → 生成 6 条全新措辞）。
 # 中文投标表单的名字高度规律：以「函/表/书/证明/声明/承诺」收尾，或标题里明说是格式。
-_FORM_SUFFIXES = ("函", "表", "书", "证明", "声明", "承诺")
+# 「承诺」不在列：表单叫「承诺函」「承诺书」（已被函/书覆盖），而「服务承诺」「售后承诺」
+# 是散文章——带上它会把招标原文塞进技术方案类章节（2026-08-11 被既有守护测试逮到）。
+_FORM_SUFFIXES = ("函", "表", "书", "证明", "声明")
 _FORM_KEYWORDS = ("格式", "一览表", "简历表", "授权", "委托")
 
 
@@ -91,6 +93,27 @@ def _is_form_item(s: dict) -> bool:
 def _sec_of(clause_id: str) -> str | None:
     """条款 id（sec-N-cM）→ 所属节 id（sec-N）；无 -cM 后缀返回 None。"""
     return clause_id.rsplit("-c", 1)[0] if "-c" in clause_id else None
+
+
+# 招标文件里集中放格式模板的那一章（「第四章 响应文件相关格式」「投标文件格式」…）。
+# 定位不到具体表单时整章兜底——**宁可多给几千字，也不能一个字不给**：什么都不给时模型只能
+# 凭常识自创一份表单，用户拿到的标书与招标格式对不上，而废标恰恰卡这里（2026-08-11 实测）。
+_FORMAT_CHAPTER_RE = re.compile(r"(响应|投标|应答|磋商|谈判|报价)?文件.{0,4}格式|格式.{0,4}(要求|文本|范本)|相关格式")
+_FORMAT_FALLBACK_CHARS = 12000    # 整章兜底的上限：比单表单宽，但不至于顶穿单章预算
+
+
+def _core_form_name(title: str) -> str:
+    """章标题 → 表单本名（去章节编号与括注）：「第一章 报价函（商务标）」→「报价函」。"""
+    core = re.sub(r"[（(].*?[）)]", "", title).strip()
+    core = re.sub(r"^[第一二三四五六七八九十\d]+[章节、.\s]+", "", core).strip()
+    return re.sub(r"[（(].*$", "", core).strip()
+
+
+def _secs_by_heading(read: dict, match) -> list[str]:
+    """按**标题**找节（条款 id 对不上时的第二条路）：招标与投标两侧对同一份表单的叫法
+    通常一致（都叫「报价函」），标题匹配比条款编号稳——编号靠读标切分，切歪就全盘落空。"""
+    return [h.get("sec") for h in (read.get("doc_headings") or [])
+            if h.get("sec") and match(str(h.get("title") or ""))]
 
 
 def _template_entries(read: dict, outline: dict) -> dict[str, str]:
@@ -120,12 +143,33 @@ def _template_entries(read: dict, outline: dict) -> dict[str, str]:
             clause_ids += it.get("clause_ids") or []
         secs = sorted({s for cid in clause_ids if (s := _sec_of(cid))})
         text = "\n".join(t for sec in secs for t in by_sec.get(sec, []) if t)
+        cap, note = _TEMPLATE_CHAPTER_CHARS, f"本章「{title}」对应的招标格式原文"
         if not text:
+            # 降级一：按标题找（条款编号对不上时——编号靠读标切分，切歪就全盘落空）
+            name = _core_form_name(title)
+            if name:
+                secs = _secs_by_heading(read, lambda t: name in t)
+                text = "\n".join(t for sec in secs for t in by_sec.get(sec, []) if t)
+        if not text:
+            # 降级二：整份招标的格式章兜底。给多了模型自己挑，给零它只能编。
+            secs = _secs_by_heading(read, lambda t: bool(_FORMAT_CHAPTER_RE.search(t)))
+            text = "\n".join(t for sec in secs for t in by_sec.get(sec, []) if t)
+            cap, note = _FORMAT_FALLBACK_CHARS, ("招标文件的「格式」章全文（未能定位到本章"
+                                                 f"「{title}」的具体表单，请从中找出对应的一份照它写）")
+        if not text:
+            # 三条路都空：留痕。让模型显式告知用户「本章未找到招标格式原文」，
+            # 而不是不声不响地自创一份——用户以为是照招标格式写的，评标时才发现对不上。
+            out[chapter.get("id")] = (f"{TEMPLATE_GUIDE}\n— 招标文件中**未能找到**本章「{title}」"
+                                       "对应的格式原文。请按通行格式起草，并在本章开头加一句醒目提示："
+                                       "「（注意：招标文件中未找到本表单的规定格式，以下为通用格式，"
+                                       "递交前请人工比对招标文件原文）」。")
+            logger.warning("no tender template located for form chapter %s (%s)",
+                           chapter.get("id"), title)
             continue
-        if len(text) > _TEMPLATE_CHAPTER_CHARS:
+        if len(text) > cap:
             logger.warning("template entry truncated at chapter %s", chapter.get("id"))
-            text = text[:_TEMPLATE_CHAPTER_CHARS] + "…（超长截断）"
-        out[chapter.get("id")] = f"{TEMPLATE_GUIDE}\n— 本章「{title}」对应的招标格式原文：\n{text}"
+            text = text[:cap] + "…（超长截断）"
+        out[chapter.get("id")] = f"{TEMPLATE_GUIDE}\n— {note}：\n{text}"
     return out
 
 

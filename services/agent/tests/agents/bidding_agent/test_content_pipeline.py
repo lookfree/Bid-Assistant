@@ -340,16 +340,58 @@ class TestBriefTargeting:
         assert "招标格式模板" in brief, "报价函章没拿到招标格式原文"
         assert "潍坊环境工程职业学院：" in brief, "模板原文没进简报"
 
+    def test_template_falls_back_to_matching_by_heading_when_clause_ids_miss(self, monkeypatch):
+        """降级一:条款 id 定位不到就按**标题**找。条款编号靠读标切分,切歪整章就零模板——
+        而招标与投标两侧对同一份表单的叫法通常一致(都叫「报价函」),标题比编号稳。"""
+        state = _state(2)
+        state["outline"]["chapters"][0]["title"] = "第一章 报价函"
+        state["outline"]["chapters"][0]["items"] = [{"id": "i1", "label": "报价函"}]  # 无 clause_ids
+        state["read"] = {
+            "doc_headings": [{"sec": "sec-8", "title": "附件一 报价函", "level": 2}],
+            "doc_sections": [{"id": "sec-8-c1", "text": "致：潍坊环境工程职业学院\n1、我方同意本报价函自开标之日起有效"}]}
+        chat = _FakeChat()
+        _run(state, chat, monkeypatch=monkeypatch)
+        brief = _brief_of(chat, "第一章 报价函")
+        assert "我方同意本报价函自开标之日起有效" in brief, "条款 id 落空后没按标题兜到模板"
+        assert "招标格式模板" not in _brief_of(chat, "章节2"), "兜底把模板漏给了无关章"
+
+    def test_template_falls_back_to_the_whole_format_chapter(self, monkeypatch):
+        """降级二:条款 id 和标题都定位不到,就把招标的「格式」章整章给它。
+        **宁可多给几千字让模型自己挑,也不能一个字不给**——给零它只会自创一份格式。"""
+        state = _state(2)
+        state["outline"]["chapters"][0]["title"] = "开标一览表"
+        state["outline"]["chapters"][0]["items"] = [{"id": "i1", "label": "报价明细"}]
+        state["read"] = {
+            "doc_headings": [{"sec": "sec-9", "title": "第四章 响应文件相关格式", "level": 1}],
+            "doc_sections": [{"id": "sec-9-c1", "text": "格式一：报价函\n格式二：开标一览表（此处为招标规定表样）"}]}
+        chat = _FakeChat()
+        _run(state, chat, monkeypatch=monkeypatch)
+        brief = _brief_of(chat, "开标一览表")
+        assert "此处为招标规定表样" in brief, "格式章整章兜底没生效——该章拿到了零模板"
+
+    def test_a_form_chapter_with_no_template_anywhere_is_told_to_flag_it(self, monkeypatch):
+        """三条路都空时**留痕**:让模型显式提示「未找到规定格式」。
+        不声不响自创一份最危险——用户以为是照招标格式写的,评标时才发现对不上。"""
+        state = _state(2)
+        state["outline"]["chapters"][0]["title"] = "法人授权委托书"
+        state["read"] = {"doc_sections": [{"id": "sec-8-c1", "text": "与格式无关的技术要求正文"}]}
+        chat = _FakeChat()
+        _run(state, chat, monkeypatch=monkeypatch)
+        brief = _brief_of(chat, "法人授权委托书")
+        assert "未能找到" in brief and "人工比对" in brief, "无模板时没留痕,模型会静默自创格式"
+
     def test_a_prose_chapter_is_not_mistaken_for_a_form(self, monkeypatch):
         """构词法不能宽到把正文章也当表单——那会把无关的招标原文塞进技术方案章。"""
         state = _state(2)
         state["outline"]["chapters"][0]["title"] = "技术方案"
         state["outline"]["chapters"][0]["items"] = [
             {"id": "i1", "label": "总体设计", "clause_ids": ["sec-8-c1"]}]
+        state["outline"]["chapters"][1]["title"] = "服务承诺"   # 以「承诺」收尾但是散文章
         state["read"] = {"doc_sections": [{"id": "sec-8-c1", "text": "致：（招标人名称）"}]}
         chat = _FakeChat()
         _run(state, chat, monkeypatch=monkeypatch)
         assert "招标格式模板" not in _brief_of(chat, "技术方案")
+        assert "招标格式模板" not in _brief_of(chat, "服务承诺")
 
 
 class TestPackageScope:
