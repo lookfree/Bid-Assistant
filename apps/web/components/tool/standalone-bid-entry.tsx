@@ -44,7 +44,7 @@ export type StandaloneBidEntryProps = {
 
 /** 独立操作入口（spec328 独立审查 + 独立述标共用）：
  *  ① 选择「我的标书」里符合条件的项目直接操作（走既有流程）；
- *  ② 上传线下标书（bidOnly=false 时可附招标文件先读标；bidOnly=true 只传标书直接操作）。 */
+ *  ② 上传线下标书（bidOnly=false 时可附招标文件；创建后一律回本工具页，读标由本工具页一并跑掉）。 */
 export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
   const { onBack, backLabel, noTenderHref, pickTitle, pickDesc, emptyHint, isSelectable, readyLabel,
     switchToUploadLabel, doneStep, doneLabel, uploadHref } = props

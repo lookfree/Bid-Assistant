@@ -97,7 +97,7 @@ export function RejectUploadPanel(
               ? "请补充招标文件"
               : !bid.length
                 ? "请补充投标文件"
-                : "创建对照审查（先读标）"}
+                : "创建并开始对照审查"}
       </button>
 
       <button
