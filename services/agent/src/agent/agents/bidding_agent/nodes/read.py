@@ -172,7 +172,7 @@ async def _segmented_read(ctx, user: str, clauses: list[dict]) -> ReadResult:
     total = 3 + len(chunks)
     done = 0
     sem = asyncio.Semaphore(SEG_CONCURRENCY)
-    await publish_phase(ctx, f"读标·并行提取中(共 {total} 轮:基础/格式/评分 + 技术 {len(chunks)} 块)")
+    await publish_phase(ctx, f"读标·并行提取中(共 {total} 轮:基础/格式/评分 + 技术 {len(chunks)} 块)", 0, total)
 
     cached_hits = 0
 
@@ -188,7 +188,7 @@ async def _segmented_read(ctx, user: str, clauses: list[dict]) -> ReadResult:
             cached_hits += 1
         done += 1   # asyncio 单线程,计数无竞态
         suffix = f"(续跑复用 {cached_hits})" if cached_hits else ""
-        await publish_phase(ctx, f"读标·并行提取中 已完成 {done}/{total} 轮{suffix}")
+        await publish_phase(ctx, f"读标·并行提取中 已完成 {done}/{total} 轮{suffix}", done, total)
         await _publish_part(ctx, part)   # 该轮已解读的内容立刻上屏（展示态，权威结果仍以 step.done 为准）
         return part
 

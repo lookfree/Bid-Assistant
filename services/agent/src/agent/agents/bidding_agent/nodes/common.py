@@ -135,7 +135,7 @@ def _ocr_progress(ctx, name: str, what: str = "扫描页"):
         return None
 
     async def _report(done: int, total: int) -> None:
-        await publish_phase(ctx, f"识别《{name}》的{what} {done}/{total}")
+        await publish_phase(ctx, f"识别《{name}》的{what} {done}/{total}", done, total)
 
     return _report
 

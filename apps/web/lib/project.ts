@@ -38,8 +38,10 @@ export class StepFailedError extends Error {
 /** 正文生成的逐章进度（agent 每写完一章推一条 chapter.progress SSE 事件，前端实时勾选）。 */
 export type ChapterProgress = { kind?: string; done: number; total: number; doneIds: string[]; title?: string }
 
-/** 步骤运行阶段（node/phase 事件 → 人话标签，如「读标·技术第2/5块」「审查中」）。 */
-export type StepPhase = { label: string }
+/** 步骤运行阶段（node/phase 事件 → 人话标签，如「读标·技术第2/5块」「审查中」）。
+ *  done/total：服务端**结构化**下发的当前阶段完成度，用来画进度条。
+ *  别去正则解析 label 里的数字——文案随时会改（加个「(续跑复用 2)」后缀就打歪了），而且是静默打歪。 */
+export type StepPhase = { label: string; done?: number; total?: number }
 import type { DocHeading } from "./doc-sections"
 
 export type StepLiveEvent =
@@ -129,7 +131,8 @@ function dispatchStepFrame(f: string, onEvent: (e: StepLiveEvent) => void): bool
   if (type === "progress" && kind === "chapter") {
     onEvent({ kind: "chapter", progress: data as ChapterProgress })
   } else if (type === "progress" && kind === "phase") {
-    onEvent({ kind: "phase", phase: { label: (data as { label: string }).label } })
+    const ph = data as { label: string; done?: number; total?: number }
+    onEvent({ kind: "phase", phase: { label: ph.label, done: ph.done, total: ph.total } })
   } else if (type === "progress" && kind === "read_part") {
     // 分段读标每完成一轮推一条：整轮跑完前先把已解读的部分放上屏（大标书要十几分钟）。
     // 这是**展示态**，最终以 step.done 的合并结果整体覆盖——前端不复刻服务端的合并语义。

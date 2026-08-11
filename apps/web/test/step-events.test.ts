@@ -89,4 +89,34 @@ describe("openStepEvents 断线重连", () => {
 
     expect(calls).toBe(1)
   })
+
+  it("phase 带 done/total 时原样透到前端（进度条的数据源，不许前端从文案抠数字）", async () => {
+    globalThis.fetch = (async () =>
+      sse(
+        frame({ kind: "phase", label: "读标·并行提取中 已完成 3/9 轮(续跑复用 2)", done: 3, total: 9 }),
+        "event: run.end\ndata: {}\n\n",
+      )) as unknown as typeof fetch
+
+    const got: StepLiveEvent[] = []
+    const cancel = openStepEvents("p1", "read", (e) => got.push(e))
+    await waitFor(() => got.some((e) => e.kind === "end"))
+    cancel()
+
+    const ph = got.find((e) => e.kind === "phase")
+    expect(ph).toEqual({ kind: "phase", phase: { label: "读标·并行提取中 已完成 3/9 轮(续跑复用 2)", done: 3, total: 9 } })
+  })
+
+  it("phase 不带数字时不凭空造出 done/total（多数步骤没有可数的进度）", async () => {
+    globalThis.fetch = (async () =>
+      sse(frame({ kind: "phase", label: "审查中" }), "event: run.end\ndata: {}\n\n")) as unknown as typeof fetch
+
+    const got: StepLiveEvent[] = []
+    const cancel = openStepEvents("p1", "review", (e) => got.push(e))
+    await waitFor(() => got.some((e) => e.kind === "end"))
+    cancel()
+
+    const ph = got.find((e) => e.kind === "phase") as { phase: { done?: number; total?: number } }
+    expect(ph.phase.done).toBeUndefined()
+    expect(ph.phase.total).toBeUndefined()
+  })
 })

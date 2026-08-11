@@ -26,7 +26,15 @@ async def publish_event(redis: Any, run_id: str | None, data: dict) -> None:
         logger.warning("progress publish failed", exc_info=True)
 
 
-async def publish_phase(ctx: Any, label: str) -> None:
-    """推一条 phase 阶段事件（读标分段/各步阶段名），前端订阅后实时显示「跑到哪一步」。"""
-    await publish_event(getattr(ctx, "redis", None), getattr(ctx, "run_id", None),
-                        {"kind": "phase", "label": label})
+async def publish_phase(ctx: Any, label: str, done: int | None = None,
+                        total: int | None = None) -> None:
+    """推一条 phase 阶段事件（读标分段/各步阶段名），前端订阅后实时显示「跑到哪一步」。
+
+    给了 done/total 就一并结构化推出去，前端据此画进度条；不给就只有文案。
+    **数字必须走字段，不许让前端去正则解析中文文案**——文案是给人看的，改一个字
+    （加个「(续跑复用 2)」后缀之类）就会把解析打歪，而那种打歪是静默的。
+    total 为 0/None 时只发文案：除以零画不出百分比，宁可退回纯文字。"""
+    ev: dict[str, Any] = {"kind": "phase", "label": label}
+    if done is not None and total:
+        ev["done"], ev["total"] = done, total
+    await publish_event(getattr(ctx, "redis", None), getattr(ctx, "run_id", None), ev)
