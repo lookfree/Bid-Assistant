@@ -252,14 +252,31 @@ def _add_field(paragraph, instr_text: str) -> None:
 
 def _add_toc_field(doc: Document) -> None:
     """真目录域（非静态文本）：TOC \\o "1-4" \\h \\z \\u。目录页码只有 Word 排版引擎知道，
-    导出域交由 Word 打开时按 F9 更新，比人工维护的静态占位准确。"""
+    域交由 Word 打开时自动更新（见 _set_update_fields_on_open），比人工维护的静态占位准确。"""
     doc.add_heading("目录", level=1)
-    doc.add_paragraph("（在 Word 中按 F9 更新目录）")
     field_p = doc.add_paragraph()
     # 目录只收到四级：五级明细（① 值班安排）进目录会把目录撑得比正文还碎，
     # 评标专家反而找不到重点——五级仍在正文里有层级，只是不进目录。
     _add_field(field_p, 'TOC \\o "1-4" \\h \\z \\u')
+    _set_update_fields_on_open(doc)
     doc.add_page_break()
+
+
+def _set_update_fields_on_open(doc: Document) -> None:
+    """让 Word 打开文档时自动更新所有域（settings.xml 的 w:updateFields）。
+
+    没有这一句，目录域打开后是**空的**——页码只有 Word 的排版引擎算得出，域本身不含内容，
+    用户看到的就是「导出的文档没有目录」（2026-08-11 用户实测反馈）。此前靠正文里写一句
+    「请按 F9 更新目录」提示用户手动更新，等于把我们的实现细节转嫁给用户，还得留一行废话在
+    标书正文里（那是要交给评委的文件）。页脚的 PAGE 页码域同理受益。
+    Word 打开时会弹一次「是否更新域」确认，选是即可；WPS 与 LibreOffice 同样认这个开关。
+    """
+    settings = doc.settings.element
+    if settings.find(qn("w:updateFields")) is not None:
+        return
+    flag = OxmlElement("w:updateFields")
+    flag.set(qn("w:val"), "true")
+    settings.append(flag)
 
 
 def _add_page_number_footer(doc: Document, project_name: str) -> None:

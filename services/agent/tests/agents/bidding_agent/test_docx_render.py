@@ -45,7 +45,10 @@ def test_render_docx_handles_ragged_table_and_container():
 
 
 def test_render_docx_has_real_toc_and_page_number_fields():
-    """spec323：目录不是静态文本而是真域（Word 打开按 F9 更新）；页脚是居中 PAGE 域页码。"""
+    """spec323：目录不是静态文本而是真域；页脚是居中 PAGE 域页码。
+    2026-08-11：域**必须配 settings.xml 的 updateFields**，否则 Word 打开时目录是空的——
+    用户看到的就是「导出的文档没有目录」（实测反馈）；原先靠正文写一句「按 F9 更新」提示，
+    等于把实现细节转嫁给用户，还把一行废话印进要交给评委的标书。"""
     outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]}
     data = render_docx(outline, {"t1": "<p>正文</p>"}, meta={"name": "某项目 投标文件"})
     zf = zipfile.ZipFile(io.BytesIO(data))
@@ -56,8 +59,10 @@ def test_render_docx_has_real_toc_and_page_number_fields():
     header_xml = "".join(
         zf.read(n).decode("utf-8") for n in zf.namelist() if n.startswith("word/header")
     )
+    settings_xml = zf.read("word/settings.xml").decode("utf-8")
     assert 'TOC \\o "1-4" \\h \\z \\u' in document_xml     # 真 TOC 域 instrText（1-4:章/节/小节/细项）
-    assert "在 Word 中按 F9 更新目录" in document_xml       # 保留人工提示文案
+    assert "updateFields" in settings_xml                  # 打开即自动更新域（否则目录是空的）
+    assert "F9" not in document_xml                        # 不把「请按 F9」这类提示印进标书正文
     assert "PAGE" in footer_xml                            # 页脚 PAGE 域
     assert "某项目 投标文件" in header_xml                  # 页眉=项目名
 
