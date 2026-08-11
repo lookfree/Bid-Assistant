@@ -144,7 +144,12 @@ export async function presignDownload(
 // ---- 资料库 PDF 转页图（spec 2026-08-08-library-pdf-pages） ----
 
 const PDF_PAGES_MAX_BYTES = 20 * 1024 * 1024 // 证书类不会这么大；防手册误传拖垮 agent
-const PDF_PAGES_TIMEOUT_MS = 30_000
+// 等待上限必须跟着**页数上限**走（agent 侧 render/preview._PDF_PAGE_MAX，2026-08-11 由 5 提到 10）。
+// 2026-08-11 生产实测：6 页扫描版信用报告渲染 22s（约 3.7s/页，1600px 全页 PNG），
+// 上限从 5 提到 10 却漏改这里 → 10 页需 35~40s > 30s，用户看到的是「转换失败，请稍后再试」
+// （nginx 记的是 502 upstream prematurely closed，不是可读的业务错误）。
+// 120s = 10 页 × 4s + 页图写入 MinIO 的余量；改页数上限时**必须同步复核这个值**。
+const PDF_PAGES_TIMEOUT_MS = 120_000
 
 export class PdfPagesRejectedError extends Error {
   constructor(public code: "not_pdf" | "too_large" | "too_many_pages" | "unrenderable") {
