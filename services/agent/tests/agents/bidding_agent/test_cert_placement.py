@@ -125,7 +125,31 @@ class TestPlaceCertificates:
         assert CERT_KEYWORDS == ("营业执照", "资质证书", "授权书", "法定代表人身份证明",
                                  "检测证书", "许可证",
                                  "审计报告", "资产负债表", "利润表", "财务报表", "纳税证明",
-                                 "完税证明", "社保证明", "银行资信证明", "开户许可证")
+                                 "社保证明", "银行资信证明", "开户许可证")
+
+    def test_the_two_sides_may_use_different_wording_for_the_same_material(self):
+        """归组的意义所在：招标要求写「法定代表人身份证明」、用户把条目命名成「法人身份证」，
+        平表时代这两边对不上、材料躺在库里插不进标书（2026-08-11 用户实测踩到两次）。"""
+        out = {"t1": "<h3>资格证明</h3>"}
+        state = {"outline": {"chapters": [_chapter("t1", "资格证明文件", ["sec-4-c1"])]},
+                 "read": _read_with("提供法定代表人身份证明及授权代表身份证", ["sec-4-c1"]),
+                 "run_input": {"credentials": [
+                     {"title": "法人身份证", "images": [
+                         {"fileId": "f7", "key": "k7", "name": "id.png"}]}]}}
+        result = place_certificates(out, state)
+        assert "【法定代表人身份证明】见下图：" in result["t1"], "同义写法没匹配上"
+        assert 'data-file-id="f7"' in result["t1"]
+
+    def test_a_requirement_worded_loosely_still_finds_its_group(self):
+        """招标那侧也常用简写：「提供公司执照复印件」应当归到营业执照组。"""
+        out = {"t1": "<h3>资格证明</h3>"}
+        state = {"outline": {"chapters": [_chapter("t1", "资格证明文件", ["sec-4-c1"])]},
+                 "read": _read_with("提供公司执照复印件并加盖公章", ["sec-4-c1"]),
+                 "run_input": {"credentials": [
+                     {"title": "营业执照副本", "images": [
+                         {"fileId": "f6", "key": "k6", "name": "lic.png"}]}]}}
+        result = place_certificates(out, state)
+        assert "【营业执照】见下图：" in result["t1"]
 
     def test_financial_requirement_inserts_the_financial_document(self):
         """招标要求「近三年经审计的资产负债表」→ 资料库里那条（财务分类的条目同样进 credentials）

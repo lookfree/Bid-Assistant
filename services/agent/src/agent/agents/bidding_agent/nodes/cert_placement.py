@@ -18,12 +18,48 @@ from agent.agents.bidding_agent.nodes.credentials_chapter import SYS_CREDS_ID, _
 
 # 证照词表字面量——与计划 Global Constraints、web 侧 lib/cert-keywords.ts 逐字同形（两端各自
 # 持有确定性实现,字面量一改就要同步改另一处，注释互指）。
-CERT_KEYWORDS = ("营业执照", "资质证书", "授权书", "法定代表人身份证明", "检测证书", "许可证",
-                 # 财务与资格类材料（2026-08-11 加）：康恒那单实测报出「近三年经审计的资产负债表
-                 # 未提供」「银行资信证明未提供」，而这些材料就躺在资料库「财务材料」分类里，
-                 # 既进不了附录章、也不会被定向插到要求它的章节——因为词表只覆盖资质类。
-                 "审计报告", "资产负债表", "利润表", "财务报表", "纳税证明", "完税证明",
-                 "社保证明", "银行资信证明", "开户许可证")
+# 证照词组：每组 = (标准名, 该组的全部写法…)。**匹配用组内任一写法，展示用标准名。**
+# 为什么不是一张平表（2026-08-11 用户实测两次踩空）：平表要求"招标要求的措辞"与"用户给条目
+# 起的名字"命中同一个词——「法人身份证」对不上「法定代表人身份证明」、「公司执照」对不上
+# 「营业执照」，材料躺在库里却插不进标书。归组后两侧各自用自己的习惯说法即可。
+# 与 web 侧 lib/cert-keywords.ts 逐字同形（两端各自持有确定性实现，一改就要同步改另一处）。
+CERT_GROUPS: tuple[tuple[str, ...], ...] = (
+    ("营业执照", "营业执照", "工商执照", "公司执照", "营业执照副本", "三证合一"),
+    ("资质证书", "资质证书", "资质证明", "企业资质", "等级证书"),
+    ("授权书", "授权书", "授权委托书", "法定代表人授权书", "原厂授权", "厂家授权"),
+    ("法定代表人身份证明", "法定代表人身份证明", "法定代表人身份证", "法人身份证明",
+     "法人身份证", "法人代表身份证", "法定代表人证明书"),
+    ("检测证书", "检测证书", "检测报告", "检验报告", "型式试验"),
+    ("许可证", "许可证", "经营许可"),
+    ("审计报告", "审计报告", "审计意见", "经审计的财务"),
+    ("资产负债表", "资产负债表"),
+    ("利润表", "利润表", "损益表"),
+    ("财务报表", "财务报表", "财务状况", "财务报告"),
+    ("纳税证明", "纳税证明", "完税证明", "纳税记录", "税收缴纳"),
+    ("社保证明", "社保证明", "社会保险", "社保缴纳"),
+    ("银行资信证明", "银行资信证明", "资信证明", "银行资信"),
+    ("开户许可证", "开户许可证", "基本账户", "开户证明"),
+)
+
+# 标准名列表（展示用，也是双端同表断言的锚点）。
+CERT_KEYWORDS: tuple[str, ...] = tuple(g[0] for g in CERT_GROUPS)
+
+
+def _group_of(text: str) -> str | None:
+    """一段文字命中哪一组 → 返回该组标准名；都不命中返回 None。取**最长**的匹配写法所在组，
+    避免「开户许可证」同时命中「许可证」组（包含关系）。"""
+    best: tuple[int, str] | None = None
+    for group in CERT_GROUPS:
+        for alias in group[1:]:
+            if alias in text and (best is None or len(alias) > best[0]):
+                best = (len(alias), group[0])
+    return best[1] if best else None
+
+
+def _aliases_of(canonical: str) -> tuple[str, ...]:
+    """标准名 → 该组全部写法（查库存时任一写法命中即算这份材料）。"""
+    return next((g[1:] for g in CERT_GROUPS if g[0] == canonical), (canonical,))
+
 
 # post-pass 定位只看 read 结论里资格/商务两类条目——技术类要求命中证照字样极罕见且易误报。
 _CERT_CATEGORY_KEYS = ("qualification", "commercial")
@@ -60,10 +96,10 @@ def _matched_keywords(read: dict, clause_ids: set[str]) -> list[str]:
         for it in cat.get("items") or []:
             if set(it.get("clause_ids") or []) & clause_ids:
                 hit_titles.append(str(it.get("title") or ""))
-    hits = [kw for kw in CERT_KEYWORDS if any(kw in t for t in hit_titles)]
-    # 词表里存在包含关系（「开户许可证」⊃「许可证」）：两个都命中就会为同一份材料插两遍图。
-    # 保留更具体的那个——被别的命中词整个包含的词一律丢弃。
-    return [kw for kw in hits if not any(kw != other and kw in other for other in hits)]
+    # 每条要求各自归组（组内取最长写法，天然处理「开户许可证」⊃「许可证」这类包含关系），
+    # 再按词表序去重——同一组被多条要求命中只插一次图。
+    matched = {g for g in (_group_of(t) for t in hit_titles) if g}
+    return [kw for kw in CERT_KEYWORDS if kw in matched]
 
 
 def place_certificates(out: dict[str, str], state: dict) -> dict[str, str]:
@@ -87,7 +123,9 @@ def place_certificates(out: dict[str, str], state: dict) -> dict[str, str]:
             continue
         blocks = []
         for kw in keywords:
-            entry = next((c for c in credentials if kw in str(c.get("title") or "")), None)
+            aliases = _aliases_of(kw)
+            entry = next((c for c in credentials
+                          if any(a in str(c.get("title") or "") for a in aliases)), None)
             blocks.append(_cert_block(kw, entry))
         result[cid] = html + "\n" + "\n".join(blocks)
     return result

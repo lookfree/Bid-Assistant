@@ -50,8 +50,25 @@ describe("missingCerts", () => {
 
   test("CERT_KEYWORDS 与 agent 侧 cert_placement.py 逐字同形", () => {
     expect(CERT_KEYWORDS).toEqual(["营业执照", "资质证书", "授权书", "法定代表人身份证明", "检测证书", "许可证",
-      "审计报告", "资产负债表", "利润表", "财务报表", "纳税证明", "完税证明",
+      "审计报告", "资产负债表", "利润表", "财务报表", "纳税证明",
       "社保证明", "银行资信证明", "开户许可证"])
+  })
+
+  test("同一份材料的不同说法算同一件事", () => {
+    // 招标要求写正式名、用户按习惯命名，两边对不上就等于材料没提供（2026-08-11 用户实测）。
+    const categories = [
+      { key: "qualification", items: [{ title: "提供法定代表人身份证明" }] },
+    ]
+    expect(missingCerts(categories, [])).toEqual(["法定代表人身份证明"])
+    expect(missingCerts(categories, ["法人身份证"])).toEqual([])   // 库里叫别名也算有
+  })
+
+  test("招标那侧用简写同样归得了组", () => {
+    const categories = [
+      { key: "qualification", items: [{ title: "提供公司执照复印件" }] },
+    ]
+    expect(missingCerts(categories, [])).toEqual(["营业执照"])
+    expect(missingCerts(categories, ["营业执照副本"])).toEqual([])
   })
 
   test("财务类要求同样出缺证预警", () => {
