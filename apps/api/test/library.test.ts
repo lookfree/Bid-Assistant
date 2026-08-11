@@ -4,7 +4,7 @@ import { Hono } from "hono"
 import { libraryRoutes } from "../src/routes/library"
 import { loginWithPhone } from "../src/services/auth"
 import { getDb, closeDb } from "../src/db/client"
-import { users, projectFiles } from "../src/db/schema"
+import { users, projectFiles, libraryItems } from "../src/db/schema"
 import { uniquePhone, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连真库
@@ -154,6 +154,31 @@ describe("/api/library 资料库", () => {
     const reloaded = list.items.find((i) => i.id === row.id)
     expect(reloaded?.attachments?.[1]?.sourceFileId).toBe(filePdfSrc)
     expect(reloaded?.attachments?.[0]?.sourceFileId).toBeUndefined() // 源 PDF 自身没有 sourceFileId
+  })
+
+  it("列表不带附件正文，保存也不会把它抹掉", async () => {
+    // text 是后台解析出的全文（单附件上限 50k 字），而本接口是资料库页与正文页「从资料库插入」
+    // 的共用数据源、在投标热路径上——带上它，重附件用户每次开页要拉几 MB。
+    // 但前端拿不到就意味着原样回传会清空它，所以写入侧必须按 fileId 补回。
+    const db = getDb()
+    const [seeded] = await db.select().from(libraryItems).where(eq(libraryItems.id, itemId)).limit(1)
+    const atts = (seeded!.attachments ?? []).map((a, i) =>
+      i === 0 ? { ...a, text: "解析出来的正文" .repeat(50) } : a)
+    await db.update(libraryItems).set({ attachments: atts }).where(eq(libraryItems.id, itemId))
+
+    const list = (await (await req("", tokenA)).json()) as { items: Item[] }
+    const shown = list.items.find((i) => i.id === itemId)
+    expect(shown?.attachments?.[0]).toBeDefined()
+    expect((shown!.attachments![0] as { text?: string }).text).toBeUndefined() // 列表剔掉正文
+    expect(shown!.attachments![0]!.name).toBeDefined()                          // 其余字段照旧
+
+    // 前端把「没有 text 的附件」原样回传（真实场景）
+    await req(`/${itemId}`, tokenA, {
+      method: "PUT",
+      body: JSON.stringify({ attachments: shown!.attachments }),
+    })
+    const [after] = await db.select().from(libraryItems).where(eq(libraryItems.id, itemId)).limit(1)
+    expect((after!.attachments![0] as { text?: string }).text).toContain("解析出来的正文")
   })
 
   it("GET：A 能看到自己的条目，B 看不到（属主隔离）", async () => {

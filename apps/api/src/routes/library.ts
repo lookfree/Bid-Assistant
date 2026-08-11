@@ -81,6 +81,23 @@ async function cleanupAttachments(atts: { fileId: string }[] | null, userId: str
 }
 
 // 条目可检索文本（spec316）：title + meta + 结构化字段 + 正文 + **附件正文**。
+/** 列表出参剔掉附件正文（见 GET / 的注释）——只去 text，其余字段原样。 */
+function stripAttachmentText<T extends { attachments: LibraryItem["attachments"] }>(item: T): T {
+  if (!item.attachments?.length) return item
+  return { ...item, attachments: item.attachments.map(({ text: _drop, ...rest }) => rest) }
+}
+
+/** 写入时保住库里已有的附件正文：前端拿不到 text（列表不返），原样回传就会把它抹掉。
+ *  按 fileId 对齐——用户换了附件顺序、删了某个附件都不影响其余附件的正文。 */
+function keepAttachmentText(
+  incoming: LibraryItem["attachments"],
+  existing: LibraryItem["attachments"],
+): LibraryItem["attachments"] {
+  if (!incoming?.length) return incoming
+  const textById = new Map((existing ?? []).filter((a) => a.text).map((a) => [a.fileId, a.text!]))
+  return incoming.map((a) => (a.text ? a : { ...a, ...(textById.has(a.fileId) ? { text: textById.get(a.fileId) } : {}) }))
+}
+
 // 附件正文由 services/library-text 后台解析后写回 attachments[].text（扫描版 PDF 走 OCR），
 // spec 2026-08-11：在此之前系统只看得见附件的标题，用户上传的 docx/pdf 内容完全不进检索。
 // 每份附件带上文件名再拼正文——文件名本身就是强检索信号（「零信任统一身份认证技术方案.docx」），
@@ -152,14 +169,19 @@ export function libraryRoutes(deps: Partial<LibraryDeps> = {}) {
   const r = new Hono<{ Variables: { user: User } }>()
   r.use("*", authMiddleware) // 资料属本人，需登录
 
-  // 当前用户全部条目（个人资料量小，不分页）
+  // 当前用户全部条目（个人资料量小，不分页）。
+  // **附件正文不随列表返回**：attachments[].text 是后台解析出的全文（单附件上限 50k 字、
+  // 单条目 100k 字），而本接口是资料库页与正文页「从资料库插入」的共用数据源、在投标热路径上——
+  // 带上它，一个重附件用户每次开页就要拉几 MB（同 content 步 ?slim=1 那类坑：SQL 层不选大列，
+  // 实测 28ms vs 2788ms）。正文只有后台解析与建索引用得着，前端一处都不读。
+  // 保存时 PUT 不带 text 也不会丢：write 路径按 fileId 保留库里已有的正文（见 keepAttachmentText）。
   r.get("/", async (c) => {
     const items = await getDb()
       .select()
       .from(libraryItems)
       .where(eq(libraryItems.userId, getUserId(c)))
       .orderBy(desc(libraryItems.createdAt))
-    return c.json({ items })
+    return c.json({ items: items.map(stripAttachmentText) })
   })
 
   r.post("/", async (c) => {
@@ -190,6 +212,15 @@ export function libraryRoutes(deps: Partial<LibraryDeps> = {}) {
     const patch = Object.fromEntries(
       Object.entries(parsed.data).filter(([, v]) => v !== undefined),
     ) as Partial<typeof libraryItems.$inferInsert>
+    // 附件正文不随列表下发，前端原样回传就会把库里已解析的正文抹掉——按 fileId 补回来。
+    if (patch.attachments !== undefined && patch.attachments !== null) {
+      const [before] = await getDb()
+        .select({ attachments: libraryItems.attachments })
+        .from(libraryItems)
+        .where(and(eq(libraryItems.id, id), eq(libraryItems.userId, userId)))
+        .limit(1)
+      patch.attachments = keepAttachmentText(patch.attachments, before?.attachments ?? null)
+    }
     // 属主隔离：where 带 userId，非本人的条目等同不存在 → 404
     const [row] = await getDb()
       .update(libraryItems)
