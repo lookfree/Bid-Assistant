@@ -213,8 +213,13 @@ class TestReportFilter:
 
 
 class TestDedupeKey:
-    """审查载荷里已经没有任何内部条款 id（提纲/构成清单/读标三处都剥过），发现本身也就不带
-    条款 id → 去重键只能靠位置分辨，否则同类问题会塌缩成一条、漏报其余位置。"""
+    """审查载荷里已经没有任何内部条款 id（提纲/构成清单经 strip_clause_ids，读标经
+    compress_read 的 _item_for_model），发现本身也就不带条款 id → 去重键靠**位置 + 招标依据**
+    分辨（target_id/anchor_text/tender_ref），否则同类问题会塌缩成一条、漏报其余位置。
+
+    tender_ref 那一项是内容级判据,**把它从键里删掉即复发**「偏离表十条★漏登塌缩成一条」;
+    但它只在各条 tender_ref 确实不同时生效——全为空串时仍只剩位置项,兜底靠提示词要求
+    标题点名具体条款(见 prompts/review)。"""
 
     def test_same_wording_on_different_chapters_stays_two_findings(self):
         a = _finding("★条款未登入偏离表", "在偏离表中逐条登记", target_id="t1", anchor_text="技术偏离表")
