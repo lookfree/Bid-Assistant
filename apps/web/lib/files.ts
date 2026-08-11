@@ -102,7 +102,7 @@ export function checkFiles(picked: File[], accept: string, already = 0): string 
 export function pdfPagesErrorMessage(e: unknown): string {
   const code = (e as { code?: string } | null)?.code
   switch (code) {
-    case "too_many_pages": return "页数超过 5 页,暂不支持转换"
+    case "too_many_pages": return "页数超过 10 页,暂不支持转换"
     case "unrenderable": return "该 PDF 已加密或无法解析"
     case "agent_unavailable": return "转换服务暂不可用,稍后再试"
     case "too_large": return "文件过大,暂不支持转换"

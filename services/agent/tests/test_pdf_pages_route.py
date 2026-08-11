@@ -42,7 +42,7 @@ async def test_renders_uploads_and_returns_page_keys(monkeypatch):
 
 async def test_too_many_pages_is_422(monkeypatch):
     from fastapi.responses import JSONResponse
-    store = _Storage(_pdf_with_pages(6))
+    store = _Storage(_pdf_with_pages(11))   # 上限 10 页（render/preview._PDF_PAGE_MAX）
     monkeypatch.setattr(mod, "storage", store)
     resp = await pdf_pages(PdfPagesBody(key="uploads/u1/f1/manual.pdf"))
     assert isinstance(resp, JSONResponse) and resp.status_code == 422

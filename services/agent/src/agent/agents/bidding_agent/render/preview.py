@@ -72,7 +72,8 @@ def render_deck_previews(pptx_bytes: bytes) -> list[bytes]:
 
 # ---- 资料库 PDF 转页图(spec 2026-08-08-library-pdf-pages) ----
 
-_PDF_PAGE_MAX = 5          # 只服务证书类小 PDF;超页数明示"暂不支持",不做选页界面(用户拍板)
+_PDF_PAGE_MAX = 10         # 只服务证书类小 PDF;超页数明示"暂不支持",不做选页界面(用户拍板)。
+                           # 2026-08-11 由 5 提到 10：实际证照 PDF 常带副本/年检页,5 页卡住了正常件。
 _PDF_PAGE_WIDTH_PX = 1600  # 证书文字对 OCR 可读;前端插入时自会压到 1200 JPEG 内嵌
 
 
@@ -89,7 +90,7 @@ def render_pdf_pages(pdf_bytes: bytes, max_pages: int = _PDF_PAGE_MAX,
     """PDF → 每页一张 PNG(按页序)。返回 [(png_bytes, width, height)]。
     渲染循环与 render_deck_previews 同源:按宽等比缩放、PIL 存 PNG（parsing/pdf_render.page_image）,
     也同样整段持 PDFIUM_LOCK（PDFium 进程级非线程安全,见 parsing/pdf_render.py 的锁注释）。
-    先查页数再渲染——6 页的文件不该白渲 5 页才发现超限。"""
+    先查页数再渲染——11 页的文件不该白渲 10 页才发现超限。"""
     import pypdfium2 as pdfium
 
     from agent.parsing.pdf_render import PDFIUM_LOCK, page_image

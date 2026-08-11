@@ -27,7 +27,14 @@ def test_renders_each_page_as_png_at_target_width():
 
 def test_more_than_max_pages_is_rejected_before_rendering():
     with pytest.raises(TooManyPages):
-        render_pdf_pages(_pdf_with_pages(6))
+        render_pdf_pages(_pdf_with_pages(11))
+
+
+def test_exactly_the_max_page_count_is_accepted():
+    """上限本身必须锁住**两侧**：只验"超限被拒"时，把上限从 10 改回 5 照样全绿
+    （11 页在两个值下都超），边界等于没测。证照 PDF 常带副本/年检页，正好卡在这一带。"""
+    pages = render_pdf_pages(_pdf_with_pages(10))
+    assert len(pages) == 10
 
 
 def test_garbage_bytes_raise_unrenderable():
