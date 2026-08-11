@@ -19,6 +19,7 @@ let userB = ""
 let keyA1 = ""
 let keyA2 = ""
 let keyB = ""
+let keyMessy = ""   // key 的 basename 被 sanitize 过，与真实文件名**不同**
 
 beforeAll(async () => {
   const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
@@ -30,10 +31,13 @@ beforeAll(async () => {
   keyA1 = `uploads/${userA}/${crypto.randomUUID()}/公告.pdf`
   keyA2 = `uploads/${userA}/${crypto.randomUUID()}/技术规范书.docx`
   keyB = `uploads/${userB}/${crypto.randomUUID()}/b.pdf`
+  // 上传链路会 sanitize 文件名进 key（空格/括号 → 下划线）：只有真去库里查 filename 才拿得到原名
+  keyMessy = `uploads/${userA}/${crypto.randomUUID()}/_______2______-____ _____.doc`
   await getDb().insert(projectFiles).values([
     { userId: userA, bucket: "bidsaas", key: keyA1, filename: "公告.pdf", contentType: "application/pdf", size: 1, status: "uploaded" },
     { userId: userA, bucket: "bidsaas", key: keyA2, filename: "技术规范书.docx", contentType: "application/msword", size: 1, status: "uploaded" },
     { userId: userB, bucket: "bidsaas", key: keyB, filename: "b.pdf", contentType: "application/pdf", size: 1, status: "uploaded" },
+    { userId: userA, bucket: "bidsaas", key: keyMessy, filename: "银联数据统一身份认证系统采购项目（第二次）-采购文件 （发售稿）.doc", contentType: "application/msword", size: 1, status: "uploaded" },
   ])
 })
 
@@ -100,5 +104,50 @@ describe("POST /api/projects 多文件（spec320）", () => {
     const res = await post({})
     expect(res.status).toBe(400)
     expect(((await res.json()) as { error: string }).error).toBe("invalid_input")
+  })
+})
+
+describe("GET /api/projects 文件构成（2026-08-12）", () => {
+  it("列表回招标/投标各自的**原始文件名**，不是 MinIO key", async () => {
+    const res = await post({ fileKeys: [keyA1, keyA2] })
+    const { id } = (await res.json()) as { id: string }
+    const list = await app.request("/api/projects?pageSize=50", {
+      headers: { Authorization: `Bearer ${tokenA}` },
+    })
+    const { items } = (await list.json()) as { items: { id: string; tenderFiles: string[]; bidFiles: string[] }[] }
+    const row = items.find((i) => i.id === id)
+    // 一份招标常是正文+补遗+答疑：卡片过去只渲染一个派生项目名，用户看不出自己传了几份
+    expect(row?.tenderFiles).toEqual(["公告.pdf", "技术规范书.docx"])
+    expect(row?.bidFiles).toEqual([]) // 生成项目的投标文件是系统写的，不在这里
+  })
+
+  it("回的是库里的原始文件名，不是 key 里 sanitize 过的 basename", async () => {
+    const res = await post({ fileKeys: [keyMessy] })
+    const { id } = (await res.json()) as { id: string }
+    const list = await app.request("/api/projects?pageSize=50", {
+      headers: { Authorization: `Bearer ${tokenA}` },
+    })
+    const { items } = (await list.json()) as { items: { id: string; tenderFiles: string[] }[] }
+    // key 里是「_______2______-____ _____.doc」，拿它当名字展示等于给用户看一串下划线
+    expect(items.find((i) => i.id === id)?.tenderFiles).toEqual([
+      "银联数据统一身份认证系统采购项目（第二次）-采购文件 （发售稿）.doc",
+    ])
+  })
+
+  it("线下审查项目回投标文件名（多份分册照序给全）", async () => {
+    const res = await app.request("/api/projects/review", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${tokenA}`, "content-type": "application/json" },
+      body: JSON.stringify({ bidFileKeys: [keyA2, keyA1], tenderFileKeys: [keyA1] }),
+    })
+    expect(res.status).toBe(200)
+    const { id } = (await res.json()) as { id: string }
+    const list = await app.request("/api/projects?pageSize=50", {
+      headers: { Authorization: `Bearer ${tokenA}` },
+    })
+    const { items } = (await list.json()) as { items: { id: string; tenderFiles: string[]; bidFiles: string[] }[] }
+    const row = items.find((i) => i.id === id)
+    expect(row?.bidFiles).toEqual(["技术规范书.docx", "公告.pdf"]) // 顺序=拼接顺序，不许排序
+    expect(row?.tenderFiles).toEqual(["公告.pdf"])
   })
 })

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { FolderOpen, Loader2, UploadCloud, X } from "lucide-react"
 import { listProjects, setCurrentProjectId, createReviewProject, type ProjectListItem } from "@/lib/project"
+import { fileSummary, fileTitle } from "@/lib/project-files"
 import { uploadFile, uploadErrorMessage, uploadHint, ACCEPT_BID, ACCEPT_TENDER } from "@/lib/files"
 
 export type StandaloneBidEntryProps = {
@@ -107,7 +108,14 @@ export function StandaloneBidEntry(props: StandaloneBidEntryProps) {
                   }}
                   className="flex w-full items-center justify-between rounded-xl border border-border px-3 py-2.5 text-left transition-colors hover:border-primary/40"
                 >
-                  <span className="min-w-0 truncate text-sm text-foreground" title={p.name}>{p.name}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm text-foreground" title={p.name}>{p.name}</span>
+                    {/* 这一行名字是派生的：生成项目显示招标文件名、线下项目显示投标文件名。
+                        不点明是哪一类、有几份，用户无从判断自己选的这条到底拿什么去审查。 */}
+                    <span className="block truncate text-[11px] text-muted-foreground" title={fileTitle(p)}>
+                      {fileSummary(p)}
+                    </span>
+                  </span>
                   <span className="ml-2 shrink-0 text-[11px] text-muted-foreground">
                     {p.doneSteps?.includes(doneStep) ? doneLabel : p.currentStep === "done" ? "已完成" : readyLabel}
                   </span>

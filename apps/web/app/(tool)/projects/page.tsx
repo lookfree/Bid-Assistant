@@ -28,6 +28,7 @@ import {
   BID_CATEGORY_LABEL,
   type ProjectListItem,
 } from "@/lib/project"
+import { fileSummary, fileTitle } from "@/lib/project-files"
 
 type CurrentStep = ProjectListItem["currentStep"]
 
@@ -38,7 +39,10 @@ const stepMap: Record<CurrentStep, { label: string; href: string; tone: string; 
   read: { label: "读标中", href: "/read", tone: "gradient-brand-soft text-primary", icon: FileSearch },
   outline: { label: "提纲中", href: "/outline", tone: "gradient-brand-soft text-primary", icon: ListTree },
   content: { label: "正文生成中", href: "/content", tone: "gradient-brand-soft text-primary", icon: PenLine },
-  review: { label: "待审查", href: "/risk", tone: "bg-warning/10 text-warning", icon: ShieldAlert },
+  // ?view=project 不能省：审查页把「审查当前项目」的 CTA 闸在这个参数后面（左侧导航直接点
+  // 「标书审查」时不摆 CTA，统一走选择列表——这是产品口径）。从这里点卡片属于**显式选定项目**，
+  // 不带参数就会出现「有审查结果 → 报告页 / 没结果 → 上传面板」两种落地页，同一个项目两副样子。
+  review: { label: "待审查", href: "/risk?view=project", tone: "bg-warning/10 text-warning", icon: ShieldAlert },
   present: { label: "述标准备", href: "/present", tone: "gradient-brand-soft text-primary", icon: Presentation },
   export: { label: "待导出", href: "/content", tone: "bg-success/10 text-success", icon: Download },
   done: { label: "已完成", href: "/content", tone: "bg-muted text-muted-foreground", icon: CheckCircle2 },
@@ -356,7 +360,7 @@ function ProjectCard({
   const stage = stepMap[p.currentStep] ?? stepMap.read
   // 线下标书项目（spec328，kind=review）不进生成流水线,可审查/述标：读标阶段去读标页,其余默认回审查页
   //（述标产物经述标页「述标我的标书」选择器可达；此处不据 currentStep 判 present 有无，故默认落审查）。
-  const href = p.kind === "review" ? (p.currentStep === "read" ? "/read" : "/risk") : stage.href
+  const href = p.kind === "review" ? (p.currentStep === "read" ? "/read" : "/risk?view=project") : stage.href
   const Icon = stage.icon
   const progress = p.totalSteps > 0 ? Math.min(100, Math.round((p.stepIndex / p.totalSteps) * 100)) : 0
   return (
@@ -409,20 +413,18 @@ function ProjectCard({
               </span>
             ) : null}
           </div>
+          {/* 文件构成：卡片上的名字是**派生**的（生成项目取招标文件名、线下项目取投标文件名），
+              光看它既不知道传了几份，也分不清这一行代表招标还是投标。悬停出逐份文件名。 */}
+          <p className="mt-1 truncate text-xs text-muted-foreground" title={fileTitle(p)}>
+            <Files className="mr-1 inline size-3.5 align-[-2px]" />
+            {fileSummary(p)}
+          </p>
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
             <span className="inline-flex items-center gap-1">
               <Clock className="size-3.5" />
               {formatDate(p.createdAt)} 创建
             </span>
             <span>{statusLabel[p.status]}</span>
-            {/* 一份招标常是正文+补遗+答疑+清单好几个文件：只显示主文件名会让用户以为漏传了，
-                标出份数（主文件名 · 含 N 份），点进项目在读标页可逐份切换查看原文 */}
-            {(p.tenderCount ?? 0) > 1 && (
-              <span className="inline-flex items-center gap-1">
-                <Files className="size-3.5" />
-                招标文件 {p.tenderCount} 份（主文件 + 附件）
-              </span>
-            )}
           </div>
           {/* 进度条：已完成步数 / 总步数 */}
           <div className="mt-2.5 flex items-center gap-2">

@@ -227,6 +227,11 @@ export type ProjectListItem = {
   totalSteps: number
   /** 招标文件份数（正文+补遗+答疑+清单常是多份）：列表展示「主文件名 · 含 N 份」 */
   tenderCount?: number
+  /** 本项目的招标文件原始名（按上传顺序）。列表卡只渲染一个派生项目名——生成项目显示的是招标
+   *  文件名、线下项目显示的是投标文件名，同一位置两种含义，用户看不出自己传了几份、传的哪几份。 */
+  tenderFiles?: string[]
+  /** 线下上传的投标文件原始名；生成项目为空数组（它的投标文件是系统写的，不在文件表里）。 */
+  bidFiles?: string[]
   /** 已有可用的投标文件（生成到正文之后，或线下上传的标书）：述标/审查选择列表据此过滤 */
   hasBid?: boolean
   /** 已完成的步（read/outline/content/review/present/export）：列表据此标「已审查 / 已述标」——
