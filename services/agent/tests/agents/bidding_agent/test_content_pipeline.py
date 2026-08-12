@@ -359,26 +359,98 @@ class TestBriefTargeting:
         """降级二:条款 id 和标题都定位不到,就把招标的「格式」章整章给它。
         **宁可多给几千字让模型自己挑,也不能一个字不给**——给零它只会自创一份格式。"""
         state = _state(2)
-        state["outline"]["chapters"][0]["title"] = "开标一览表"
-        state["outline"]["chapters"][0]["items"] = [{"id": "i1", "label": "报价明细"}]
+        # 名字在招标标题里找不到（招标叫「格式二 开标一览表」，投标这章叫「投标承诺书」），
+        # 前两条路都落空 → 必须走整章兜底
+        state["outline"]["chapters"][0]["title"] = "投标承诺书"
+        state["outline"]["chapters"][0]["items"] = [{"id": "i1", "label": "承诺事项"}]
+        # 切分器每遇一个标题就另起一个 sec：章标题那个 sec 里**只有一句导语**，
+        # 真正的表单在下级标题的 sec 里。只取命中的 sec 等于兜了个空（评审 2026-08-12 实证）。
         state["read"] = {
-            "doc_headings": [{"sec": "sec-9", "title": "第四章 响应文件相关格式", "level": 1}],
-            "doc_sections": [{"id": "sec-9-c1", "text": "格式一：报价函\n格式二：开标一览表（此处为招标规定表样）"}]}
+            "doc_headings": [
+                {"sec": "sec-9", "title": "第四章 响应文件相关格式", "level": 1},
+                {"sec": "sec-10", "title": "格式一 报价函", "level": 2},
+                {"sec": "sec-11", "title": "格式二 开标一览表", "level": 2},
+                {"sec": "sec-12", "title": "第五章 技术规范书", "level": 1},   # 同级 → 格式章到此为止
+                {"sec": "sec-13", "title": "5.1 性能指标", "level": 2},
+            ],
+            "doc_sections": [
+                {"id": "sec-9-c1", "text": "投标人应按下列格式编制响应文件。"},
+                {"id": "sec-10-c1", "text": "致：招标人（报价函正文）"},
+                {"id": "sec-11-c1", "text": "开标一览表（此处为招标规定表样）"},
+                {"id": "sec-12-c1", "text": "本章为技术规范，与格式无关"},
+                {"id": "sec-13-c1", "text": "吞吐量不低于 10Gbps"},
+            ]}
         chat = _FakeChat()
         _run(state, chat, monkeypatch=monkeypatch)
-        brief = _brief_of(chat, "开标一览表")
+        brief = _brief_of(chat, "投标承诺书")
         assert "此处为招标规定表样" in brief, "格式章整章兜底没生效——该章拿到了零模板"
+        assert "报价函正文" in brief, "只捞到章导语,漏了下级标题里的模板本体"
+        assert "吞吐量不低于 10Gbps" not in brief, "越过同级标题，把技术规范章也卷进来了"
 
     def test_a_form_chapter_with_no_template_anywhere_is_told_to_flag_it(self, monkeypatch):
         """三条路都空时**留痕**:让模型显式提示「未找到规定格式」。
         不声不响自创一份最危险——用户以为是照招标格式写的,评标时才发现对不上。"""
         state = _state(2)
-        state["outline"]["chapters"][0]["title"] = "法人授权委托书"
-        state["read"] = {"doc_sections": [{"id": "sec-8-c1", "text": "与格式无关的技术要求正文"}]}
+        state["outline"]["chapters"][0].update({"title": "法人授权委托书", "structure_ref": "s1"})
+        state["read"] = {"required_structure": [{"id": "s1", "title": "法人授权委托书", "kind": "form"}],
+                         "doc_sections": [{"id": "sec-8-c1", "text": "与格式无关的技术要求正文"}]}
         chat = _FakeChat()
         _run(state, chat, monkeypatch=monkeypatch)
         brief = _brief_of(chat, "法人授权委托书")
         assert "未能找到" in brief and "人工比对" in brief, "无模板时没留痕,模型会静默自创格式"
+        assert "招标格式模板" not in brief, (
+            "留痕不许带 TEMPLATE_GUIDE：那段开头说「以下为招标自带的格式模板原文」,"
+            "后面却跟着「没找到原文」,十几行「务必照抄」配一份不存在的模板=请模型编一份")
+
+    def test_a_guessed_form_chapter_with_no_template_stays_silent(self, monkeypatch):
+        """构词法只是**猜**。猜错时那句「未找到本表单的规定格式」会原样印进交付的 docx,
+        出现在一个根本不是表单的章开头（评审 2026-08-12）。只有读标登记成 form 才留痕。"""
+        state = _state(2)
+        state["outline"]["chapters"][0]["title"] = "服务承诺书"   # 构词法命中,但读标没登记
+        state["read"] = {"doc_sections": [{"id": "sec-8-c1", "text": "与格式无关的技术要求正文"}]}
+        chat = _FakeChat()
+        _run(state, chat, monkeypatch=monkeypatch)
+        assert "未能找到" not in _brief_of(chat, "服务承诺书")
+
+    def test_deviation_and_volume_chapters_are_not_forms(self, monkeypatch):
+        """只看后缀「表」「书」会把偏离表/标书判成表单:偏离表会同时收到偏离表指引与格式模板
+        两份互相打架的指令,技术标书则会收到整章无关的格式原文（评审 2026-08-12 实证）。"""
+        state = _state(2)
+        state["outline"]["chapters"][0]["title"] = "技术偏离表"
+        state["outline"]["chapters"][1]["title"] = "技术标书"
+        state["read"] = {
+            "doc_headings": [{"sec": "sec-9", "title": "第四章 响应文件相关格式", "level": 1}],
+            "doc_sections": [{"id": "sec-9-c1", "text": "投标人应按下列格式编制响应文件。"}]}
+        chat = _FakeChat()
+        _run(state, chat, monkeypatch=monkeypatch)
+        assert "招标格式模板" not in _brief_of(chat, "技术偏离表")
+        assert "招标格式模板" not in _brief_of(chat, "技术标书")
+
+    def test_a_form_chapter_with_a_trailing_tail_still_counts(self, monkeypatch):
+        """表单章常带尾巴:「投标函及投标函附录」只看结尾会漏判——旧的子串匹配本来是中的,
+        这是改构词法时引入的回归（评审 2026-08-12 实证）。"""
+        state = _state(2)
+        state["outline"]["chapters"][0]["title"] = "投标函及投标函附录"
+        state["outline"]["chapters"][0]["items"] = [{"id": "i1", "label": "投标函", "clause_ids": ["sec-8-c1"]}]
+        state["read"] = {"doc_sections": [{"id": "sec-8-c1", "text": "致：招标人，我方决定参加投标"}]}
+        chat = _FakeChat()
+        _run(state, chat, monkeypatch=monkeypatch)
+        assert "我方决定参加投标" in _brief_of(chat, "投标函及投标函附录")
+
+    def test_a_two_character_form_name_is_not_used_to_search_headings(self, monkeypatch):
+        """按标题检索要设最短名。「证明」两个字会把「资质证明材料」「业绩证明」全捞进来，
+        几千字无关原文顶着「本章的招标格式原文」发出去，模型照单全抄（评审 2026-08-12）。"""
+        state = _state(2)
+        state["outline"]["chapters"][0]["title"] = "第三章 证明"
+        state["read"] = {
+            "doc_headings": [{"sec": "sec-9", "title": "资质证明材料", "level": 2},
+                             {"sec": "sec-10", "title": "业绩证明", "level": 2}],
+            "doc_sections": [{"id": "sec-9-c1", "text": "投标人须提供近三年审计报告等资质材料"},
+                             {"id": "sec-10-c1", "text": "近三年同类项目业绩清单及合同复印件"}]}
+        chat = _FakeChat()
+        _run(state, chat, monkeypatch=monkeypatch)
+        brief = _brief_of(chat, "第三章 证明")
+        assert "近三年审计报告" not in brief and "合同复印件" not in brief
 
     def test_a_prose_chapter_is_not_mistaken_for_a_form(self, monkeypatch):
         """构词法不能宽到把正文章也当表单——那会把无关的招标原文塞进技术方案章。"""

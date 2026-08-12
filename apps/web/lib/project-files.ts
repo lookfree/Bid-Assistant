@@ -15,19 +15,27 @@ export function kindLabel(p: ProjectListItem): string {
   return p.kind === "review" ? "线下审查" : "生成项目"
 }
 
-/** 投标文件那一段：线下项目报份数，生成项目报生成状态（它的正文不在文件表里）。 */
-function bidPart(p: ProjectListItem): string {
-  if (p.kind === "review") {
-    const n = p.bidFiles?.length ?? 0
-    return n ? `投标 ${n} 份` : "投标文件缺失"
-  }
-  return p.hasBid ? "投标已生成" : "投标待生成"
+/** 投标文件那一段：线下项目报份数，生成项目报生成状态（它的正文不在文件表里）。
+ *  **字段缺失 = 未知，不是缺失**：bidFiles 是可选字段（web 先于 api 发版 / 旧缓存就没有），
+ *  按 0 处理会让选择列表一边写着「投标文件缺失」，一边照样把这个项目摆出来让人花 60 积分审查
+ *  ——lib/bid-pick 的 reviewable() 对同一情形是刻意放行的，两处口径不能相反。 */
+function bidPart(p: ProjectListItem): string | null {
+  if (p.kind !== "review") return p.hasBid ? "投标已生成" : "投标待生成"
+  if (p.bidFiles === undefined) return null              // 未知：这一段整个不说
+  return p.bidFiles.length ? `投标 ${p.bidFiles.length} 份` : "投标文件缺失"
 }
 
-/** 一行构成摘要：「生成项目 · 招标 2 份 · 投标已生成」。 */
+/** 招标文件那一段。述标建的线下项目**本来就不传招标文件**（standalone-bid-entry 的 bidOnly
+ *  路径传的是空数组），对它说「无招标文件」像在报故障,其实一切正常——这种情况不说这一段。 */
+function tenderPart(p: ProjectListItem): string | null {
+  const n = p.tenderFiles?.length ?? p.tenderCount
+  if (n === undefined) return null
+  return n ? `招标 ${n} 份` : null
+}
+
+/** 一行构成摘要：「生成项目 · 招标 2 份 · 投标已生成」。说不准的段直接不说，不猜也不报错。 */
 export function fileSummary(p: ProjectListItem): string {
-  const tender = p.tenderFiles?.length ?? p.tenderCount ?? 0
-  return [kindLabel(p), tender ? `招标 ${tender} 份` : "无招标文件", bidPart(p)].join(" · ")
+  return [kindLabel(p), tenderPart(p), bidPart(p)].filter(Boolean).join(" · ")
 }
 
 /** 悬停展开的逐份文件名。摘要只给数字，用户还要能确认**具体是哪几份**（传漏补遗是废标常客）。

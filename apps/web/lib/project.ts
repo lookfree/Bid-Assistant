@@ -42,6 +42,12 @@ export type ChapterProgress = { kind?: string; done: number; total: number; done
  *  done/total：服务端**结构化**下发的当前阶段完成度，用来画进度条。
  *  别去正则解析 label 里的数字——文案随时会改（加个「(续跑复用 2)」后缀就打歪了），而且是静默打歪。 */
 export type StepPhase = { label: string; done?: number; total?: number }
+
+/** phase → 进度条入参。抽出来是因为读标页两处横幅 + 审查页共三处要用同一判据：
+ *  各写一份，改判据时漏掉一处，同一次运行的不同视图就会一个有条一个没条。 */
+export function phaseProgress(phase: StepPhase | null): { done: number; total: number } | null {
+  return phase?.total ? { done: phase.done ?? 0, total: phase.total } : null
+}
 import type { DocHeading } from "./doc-sections"
 
 export type StepLiveEvent =

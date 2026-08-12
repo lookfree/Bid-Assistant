@@ -155,8 +155,15 @@ export default function ProjectsPage() {
 
   // 当前项目（工具页共用的 localStorage 指向）：**只能在挂载后读**——渲染期读 localStorage
   // 服务端拿到 null、客户端拿到 id，两边 HTML 不一致会触发 hydration 报错并整棵子树重渲。
+  // 跟着 refresh 一起刷：切到别的标签页开了另一本标书再切回来，只重拉列表不重读这个指向的话，
+  // 「当前」标签会稳稳地指着旧项目——一个自信的错答案，比原来没有答案更糟。
   const [currentId, setCurrentId] = useState<string | null>(null)
-  useEffect(() => setCurrentId(currentProjectId()), [])
+  useEffect(() => {
+    const sync = () => setCurrentId(currentProjectId())
+    sync()
+    window.addEventListener("focus", sync)
+    return () => window.removeEventListener("focus", sync)
+  }, [])
 
   return (
     <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8">

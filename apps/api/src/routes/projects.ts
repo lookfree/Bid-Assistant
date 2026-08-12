@@ -224,6 +224,22 @@ function keysOf(many: string[] | null, one: string | null): string[] {
   return many ?? (one ? [one] : [])
 }
 
+/** 本页各项目所有招标/投标文件 key → 原始文件名（**一条批量查询**）。
+ *  列表要说清「这个项目由哪几份文件构成」：一份招标常是正文+补遗+答疑+清单，线下标书常按
+ *  商务/技术分册出卷，而卡片过去只渲染一个派生出来的项目名——生成项目显示的是招标文件名、
+ *  线下项目显示的是投标文件名，同一个位置两种含义，用户无从知道自己传了几份、传的是哪几份。
+ *  key 上有唯一索引，IN 查询走索引，不会拖慢首屏。 */
+type FileKeyCols = { tenderFileKey: string | null; tenderFileKeys: string[] | null; bidFileKey: string | null; bidFileKeys: string[] | null }
+async function fileNamesByKey(items: FileKeyCols[]): Promise<Map<string, string>> {
+  const keys = [...new Set(items.flatMap((p) => [...keysOf(p.tenderFileKeys, p.tenderFileKey), ...keysOf(p.bidFileKeys, p.bidFileKey)]))]
+  if (!keys.length) return new Map()
+  const rows = await getDb()
+    .select({ key: projectFiles.key, filename: projectFiles.filename })
+    .from(projectFiles)
+    .where(inArray(projectFiles.key, keys))
+  return new Map(rows.map((r) => [r.key, r.filename]))
+}
+
 /** 剥掉项目名尾部的「·包名」后缀（与给定包匹配才剥）。选包改名（重选先剥旧再拼新，幂等不叠加）
  *  与克隆去后缀（新项目将选自己的包，不继承源项目的包名）共用。 */
 function stripPackageSuffix(name: string, pkg: { name: string } | null | undefined): string {
@@ -637,21 +653,6 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     return c.json({ id: clone.id, threadId: clone.threadId })
   })
 
-  /** 本页各项目所有招标/投标文件 key → 原始文件名（**一条批量查询**，同 doneRows 的写法）。
-   *  列表要说清「这个项目由哪几份文件构成」：一份招标常是正文+补遗+答疑+清单，线下标书常按
-   *  商务/技术分册出卷，而卡片过去只渲染一个派生出来的项目名——生成项目显示的是招标文件名、
-   *  线下项目显示的是投标文件名，同一个位置两种含义，用户无从知道自己传了几份、传的是哪几份。
-   *  key 上有唯一索引，IN 查询走索引，不会拖慢首屏。 */
-  async function fileNamesByKey(items: { tenderFileKey: string | null; tenderFileKeys: string[] | null; bidFileKey: string | null; bidFileKeys: string[] | null }[]): Promise<Map<string, string>> {
-    const keys = [...new Set(items.flatMap((p) => [...keysOf(p.tenderFileKeys, p.tenderFileKey), ...keysOf(p.bidFileKeys, p.bidFileKey)]))]
-    if (!keys.length) return new Map()
-    const rows = await getDb()
-      .select({ key: projectFiles.key, filename: projectFiles.filename })
-      .from(projectFiles)
-      .where(inArray(projectFiles.key, keys))
-    return new Map(rows.map((r) => [r.key, r.filename]))
-  }
-
   // 我的项目列表（分页，按创建时间倒序）。注意：必须先于 GET /:id 注册，否则被参数路由吞掉。
   r.get("/", async (c) => {
     let pg
@@ -668,19 +669,19 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const totalSteps = STEP_ORDER.length
     // 各项目已完成的步（一次分组查询）：列表要标「已审查 / 已述标」，光看 currentStep 会标错——
     // 审查跑完 currentStep 就推进到 present，那份标书在选择列表里仍显示「可审查」（用户实测）。
-    const doneRows = items.length
-      ? await getDb()
+    // 三条批量查询**并发**：彼此不依赖，串起来等于给首屏白加两个来回。
+    // 逐项目查会让列表退化成 N+1，正是首屏慢的老病根——这里同样不许把它退化成 1+3 次串行。
+    const [doneRows, nameByKey, catRows] = await Promise.all([
+      items.length
+      ? getDb()
           .select({ projectId: projectSteps.projectId, step: projectSteps.step })
           .from(projectSteps)
           .where(and(inArray(projectSteps.projectId, items.map((p) => p.id)), eq(projectSteps.status, "done")))
-      : []
-    const doneByProject = new Map<string, string[]>()
-    for (const r of doneRows) doneByProject.set(r.projectId, [...(doneByProject.get(r.projectId) ?? []), r.step])
-    const nameByKey = await fileNamesByKey(items)
-    // 分类标签（spec334）：**一条批量查询**取本页各项目的判定值，与上面的 doneRows 同法——
-    // 逐项目查会让列表退化成 N+1，正是首屏慢的老病根。只取 result 里那一个 JSON 键，不碰整列。
-    const catRows = items.length
-      ? await getDb()
+      : [],
+      fileNamesByKey(items),
+      // 分类标签（spec334）：取本页各项目的判定值。只取 result 里那一个 JSON 键，不碰整列。
+      items.length
+      ? getDb()
           .selectDistinctOn([projectSteps.projectId], {
             projectId: projectSteps.projectId,
             cat: sql<{ value?: string[] } | null>`${projectSteps.result} -> 'bid_category'`,
@@ -695,7 +696,10 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
             ),
           )
           .orderBy(projectSteps.projectId, desc(projectSteps.createdAt))
-      : []
+      : [],
+    ])
+    const doneByProject = new Map<string, string[]>()
+    for (const r of doneRows) doneByProject.set(r.projectId, [...(doneByProject.get(r.projectId) ?? []), r.step])
     const detectedByProject = new Map(catRows.map((r) => [r.projectId, r.cat?.value ?? []]))
     return c.json(
       pagedBody(pg, {

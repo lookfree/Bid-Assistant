@@ -27,7 +27,7 @@ import { stepNotApplicable, useStep } from "@/lib/use-step"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import { clauseLocationIn, groupDocSections, type DocHeading, type DocSentence } from "@/lib/doc-sections"
-import { cloneProject, exportPreview, setProjectPackage, triggerDownload } from "@/lib/project"
+import { cloneProject, exportPreview, phaseProgress, setProjectPackage, triggerDownload } from "@/lib/project"
 import { exportReadReport } from "@/lib/risk-api"
 import { missingCerts } from "@/lib/cert-keywords"
 
@@ -287,7 +287,7 @@ export default function ReadPage() {
           running={running}
           error={error}
           runningText={phase ? `AI 读标中：${phase.label}…` : "AI 正在通读招标文件，提取评分点与废标红线…（约 1–2 分钟）"}
-          progress={phase?.total ? { done: phase.done ?? 0, total: phase.total } : null}
+          progress={phaseProgress(phase)}
           onRetry={() => void start()}
           action={errorAction ?? undefined}
         />
@@ -327,7 +327,7 @@ export default function ReadPage() {
               ? `AI 读标中：${phase.label}…${hasPartialRead ? "（下方为已解读部分，完成后自动补全）" : ""}`
               : "AI 正在通读招标文件…"
           }
-          progress={phase?.total ? { done: phase.done ?? 0, total: phase.total } : null}
+          progress={phaseProgress(phase)}
           onRetry={() => void start()}
           action={errorAction ?? undefined}
         />

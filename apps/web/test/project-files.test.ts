@@ -54,4 +54,22 @@ describe("项目文件构成文案", () => {
   it("一个文件名都没有时不给空 tooltip", () => {
     expect(fileTitle({ ...base, kind: "bid", tenderCount: 2 })).toBeUndefined()
   })
+
+  it("bidFiles 字段缺失 = 未知，不许说「投标文件缺失」", () => {
+    // web 先于 api 发版 / 旧缓存就没有这个字段。reviewable() 对同一情形刻意放行——
+    // 一边把项目摆出来让人花 60 积分审查、一边写着「投标文件缺失」，两处口径不能相反。
+    const p = { ...base, kind: "review" as const, tenderFiles: ["招标文件.pdf"], hasBid: true }
+    expect(fileSummary(p)).toBe("线下审查 · 招标 1 份")
+  })
+
+  it("真回了空数组才叫缺失（后端明确说没有）", () => {
+    const p = { ...base, kind: "review" as const, tenderFiles: ["招标文件.pdf"], bidFiles: [], hasBid: false }
+    expect(fileSummary(p)).toBe("线下审查 · 招标 1 份 · 投标文件缺失")
+  })
+
+  it("述标建的线下项目没有招标文件是**正常**，不报「无招标文件」", () => {
+    // standalone-bid-entry 的 bidOnly 路径传的就是空数组：述标不吃招标上下文
+    const p = { ...base, kind: "review" as const, tenderFiles: [], bidFiles: ["响应文件.docx", "技术标.docx"], hasBid: true }
+    expect(fileSummary(p)).toBe("线下审查 · 投标 2 份")
+  })
 })

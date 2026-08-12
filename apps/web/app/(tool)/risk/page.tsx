@@ -21,6 +21,7 @@ import { StepRunCta } from "@/components/tool/step-run-cta"
 import { AiNotice } from "@/components/tool/ai-notice"
 import { deriveRisk, scanNotice, scanFileLabel, type RealRisk } from "@/lib/risk-derive"
 import { stepPrereq, useStep } from "@/lib/use-step"
+import { phaseProgress } from "@/lib/project"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import { ContrastReviewCta } from "./contrast-run"
@@ -79,6 +80,27 @@ export default function ReviewPage() {
   )
 }
 
+
+/** 运行中一行 + 可选进度条（审查页用的是自己的横幅样式，不套 StepBanner）。 */
+function RunningLine({ label, progress }: { label: string; progress: { done: number; total: number } | null }) {
+  const pct = progress && progress.total > 0
+    ? Math.min(100, Math.max(0, Math.round((progress.done / progress.total) * 100)))
+    : null
+  return (
+    <div>
+      <div className="flex items-center gap-2 font-medium text-primary">
+        <span className="min-w-0 flex-1">{label}</span>
+        {pct !== null && <span className="shrink-0 tabular-nums">{pct}%</span>}
+      </div>
+      {pct !== null && (
+        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-primary/15">
+          <div className="h-full rounded-full gradient-brand transition-[width] duration-500" style={{ width: `${pct}%` }} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 /* ============== 废标风险审查 ============== */
 function RejectReview() {
   // review 步产 RiskReport（计费步）：绝不自动触发，一律用户显式点击「开始废标体检」才跑。
@@ -124,7 +146,10 @@ function RejectReview() {
     return (
       <div className="rounded-2xl border border-border bg-card px-5 py-6 text-sm">
         {running ? (
-          <span className="font-medium text-primary">{phase ? `AI ${phase.label}…（约 1–2 分钟）` : "AI 正在逐条比对招标要求与标书内容，生成废标体检报告…（约 1–2 分钟）"}</span>
+          // 审查这条路才是真会跑 OCR 的（parse_bid_docs 逐页识别扫描件，代码里给到 20 分钟上限），
+          // 阶段事件带 done/total 时必须画出来——否则最漫长、最不透明的那一段依旧是一行不动的字。
+          <RunningLine label={phase ? `AI ${phase.label}…（约 1–2 分钟）` : "AI 正在逐条比对招标要求与标书内容，生成废标体检报告…（约 1–2 分钟）"}
+                       progress={phaseProgress(phase)} />
         ) : (
           <span className="flex items-center justify-between text-destructive">
             {error}
