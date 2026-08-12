@@ -27,6 +27,7 @@ import { stepNotApplicable, useStep } from "@/lib/use-step"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import { clauseLocationIn, groupDocSections, type DocHeading, type DocSentence } from "@/lib/doc-sections"
+import { locateParamOf, pickLocateTarget } from "@/lib/tender-locate"
 import { cloneProject, exportPreview, phaseProgress, setProjectPackage, triggerDownload } from "@/lib/project"
 import { exportReadReport } from "@/lib/risk-api"
 import { missingCerts } from "@/lib/cert-keywords"
@@ -223,6 +224,27 @@ export default function ReadPage() {
     () => (certPreview ? missingCerts(categories, certPreview.credentials.map((c) => c.title)) : []),
     [categories, certPreview],
   )
+
+  // ?locate=<招标出处>：审查报告点「对应:第五章 技术规范书」跳过来的。用与搜索框同一套匹配
+  // （标题+正文），命中即滚过去高亮。**定位不到就明说**，不退回第一条——那会让用户以为招标
+  // 要求就写在开头（report-dialog 实测过这个坑）。
+  const [locateRef] = useState(() => (typeof window === "undefined" ? "" : locateParamOf(window.location.search)))
+  const [locateMiss, setLocateMiss] = useState(false)
+  const locateDone = useRef(false)
+  useEffect(() => {
+    // 等原文真到齐再跳：读标结果是异步来的，早跳会落在空列表上。
+    if (locateDone.current || !locateRef || docSections.length === 0) return
+    locateDone.current = true
+    const hit = pickLocateTarget(docSections, locateRef)
+    if (!hit) {
+      setLocateMiss(true)
+      return
+    }
+    setActiveClauses([hit.clauseId])
+    setActiveSection(hit.secId)
+    // 等这一帧渲染完再滚：ref 是渲染时挂上的，同步滚拿到的是 undefined。
+    requestAnimationFrame(() => clauseRefs.current[hit.clauseId]?.scrollIntoView({ behavior: "smooth", block: "center" }))
+  }, [locateRef, docSections])
 
   function handleItemClick(clauseIds: string[] | undefined, key: string) {
     if (!clauseIds || clauseIds.length === 0) return
@@ -466,6 +488,18 @@ export default function ReadPage() {
         />
       )}
 
+      {/* 定位不到时必须明说：静悄悄停在原地，用户会以为跳转坏了、或者以为要求就在开头。
+          出处是模型照抄的一句话，偶有转述，找不到是正常结果，不是故障。 */}
+      {locateMiss && (
+        <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl border border-warning/30 bg-warning/10 px-4 py-3 text-sm">
+          <span className="text-foreground">
+            未能在招标原文中定位到「{locateRef}」——审查给的出处可能是转述，可在下方原文里手动搜索。
+          </span>
+          <button onClick={() => setLocateMiss(false)} className="shrink-0 text-xs font-medium text-primary hover:underline">
+            知道了
+          </button>
+        </div>
+      )}
       <div className="mt-5 grid gap-5 lg:grid-cols-2">
         {/* 左侧：原始文档（真实分句 / 示例回落） */}
         <TenderDocPanel

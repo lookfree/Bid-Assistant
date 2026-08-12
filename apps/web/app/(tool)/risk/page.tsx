@@ -24,6 +24,7 @@ import { deriveRisk, scanNotice, scanFileLabel, type RealRisk } from "@/lib/risk
 import { stepPrereq, useStep } from "@/lib/use-step"
 import { phaseProgress } from "@/lib/project"
 import { isUploading } from "@/lib/upload-progress"
+import { tenderLocateHref } from "@/lib/tender-locate"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import { ContrastReviewCta } from "./contrast-run"
@@ -272,6 +273,10 @@ function RejectReview() {
 
   const { score, overview, riskItems, passed } = deriveRisk(real)
   const scan = scanNotice(real)
+  // 能不能跳回招标原文：得**这个项目真有招标文件、且读标真跑完**。线下自查项目（只传了标书、
+  // 没传招标文件）跳过去是一片空白，给个必然落空的链接比不给更糟。
+  const tenderLocatable = !!info.project.tenderFileKey
+    && info.steps.some((st) => st.step === "read" && st.status === "done")
   return (
     <div className="flex flex-col gap-6">
         <EntryBar onOpen={goEntry} />
@@ -346,7 +351,7 @@ function RejectReview() {
                     <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${toneClasses[item.tone].badge}`}>
                       {item.level}
                     </span>
-                    <span className="text-xs text-muted-foreground">{item.chapter}</span>
+                    <TenderRefLink chapter={item.chapter} enabled={tenderLocatable} />
                   </div>
                   <h3 className="mt-2 text-sm font-semibold text-foreground">{item.title}</h3>
                   {/* 建议为空就整块不画：画一个只有「整改建议：」的空框，比不画更像出了故障
@@ -397,5 +402,17 @@ function EntryBar({ onOpen }: { onOpen: () => void }) {
         审查其它标书 / 上传线下标书 →
       </button>
     </div>
+  )
+}
+
+/** 招标出处：能定位就渲染成链接，跳读标页把原文滚出来并高亮。
+ *  没有招标文件（线下自查项目）或出处太短时保持灰字——给一个点了必然落空的链接更糟。 */
+function TenderRefLink({ chapter, enabled }: { chapter: string; enabled: boolean }) {
+  const href = enabled ? tenderLocateHref(chapter) : null
+  if (!href) return <span className="text-xs text-muted-foreground">{chapter}</span>
+  return (
+    <a href={href} title="在招标原文中查看这一条要求" className="text-xs text-primary hover:underline">
+      {chapter} →
+    </a>
   )
 }
