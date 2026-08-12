@@ -466,6 +466,93 @@ class TestBriefTargeting:
         assert "招标格式模板" not in _brief_of(chat, "服务承诺")
 
 
+class TestFormFidelity:
+    """表单章保真接线：模型改写模板 → 弃用产出、拿招标原文渲染（判定逻辑本身见
+    test_form_fidelity.py，这里只管**有没有真接上流水线**）。"""
+
+    _TPL = ("报价函\n致：潍坊环境工程职业学院\n"
+            "1、我方同意本报价函自开标之日起 90 天内有效，并承诺不作任何保留。\n"
+            "2、我方承诺在中标后按招标文件规定的期限完成全部供货与服务。")
+
+    def _state(self):
+        st = _state(2)
+        st["outline"]["chapters"][0]["title"] = "报价函"
+        st["outline"]["chapters"][0]["items"] = [{"id": "i1", "label": "报价函", "clause_ids": ["sec-8-c1"]}]
+        st["read"] = {"doc_sections": [{"id": "sec-8-c1", "text": self._TPL}]}
+        return st
+
+    def test_a_rewritten_form_is_replaced_by_the_tender_original(self, monkeypatch):
+        """用户实测的原病：招标固定条款被换成全新措辞。提示词拦不住，代码必须拦住。"""
+        class _Rewriter(_FakeChat):
+            async def ainvoke(self, msgs, config=None):
+                self.calls += 1
+                self.seen.append((msgs[0].content, msgs[-1].content))
+                if "报价函" in msgs[-1].content.split("请撰写本章")[-1]:
+                    return AIMessage(content="<h3>报价函</h3><p>本报价函有效期为九十日，"
+                                             + "我方保留最终解释权。" * 20 + "</p>")
+                return AIMessage(content=f"<h3>一、正文</h3><p>{'内容' * 60}</p>")
+
+        chat = _Rewriter()
+        out = _run(self._state(), chat, monkeypatch=monkeypatch)
+        html = out["t1"]
+        assert "保留最终解释权" not in html, "改写稿被原样交付了——保真校验没接上"
+        assert "自开标之日起 90 天内有效" in html, "退路没拿招标原文渲染"
+
+    def test_a_faithful_fill_is_kept(self, monkeypatch):
+        """只填空、没改原文的产出必须原样留下——否则等于把模型的活白干了。"""
+        class _Filler(_FakeChat):
+            async def ainvoke(self, msgs, config=None):
+                self.calls += 1
+                self.seen.append((msgs[0].content, msgs[-1].content))
+                if "报价函" in msgs[-1].content.split("请撰写本章")[-1]:
+                    return AIMessage(content=(
+                        "<h3>报价函</h3><p>致：潍坊环境工程职业学院</p>"
+                        "<p>1、我方同意本报价函自开标之日起 90 天内有效，并承诺不作任何保留。</p>"
+                        "<p>2、我方承诺在中标后按招标文件规定的期限完成全部供货与服务。</p>"
+                        "<p>投标人：上海安几科技有限公司（盖章）</p>" + "<p>补充说明。</p>" * 20))
+                return AIMessage(content=f"<h3>一、正文</h3><p>{'内容' * 60}</p>")
+
+        chat = _Filler()
+        out = _run(self._state(), chat, monkeypatch=monkeypatch)
+        assert "上海安几科技有限公司" in out["t1"]
+
+    def test_bidder_info_from_the_licence_reaches_only_the_form_chapter(self, monkeypatch):
+        """单位名称/信用代码/法定代表人是**表单空位**要填的东西。散文章用不上，
+        发过去只是白占本来就紧的单章预算。"""
+        st = self._state()
+        st["run_input"] = {"credentials": [{"title": "企业法人营业执照", "images": [
+            {"fileId": "f1", "key": "k1",
+             "ocrText": "营业执照\n统一社会信用代码 91310115MA1K35XY7B\n名　称 上海安几科技有限公司"}]}]}
+        chat = _FakeChat()
+        _run(st, chat, monkeypatch=monkeypatch)
+        assert "上海安几科技有限公司" in _brief_of(chat, "报价函"), "表单章没拿到投标人信息"
+        assert "上海安几科技有限公司" not in _brief_of(chat, "章节2"), "投标人信息发给了散文章"
+
+    def test_no_licence_leaves_the_brief_untouched(self, monkeypatch):
+        """没有营业执照的用户，简报里不该凭空多出一个空段落。"""
+        chat = _FakeChat()
+        _run(self._state(), chat, monkeypatch=monkeypatch)
+        assert "【投标人信息】" not in _brief_of(chat, "报价函")
+
+    def test_a_form_chapter_is_never_padded_to_hit_the_word_budget(self, monkeypatch):
+        """给报价函注水凑字数本身就是改格式；扩写还是整章替换，一扩必然改写模板原文，
+        等于自己把保真校验逼到必然退回空表。"""
+        from agent.agents.bidding_agent.nodes import content_pipeline as cp
+
+        expanded: list[str] = []
+
+        async def _record(ctx, chat, sp, ch, user, html, budget, sem, progress):
+            expanded.append(ch.get("id") or "")
+            return html
+
+        monkeypatch.setattr(cp, "_expand_short", _record)
+        st = self._state()
+        st["run_input"] = {"target_chars": 60000}      # 逼出很大的篇幅预算
+        _run(st, _FakeChat(), monkeypatch=monkeypatch)
+        assert "t1" not in expanded, "表单章被拿去扩写了"
+        assert "t2" in expanded, "普通章的扩写被顺手关掉了——这条守的是「只豁免表单章」"
+
+
 class TestPackageScope:
     """选包时每章简报追加范围约束（spec324，与 outline 同款）——#85 删旧规划者引擎时随它
     一起丢了，正文不再知道只投一个包件（从 test_content_node 的

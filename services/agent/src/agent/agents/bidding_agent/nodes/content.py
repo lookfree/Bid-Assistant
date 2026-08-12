@@ -148,12 +148,14 @@ def _format_chapter_secs(read: dict) -> list[str]:
     return [sec for sec in out if sec]
 
 
-def _template_entries(read: dict, outline: dict) -> dict[str, str]:
+def _template_entries(read: dict, outline: dict) -> dict[str, dict]:
     """【招标格式模板】按章精确抠取：招标自带格式（响应函/法代证明/报价一览表/声明函等）的章 →
     其对应原文段（按条款所属节整节取）。返回 {chapter_id: 模板段}，**只发给对应的那一章**——
     旧的整块下发靠标题子串匹配投递，散文章标题恰好出现在别章模板原文里就会错收几万字无关
     模板并当成表单来写（评审 2026-08-08）。投标书必须沿用招标模板，不得自创格式。
-    无格式章节/无原文 → 空 dict。"""
+    无格式章节/无原文 → 空 dict。
+    每章返回 {"brief": 发给模型的简报段, "raw": 招标模板原文}——原文供 form_fidelity
+    校验模型有没有改写、以及改写时零模型渲染出退路（提示词只能请求，代码才能保证）。"""
     sections = read.get("doc_sections") or []
     if not sections or not outline:
         return {}
@@ -198,17 +200,18 @@ def _template_entries(read: dict, outline: dict) -> dict[str, str]:
             # 后面却跟着「没找到原文」，十几行「务必照抄」的规则配一份不存在的模板，
             # 反而是在请模型编一份出来满足规则。
             if struct is not None:
-                out[chapter.get("id")] = (f"— 招标文件中**未能找到**本章「{title}」对应的格式原文。"
+                out[chapter.get("id")] = {"raw": "", "brief": (
+                                          f"— 招标文件中**未能找到**本章「{title}」对应的格式原文。"
                                           "请按通行格式起草，并在本章开头加一句醒目提示："
                                           "「（注意：招标文件中未找到本表单的规定格式，以下为通用格式，"
-                                          "递交前请人工比对招标文件原文）」。")
+                                          "递交前请人工比对招标文件原文）」。")}
                 logger.warning("no tender template located for form chapter %s (%s)",
                                chapter.get("id"), title)
             continue
         if len(text) > cap:
             logger.warning("template entry truncated at chapter %s", chapter.get("id"))
             text = text[:cap] + "…（超长截断）"
-        out[chapter.get("id")] = f"{TEMPLATE_GUIDE}\n— {note}：\n{text}"
+        out[chapter.get("id")] = {"brief": f"{TEMPLATE_GUIDE}\n— {note}：\n{text}", "raw": text}
     return out
 
 

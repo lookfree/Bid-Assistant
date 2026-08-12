@@ -311,8 +311,12 @@ def _chapter_brief(state: dict, ch: dict, shared: dict) -> tuple[str, str]:
     if shared.get("deviation") and cid in (shared.get("deviation_ids") or set()):
         parts.append(shared["deviation"])          # 偏离表条目只发给偏离表章（按 id,含 structure_ref 识别的）
     tpl = (shared.get("templates") or {}).get(cid)
-    if tpl:
-        parts.append(tpl)                          # 招标格式模板只发给它自己的那一章
+    if tpl and tpl.get("brief"):
+        parts.append(tpl["brief"])                  # 招标格式模板只发给它自己的那一章
+        # 投标人信息（营业执照 OCR）**只发给表单章**：单位名称/信用代码/法定代表人这组字段
+        # 是表单空位要填的东西，散文章用不上，发过去只是白占预算。
+        if shared.get("bidder"):
+            parts.append(shared["bidder"])
     # 人员/业绩定向注入（Task 3）：进 stable 部分而非检索段——库存变化即让命中章缓存键跟着
     # 变、无关章不受影响，语义与偏离表/模板一致（评审 2026-08-09）。
     text = _chapter_keyword_text(ch)
@@ -405,6 +409,7 @@ async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, share
     """写一章：断点命中直接用；否则限流下调模型，产出清洗后（必要时追一轮扩写）落缓存。
     残章/截断稿重试一次（截断稿绝不入库——半章缓存 24h 等于把残稿钉死,评审 2026-08-08）；
     两次失败 → 记缺章。简报构造/清洗抛错只废本章,绝不连累其他 19 章（gather 无隔离,评审）。"""
+    from agent.agents.bidding_agent.nodes.form_fidelity import keeps_template, template_html
     from agent.agents.bidding_agent.render.sanitize import (
         clean_internal_ids, strip_chat_wrapper, strip_document_shell)
 
@@ -457,9 +462,18 @@ async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, share
     # 缓存就再也扩不动了。证照插图等下游 post-pass 在 run_content_pipeline 里跑，照常作用于终稿。
     # 撞过长度上限的章跳过：刚让它"压缩篇幅、确保完整收尾"，转头再让它扩写自相矛盾，而扩写是
     # 整章替换，再撞一次上限等于拿半章换成稿——不丢内容优先（评审裁量 2026-08-09）。
+    tpl_raw = ((shared.get("templates") or {}).get(cid) or {}).get("raw") or ""
     budget = int((shared.get("budgets") or {}).get(cid) or 0)
-    if budget and not truncated:
+    # 表单章**不扩写**：给报价函、授权书注水凑字数本身就是改格式，扩写还是整章替换，
+    # 一扩必然改写模板原文，等于自己把下面的保真校验逼到必然退回空表。
+    if budget and not truncated and not tpl_raw:
         html = await _expand_short(ctx, chat, system_prompt, ch, user, html, budget, sem, progress)
+    # 保真校验：模型只许填空。改写/漏行/乱序 → 丢弃产出，零模型拿招标原文渲染。
+    # 交一份留着空位的招标原格式，比交一份措辞被改写、看着很完整的表单安全得多——
+    # 后者要到评标现场才发现对不上（2026-08-11 潍坊那单实测：7 条固定条款被写成 6 条新措辞）。
+    if tpl_raw and not keeps_template(html, tpl_raw):
+        logger.warning("章 %s 改写了招标格式模板，弃用产出，改用招标原文渲染", cid)
+        html = template_html(tpl_raw, ch.get("title") or "")
     await _cache_set(ctx, key, html)
     await progress.chapter_done(cid)
     return cid, html
@@ -485,7 +499,10 @@ def _shared_blocks(state: dict, read: dict, outline: dict, chapters: list[dict])
     # library_refs（Task 3）：App content 步下发，两类都空则键缺省——`or {}` 兜底后 .get 拿到 []，
     # `_library_ref_block` 对空列表返回空串，无 library_refs 的老行为逐字节不变。
     refs = (state.get("run_input") or {}).get("library_refs") or {}
+    from agent.agents.bidding_agent.nodes.bidder_profile import from_credentials, profile_block
+    bidder = profile_block(from_credentials((state.get("run_input") or {}).get("credentials") or []))
     return {
+        "bidder": bidder,
         "project": ("【项目信息】（响应函/表单/落款字段据此填写，未知处留（待补充：____））："
                     + json.dumps(strip_clause_ids(meta), ensure_ascii=False)[:2000]) if meta else "",
         "risk": ("【读标红线】（涉及本章内容时不得违背）："
