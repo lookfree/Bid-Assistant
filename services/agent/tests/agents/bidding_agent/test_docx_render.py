@@ -67,6 +67,31 @@ def test_render_docx_has_real_toc_and_page_number_fields():
     assert "某项目 投标文件" in header_xml                  # 页眉=项目名
 
 
+def test_render_docx_toc_cache_holds_static_entries():
+    """目录域的缓存区必须有静态条目。空域赌「打开时自动更新」——Word 只是弹一次确认，
+    WPS 和导出的 PDF 根本不理 updateFields，用户看到的就是空白目录页（2026-08-11 修过
+    一次 updateFields，2026-08-12 用户实测「还是没有目录」）。
+    条目必须位于 fldChar separate 与 end **之间**：放在域外，Word 更新域后正文会同时
+    出现静态一份 + 重建一份，两份目录。"""
+    outline = {"chapters": [
+        {"id": "t1", "no": "第一章", "title": "响应函", "group": "tech"},
+        {"id": "t2", "no": "第二章", "title": "技术方案", "group": "tech"}]}
+    data = render_docx(outline, {
+        "t1": "<p>正文</p>",
+        "t2": "<h3>一、总体架构</h3><p>x</p><h6>（1）五级明细</h6>"})
+    xml = zipfile.ZipFile(io.BytesIO(data)).read("word/document.xml").decode("utf-8")
+    sep = xml.index('w:fldCharType="separate"')
+    end = xml.index('w:fldCharType="end"', sep)
+    cache = xml[sep:end]
+    assert "第一章 响应函（技术标）" in cache, "章级条目没进目录缓存——WPS/PDF 里目录仍是空白"
+    assert "一、总体架构" in cache                    # 节级（Heading 2）也进
+    assert "投标人承诺与签章" in cache                # 系统章同样进目录
+    assert "（1）五级明细" not in cache               # 没有页码的深层明细堆一页纯属噪音
+    # 目录一份 + 正文一份，恰好两处；缓存条目错插到域外时这里会数出错位
+    assert xml.count("第一章 响应函（技术标）") == 2
+    assert "updateFields" in zipfile.ZipFile(io.BytesIO(data)).read("word/settings.xml").decode("utf-8")
+
+
 def test_render_docx_without_package_byte_identical():
     """spec324：不传 package（未选包/单包）→ 输出与今天逐字节一致（无「包件：」行）。"""
     outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "T", "group": "tech"}]}

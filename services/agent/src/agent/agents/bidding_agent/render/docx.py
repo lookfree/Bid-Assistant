@@ -1,6 +1,7 @@
 from __future__ import annotations
 import base64
 import io
+import re
 from typing import Callable
 from bs4 import BeautifulSoup
 from docx import Document
@@ -250,16 +251,64 @@ def _add_field(paragraph, instr_text: str) -> None:
         r.append(node)
 
 
-def _add_toc_field(doc: Document) -> None:
-    """真目录域（非静态文本）：TOC \\o "1-4" \\h \\z \\u。目录页码只有 Word 排版引擎知道，
-    域交由 Word 打开时自动更新（见 _set_update_fields_on_open），比人工维护的静态占位准确。"""
+def _add_toc_field(doc: Document):
+    """真目录域 + 可回填的缓存区：TOC \\o "1-4" \\h \\z \\u。
+
+    域拆成两个段落——begin/instrText/separate 一段、end 一段，正文渲染完由
+    _fill_toc_entries 把实际产出的标题静态写进两者**之间**（Word 域的缓存结果区）。
+    为什么不能只留空域赌「打开时自动更新」（2026-08-11 的做法）：Word 只是弹一次确认，
+    WPS 和导出的 PDF 根本不理 updateFields，用户看到的仍是空白目录页（2026-08-12
+    用户二次实测「还是没有目录」）。缓存条目是普通文档内容，任何查看器直接可见；
+    在 Word 里更新域会把缓存区整体重建成带页码的目录，两头都不吃亏。
+    返回持有 fldChar end 的段落，供回填时定位插入点。"""
     doc.add_heading("目录", level=1)
     field_p = doc.add_paragraph()
     # 目录只收到四级：五级明细（① 值班安排）进目录会把目录撑得比正文还碎，
     # 评标专家反而找不到重点——五级仍在正文里有层级，只是不进目录。
-    _add_field(field_p, 'TOC \\o "1-4" \\h \\z \\u')
+    run = field_p.add_run()._r
+    begin = OxmlElement("w:fldChar")
+    begin.set(qn("w:fldCharType"), "begin")
+    instr = OxmlElement("w:instrText")
+    instr.set(qn("xml:space"), "preserve")
+    instr.text = 'TOC \\o "1-4" \\h \\z \\u'
+    separate = OxmlElement("w:fldChar")
+    separate.set(qn("w:fldCharType"), "separate")
+    for node in (begin, instr, separate):
+        run.append(node)
+    end_p = doc.add_paragraph()
+    end = OxmlElement("w:fldChar")
+    end.set(qn("w:fldCharType"), "end")
+    end_p.add_run()._r.append(end)
     _set_update_fields_on_open(doc)
     doc.add_page_break()
+    return end_p
+
+
+_TOC_CACHE_LEVELS = 3      # 静态缓存条目只收三级：没有页码的四级明细堆一页纯属噪音
+_TOC_INDENT_CM = 0.74      # 每深一级缩进一档（与 Word 默认 TOC 样式的视觉一致）
+
+
+def _fill_toc_entries(doc: Document, toc_end_p) -> None:
+    """把正文里实际渲染出的标题回填进目录域缓存区（fldChar separate 与 end 之间）。
+    条目取自成品文档本身（Heading 1..N 段落），而不是另算一份提纲——目录必须和正文
+    逐字一致，两处各算一遍就会慢慢长歪（附录/签章页这类系统章也要进目录）。"""
+    passed_end = False
+    entries: list[tuple[int, str]] = []
+    for p in doc.paragraphs:
+        if p._p is toc_end_p._p:
+            passed_end = True
+            continue
+        if not passed_end:
+            continue   # 域之前只有封面和「目录」标题自己——目录不给自己列条目
+        m = re.fullmatch(r"Heading (\d)", p.style.name or "")
+        if m and int(m.group(1)) <= _TOC_CACHE_LEVELS and p.text.strip():
+            entries.append((int(m.group(1)), p.text.strip()))
+    for level, text in entries:
+        entry = toc_end_p.insert_paragraph_before(text)
+        entry.paragraph_format.left_indent = Cm(_TOC_INDENT_CM * (level - 1))
+        entry.paragraph_format.first_line_indent = Pt(0)   # 不吃 Normal/自定义格式的首行缩进
+        for run in entry.runs:
+            run.font.size = Pt(10.5)
 
 
 def _set_update_fields_on_open(doc: Document) -> None:
@@ -373,7 +422,7 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
     if fmt is not None:  # spec330 输出格式：显式配置才覆盖,缺省与既有导出一致
         _apply_custom_format(doc, fmt)
     _style_cover(doc, meta, package)
-    _add_toc_field(doc)
+    toc_end_p = _add_toc_field(doc)
     _add_page_number_footer(doc, meta.get("name", "投标文件"))
     # 章节正文：按 outline 顺序（缺正文出占位，不报错）。每章另起一页——评标翻阅按章定位，
     # 章接章挤在同一页找不到边界（用户要求）；首章不加，否则目录后会多出一整页空白。
@@ -396,6 +445,8 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
     doc.add_heading("投标人承诺与签章", level=1)
     doc.add_paragraph("法定代表人/授权代表（签字）：____________   日期：__________")
     _add_ai_notice(doc)
+    # 正文齐了才回填目录缓存——条目取自成品文档的标题段落，与正文逐字一致
+    _fill_toc_entries(doc, toc_end_p)
     out = io.BytesIO()
     doc.save(out)
     return out.getvalue()
