@@ -122,7 +122,7 @@ function RejectReview() {
   const [uploading, setUploading] = useState(() => isUploading("/risk"))
   // 点开「标书原文」时定位到哪一条（null = 弹层关闭）。线下标书没有可编辑正文，
   // 报告卡片以前点哪儿都没反应，这是 #97② 补的那条路。
-  const [bidTextAt, setBidTextAt] = useState<{ chapterTitle: string; anchorText: string } | null>(null)
+  const [bidTextAt, setBidTextAt] = useState<{ targetId: string; chapterTitle: string; anchorText: string } | null>(null)
   const { projectId, info, data: real, dataLoading, running, phase, error, errorAction, start } = useStep<RealRisk>("review")
   const { overview: membershipOverview } = useMembership()
   const reviewCost = creditCostValue(membershipOverview, "review", 60)
@@ -348,6 +348,7 @@ function RejectReview() {
         {bidTextAt && (
           <BidTextDialog
             projectId={projectId}
+            targetId={bidTextAt.targetId}
             chapterTitle={bidTextAt.chapterTitle}
             anchorText={bidTextAt.anchorText}
             onClose={() => setBidTextAt(null)}
@@ -369,7 +370,7 @@ function RejectReview() {
                     <TenderRefLink chapter={item.chapter} enabled={tenderLocatable} />
                     {bidTextAvailable && (
                       <button
-                        onClick={() => setBidTextAt({ chapterTitle: item.chapterTitle, anchorText: item.anchorText })}
+                        onClick={() => setBidTextAt({ targetId: item.targetId, chapterTitle: item.chapterTitle, anchorText: item.anchorText })}
                         className="text-xs text-primary hover:underline"
                       >
                         定位到标书原文 →

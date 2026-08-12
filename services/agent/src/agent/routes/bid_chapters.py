@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+from html import unescape
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -37,20 +39,42 @@ class BidChaptersBody(BaseModel):
     keys: list[str]             # 投标文件的 MinIO 键（属主校验在 App API，这里只管解析）
 
 
+# parse_bid_chapters 回的是 {"sec-1": "<h3>标题</h3><p>正文</p>…"}：**键是节 id、值是转义后的
+# HTML**，不是 {标题: 正文}。节 id 正是审查结论里 target_id 要求原样照抄的那个键（schemas
+# RiskFinding.target_id），所以必须原样带给前端做精确定位；HTML 则要在这里还原成结构化的
+# 标题 + 段落——直接丢给前端会被 React 转义成一屏裸标签，而按 \n 切段更是切不出东西（这串
+# 里一个换行都没有）。还原（unescape）与 html_to_review_text / present._plain 同一口径。
+_H3 = re.compile(r"^<h3>(.*?)</h3>", re.S)
+_P = re.compile(r"<p>(.*?)</p>", re.S)
+
+
+def _split_chapter(raw_html: str) -> tuple[str, list[str]]:
+    """一章的 HTML → (标题, 段落列表)，全部反转义。无 <h3> 即无标题（解析不出标题的节）。"""
+    head = _H3.match(raw_html or "")
+    title = unescape(head.group(1)).strip() if head else ""
+    body = raw_html[head.end():] if head else (raw_html or "")
+    return title, [t for p in _P.findall(body) if (t := unescape(p).strip())]
+
+
 def _shape(raw: dict[str, str]) -> tuple[list[dict], bool]:
-    """{章标题: 正文} → [{title, text}]，逐章截断 + 总量封顶。保序（= 文件与章节的原始顺序）。"""
+    """{节 id: 章 HTML} → [{sec, title, paragraphs}]。逐章截断 + 总量封顶；保序。"""
     out: list[dict] = []
     total = 0
     truncated = False
-    for title, text in raw.items():
-        body = (text or "").strip()
-        if len(body) > _MAX_CHAPTER_CHARS:
-            body, truncated = body[:_MAX_CHAPTER_CHARS], True
-        if total + len(body) > _MAX_TOTAL_CHARS:
-            truncated = True
-            break
-        total += len(body)
-        out.append({"title": title, "text": body})
+    for sec, html in raw.items():
+        title, paragraphs = _split_chapter(html)
+        kept: list[str] = []
+        used = 0
+        for para in paragraphs:
+            if used + len(para) > _MAX_CHAPTER_CHARS or total + used + len(para) > _MAX_TOTAL_CHARS:
+                truncated = True
+                break
+            kept.append(para)
+            used += len(para)
+        total += used
+        # **超限的章也要留下（哪怕正文空）**：整章丢掉的话，落在它里面的风险项就永远跳不过去，
+        # 前端还会显示「未能定位」——那是假消息，章根本没送到。
+        out.append({"sec": sec, "title": title, "paragraphs": kept})
     return out, truncated
 
 

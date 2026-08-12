@@ -8,7 +8,7 @@ import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bu
 import { inArray } from "drizzle-orm"
 import { Hono } from "hono"
 import { getDb, closeDb } from "../src/db/client"
-import { users, bidProjects, projectFiles } from "../src/db/schema"
+import { users, bidProjects } from "../src/db/schema"
 import { loginWithPhone } from "../src/services/auth"
 import { projectRoutes } from "../src/routes/projects"
 import { AgentHttpError } from "../src/services/agent-client"
@@ -16,7 +16,7 @@ import { uniquePhone, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS)
 
-const CHAPTERS = { chapters: [{ title: "第二章 技术方案", text: "零信任网关部署方案……" }], truncated: false }
+const CHAPTERS = { chapters: [{ sec: "sec-2", title: "第二章 技术方案", paragraphs: ["零信任网关部署方案……"] }], truncated: false }
 
 let calls: string[][] = []
 const app = new Hono()
@@ -32,7 +32,6 @@ app.route("/api/projects", projectRoutes({
 let token = ""
 let userId = ""
 let otherId = ""
-const madeProjects: string[] = []
 
 beforeAll(async () => {
   const a = await loginWithPhone(uniquePhone(), { agreedToTerms: true }, 30, async () => "ok" as const)
@@ -58,7 +57,6 @@ async function makeProject(owner: string, bidKeys: string[] | null): Promise<str
       ...(bidKeys ? { bidFileKey: bidKeys[0], bidFileKeys: bidKeys } : {}),
     })
     .returning()
-  madeProjects.push(p!.id)
   return p!.id
 }
 

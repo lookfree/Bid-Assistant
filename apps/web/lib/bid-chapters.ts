@@ -10,49 +10,60 @@ import { blockMatchesAnchor } from "./anchor"
 // 报告卡片以前点哪儿都没反应。现在按需向后端要一次分章正文（不落库、不计费），
 // 在弹层里展示并定位。
 
-export type BidChapter = { title: string; text: string }
+/** 一章：sec = 节 id（审查结论 target_id 原样照抄的就是它）、title 标题、paragraphs 已切好的段。 */
+export type BidChapter = { sec: string; title: string; paragraphs: string[] }
 
 /** 后端明确说「这份标书给不出可跳转的正文」（加密/损坏/纯扫描件），与服务故障区分开。 */
 export class BidTextUnavailableError extends Error {}
+/** 这个项目压根没有线下投标文件（409）——与「解析不出」不是一回事，说辞不能混。 */
+export class NoBidFileError extends Error {}
 
-/** 取分章正文。项目没有线下投标文件（409）也归为「没有可展示的原文」。 */
+// 同一份标书在一次会话里会被反复点开（一份报告 20 条风险就是 20 次），而每次都要回源
+// 从 MinIO 取件重解析（几百页可跑数十秒）。按项目缓存一次，关掉弹层再开不再等。
+const cache = new Map<string, { chapters: BidChapter[]; truncated: boolean }>()
+
 export async function fetchBidChapters(projectId: string): Promise<{ chapters: BidChapter[]; truncated: boolean }> {
+  const hit = cache.get(projectId)
+  if (hit) return hit
   try {
-    return await api.request(`/api/projects/${projectId}/bid-chapters`)
+    const got = await api.request<{ chapters: BidChapter[]; truncated: boolean }>(
+      `/api/projects/${projectId}/bid-chapters`)
+    cache.set(projectId, got)
+    return got
   } catch (e) {
-    if (e instanceof ApiError && (e.status === 422 || e.status === 409)) throw new BidTextUnavailableError()
+    if (e instanceof ApiError && e.status === 409) throw new NoBidFileError()
+    if (e instanceof ApiError && e.status === 422) throw new BidTextUnavailableError()
     throw e
   }
-}
-
-/** 一章正文切成可定位的段落。空行分段——解析出来的正文就是按行来的。 */
-export function paragraphsOf(text: string): string[] {
-  return (text || "").split(/\n+/).map((p) => p.trim()).filter(Boolean)
 }
 
 export type BidLocation = { chapterIndex: number; paragraphIndex: number }
 
 /** 在分章正文里找这条风险指的位置。
 
- *  先按**章标题**收窄，再在章内按 anchorText 找段落——审查给的 anchorText 是模型从标书里
- *  「原样摘抄」的一小段，实际总有出入，所以复用 lib/anchor 那套前缀匹配而不是全等。
- *  章定位得到、段落定位不到 → 落到该章开头（章是可信的，段落只是锦上添花）；
- *  **章也定位不到就返回 null**，不落到第一章——那会让用户以为问题出在标书开头。 */
+ *  **先按 sec 精确命中**：审查契约要求 target_id 原样照抄材料里的节 id（schemas
+ *  RiskFinding.target_id），拿它做字典式定位，比按模型自己写的章名模糊匹配可靠得多——
+ *  「第一章 商务响应」与「商务响应（第一册）」这种出入，模糊匹配就废了。
+ *  章名与摘抄段是它对不上时的两条退路。
+ *  章内段落用 anchorText 前缀匹配（模型是「原样摘抄」，实际总有出入，见 lib/anchor）。
+ *  **章定位不到就返回 null**，不落到第一章——那会让用户以为问题出在标书开头。 */
 export function locateFinding(
   chapters: BidChapter[],
+  targetId: string,
   chapterTitle: string,
   anchorText: string,
 ): BidLocation | null {
   const title = (chapterTitle || "").trim()
-  let chapterIndex = title ? chapters.findIndex((c) => c.title.includes(title) || title.includes(c.title)) : -1
-  if (chapterIndex < 0 && anchorText.trim()) {
-    // 章标题对不上时退而求其次：全书找摘抄段（模型有时给的是分册名而非章名）
-    chapterIndex = chapters.findIndex((c) => paragraphsOf(c.text).some((p) => blockMatchesAnchor(p, anchorText)))
+  const anchor = (anchorText || "").trim()
+  let chapterIndex = targetId ? chapters.findIndex((c) => c.sec === targetId) : -1
+  if (chapterIndex < 0 && title) {
+    chapterIndex = chapters.findIndex((c) => c.title.includes(title) || title.includes(c.title))
+  }
+  if (chapterIndex < 0 && anchor) {
+    chapterIndex = chapters.findIndex((c) => c.paragraphs.some((p) => blockMatchesAnchor(p, anchor)))
   }
   if (chapterIndex < 0) return null
-  const paras = paragraphsOf(chapters[chapterIndex]!.text)
-  const paragraphIndex = anchorText.trim()
-    ? Math.max(0, paras.findIndex((p) => blockMatchesAnchor(p, anchorText)))
-    : 0
+  const paras = chapters[chapterIndex]!.paragraphs
+  const paragraphIndex = anchor ? Math.max(0, paras.findIndex((p) => blockMatchesAnchor(p, anchor))) : 0
   return { chapterIndex, paragraphIndex }
 }

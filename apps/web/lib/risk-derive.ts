@@ -18,7 +18,7 @@ export function deriveRisk(f: RealRisk) {
     // 两个方向的定位字段必须都带上，混用会定位到错的文档（#97 实测）。
     riskItems: f.items.map((x) => ({
       level: x.level, tone: x.tone, title: x.title, chapter: x.tenderRef, advice: x.advice,
-      chapterTitle: x.chapterTitle, anchorText: x.anchorText ?? "",
+      chapterTitle: x.chapterTitle, anchorText: x.anchorText ?? "", targetId: x.targetId,
     })),
     passed: f.passedItems,
   }

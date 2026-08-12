@@ -16,9 +16,20 @@ export const LOCATE_PARAM = "locate"
 // 假装定位比不给定位更糟——用户会以为问题就出在落点那一处（同 report-dialog 里「无章可跳」的教训）。
 const MIN_REF_CHARS = 4
 
-/** 出处 → 读标页地址；太短/为空返回 null，调用方据此决定渲染成链接还是灰字。 */
+// tenderRef 是**展示串**，契约写明模型要写成「对应：xxx（★不可偏离）」（schemas RiskFinding
+// .tender_ref）。拿整串去全文搜必然一条都搜不到——招标原文里只有 xxx，没有「对应：」前缀，
+// 于是「未能定位」横幅会在几乎每条上弹（评审 2026-08-12 实证）。搜之前先剥成 xxx。
+const REF_PREFIX = /^\s*(?:对应|出处|依据)\s*[：:]\s*/
+const REF_SUFFIX = /\s*[（(][^（）()]{0,20}[）)]\s*$/
+
+/** 展示串 → 可用于全文搜索的名称。 */
+export function refKeyword(tenderRef: string | undefined): string {
+  return (tenderRef ?? "").replace(REF_PREFIX, "").replace(REF_SUFFIX, "").trim()
+}
+
+/** 出处 → 读标页地址；剥完太短/为空返回 null，调用方据此决定渲染成链接还是灰字。 */
 export function tenderLocateHref(tenderRef: string | undefined): string | null {
-  const ref = (tenderRef ?? "").trim()
+  const ref = refKeyword(tenderRef)
   if (ref.length < MIN_REF_CHARS) return null
   return `/read?${LOCATE_PARAM}=${encodeURIComponent(ref)}`
 }
@@ -26,8 +37,15 @@ export function tenderLocateHref(tenderRef: string | undefined): string | null {
 /** 在已解析的招标原文里找落点。找不到返回 null——**不要退回第一条**：
  *  那会让用户以为招标要求就写在开头（report-dialog 实测过这个坑，63 条里 10 条假定位）。 */
 export function pickLocateTarget(sections: DocSectionGroup[], ref: string): DocMatch | null {
-  const hits = searchDocSections(sections, (ref ?? "").trim())
-  return hits[0] ?? null
+  const q = refKeyword(ref)
+  const hits = searchDocSections(sections, q)
+  if (!hits.length) return null
+  // 招标 PDF 开头几乎都有目录，把每个章名列一遍——按文档序取第一条就会落在目录行上，
+  // 高亮给用户看的是一行光秃秃的目录，正是本文件开头说的那种「假定位」。
+  // 章**标题**命中的那一节才是正主，优先取它。
+  const byTitle = sections.find((sec) => sec.title.includes(q) || q.includes(sec.title))
+  const titleHit = byTitle && hits.find((h) => h.secId === byTitle.id)
+  return titleHit ?? hits[0]!
 }
 
 /** 从地址栏取定位词（读标页挂载时读一次）。 */

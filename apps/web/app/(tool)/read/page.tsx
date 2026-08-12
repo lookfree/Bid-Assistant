@@ -232,19 +232,26 @@ export default function ReadPage() {
   const [locateMiss, setLocateMiss] = useState(false)
   const locateDone = useRef(false)
   useEffect(() => {
-    // 等原文真到齐再跳：读标结果是异步来的，早跳会落在空列表上。
+    // 等原文真到齐再跳。**光看「非空」不够**：读标在跑时 docSections 会先拿分轮推来的
+    // 半份原文顶上，这时判「定位不到」并把 locateDone 锁死，等全文到了也不会再试了。
+    // 所以未跑完时只在命中后才收手，没命中就等下一批（real 到手即为权威，此后才允许判失败）。
     if (locateDone.current || !locateRef || docSections.length === 0) return
-    locateDone.current = true
     const hit = pickLocateTarget(docSections, locateRef)
     if (!hit) {
+      if (!real) return           // 还在流式加载，别急着下结论
+      locateDone.current = true
       setLocateMiss(true)
       return
     }
+    locateDone.current = true
+    // 消费即摘除（同 autostart 的处理）：留在地址栏里，刷新/后退都会再跳一次，
+    // 把用户从他刚翻到的地方拽回来，还会重新弹出他已经关掉的提示。
+    window.history.replaceState(null, "", window.location.pathname)
     setActiveClauses([hit.clauseId])
     setActiveSection(hit.secId)
     // 等这一帧渲染完再滚：ref 是渲染时挂上的，同步滚拿到的是 undefined。
     requestAnimationFrame(() => clauseRefs.current[hit.clauseId]?.scrollIntoView({ behavior: "smooth", block: "center" }))
-  }, [locateRef, docSections])
+  }, [locateRef, docSections, real])
 
   function handleItemClick(clauseIds: string[] | undefined, key: string) {
     if (!clauseIds || clauseIds.length === 0) return

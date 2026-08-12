@@ -315,7 +315,8 @@ export async function parseAttachmentText(payload: { key: string; maxChars: numb
  *  120s：分章是同步 CPU 活，几百页 PDF 可跑数十秒；它是用户点一下等着的动作，
  *  比资料库那条后台 OCR（720s）短得多，但 30s 会在真实大单上误杀。 */
 export async function bidChapters(keys: string[]): Promise<{
-  chapters: { title: string; text: string }[]
+  /** sec = 节 id（审查结论 target_id 原样照抄的就是它，前端据此精确定位）。 */
+  chapters: { sec: string; title: string; paragraphs: string[] }[]
   truncated: boolean
 }> {
   return postSync("/tools/bid-chapters", { keys }, 120_000)

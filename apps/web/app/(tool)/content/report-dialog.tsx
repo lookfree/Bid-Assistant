@@ -70,26 +70,27 @@ function RiskCard({
       </div>
       <p className="mt-2 text-xs leading-relaxed text-foreground">{item.advice}</p>
       <div className="mt-3 flex items-center justify-between">
-        {/* 招标出处点得动：跳读标页把那一条招标要求滚出来并高亮。用户要核对的是「招标到底
-            怎么要求的」，这行字以前只能看不能点，只好自己回读标页翻。
-            **用 tenderRef 而不是 chapter**：本弹窗里的 chapter 是**标书**章节（deriveHealthReport
-            映射自 chapterTitle），拿它去定位招标原文找的是错东西。
-            出处太短（「技术」这种）时 tenderLocateHref 给 null，保持灰字不假装能跳。 */}
-        {tenderHref ? (
-          <a
-            href={tenderHref}
-            title="在招标原文中查看这一条要求"
-            className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
-          >
-            <FileText className="size-3.5" />
-            {item.tenderRef} →
-          </a>
-        ) : (
-          <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+        <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+          <span className="inline-flex items-center gap-1">
             <FileText className="size-3.5" />
             {item.chapter}
           </span>
-        )}
+          {/* 招标出处点得动：跳读标页把那一条招标要求滚出来并高亮。
+              **与标书章节并排显示，不是二选一**——把 chapter 换掉的话，用户就看不到问题
+              出在标书哪一章了，而旁边那个「定位到本章修改」按钮指的正是它。
+              **另开标签页**：这里是编辑器，整页跳走会把在途的自动保存打断、报告也没了。 */}
+          {tenderHref && (
+            <a
+              href={tenderHref}
+              target="_blank"
+              rel="noopener"
+              title="在招标原文中查看这一条要求（新标签页打开）"
+              className="text-primary hover:underline"
+            >
+              {item.tenderRef} ↗
+            </a>
+          )}
+        </span>
         {/* 无章可跳时不给按钮。此前一律渲染，点下去 list.find(...) ?? list[0] 会**跳到第一章**，
             看起来像定位成功了——实测线上一份报告 63 条里有 10 条如此（都是「装订/密封/递交时间/
             报价有效期」这类全文性要求，模型没有章节可指，就填了个不存在的 b0）。
