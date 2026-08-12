@@ -340,6 +340,35 @@ class TestBriefTargeting:
         assert "招标格式模板" in brief, "报价函章没拿到招标格式原文"
         assert "潍坊环境工程职业学院：" in brief, "模板原文没进简报"
 
+    def test_coarse_section_never_ships_the_notice_as_a_template(self, monkeypatch):
+        """2026-08-12 云上江西的事故本体：.doc 里表单名没做成标题样式，整份采购公告挤在
+        一个 sec、全部表单挤在另一个 sec；章 items 的 clause_ids 是**需求条款引用**，
+        指向公告那个 sec——「整节取」就把整份公告当成响应函模板逐字下发，再被保真机制
+        钉死，交付的每个表单章都是公告转储。修后：整节文本要过单份闸，只有切得出
+        「本章那一份」才算命中，公告一个字都不许进表单章的简报。"""
+        state = _state(2)
+        state["outline"]["chapters"][0]["title"] = "第一章 响应函（技术标）"
+        state["outline"]["chapters"][0]["items"] = [
+            {"id": "i1", "label": "响应承诺", "clause_ids": ["sec-1-c1", "sec-1-c2"]}]
+        state["read"] = {"doc_sections": [
+            # sec-1 = 公告 + 格式章引导，「1.响应函」挂在节尾（切分器把它留在上一节）
+            {"id": "sec-1-c1", "text": "采购方案"},
+            {"id": "sec-1-c2", "text": "（三）本项目设置最高限价，最高限价为含税人民币230000元。"},
+            {"id": "sec-1-c3", "text": "1.响应函"},
+            # sec-2 = 响应函正文 + 下一份表单
+            {"id": "sec-2-c1", "text": "致：【XX公司[采购人名称]】："},
+            {"id": "sec-2-c2", "text": "我方将严格按照询比文件要求提交符合要求的全部响应文件。"},
+            {"id": "sec-2-c3", "text": "2.法定代表人授权书"},
+            {"id": "sec-2-c4", "text": "（供应商全称）法定代表人授权（全权代表姓名）为全权代表。"},
+        ], "doc_headings": [{"sec": "sec-2", "level": 2, "title": "响   应   函"}]}
+        chat = _FakeChat()
+        _run(state, chat, monkeypatch=monkeypatch)
+        brief = _brief_of(chat, "第一章 响应函（技术标）")
+        assert "致：【XX公司[采购人名称]】：" in brief, "没按边界切出响应函那一份"
+        assert "采购方案" not in brief, "整份公告被当成模板下发——事故复现"
+        assert "最高限价" not in brief
+        assert "法定代表人授权" not in brief, "下一份表单混进了响应函的模板"
+
     def test_template_falls_back_to_matching_by_heading_when_clause_ids_miss(self, monkeypatch):
         """降级一:条款 id 定位不到就按**标题**找。条款编号靠读标切分,切歪整章就零模板——
         而招标与投标两侧对同一份表单的叫法通常一致(都叫「报价函」),标题比编号稳。"""

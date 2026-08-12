@@ -37,7 +37,9 @@ from agent.runtime.progress import publish_event
 logger = logging.getLogger(__name__)
 
 # 提示词/上下文构造一变，旧缓存整体作废（与分段读标同一手法）。p2：#86 简报补强。
-_PROMPT_VER = "p3"
+# p4：表单模板改全文切单份（云上江西模板错位）——不升版，24h 内续跑会把公告转储章
+# 从缓存原样端回来，修复对已跑过的项目形同没修。
+_PROMPT_VER = "p4"
 _CACHE_TTL_S = 24 * 3600
 # 产出下限：短于此视为残章，重试一次；两次都残按缺章记，交给前端「补齐」按钮（免费）。
 _MIN_CHAPTER_CHARS = 120

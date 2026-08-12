@@ -12,6 +12,8 @@ from agent.agents.bidding_agent.nodes.common import (
 from agent.agents.bidding_agent.prompts.content import (
     CHAPTER_DRAFT_PROMPT, REWRITE_PROMPT,
     DEVIATION_TABLE_GUIDE, TEMPLATE_GUIDE)
+from agent.agents.bidding_agent.nodes.form_locate import (
+    _looks_like_form_title, build_form_index, find_form, slice_single_form)
 from agent.rag import retrieve as rag_retrieve
 from agent.agents.bidding_agent.render.sanitize import strip_document_shell, strip_chat_wrapper, clean_internal_ids
 
@@ -61,40 +63,9 @@ def _has_deviation_chapters(outline: dict, structure: list[dict]) -> bool:
     return False
 
 
-# 招标自带格式章节识别关键词（响应函/投标函/声明函/证明/一览表/简历表/报价表/授权委托等格式类文书）
-# 表单类章节的识别：**按构词法判，不靠穷举**。平表穷举栽过——「报价函」不在表里
-# （表里只有「响应函」「投标函」「承诺函」「报价表」），于是整章拿不到招标格式原文，
-# 模型只能自己编一份出来，用户看到的就是「格式跟招标书对不上、条款都被改写了」
-# （2026-08-11 潍坊那单实测：招标 7 条固定条款 → 生成 6 条全新措辞）。
-# 判据分两层，都不是穷举全名（穷举栽过一次：表里没有「报价函」）：
-#
-# ① 构词短语（标题里出现即算）——「X表」「X书」里的 X 才是决定性的那半个词。
-#    只看后缀「表」「书」会把「技术偏离表」「技术标书」「项目实施进度表」「技术方案书」
-#    全判成表单（2026-08-12 评审实证），偏离表还会同时收到偏离表指引和格式模板两份指令。
-#    短语要**整词命中**，所以不放裸「授权」「委托」——那会误伤「授权服务体系」「委托运维方案」。
-# ② 尾字（去编号括注后收尾）——「函」和「证明」收尾的几乎必是表单文书。
-#    「书」「表」「声明」不放这里，理由同上；它们靠 ① 的整词短语命中。
-#
-# 用**短语出现即算**而不是「只看结尾」：表单章常带尾巴——「投标函及投标函附录」
-# 「响应函及附件」「资格声明及相关材料」只看结尾全部漏判（2026-08-12 评审实证，
-# 而旧的子串匹配本来是中的——这是我改构词法时引入的回归）。
-_FORM_WORDS = ("格式", "一览表", "报价表", "简历表", "汇总表", "明细表", "申报表", "申请表",
-               "承诺书", "委托书", "授权书", "保证书", "确认书",
-               "投标函", "响应函", "报价函", "承诺函", "声明函", "身份证明", "声明")
-_FORM_SUFFIXES = ("函", "证明")
-
-
-def _core_form_name(title: str) -> str:
-    """章标题 → 表单本名（去章节编号与括注）：「第一章 报价函（商务标）」→「报价函」。
-    判定与检索共用同一份清洗——两处各写一遍就会慢慢长歪（判成表单，却按另一个名字去找）。"""
-    core = re.sub(r"[（(].*?[）)]", "", title).strip()           # 去括注
-    core = re.sub(r"^[第一二三四五六七八九十\d]+[章节、.\s]+", "", core).strip()   # 去章节编号
-    return re.sub(r"[（(].*$", "", core).strip()                 # 去未闭合的括注残尾
-
-
-def _looks_like_form_title(title: str) -> bool:
-    """标题像不像表单：命中构词短语，或去掉编号/括注后以表单尾字收尾。"""
-    return any(w in title for w in _FORM_WORDS) or _core_form_name(title).endswith(_FORM_SUFFIXES)
+# 表单类章节识别（构词法 _looks_like_form_title/_core_form_name）与全文表单定位现收在
+# form_locate.py（2026-08-12 云上江西模板错位返工时整体搬迁）——判定、检索、切割
+# 共用同一份构词法，两处各写一份就会长歪。
 
 
 _TEMPLATE_CHAPTER_CHARS = 8000    # 单章模板原文上限（格式类文书通常很短，超限截断保上下文）
@@ -115,15 +86,6 @@ def _sec_of(clause_id: str) -> str | None:
 # 凭常识自创一份表单，用户拿到的标书与招标格式对不上，而废标恰恰卡这里（2026-08-11 实测）。
 _FORMAT_CHAPTER_RE = re.compile(r"(响应|投标|应答|磋商|谈判|报价)?文件.{0,4}格式|格式.{0,4}(要求|文本|范本)|相关格式")
 _FORMAT_FALLBACK_CHARS = 12000    # 整章兜底的上限：比单表单宽，但不至于顶穿单章预算
-
-
-_MIN_LOOKUP_NAME = 3   # 按标题检索的最短表单名
-
-def _secs_by_heading(read: dict, match) -> list[str]:
-    """按**标题**找节（条款 id 对不上时的第二条路）：招标与投标两侧对同一份表单的叫法
-    通常一致（都叫「报价函」），标题匹配比条款编号稳——编号靠读标切分，切歪就全盘落空。"""
-    return [h.get("sec") for h in (read.get("doc_headings") or [])
-            if h.get("sec") and match(str(h.get("title") or ""))]
 
 
 def _format_chapter_secs(read: dict) -> list[str]:
@@ -165,27 +127,29 @@ def _template_entries(read: dict, outline: dict) -> dict[str, dict]:
         if sec:
             by_sec.setdefault(sec, []).append(c.get("text") or "")
     form_items = {s.get("id"): s for s in (read.get("required_structure") or []) if _is_form_item(s)}
+    index = build_form_index(read)   # 全文表单边界索引，各章共用（见 form_locate.py 文档串）
     out: dict[str, dict] = {}
     for chapter in outline.get("chapters", []):
         struct = form_items.get(chapter.get("structure_ref"))
         title = chapter.get("title") or ""
         if struct is None and not _looks_like_form_title(title):
             continue
-        # 模板原文定位：优先构成项的 clause_ids，回退章内 items 的 clause_ids；取所属节全文
+        # 一：构成项/章内条款所指的节，取全文后必须过**单份闸**（slice_single_form）——
+        # 细粒度文档（潍坊式，一份表单一节）原样通过；粗粒度文档一个节里装着整份公告或
+        # 好几份表单（2026-08-12 云上江西实测），闸内只切出与本章同名的那份，切不出就当
+        # 没找到。旧的「整节直发」正是把整份采购公告喂成"响应函模板"、再被保真机制逐字
+        # 钉死的事故根源——items 的 clause_ids 是需求条款引用，不保证是表单位置。
         clause_ids = list((struct or {}).get("clause_ids") or [])
         for it in _iter_items(chapter.get("items", [])):  # 含小节:条款引用可能挂在第三层
             clause_ids += it.get("clause_ids") or []
         secs = sorted({s for cid in clause_ids if (s := _sec_of(cid))})
-        text = "\n".join(t for sec in secs for t in by_sec.get(sec, []) if t)
+        sec_text = "\n".join(t for sec in secs for t in by_sec.get(sec, []) if t)
+        text = slice_single_form(sec_text, title) if sec_text else ""
         cap, note = _TEMPLATE_CHAPTER_CHARS, f"本章「{title}」对应的招标格式原文"
         if not text:
-            # 降级一：按标题找（条款编号对不上时——编号靠读标切分，切歪就全盘落空）。
-            # 名字太短不查：「证明」「声明」两个字会把「资质证明材料」「业绩证明」全捞进来，
-            # 几千字无关原文顶着「本章的招标格式原文」发出去，模型会照单全抄。
-            name = _core_form_name(title)
-            if len(name) >= _MIN_LOOKUP_NAME:
-                secs = _secs_by_heading(read, lambda t: name in t)
-                text = "\n".join(t for sec in secs for t in by_sec.get(sec, []) if t)
+            # 二：全文表单边界索引按章名取单份（「1.响应函」这类编号行、节标题、
+            # 无编号表单名行都是边界；含子编号归并、复合章名拆部件匹配）。
+            text = find_form(index, title)
         exact = bool(text)   # 前两条路命中 = 这一段**就是本章那一份表单**，可以逐字校验
         if not text:
             # 降级二：整份招标的格式章兜底。给多了模型自己挑，给零它只能编。
