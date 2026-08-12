@@ -23,7 +23,7 @@ import { AiNotice } from "@/components/tool/ai-notice"
 import { deriveRisk, scanNotice, scanFileLabel, type RealRisk } from "@/lib/risk-derive"
 import { stepPrereq, useStep } from "@/lib/use-step"
 import { phaseProgress } from "@/lib/project"
-import { clearUploading, isUploading } from "@/lib/upload-progress"
+import { isUploading } from "@/lib/upload-progress"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import { ContrastReviewCta } from "./contrast-run"
@@ -133,12 +133,12 @@ function RejectReview() {
           <Loader2 className="size-4 animate-spin" />
           正在上传并创建线下标书…（文件较大时需要几分钟，可以先去别处，传完回本页即可看到）
         </div>
-        <button
-          onClick={() => { clearUploading(); setUploading(false) }}
-          className="mt-3 text-xs font-medium text-primary hover:underline"
-        >
-          上传已中断？点这里重新上传
-        </button>
+        {/* 不放「点这里重新上传」：原来那笔上传在文档没被拆掉时仍然活着（切菜单只是卸载组件），
+            劝用户重传就是建出两个线下标书项目、之后每一步双倍计费。整页跳转/刷新会走 pagehide
+            把标记清掉，所以真死掉的上传不会卡在这个界面上。 */}
+        <a href="/projects" className="mt-3 inline-block text-xs font-medium text-primary hover:underline">
+          等太久了？去「我的标书」看看是否已经创建 →
+        </a>
       </div>
     )
   if (viewParam === "entry")

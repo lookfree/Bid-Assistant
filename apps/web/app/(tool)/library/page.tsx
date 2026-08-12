@@ -82,6 +82,18 @@ export default function LibraryPage() {
     <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8 sm:py-10">
       <PageHeader onAdd={() => setEditing({ catId: activeCat, item: null })} />
       <Banners loadError={loadError} actionError={actionError} soonCount={soonCount} onRetry={() => void reload()} />
+      {/* 企业信息引导：表单章（响应函/授权书/报价表）的空位就是按它填的，但用户无从知道
+          「要在常用文本里建一条、标题还得叫企业信息」——不提示就等于这个能力不存在。
+          **放在页签之上、不看当前页签**：页面默认落在「企业资质」，把提示藏进常用文本页签，
+          等于要用户先完成它本来要替代的那一步发现（2026-08-12 评审实证）。已建过就不再打扰。 */}
+      {!loading && !hasCompanyProfile(items) && (
+        <CompanyProfileHint
+          onCreate={() => {
+            setActiveCat("text")
+            setEditing({ catId: "text", item: null, preset: COMPANY_PRESET })
+          }}
+        />
+      )}
       <CategoryGrid
         items={items}
         activeCat={activeCat}
@@ -90,14 +102,6 @@ export default function LibraryPage() {
           setQuery("")
         }}
       />
-      {/* 企业信息引导：表单章（响应函/授权书/报价表）的空位就是按它填的，但用户无从知道
-          「要在常用文本里建一条、标题还得叫企业信息」——不提示就等于这个能力不存在。
-          已经建过就不再打扰。 */}
-      {activeCat === "text" && !loading && !hasCompanyProfile(catItems) && (
-        <CompanyProfileHint
-          onCreate={() => setEditing({ catId: "text", item: null, preset: COMPANY_PRESET })}
-        />
-      )}
       <CategoryPanel
         current={current}
         items={filtered}

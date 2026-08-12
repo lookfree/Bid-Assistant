@@ -37,7 +37,7 @@ from agent.runtime.progress import publish_event
 logger = logging.getLogger(__name__)
 
 # 提示词/上下文构造一变，旧缓存整体作废（与分段读标同一手法）。p2：#86 简报补强。
-_PROMPT_VER = "p2"
+_PROMPT_VER = "p3"
 _CACHE_TTL_S = 24 * 3600
 # 产出下限：短于此视为残章，重试一次；两次都残按缺章记，交给前端「补齐」按钮（免费）。
 _MIN_CHAPTER_CHARS = 120
@@ -474,6 +474,11 @@ async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, share
     if tpl_raw and not keeps_template(html, tpl_raw):
         logger.warning("章 %s 改写了招标格式模板，弃用产出，改用招标原文渲染", cid)
         html = template_html(tpl_raw, ch.get("title") or "")
+        # 退路也要过最短长度闸：模板抠歪了（只捞到一行）时渲染出来的是个残章，
+        # 而它非空就会被当成写成了，既不进缺章名单、也不给用户免费补齐，还被钉进 24h 缓存。
+        if len(html) < min_chars:
+            logger.error("章 %s 的招标原文退路仍过短（%d 字符），记为缺章", cid, len(html))
+            return cid, ""
     await _cache_set(ctx, key, html)
     await progress.chapter_done(cid)
     return cid, html
@@ -498,11 +503,10 @@ def _shared_blocks(state: dict, read: dict, outline: dict, chapters: list[dict])
     risk_txt = json.dumps(risks, ensure_ascii=False) if risks else ""
     # library_refs（Task 3）：App content 步下发，两类都空则键缺省——`or {}` 兜底后 .get 拿到 []，
     # `_library_ref_block` 对空列表返回空串，无 library_refs 的老行为逐字节不变。
-    refs = (state.get("run_input") or {}).get("library_refs") or {}
     from agent.agents.bidding_agent.nodes.bidder_profile import profile_block
-    bidder = profile_block(((state.get("run_input") or {}).get("library_refs") or {}).get("company") or [])
+    refs = (state.get("run_input") or {}).get("library_refs") or {}
     return {
-        "bidder": bidder,
+        "bidder": profile_block(refs.get("company") or []),
         "project": ("【项目信息】（响应函/表单/落款字段据此填写，未知处留（待补充：____））："
                     + json.dumps(strip_clause_ids(meta), ensure_ascii=False)[:2000]) if meta else "",
         "risk": ("【读标红线】（涉及本章内容时不得违背）："

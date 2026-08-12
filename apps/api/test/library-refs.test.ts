@@ -270,11 +270,56 @@ describe("下发时机：content 步下发 library_refs，export 步不下发", 
     try {
       const { id } = await createProject(tokenA, keyA)
       await runToExport(id, tokenA)
-      expect(runInputsByStep.content?.library_refs?.company).toEqual([
+      const refs = runInputsByStep.content?.library_refs as { company?: unknown[] } | undefined
+      expect(refs?.company).toEqual([
         { title: "企业信息", fields: [{ label: "单位名称", value: "上海安几科技有限公司" }] },
       ])
     } finally {
       await getDb().delete(libraryItems).where(inArray(libraryItems.id, [company!.id, noise!.id]))
+    }
+  })
+
+  it("⑦常用文本超过 20 条时，几个月前建的企业信息也不能被挤掉", async () => {
+    // 复用「按 updatedAt 倒序取 20 行再过滤」的话，建完就没再改过的企业信息根本进不了那 20 行，
+    // 而前端列的是全部条目、引导卡照样不显示——前后端各自「以为没问题」（评审 2026-08-12）。
+    const [company] = await getDb()
+      .insert(libraryItems)
+      .values({ userId: userA, category: "text", title: "企业信息",
+                fields: [{ label: "单位名称", value: "上海安几科技有限公司" }] })
+      .returning()
+    const noise = await getDb()
+      .insert(libraryItems)
+      .values(Array.from({ length: 25 }, (_, i) => ({
+        userId: userA, category: "text" as const, title: `常用段落${i}`, body: "零信任架构概述……",
+      })))
+      .returning()
+
+    try {
+      const { id } = await createProject(tokenA, keyA)
+      await runToExport(id, tokenA)
+      const refs = runInputsByStep.content?.library_refs as { company?: { title: string }[] } | undefined
+      expect(refs?.company?.[0]?.title).toBe("企业信息")
+    } finally {
+      await getDb().delete(libraryItems)
+        .where(inArray(libraryItems.id, [company!.id, ...noise.map((n) => n.id)]))
+    }
+  })
+
+  it("⑧「企业信息化建设方案」这类长文不算企业信息", async () => {
+    // 安全/IT 集成商的常用文本里常年躺着这种标题。被当成企业信息的后果是双向静默错误：
+    // 前端不再提示去建真的那条，后端把方案正文按「标签：值」解析出垃圾字段塞进每个表单章。
+    const [decoy] = await getDb()
+      .insert(libraryItems)
+      .values({ userId: userA, category: "text", title: "企业信息化建设方案",
+                body: "建设目标：全面提升信息化水平" })
+      .returning()
+
+    try {
+      const { id } = await createProject(tokenA, keyA)
+      await runToExport(id, tokenA)
+      expect(runInputsByStep.content?.library_refs).not.toHaveProperty("company")
+    } finally {
+      await getDb().delete(libraryItems).where(inArray(libraryItems.id, [decoy!.id]))
     }
   })
 

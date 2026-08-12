@@ -516,6 +516,48 @@ class TestFormFidelity:
         out = _run(self._state(), chat, monkeypatch=monkeypatch)
         assert "上海安几科技有限公司" in out["t1"]
 
+    def test_the_whole_format_chapter_fallback_does_not_police_a_single_form(self, monkeypatch):
+        """降级二给的是整份格式章（报价函+授权书+声明函…），而模型**正确的做法是只写其中一份**。
+        拿整章去逐字校验，单份表单必然判不过 → 每个表单章都被换成整份格式章的转储，
+        同一份格式章在标书里重复 N 遍、一个填好的表单都没有（2026-08-12 评审实证）。"""
+        st = _state(2)
+        st["outline"]["chapters"][0]["title"] = "投标承诺书"      # 名字在招标标题里找不到 → 走降级二
+        st["read"] = {
+            "doc_headings": [{"sec": "sec-9", "title": "第四章 响应文件相关格式", "level": 1},
+                             {"sec": "sec-10", "title": "格式一 报价函", "level": 2}],
+            "doc_sections": [{"id": "sec-9-c1", "text": "投标人应按下列格式编制响应文件。"},
+                             {"id": "sec-10-c1", "text": "致：招标人，我方决定参加本项目的投标，并承诺遵守全部要求。"}]}
+
+        class _OneForm(_FakeChat):
+            async def ainvoke(self, msgs, config=None):
+                self.calls += 1
+                self.seen.append((msgs[0].content, msgs[-1].content))
+                if "投标承诺书" in msgs[-1].content.split("请撰写本章")[-1]:
+                    return AIMessage(content="<h3>投标承诺书</h3><p>我方郑重承诺遵守招标文件全部要求。</p>"
+                                             + "<p>补充承诺条款。</p>" * 20)
+                return AIMessage(content=f"<h3>一、正文</h3><p>{'内容' * 60}</p>")
+
+        out = _run(st, _OneForm(), monkeypatch=monkeypatch)
+        assert "我方郑重承诺遵守招标文件全部要求" in out["t1"], "只写一份表单的正确产出被整章比对判死了"
+        assert "投标人应按下列格式编制响应文件" not in out["t1"], "整份格式章被当成本章内容转储了"
+
+    def test_the_fallback_never_ships_the_truncation_marker(self, monkeypatch):
+        """raw 只用于校验与零模型渲染，带上「…（超长截断）」会把这个内部标记原样印进交付的
+        docx（本仓已为同类泄漏返工过一次，任务 #96）。"""
+        long_form = "报价函\n" + "\n".join(f"{i}、我方承诺遵守招标文件的第{i}项全部要求。" for i in range(1, 400))
+        st = self._state()
+        st["read"] = {"doc_sections": [{"id": "sec-8-c1", "text": long_form}]}
+
+        class _Rewriter(_FakeChat):
+            async def ainvoke(self, msgs, config=None):
+                self.calls += 1
+                self.seen.append((msgs[0].content, msgs[-1].content))
+                return AIMessage(content="<h3>报价函</h3>" + "<p>我方另起炉灶写了一份。</p>" * 30)
+
+        out = _run(st, _Rewriter(), monkeypatch=monkeypatch)
+        assert "超长截断" not in out["t1"], "内部截断标记被印进交付内容"
+        assert "我方承诺遵守招标文件的第399项全部要求" in out["t1"], "退路用的是被截断的模板"
+
     def test_bidder_info_reaches_only_the_form_chapter(self, monkeypatch):
         """单位名称/信用代码/法定代表人是**表单空位**要填的东西。散文章用不上，
         发过去只是白占本来就紧的单章预算。"""

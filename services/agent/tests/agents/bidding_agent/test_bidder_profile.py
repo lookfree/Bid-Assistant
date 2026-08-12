@@ -41,9 +41,25 @@ class TestBidderFields:
         big = {"title": "企业信息", "body": "\n".join(f"字段{i}：值{i}" for i in range(200))}
         assert len(bidder_fields([big])) <= 30
 
+    def test_a_long_value_is_truncated_not_dropped(self):
+        """一条长注册地址不该整行匹配失败被静默丢掉——结构化 fields 那条路是截断的，
+        同一份数据两条路必须给出同样的结果。"""
+        addr = ("上海市浦东新区张江高科技园区科苑路399号张江创新园区7号楼3层301室"
+                "（中国（上海）自由贸易试验区内，园区西南门进入后左转第三栋）")
+        got = dict(bidder_fields([{"title": "企业信息", "body": f"注册地址：{addr}"}]))
+        assert "注册地址" in got, "长值让整行匹配失败，字段被静默丢掉"
+        assert got["注册地址"] == addr[:60]
+
     def test_broken_input_never_raises(self):
         assert bidder_fields([]) == []
         assert bidder_fields([None, {"fields": [None]}, {"body": None}]) == []
+
+    def test_a_non_dict_field_row_does_not_kill_the_whole_step(self):
+        """_shared_blocks 在 gather 之前跑，没有 _chapter_brief 那种「只废本章」的隔离：
+        一条脏数据抛异常 = 整个计费的正文步失败。"""
+        got = bidder_fields([{"title": "企业信息",
+                              "fields": ["单位名称：X", {"label": "法定代表人", "value": "冯世瑾"}]}])
+        assert dict(got) == {"法定代表人": "冯世瑾"}
 
 
 class TestProfileBlock:

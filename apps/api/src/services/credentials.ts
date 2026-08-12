@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm"
+import { and, desc, eq, inArray, sql } from "drizzle-orm"
 import { getDb } from "../db/client"
 import { libraryItems, projectFiles } from "../db/schema"
 import { sliceAtCodePoint } from "../lib/text"
@@ -91,12 +91,36 @@ export async function libraryRefsRunInput(
 // 代码、法定代表人、住所、开户行——全出自这里。用户自己录的字段比从营业执照图片 OCR 出来的
 // 可靠得多（OCR 认错一个字，投标函上的单位名称就是错的），所以走这条路，不碰识别结果。
 // 只取标题命中的条目、最多 3 条：常用文本还放着技术方案片段等大段文字，全量下发只是白占预算。
-const COMPANY_TITLE_RE = /企业信息|公司信息|单位信息|投标人信息|企业基本信息|公司基本信息/
+// 「信息化」「信息安全」不算：安全/IT 集成商的常用文本里常年躺着「企业信息化建设方案」
+// 「企业信息安全管理制度」这种长文，被当成企业信息的后果是双向的静默错误——前端不再提示
+// 用户去建真的那条，后端把方案正文按「标签：值」解析出一堆垃圾字段塞进每个表单章
+// （2026-08-12 评审实证）。**与 apps/web/lib/company-profile.ts 同形，改一处必须同步改另一处。**
+const COMPANY_TITLE_RE = /(?:企业|公司|单位|投标人)(?:基本)?信息(?!化|安全)/
 const COMPANY_LIMIT = 3
 
+// **在 SQL 里按标题过滤**，不能复用 fetchLibraryRefs 再过滤：那条按 updatedAt 倒序只取 20 行，
+// 常用文本超过 20 条、而企业信息又是几个月前建的（建完就不会再改）时，它根本进不了这 20 行，
+// 于是每个表单章的单位名称都是空的——而前端列的是全部条目，引导卡照样不显示，
+// 前后端各自「以为没问题」（2026-08-12 评审实证）。顺带也不再为了最多 3 条把 20 份正文拖过来。
+// SQL 侧的粗筛。Postgres 的 `~` 是 **POSIX 正则，不支持 `(?!…)` 负向先行断言**，
+// 所以精确判据（排除「信息化」「信息安全」）只能留在 JS 里，SQL 只负责把候选缩到几行。
+const COMPANY_TITLE_SQL = "(企业|公司|单位|投标人)(基本)?信息"
+
 async function fetchCompanyProfile(userId: string): Promise<LibraryRefItem[]> {
-  const all = await fetchLibraryRefs(userId, "text")
-  return all.filter((r) => COMPANY_TITLE_RE.test(r.title)).slice(0, COMPANY_LIMIT)
+  const rows = await getDb()
+    .select({
+      title: libraryItems.title,
+      meta: libraryItems.meta,
+      fields: libraryItems.fields,
+      body: libraryItems.body,
+      tags: libraryItems.tags,
+    })
+    .from(libraryItems)
+    .where(and(eq(libraryItems.userId, userId), eq(libraryItems.category, "text"),
+               sql`${libraryItems.title} ~ ${COMPANY_TITLE_SQL}`))
+    .orderBy(desc(libraryItems.updatedAt))
+    .limit(LIBRARY_REF_LIMIT)
+  return rows.filter((r) => COMPANY_TITLE_RE.test(r.title)).slice(0, COMPANY_LIMIT).map(toLibraryRefItem)
 }
 
 // body 无 zod 字符上限（UI 侧 personnel/performance 表单目前没有 body 输入口，现实风险低），
@@ -118,12 +142,19 @@ async function fetchLibraryRefs(userId: string, category: "personnel" | "perform
     .orderBy(desc(libraryItems.updatedAt))
     .limit(LIBRARY_REF_LIMIT)
 
-  return rows.map((r) => ({
+  return rows.map(toLibraryRefItem)
+}
+
+type LibraryRefRow = { title: string; meta: string | null; fields: { label: string; value: string }[] | null
+                       body: string | null; tags: string[] | null }
+
+function toLibraryRefItem(r: LibraryRefRow): LibraryRefItem {
+  return {
     title: r.title,
     ...(r.meta ? { meta: r.meta } : {}),
     ...(r.tags && r.tags.length > 0 ? { tags: r.tags } : {}),
     ...(r.fields && r.fields.length > 0 ? { fields: r.fields } : {}),
     // UTF-16 安全截断（终审 wave2）：裸 slice 可能切在代理对中间产出孤代理，见 lib/text.ts 注释。
     ...(r.body ? { body: sliceAtCodePoint(r.body, LIBRARY_REF_BODY_CHARS) } : {}),
-  }))
+  }
 }

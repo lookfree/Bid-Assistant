@@ -165,7 +165,7 @@ def _template_entries(read: dict, outline: dict) -> dict[str, dict]:
         if sec:
             by_sec.setdefault(sec, []).append(c.get("text") or "")
     form_items = {s.get("id"): s for s in (read.get("required_structure") or []) if _is_form_item(s)}
-    out: dict[str, str] = {}
+    out: dict[str, dict] = {}
     for chapter in outline.get("chapters", []):
         struct = form_items.get(chapter.get("structure_ref"))
         title = chapter.get("title") or ""
@@ -186,6 +186,7 @@ def _template_entries(read: dict, outline: dict) -> dict[str, dict]:
             if len(name) >= _MIN_LOOKUP_NAME:
                 secs = _secs_by_heading(read, lambda t: name in t)
                 text = "\n".join(t for sec in secs for t in by_sec.get(sec, []) if t)
+        exact = bool(text)   # 前两条路命中 = 这一段**就是本章那一份表单**，可以逐字校验
         if not text:
             # 降级二：整份招标的格式章兜底。给多了模型自己挑，给零它只能编。
             secs = _format_chapter_secs(read)
@@ -208,10 +209,17 @@ def _template_entries(read: dict, outline: dict) -> dict[str, dict]:
                 logger.warning("no tender template located for form chapter %s (%s)",
                                chapter.get("id"), title)
             continue
+        # raw 只在**精确命中本章那一份表单**时给：走了格式章整章兜底的话，这一段里装着
+        # 报价函+授权书+声明函等好几份，而模型正确的做法是只写其中一份——拿整章去逐字校验，
+        # 单份表单必然判不过，于是每个表单章都被换成整份格式章的转储，同一份格式章在标书里
+        # 重复 N 遍、一个填好的表单都没有，比不做这个校验糟得多（2026-08-12 评审实证）。
+        # 也**不带截断标记**：raw 只用于校验与零模型渲染，带上「…（超长截断）」会把这个
+        # 内部标记原样印进交付的 docx（本仓已为同类泄漏返工过一次，任务 #96）。
+        raw = text if exact else ""
+        brief_text = text if len(text) <= cap else text[:cap] + "…（超长截断）"
         if len(text) > cap:
             logger.warning("template entry truncated at chapter %s", chapter.get("id"))
-            text = text[:cap] + "…（超长截断）"
-        out[chapter.get("id")] = {"brief": f"{TEMPLATE_GUIDE}\n— {note}：\n{text}", "raw": text}
+        out[chapter.get("id")] = {"brief": f"{TEMPLATE_GUIDE}\n— {note}：\n{brief_text}", "raw": raw}
     return out
 
 

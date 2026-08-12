@@ -15,6 +15,14 @@ describe("企业信息条目判定", () => {
     }
   })
 
+  it("「企业信息化」「企业信息安全」这类长文不算——它们是本产品客户的常客", () => {
+    // 安全/IT 集成商的常用文本里常年躺着这种标题。误判是双向静默错误：这边不再提示去建真的
+    // 那条，后端把方案正文按「标签：值」解析出垃圾字段塞进每个表单章（评审 2026-08-12）。
+    for (const t of ["企业信息化建设方案", "企业信息安全管理制度", "公司信息化规划（2026）"]) {
+      expect(COMPANY_TITLE_RE.test(t)).toBe(false)
+    }
+  })
+
   it("建过就不再打扰", () => {
     expect(hasCompanyProfile([{ title: "技术方案常用段落" }, { title: "企业信息" }])).toBe(true)
     expect(hasCompanyProfile([{ title: "技术方案常用段落" }])).toBe(false)

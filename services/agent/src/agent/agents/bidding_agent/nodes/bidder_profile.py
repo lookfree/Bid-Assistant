@@ -13,7 +13,9 @@ from __future__ import annotations
 import re
 
 # 「标签：值」——常用文本的 body 里用户多半就是这么写的。冒号半/全角都认。
-_LINE = re.compile(r"^\s*([^：:]{2,12})\s*[：:]\s*(\S.{0,60})$")
+# 值**不设长度上限**，超长在下面统一截断：写成 (\S.{0,60})$ 的话，一条长注册地址会整行匹配失败、
+# 字段被静默丢掉，而结构化 fields 那条路是截断的——同一份数据两条路给出不同结果。
+_LINE = re.compile(r"^\s*([^：:]{2,12})\s*[：:]\s*(\S.*)$")
 _MAX_LINES = 30          # 一份企业信息不该有几十条；超出多半是把方案正文塞进来了
 _MAX_VALUE = 60
 
@@ -22,8 +24,12 @@ def _pairs_of(item: dict) -> list[tuple[str, str]]:
     """单个条目 → [(标签, 值)]。优先结构化 fields，其次按行解析 body。"""
     out: list[tuple[str, str]] = []
     for field in item.get("fields") or []:
-        label = str((field or {}).get("label") or "").strip()
-        value = str((field or {}).get("value") or "").strip()
+        # 非 dict 元素（历史数据/直连库写入，PUT 的 zod 是唯一守卫）不能炸掉整步：
+        # _shared_blocks 在 gather 之前跑，且没有 _chapter_brief 那种「只废本章」的隔离。
+        if not isinstance(field, dict):
+            continue
+        label = str(field.get("label") or "").strip()
+        value = str(field.get("value") or "").strip()
         if label and value:
             out.append((label, value[:_MAX_VALUE]))
     for line in str(item.get("body") or "").splitlines():

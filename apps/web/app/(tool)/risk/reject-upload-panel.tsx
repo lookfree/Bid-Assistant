@@ -32,7 +32,7 @@ export function RejectUploadPanel(
       ])
       const id = await createReviewProject(bidUp.map((f) => f.key), tenderUp.map((f) => f.key))
       setCurrentProjectId(id)
-      clearUploading()
+      clearUploading("/risk")
       // 留在本页：读标由「开始对照审查」一并跑掉（用户口径"不需要跳转到招标解读"）。
       // 之前跳去 /read，用户得等它跑完再自己回来点生成，中间还容易以为没传成功又传一遍。
       // **只在用户还留在审查页时才跳**：这段 async 在组件卸载后仍会跑完，用户可能早已切去
@@ -40,7 +40,7 @@ export function RejectUploadPanel(
       // 他下次回审查页自然看得到。
       if (window.location.pathname.startsWith("/risk")) onCreated()
     } catch (e) {
-      clearUploading()
+      clearUploading("/risk")
       setError(uploadErrorMessage(e, "创建失败，请重试"))
       setBusy(false)
     }
