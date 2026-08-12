@@ -11,6 +11,7 @@ import {
   Copy,
   ListChecks,
   UploadCloud,
+  Loader2,
 } from "lucide-react"
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepPageHeader } from "@/components/tool/step-page-header"
@@ -22,6 +23,7 @@ import { AiNotice } from "@/components/tool/ai-notice"
 import { deriveRisk, scanNotice, scanFileLabel, type RealRisk } from "@/lib/risk-derive"
 import { stepPrereq, useStep } from "@/lib/use-step"
 import { phaseProgress } from "@/lib/project"
+import { clearUploading, isUploading } from "@/lib/upload-progress"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import { ContrastReviewCta } from "./contrast-run"
@@ -111,6 +113,11 @@ function RejectReview() {
     () => (typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("view")),
   )
   const goEntry = () => { window.location.href = "/risk?view=entry" }
+  // 在途上传：切菜单会把上传面板卸载，但那段 async 照跑完。**必须排在所有视图分支之前**——
+  // 切回 ?view=upload 会把面板重挂成一张空表单，用户以为没传成功就再传一遍，建出重复项目、
+  // 后面每步重复扣费；切回裸 /risk 则直接看到旧项目的报告，完全看不出还有一笔在传。
+  // 惰性读一次即可：本组件不会在上传完成的那一刻重新挂载，跳转由上传方自己发起。
+  const [uploading, setUploading] = useState(() => isUploading("/risk"))
   const { projectId, info, data: real, dataLoading, running, phase, error, errorAction, start } = useStep<RealRisk>("review")
   const { overview: membershipOverview } = useMembership()
   const reviewCost = creditCostValue(membershipOverview, "review", 60)
@@ -119,6 +126,21 @@ function RejectReview() {
   // ?view=entry：用户从面板里点了「从我的标书选择」，给「选项目 / 传标书」的中转页。
   // 「返回当前项目的审查」仅在当前项目确可审查时给出——否则不给，避免对未生成正文的在途项目
   // 给一个点了会空转回入口的死链（整页跳转带 ?view=project）。
+  if (uploading)
+    return (
+      <div className="rounded-2xl border border-border bg-card px-5 py-6 text-sm">
+        <div className="flex items-center gap-2 font-medium text-primary">
+          <Loader2 className="size-4 animate-spin" />
+          正在上传并创建线下标书…（文件较大时需要几分钟，可以先去别处，传完回本页即可看到）
+        </div>
+        <button
+          onClick={() => { clearUploading(); setUploading(false) }}
+          className="mt-3 text-xs font-medium text-primary hover:underline"
+        >
+          上传已中断？点这里重新上传
+        </button>
+      </div>
+    )
   if (viewParam === "entry")
     return (
       <ReviewEntry

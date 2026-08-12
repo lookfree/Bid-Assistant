@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import { FolderOpen, Loader2, UploadCloud, X } from "lucide-react"
 import { listProjects, setCurrentProjectId, createReviewProject, type ProjectListItem } from "@/lib/project"
 import { fileSummary, fileTitle } from "@/lib/project-files"
+import { clearUploading, markUploading } from "@/lib/upload-progress"
 import { uploadFile, uploadErrorMessage, uploadHint, ACCEPT_BID, ACCEPT_TENDER } from "@/lib/files"
 
 export type StandaloneBidEntryProps = {
@@ -171,6 +172,8 @@ function UploadBidCard({
     if (tenderRequired && !tenderFile) return
     setBusy(true)
     setError(null)
+    const home = noTenderHref.split("?")[0]!   // 上传归属的页面（/present、/risk…）
+    markUploading(home)
     try {
       const useTender = !bidOnly && tenderFile
       const [bids, tender] = await Promise.all([
@@ -179,11 +182,15 @@ function UploadBidCard({
       ])
       const id = await createReviewProject(bids.map((f) => f.key), tender ? [tender.key] : [])
       setCurrentProjectId(id)
+      clearUploading()
       // 一律回本工具页，**带招标文件也不再绕去 /read**：读标由本工具页的「开始对照审查」一并跑掉。
       // 此前带招标文件时硬跳 /read，用户得等它跑完再自己找回来点生成，中间还容易以为没传成功又传一遍
       // （2026-08-08 已在标准版那张卡改掉，这个共用入口漏了，两个入口行为不一致——用户实测发现）。
-      window.location.href = noTenderHref
+      // 只在用户还留在本工具页时才跳：切菜单会卸载本组件，但这段 async 照样跑完，
+      // 那时把浏览器从资料库/会员中心强行拽走比不跳更糟（项目已建好且已设为当前项目）。
+      if (window.location.pathname.startsWith(home)) window.location.href = noTenderHref
     } catch (e) {
+      clearUploading()
       setError(uploadErrorMessage(e, "创建失败，请重试"))
       setBusy(false)
     }

@@ -3,6 +3,7 @@
 import { useRef, useState } from "react"
 import { Brain, EyeOff, Flame, FolderOpen, Loader2, Lock, Upload, X, Zap } from "lucide-react"
 import { createReviewProject, setCurrentProjectId } from "@/lib/project"
+import { clearUploading, markUploading } from "@/lib/upload-progress"
 import { uploadFile, uploadErrorMessage, uploadHint, checkFiles, ACCEPT_BID, ACCEPT_TENDER } from "@/lib/files"
 
 /** 废标风险审查的默认入口：招标文件 + 投标文件双上传区（用户指定的版式）。
@@ -22,6 +23,7 @@ export function RejectUploadPanel(
     if (!bid.length || !tender.length || busy) return
     setBusy(true)
     setError(null)
+    markUploading("/risk")   // 切菜单会卸载本组件，但这段 async 照跑；标记让审查页知道"还在传"
     try {
       // 顺序即拼接顺序（商务标在前还是技术标在前由用户的选择顺序决定），故 map 后整体并发上传
       const [bidUp, tenderUp] = await Promise.all([
@@ -30,10 +32,15 @@ export function RejectUploadPanel(
       ])
       const id = await createReviewProject(bidUp.map((f) => f.key), tenderUp.map((f) => f.key))
       setCurrentProjectId(id)
+      clearUploading()
       // 留在本页：读标由「开始对照审查」一并跑掉（用户口径"不需要跳转到招标解读"）。
       // 之前跳去 /read，用户得等它跑完再自己回来点生成，中间还容易以为没传成功又传一遍。
-      onCreated()
+      // **只在用户还留在审查页时才跳**：这段 async 在组件卸载后仍会跑完，用户可能早已切去
+      // 资料库或会员中心，那时把浏览器强行拽走比不跳更糟。项目已建好且已设为当前项目，
+      // 他下次回审查页自然看得到。
+      if (window.location.pathname.startsWith("/risk")) onCreated()
     } catch (e) {
+      clearUploading()
       setError(uploadErrorMessage(e, "创建失败，请重试"))
       setBusy(false)
     }
