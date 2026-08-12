@@ -2,7 +2,15 @@
 # 客户验证环境（230）发版。**在 mbp 上执行**：230 构建不了 web/admin（Next.js 构建要拉 Google Fonts，
 # 客户网络出不去），故 api/agent 在 230 原生构建、web/admin 在 mbp 交叉构建 amd64 后投送镜像。
 #
-#   用法：bash deploy/deploy-cust.sh <短 commit> [--only api,agent]
+#   用法：bash deploy/deploy-cust.sh <短 commit> ["--only api,agent,web"]
+#         **--only 连值一起加引号**，不加会被当场拦下（见下方注释里的事故）。
+#
+# 这个脚本的每一条守护都对应一次真实事故，改动前先读对应的注释：
+#   · --only 不加引号 → web 被静默跳过却照样 ALLDONE（2026-08-11）
+#   · 构建吊死无上限   → 出网坏掉时卡 27 分钟，进程活着看不出来（2026-08-12）
+#   · 切流量没有 abort → ssh 断链也能走到 ALLDONE，即「假 ALLDONE」本身
+#   · 冒烟只打印不判断 → 502 也算发成功
+#   · 没有后置验证     → 组件被跳过时无人发现
 #
 # 此前每次发版都是临时手写脚本，迁移这一步全靠人记得——0041 之前的改动恰好都不带迁移，所以没暴露。
 # 固化成脚本后，迁移是流程里的固定一步，不再是"这次要记得"。
@@ -19,15 +27,46 @@ DC='docker compose -f docker-compose.cust.yml --env-file .env.deploy.local'
 # 进程还活着、日志停在第 3 行，卡在查在途任务的那条 ssh 上 40 分钟，不看进程根本发现不了。
 # 宁可快速失败——脚本任何一步失败都 abort，且失败点全在切流量之前，重跑无害。
 SSHOPT='-o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4'
-wants() { [ -z "$ONLY" ] || [[ ",${ONLY#--only }," == *",$1,"* ]]; }
+wants() { [ -z "$ONLY" ] || [[ ",${ONLY#--only[ =]}," == *",$1,"* ]]; }
+
+# **--only 必须整体加引号**。不加的话 $2 恰好等于字面量 "--only"，${ONLY#--only } 剥不掉，
+# wants 对每个组件都判 false —— web/admin 被静默跳过，而 api/agent 是无条件构建的，
+# 于是脚本一路跑到 ALLDONE，用户以为发全了（2026-08-11 实测：web 没进去，靠事后比对
+# 容器 Up 时间才发现）。这里当场拦下，不给它跑到 ALLDONE 的机会。
 abort() { echo "ABORT: $1"; exit 1; }
+
+[ "$ONLY" = "--only" ] && abort "--only 要作为**一个带引号的参数**传：\"--only api,agent,web\"（不加引号会静默跳过 web 却照样 ALLDONE）"
+[ -n "${3:-}" ] && abort "多余参数 '${3}'：--only 及其值必须整体加引号"
 
 # 构建输出必须落文件再截取：成功时只要末几行，失败时要的是**报错原文**。
 # 直接 `build | tail -2` 在失败时留下的恰好是 buildx 结尾的 "View build details:" URL，
 # 真正的错误早被截掉——2026-08-07 的 web 构建失败就是这样查不出原因，重跑一遍才拿到。
+# 构建总时长上限。2026-08-12 实测：mbp 出网坏掉时 web 的交叉构建**吊死 27 分钟**——
+# 进程活着、日志停在 `next build` 开头、buildx 累计 CPU 只有 0.23 秒，不去看 CPU 时间
+# 根本判断不出它已经死了，人只会一直等。正常 web 交叉构建 3~6 分钟，15 分钟是宽裕的上限。
+BUILD_TIMEOUT_S="${BUILD_TIMEOUT_S:-900}"
+
+# macOS 自带没有 timeout(1)，自己盯：后台跑 + 轮询 + 到点杀。
+run_timeout() {
+  local secs="$1"; shift
+  "$@" & local pid=$! waited=0
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 5; waited=$((waited + 5))
+    if [ "$waited" -ge "$secs" ]; then
+      kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 124
+    fi
+  done
+  wait "$pid"
+}
+
 run_build() {
   local what="$1" log="/tmp/build-$1.log"; shift
-  if "$@" > "$log" 2>&1; then tail -2 "$log"; else tail -40 "$log"; abort "$what 构建失败"; fi
+  run_timeout "$BUILD_TIMEOUT_S" "$@" > "$log" 2>&1
+  local rc=$?
+  if [ "$rc" -eq 0 ]; then tail -2 "$log"; return; fi
+  tail -40 "$log"
+  [ "$rc" -eq 124 ] && abort "$what 构建超过 ${BUILD_TIMEOUT_S}s 仍无进展（多半是 mbp 出网断了，构建卡在拉依赖/字体）"
+  abort "$what 构建失败"
 }
 
 # mbp 是笔记本，发版期间没有键鼠活动、web/admin 的 amd64 交叉构建在 QEMU 下要十几分钟。
@@ -41,6 +80,19 @@ run_build() {
 command -v caffeinate >/dev/null && caffeinate -dimsu -w $$ &
 
 echo "=== start $(date) 目标 $WANT ==="
+
+# 出网预检：web/admin 的 Next 构建要联网拉 Google Fonts（这正是它们只能在 mbp 构建、
+# 230 出不去的原因）。mbp 出网一坏，构建就吊在那儿不动——2026-08-12 实测卡了 27 分钟，
+# 而当时 registry.npmmirror.com 直接 8 秒超时、fonts 要 7.8 秒。与其等超时兜底，
+# 不如开跑前一秒钟测出来：这一步失败，一个字节都还没动过线上。
+if wants web || wants admin; then
+  echo "=== mbp 出网预检（web/admin 构建要联网）==="
+  for u in "https://registry.npmmirror.com" "https://fonts.googleapis.com/css2?family=Inter"; do
+    read -r code secs <<<"$(curl -s -m 8 -o /dev/null -w '%{http_code} %{time_total}' "$u")"
+    echo "  $u -> $code ${secs}s"
+    [ "$code" = "200" ] || abort "mbp 出网异常（$u -> $code），web 构建必然吊死，先修网络再发"
+  done
+fi
 
 cd "$SRC" || abort "源码目录不存在 $SRC"
 git fetch origin main --quiet && git merge --ff-only origin/main || abort "同步 origin/main 失败"
@@ -125,20 +177,46 @@ R2=$(inflight); echo "在途(切流量前): [$R2]"
 [ "$R2" = "[]" ] || abort "构建期间出现在途任务，未重启"
 
 echo "=== 切流量 ==="
+# **这条必须带 abort**：原来没有，ssh 断链或 up -d 失败时脚本照样往下走，
+# 最后打出 ALLDONE——正是「假 ALLDONE」本身（任务 #89 的由来）。
 ssh $SSHOPT "$R230" "set -o pipefail; cd ~/bid/app/deploy && export TAG=latest
 $DC up -d api agent-api agent-worker web admin || exit 1
 sleep 8
 docker exec bid-nginx-1 nginx -s reload || $DC restart nginx
 sleep 3
-docker ps --format '{{.Names}} {{.Status}}' | head -8"
+docker ps --format '{{.Names}} {{.Status}}' | head -8" || abort "切流量失败（容器可能半新半旧，用 :prev 镜像回滚）"
+
+echo "=== 后置验证：请求发的组件是不是真的换了 ==="
+# 只看 ALLDONE 是不够的。--only 传错、某个组件被跳过、镜像没 load 进去，都会表现为
+# 「脚本很顺、容器没换」。这里按**容器 Up 时长**核对：刚重建的容器一定是秒/分钟级。
+# 这是 2026-08-11 那次 web 被静默跳过之后，我每次发版手工做的那步，固化进脚本。
+STALE=$(ssh $SSHOPT "$R230" '
+for c in bid-api-1 bid-agent-api-1 bid-agent-worker-1 bid-web-1; do
+  up=$(docker ps --format "{{.Names}}|{{.Status}}" | grep "^$c|" | sed "s/^.*|Up //")
+  case "$up" in *second*|*minute*) ;; *) echo "$c($up)";; esac
+done') || abort "后置验证连不上 230"
+if [ -n "$STALE" ]; then
+  # api/agent 是无条件构建的，web 受 --only 控制；任何一个没换都要说出来。
+  abort "这些容器没有被重建：$STALE —— 组件被跳过了（多半是 --only 没加引号），别当成发成功"
+fi
+echo "  所有目标容器均已重建"
 
 echo "=== 冒烟校验 ==="
 # OCR 健康：不静默吞掉——它挂了插图就没有识别文字，审查又会看不出材料在不在
 ssh $SSHOPT "$R231" 'curl -s -o /dev/null -w "231 OCR 健康 %{http_code}\n" http://192.168.106.231:8100/health' \
   || echo "WARN: OCR 健康检查失败（插图仍可用，只是没有识别文字）"
-ssh $SSHOPT "$R230" '
-curl -s -o /dev/null -w "C端首页 %{http_code}\n" http://127.0.0.1/
-curl -s -o /dev/null -w "后台首页 %{http_code}\n" http://127.0.0.1:8081/
-curl -s -o /dev/null -w "api鉴权(应401) %{http_code}\n" http://127.0.0.1/api/projects
-docker image prune -f | tail -1; df -h / | tail -1'
+# **冒烟必须能判失败**：原来只是把状态码打印出来，502 也照样 ALLDONE，
+# 而这几条恰恰是「切完流量到底活没活」的唯一证据。
+SMOKE=$(ssh $SSHOPT "$R230" '
+fail=""
+for pair in "C端首页|http://127.0.0.1/|200" "后台首页|http://127.0.0.1:8081/|200" "api鉴权|http://127.0.0.1/api/projects|401"; do
+  IFS="|" read -r name url want <<<"$pair"
+  got=$(curl -s -o /dev/null -m 10 -w "%{http_code}" "$url")
+  echo "$name $got（应 $want）" >&2
+  [ "$got" = "$want" ] || fail="$fail $name($got)"
+done
+echo "$fail"') || abort "冒烟校验连不上 230"
+[ -z "$(echo "$SMOKE" | tr -d '[:space:]')" ] || abort "冒烟不通：$SMOKE —— 线上可能已经坏了，用 :prev 镜像回滚"
+
+ssh $SSHOPT "$R230" 'docker image prune -f | tail -1; df -h / | tail -1'
 echo "=== ALLDONE $(date) ==="
