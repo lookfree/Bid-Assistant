@@ -12,6 +12,8 @@
 """
 from __future__ import annotations
 
+import re
+
 from agent.agents.bidding_agent.nodes.common import filter_read_by_package
 from agent.agents.bidding_agent.nodes.content import _collect_clause_ids
 from agent.agents.bidding_agent.nodes.credentials_chapter import SYS_CREDS_ID, _esc, _image_alt
@@ -83,6 +85,57 @@ def _cert_block(keyword: str, entry: dict | None) -> str:
     return "\n".join(parts)
 
 
+# 证据词：段落锚点必须带其一。「响应函里顺嘴提到营业执照」不是要材料的地方，
+# 「附：全权代表人和法定代表人身份证原件扫描件」才是——不带证据词的散文提及一律不挂图。
+_EVIDENCE = re.compile(r"扫描件|原件|复印件|证明材料|加盖公章")
+_ANCHOR = re.compile(r"<(h[3-6]|p)[^>]*>(.*?)</\1>", re.S)
+_TAG = re.compile(r"<[^>]+>")
+_TABLE_SPAN = re.compile(r"<table\b.*?</table>", re.S | re.I)
+
+
+def _anchor_end(html: str, aliases: tuple[str, ...]) -> int:
+    """章 HTML 里第一处能挂靠该证照的位置（锚元素闭合处的偏移）：
+    小节标题（h3-h6）内文含组内任一写法即算（「一、营业执照副本扫描件」）；
+    普通段落还须同时含证据词（授权书表单的「附：…身份证原件扫描件」）。找不到 -1。
+    表格内的提及一律不算锚（评审表/资格要求表里满是「提供营业执照扫描件」）：
+    插进 <td> 的占位图渲染层会整个丢掉（_emit_table 只取文字），而 html 里已出现
+    data-file-id 又会让附录把它滤掉——材料在正文和附录**两头消失**。"""
+    tables = [(t.start(), t.end()) for t in _TABLE_SPAN.finditer(html or "")]
+    for m in _ANCHOR.finditer(html or ""):
+        if any(s <= m.start() < e for s, e in tables):
+            continue
+        text = _TAG.sub("", m.group(2))
+        if any(a in text for a in aliases):
+            if m.group(1) != "p" or _EVIDENCE.search(text):
+                return m.end()
+    return -1
+
+
+def _place_by_anchor(result: dict[str, str], ordered_cids: list[str],
+                     credentials: list[dict], placed: set[int]) -> None:
+    """定向就位（2026-08-12 云上江西用户反馈）：营业执照图要在「营业执照副本扫描件」
+    小节底下、法人身份证要在授权书「附：…身份证原件扫描件」那行底下——不是全堆附录。
+    按章序扫锚点，每个条目全局只放**第一处**：五个章都提营业执照时只进最先对口的那章，
+    重复插图既撑大文件也让评委翻到哪都是同一张执照。placed 由调用方共享，
+    章尾追加与附录构建据此去重。原地更新 result。"""
+    for cid in ordered_cids:
+        html = result.get(cid)
+        if not html:
+            continue
+        for entry in credentials:
+            if id(entry) in placed or not entry.get("images"):
+                continue
+            group = _group_of(str(entry.get("title") or ""))
+            if group is None:
+                continue
+            pos = _anchor_end(html, _aliases_of(group))
+            if pos < 0:
+                continue
+            html = html[:pos] + "\n" + _cert_block(group, entry) + html[pos:]
+            placed.add(id(entry))
+        result[cid] = html
+
+
 def _matched_keywords(read: dict, clause_ids: set[str]) -> list[str]:
     """本章命中的证照词（去重,保持词表序）：资格/商务类条目 title 命中词表某词,且该条目
     clause_ids 与本章子项 clause_ids（调用方传入）有交集——定位手法与 content.py 的
@@ -103,10 +156,14 @@ def _matched_keywords(read: dict, clause_ids: set[str]) -> list[str]:
 
 
 def place_certificates(out: dict[str, str], state: dict) -> dict[str, str]:
-    """post-pass 入口（纯函数,返回新 dict,不改动入参）：对 out 中每个非系统章追加命中的
-    证照占位（或待补充提示）。定位不到章（子项无 clause_ids 或与要求无交集）或词表不命中
-    → 该章原样不动（附录/程序性章节天然兜底）。sys-creds 结构性排除，双重兜底（id 与
-    system 标记，与 content_pipeline.py 净化系统章同一手法）——绝不触碰。"""
+    """post-pass 入口（纯函数,返回新 dict,不改动入参）。两道通路，共享同一份 placed 去重：
+    ① 锚点定向就位（_place_by_anchor）：营业执照进「营业执照」小节、身份证进授权书的
+       「附：…扫描件」行下——每个条目全局只放第一处；
+    ② 条款交集章尾追加（原有通路）：招标要求命中词表 × 章 clause_ids 交集 × 库存，
+       库有见下图、库无待补充；①已放过的条目这里不再重复。
+    定位不到章或词表不命中 → 该章原样不动（附录天然兜底——appendix 只收没去处的，
+    见 credentials_chapter.append_credentials_chapter）。sys-creds 结构性排除，双重兜底
+    （id 与 system 标记，与 content_pipeline.py 净化系统章同一手法）——绝不触碰。"""
     outline = state.get("outline") or {}
     chapters = {c.get("id"): c for c in outline.get("chapters") or []
                 if c.get("id") and not c.get("system") and c.get("id") != SYS_CREDS_ID}
@@ -114,7 +171,13 @@ def place_certificates(out: dict[str, str], state: dict) -> dict[str, str]:
     credentials = (state.get("run_input") or {}).get("credentials") or []
 
     result = dict(out)
-    for cid, html in out.items():
+    # 章序 = 提纲序：定向就位「第一处」的判定要按读者翻阅顺序，不能按 dict 插入序
+    ordered = [c.get("id") for c in outline.get("chapters") or []
+               if c.get("id") in chapters and c.get("id") in result]
+    placed: set[int] = set()
+    _place_by_anchor(result, ordered, credentials, placed)
+    for cid in ordered:
+        html = result.get(cid)
         ch = chapters.get(cid)
         if ch is None or not html:
             continue
@@ -126,6 +189,9 @@ def place_certificates(out: dict[str, str], state: dict) -> dict[str, str]:
             aliases = _aliases_of(kw)
             entry = next((c for c in credentials
                           if any(a in str(c.get("title") or "") for a in aliases)), None)
+            if entry is not None and id(entry) in placed:
+                continue   # 锚点已就位的材料不再章尾重复一份
             blocks.append(_cert_block(kw, entry))
-        result[cid] = html + "\n" + "\n".join(blocks)
+        if blocks:
+            result[cid] = html + "\n" + "\n".join(blocks)
     return result

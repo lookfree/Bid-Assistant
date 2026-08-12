@@ -8,6 +8,7 @@ fileId/objectKey 两个索引,不带字节:单张证照 base64 几百 KB,进 cha
 from __future__ import annotations
 
 import copy
+import re
 
 SYS_CREDS_ID = "sys-creds"
 # 系统章字面量——与计划 Global Constraints、App 侧 credentials-chapter.ts 逐字同形（两端
@@ -72,6 +73,27 @@ def _has_sys_creds(outline: dict | None) -> bool:
     return any(c.get("id") == SYS_CREDS_ID for c in (outline or {}).get("chapters", []))
 
 
+_FILE_ID_RE = re.compile(r'data-file-id="([^"]+)"')
+_ALL_PLACED_NOTE = "<p>（各项资格证明材料已插入对应正文章节，见目录。）</p>"
+
+
+def _placed_file_ids(chapters: dict) -> set[str]:
+    """正文各章（不含附录自己）已出现的占位图 fileId——cert_placement 的锚点就位/章尾
+    追加都以 `data-file-id` 落图，据此判断哪些材料已经进了正文。墓碑章（None）跳过。"""
+    return {fid for cid, html in (chapters or {}).items() if cid != SYS_CREDS_ID
+            for fid in _FILE_ID_RE.findall(html or "")}
+
+
+def _unplaced(credentials: list[dict], placed_ids: set[str]) -> list[dict]:
+    """还没进正文的条目。**全部**图都已就位才算已安置——部分就位的条目整条保留在附录，
+    宁可多一份也不能让剩下的图无处可寻（2026-08-12 用户口径：图要在对应章节，附录只
+    收没去处的）。无图条目谈不上就位，恒留附录。"""
+    def settled(entry: dict) -> bool:
+        imgs = entry.get("images") or []
+        return bool(imgs) and all(str(i.get("fileId") or "") in placed_ids for i in imgs)
+    return [c for c in credentials if not settled(c)]
+
+
 def append_credentials_chapter(state: dict, chapters: dict) -> dict | None:
     """content_node 收尾触发点。run_input 有 credentials 就**无条件重建**这一章的 HTML——
     评审 2026-08-09 用代码路径实证：App 侧 state_overrides 每次触发 content 都会把库里
@@ -88,10 +110,17 @@ def append_credentials_chapter(state: dict, chapters: dict) -> dict | None:
     credentials = (state.get("run_input") or {}).get("credentials") or []
     if not credentials:
         return None
-    html = build_credentials_chapter(credentials)
-    if not html:
-        return None
     outline = state.get("outline") or {}
+    # 附录只收**没去处**的材料（2026-08-12 云上江西用户反馈「都放到附录里面了」）：
+    # cert_placement 已把对得上号的图插进对应章/小节，这里按正文里的 data-file-id 反查，
+    # 已就位的条目不再进附录重复一遍。
+    html = build_credentials_chapter(_unplaced(credentials, _placed_file_ids(chapters)))
+    if not html:
+        if _has_sys_creds(outline):
+            # 重跑：附录章已在提纲里删不掉（用户可能编辑过它周边），给一行说明，
+            # 不能留空章——空 html 会被渲染成「（本章正文待生成）」
+            return {"outline": outline, "chapters": {**chapters, SYS_CREDS_ID: _ALL_PLACED_NOTE}}
+        return None
     if _has_sys_creds(outline):
         new_outline = outline                    # 已在提纲里，不重复追加
     else:

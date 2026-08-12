@@ -118,6 +118,87 @@ class TestPlaceCertificates:
         result = place_certificates(out, state)
         assert result["t1"].count("【营业执照】见下图：") == 1
 
+    def test_heading_anchor_places_image_right_below_the_section_title(self):
+        """⑦锚点定向（2026-08-12 云上江西反馈）：章里有「一、营业执照副本扫描件」小节，
+        执照图必须插在**那个小节标题正下方**，而不是章尾、更不是只进附录。
+        不需要条款交集——章的小节标题本身就是最强的定位信号。"""
+        out = {"b3": "<h3>一、营业执照副本扫描件</h3>\n<p>本项提供有效的企业法人营业执照。</p>\n<h3>二、财务状况</h3>"}
+        state = {
+            "outline": {"chapters": [_chapter("b3", "资格文件", [])]},
+            "read": {},
+            "run_input": {"credentials": [
+                {"title": "上海安几科技有限公司营业执照", "images": [{"fileId": "f1", "key": "k1", "name": "n"}]}]},
+        }
+        result = place_certificates(out, state)
+        html = result["b3"]
+        assert 'data-file-id="f1"' in html
+        pos_img = html.index('data-file-id="f1"')
+        assert html.index("</h3>") < pos_img < html.index("<h3>二、财务状况</h3>"), \
+            "图没有落在营业执照小节标题与下一小节之间"
+
+    def test_attachment_line_with_evidence_word_anchors_the_id_card(self):
+        """⑧授权书表单的「附：全权代表人和法定代表人身份证原件扫描件（正、反面）」这一行
+        就是要身份证的地方——图插在这行下面。普通散文提到「身份证」（无证据词）不算锚。"""
+        out = {"b2": ("<h3>法定代表人授权书</h3>"
+                      "<p>授权代表凭身份证办理相关手续。</p>"
+                      "<p>附：全权代表人和法定代表人身份证原件扫描件（正、反面）</p>"
+                      "<p>说明：法定代表人参加采购，不用提供授权书</p>")}
+        state = {
+            "outline": {"chapters": [_chapter("b2", "法定代表人证明与授权书", [])]},
+            "read": {},
+            "run_input": {"credentials": [
+                {"title": "法人身份证", "images": [{"fileId": "id1", "key": "k", "name": "n"}]}]},
+        }
+        result = place_certificates(out, state)
+        html = result["b2"]
+        pos_img = html.index('data-file-id="id1"')
+        assert html.index("附：全权代表人") < pos_img, "图没有跟在「附：…扫描件」行后面"
+        assert pos_img < html.index("说明：法定代表人"), "图插错了位置"
+        # 无证据词的散文提及不是锚：图不该出现在那一段之后、「附」行之前
+        assert not (html.index("凭身份证办理") < pos_img < html.index("附：全权代表人"))
+
+    def test_anchor_places_each_entry_only_once_globally(self):
+        """⑨两个章都有营业执照小节 → 只进提纲序靠前的那章一次。到处重复插图
+        既撑大文件（单张执照几 MB），评委翻到哪都是同一张执照也很难看。"""
+        out = {"b3": "<h3>一、营业执照副本扫描件</h3><p>x</p>",
+               "b7": "<h3>一、营业执照副本扫描件</h3><p>y</p>"}
+        state = {
+            "outline": {"chapters": [_chapter("b3", "资格文件", []), _chapter("b7", "附件", [])]},
+            "read": {},
+            "run_input": {"credentials": [
+                {"title": "营业执照", "images": [{"fileId": "f1", "key": "k1", "name": "n"}]}]},
+        }
+        result = place_certificates(out, state)
+        assert 'data-file-id="f1"' in result["b3"]
+        assert 'data-file-id="f1"' not in result["b7"]
+
+    def test_anchored_entry_is_not_appended_again_by_clause_intersection(self):
+        """⑩同一份材料被锚点就位后，条款交集通路不得再在章尾追加一份。"""
+        out = {"t1": "<h3>一、营业执照副本扫描件</h3><p>x</p>"}
+        state = {
+            "outline": {"chapters": [_chapter("t1", "资格文件", ["sec-1-c1"])]},
+            "read": _read_with("提供营业执照", ["sec-1-c1"]),
+            "run_input": {"credentials": [
+                {"title": "营业执照", "images": [{"fileId": "f1", "key": "k1", "name": "n"}]}]},
+        }
+        result = place_certificates(out, state)
+        assert result["t1"].count('data-file-id="f1"') == 1
+
+    def test_table_cell_mention_is_never_an_anchor(self):
+        """⑪表格里的「提供营业执照扫描件」不是挂图的地方：插进 <td> 的占位图渲染层会
+        整个丢掉（_emit_table 只取文字），而 html 里已出现 data-file-id 又会让附录把这条
+        滤掉——材料在正文和附录**两头消失**，比不插还糟。"""
+        out = {"b1": ('<p>报价要求如下。</p>'
+                      '<table><tr><td><p>3</p></td><td><p>提供营业执照扫描件</p></td></tr></table>')}
+        state = {
+            "outline": {"chapters": [_chapter("b1", "报价一览表", [])]},
+            "read": {},
+            "run_input": {"credentials": [
+                {"title": "营业执照", "images": [{"fileId": "f1", "key": "k1", "name": "n"}]}]},
+        }
+        result = place_certificates(out, state)
+        assert 'data-file-id="f1"' not in result["b1"], "图被插进了表格，渲染时会整个丢掉"
+
     def test_word_list_matches_global_constraints_literal(self):
         """词表字面量必须与 web 侧 lib/cert-keywords.ts 逐字同形（双端同表约定的锚点）。
         2026-08-11 扩入财务与资格类材料——康恒那单实测报「近三年经审计的资产负债表未提供」，

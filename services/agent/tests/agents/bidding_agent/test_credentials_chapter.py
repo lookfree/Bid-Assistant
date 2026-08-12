@@ -136,6 +136,58 @@ def test_fresh_outline_without_sys_creds_appends_it():
     assert result["chapters"] == {"t1": "<p>x</p>", SYS_CREDS_ID: build_credentials_chapter(_CREDENTIALS)}
 
 
+def test_appendix_keeps_only_unplaced_entries():
+    """⑥附录只收没去处的材料（2026-08-12 云上江西用户反馈「都放到附录里面了」）：
+    cert_placement 已把营业执照两张图插进正文章（正文 html 里有它们的 data-file-id）→
+    附录不再重复；没锚点的「开户银行信息」留在附录。"""
+    creds = _CREDENTIALS + [
+        {"title": "开户银行信息", "images": [{"fileId": "f8", "key": "lib/f8.png", "name": "开户.png"}]}]
+    state = {"run_input": {"credentials": creds}, "outline": {"chapters": [
+        {"id": "b3", "no": "一", "title": "资格文件", "group": "business"}]}}
+    body = ('<h3>一、营业执照副本扫描件</h3><p><img data-file-id="f1" data-object-key="lib/f1.png" alt="营业执照" /></p>'
+            '<p><img data-file-id="f2" data-object-key="lib/f2.png" alt="营业执照" /></p>')
+    result = append_credentials_chapter(state, {"b3": body})
+    assert result is not None
+    appendix = result["chapters"][SYS_CREDS_ID]
+    assert "开户银行信息" in appendix and 'data-file-id="f8"' in appendix
+    assert 'data-file-id="f1"' not in appendix, "已就位的执照又进了附录，重复一份"
+    assert "营业执照" not in appendix
+
+
+def test_partially_placed_entry_stays_whole_in_the_appendix():
+    """⑦条目两张图只有一张进了正文 → 整条留在附录。宁可多一份，也不能让剩下那张图
+    无处可寻（正反面缺一面等于没交材料）。"""
+    state = {"run_input": {"credentials": _CREDENTIALS}, "outline": {"chapters": [
+        {"id": "b3", "no": "一", "title": "资格文件", "group": "business"}]}}
+    body = '<p><img data-file-id="f1" data-object-key="lib/f1.png" alt="营业执照" /></p>'  # 只有 f1
+    result = append_credentials_chapter(state, {"b3": body})
+    appendix = result["chapters"][SYS_CREDS_ID]
+    assert 'data-file-id="f1"' in appendix and 'data-file-id="f2"' in appendix
+
+
+def test_everything_placed_with_existing_sys_creds_leaves_a_note_not_a_stub():
+    """⑧全部就位 + 提纲里已有 sys-creds（回灌常态）→ 附录给一行说明。
+    留空 html 会被渲染成「（本章正文待生成）」——看着像漏生成。"""
+    outline = {"chapters": [{"id": "b3", "no": "一", "title": "资格文件", "group": "business"},
+                            dict(SYS_CREDS_CHAPTER)]}
+    body = ('<p><img data-file-id="f1" data-object-key="lib/f1.png" alt="x" /></p>'
+            '<p><img data-file-id="f2" data-object-key="lib/f2.png" alt="x" /></p>')
+    state = {"run_input": {"credentials": _CREDENTIALS}, "outline": outline}
+    result = append_credentials_chapter(state, {"b3": body, SYS_CREDS_ID: "<h3>旧附录</h3>"})
+    assert result is not None
+    assert "已插入对应正文章节" in result["chapters"][SYS_CREDS_ID]
+    assert "旧附录" not in result["chapters"][SYS_CREDS_ID]
+
+
+def test_everything_placed_without_sys_creds_adds_no_appendix():
+    """⑨全部就位 + 提纲还没有 sys-creds → 不追加附录章（没有没去处的材料，就不该有附录）。"""
+    body = ('<p><img data-file-id="f1" data-object-key="lib/f1.png" alt="x" /></p>'
+            '<p><img data-file-id="f2" data-object-key="lib/f2.png" alt="x" /></p>')
+    state = {"run_input": {"credentials": _CREDENTIALS}, "outline": {"chapters": [
+        {"id": "b3", "no": "一", "title": "资格文件", "group": "business"}]}}
+    assert append_credentials_chapter(state, {"b3": body}) is None
+
+
 def test_tombstone_logic_does_not_null_out_the_credentials_chapter(monkeypatch):
     """⑤墓碑逻辑不给 sys-creds 打 None：outline 追加后 ids 含它且 chapters 有它——墓碑口径
     必须用追加后的 outline，否则 sys-creds 会被误判"提纲没有此章"而漏算/错算。同时验证
