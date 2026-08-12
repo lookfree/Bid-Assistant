@@ -17,6 +17,8 @@ from __future__ import annotations
 import html as html_mod
 import re
 
+from agent.agents.bidding_agent.nodes.form_locate import is_form_title_line
+
 # 空位：连续下划线（半/全角）、点线、长空白。三者都是纸质表单里「此处填写」的写法。
 _BLANK = re.compile(r"[_＿]{2,}|[.．·]{4,}|[ \t　]{4,}")
 # 占位括注：短括注才算占位，长括注多半是条款正文里的说明（如「（含税，大写与小写不一致时以大写为准）」）
@@ -90,7 +92,13 @@ def template_html(template: str, title: str = "") -> str:
         if rows:
             out.append(f"<table>{''.join(rows)}</table>")
             rows = []
-        if line.strip():
+        if not line.strip():
+            continue
+        if is_form_title_line(line):
+            # 表单抬头（「响   应   函」）居中——招标表单的抬头都是居中的，
+            # 排成左对齐正文就是「格式跟招标书不一样」（2026-08-13 用户实测反馈）
+            out.append(f'<h3 style="text-align:center">{html_mod.escape(line.strip())}</h3>')
+        else:
             out.append(f"<p>{html_mod.escape(line.strip())}</p>")
     if rows:
         out.append(f"<table>{''.join(rows)}</table>")

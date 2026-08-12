@@ -67,6 +67,22 @@ def test_render_docx_has_real_toc_and_page_number_fields():
     assert "某项目 投标文件" in header_xml                  # 页眉=项目名
 
 
+def test_render_docx_honors_text_align_center_and_right():
+    """行内 text-align 必须落到 docx 段落对齐——表单抬头（「响   应   函」）与落款/日期
+    靠它才能和招标模板一样居中/靠右。此前渲染层无视对齐，编辑器里居中的文字导出也
+    全部变左对齐（2026-08-13 用户实测「响应函少了居中的标题」）。"""
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "响应函", "group": "tech"}]}
+    html = ('<h3 style="text-align:center">响   应   函</h3>'
+            '<p>致：采购人</p>'
+            '<p style="text-align: right">法定代表人签字或签章：</p>')
+    doc = Document(io.BytesIO(render_docx(outline, {"t1": html})))
+    by_text = {p.text: p for p in doc.paragraphs}
+    assert by_text["响   应   函"].alignment == WD_ALIGN_PARAGRAPH.CENTER
+    assert by_text["法定代表人签字或签章："].alignment == WD_ALIGN_PARAGRAPH.RIGHT
+    assert by_text["致：采购人"].alignment is None, "没写对齐的段落不该被动"
+
+
 def test_render_docx_toc_cache_holds_static_entries():
     """目录域的缓存区必须有静态条目。空域赌「打开时自动更新」——Word 只是弹一次确认，
     WPS 和导出的 PDF 根本不理 updateFields，用户看到的就是空白目录页（2026-08-11 修过

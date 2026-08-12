@@ -367,7 +367,8 @@ class TestBriefTargeting:
         assert "致：【XX公司[采购人名称]】：" in brief, "没按边界切出响应函那一份"
         assert "采购方案" not in brief, "整份公告被当成模板下发——事故复现"
         assert "最高限价" not in brief
-        assert "法定代表人授权" not in brief, "下一份表单混进了响应函的模板"
+        # 盯下一份表单的**正文**：表单名会出现在 TEMPLATE_GUIDE 的示例文字里，盯名字必误报
+        assert "（供应商全称）法定代表人授权（全权代表姓名）" not in brief, "下一份表单混进了响应函的模板"
 
     def test_template_falls_back_to_matching_by_heading_when_clause_ids_miss(self, monkeypatch):
         """降级一:条款 id 定位不到就按**标题**找。条款编号靠读标切分,切歪整章就零模板——

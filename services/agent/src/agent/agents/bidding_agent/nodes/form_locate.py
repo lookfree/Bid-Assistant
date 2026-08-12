@@ -150,6 +150,15 @@ def build_form_index(read: dict) -> list[dict]:
     return _segments_of(_doc_stream(read))
 
 
+def is_form_title_line(line: str) -> bool:
+    """一行是不是表单自己的抬头（「响   应   函」「法定代表人授权书」）。
+    渲染层据此把抬头排成**居中标题**——招标表单的抬头都是居中的，排成左对齐正文段落
+    等于格式跟招标书对不上（2026-08-13 用户实测反馈）。判定与切割共用同一份边界规则
+    （先并掉抬头里的排版空格——「响   应   函」原样匹配不到「响应函」）。"""
+    b = _boundary_of(_norm(line))
+    return b is not None and b[2]
+
+
 def _match_name(chapter_core: str, name: str) -> bool:
     """章名与边界名是否指同一份表单。互含直接算；复合章名（「承诺函与声明」
     「法定代表人证明与授权书」）按连接词拆开，任一部件（≥3 字，防「声明」两字全中）

@@ -102,3 +102,13 @@ class TestTemplateHtml:
     def test_the_fallback_render_passes_its_own_check(self):
         """退路必须自洽：拿模板渲染出来的东西，再去判一次必须通过。"""
         assert keeps_template(template_html(TEMPLATE), TEMPLATE)
+
+    def test_form_title_line_renders_centered(self):
+        """表单抬头（「响   应   函」）要排成**居中标题**——招标表单的抬头都是居中的，
+        排成左对齐正文段落就是「格式跟招标书不一样」（2026-08-13 用户实测反馈）。
+        抬头里的排版空格照抄不动（逐字保真），居中靠 style，不靠改字。"""
+        tpl = "响   应   函\n致：【XX公司[采购人名称]】：\n我方承诺如下内容：全部照办。"
+        out = template_html(tpl, title="响应函")
+        assert '<h3 style="text-align:center">响   应   函</h3>' in out
+        assert "<p>致：【XX公司[采购人名称]】：</p>" in out, "正文行不该被当抬头"
+        assert keeps_template(out, tpl), "居中抬头不得破坏保真自洽"

@@ -63,6 +63,21 @@ def _emit_placeholder_image(doc: Document, el, fetch_object: Callable[[str], byt
         doc.add_paragraph(f"（图片加载失败：{alt}）")
 
 
+_ALIGN_MAP = {"center": WD_ALIGN_PARAGRAPH.CENTER, "right": WD_ALIGN_PARAGRAPH.RIGHT}
+_ALIGN_RE = re.compile(r"text-align\s*:\s*(center|right)")
+
+
+def _apply_align(paragraph, el) -> None:
+    """行内 style 的 text-align（center/right）落到段落对齐。表单抬头（「响   应   函」）、
+    落款、日期栏靠这个才能与招标模板同样居中/靠右——此前渲染层完全无视对齐，编辑器里
+    居中的文字导出也统统变左对齐（2026-08-13 用户实测「响应函少了居中的标题」）。
+    居中/靠右段不吃首行缩进：自定义格式把缩进设在 Normal 上，带缩进的"居中"是歪的。"""
+    m = _ALIGN_RE.search(el.get("style") or "")
+    if m:
+        paragraph.alignment = _ALIGN_MAP[m.group(1)]
+        paragraph.paragraph_format.first_line_indent = Pt(0)
+
+
 def _emit_el(doc: Document, el, fetch_object: Callable[[str], bytes | None] | None = None) -> None:
     """单个 HTML 元素 → docx：h1/h2→Heading2、h3/h4→Heading3、p→段落、ul/li→项目符号、
     table→表格；容器标签（div 等）递归展开，防止整块被 get_text 压扁成一段。
@@ -74,12 +89,12 @@ def _emit_el(doc: Document, el, fetch_object: Callable[[str], bytes | None] | No
         # 章标题占 Heading 1，故正文各级整体下移一位 → Word 2/3/4/5。
         # 旧文档整章全 <h3> 同样得到 章(1)→节(2) 的层级（平级问题就此修复）；
         # h1/h2 是跑偏时的防御位（按节待遇），绝不落成正文段落。
-        doc.add_heading(
+        _apply_align(doc.add_heading(
             el.get_text(strip=True),
             level={"h1": 2, "h2": 2, "h3": 2, "h4": 3, "h5": 4, "h6": 5}.get(name, 5),
-        )
+        ), el)
     elif name == "p":
-        doc.add_paragraph(el.get_text(strip=True))
+        _apply_align(doc.add_paragraph(el.get_text(strip=True)), el)
         for img in el.find_all("img"):  # 光标处插图常嵌在段落里，只取文字会把图整个丢掉
             _emit_el(doc, img, fetch_object)
     elif name == "ul":
