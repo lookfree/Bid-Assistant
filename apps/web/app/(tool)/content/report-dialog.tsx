@@ -61,7 +61,7 @@ function RiskCard({
   locatable: boolean
 }) {
   const tc = checkToneClasses[item.tone]
-  const tenderHref = tenderLocateHref(item.chapter)
+  const tenderHref = tenderLocateHref(item.tenderRef)
   return (
     <div className={`rounded-xl border ${tc.border} p-3.5`}>
       <div className="flex items-center gap-2">
@@ -72,6 +72,8 @@ function RiskCard({
       <div className="mt-3 flex items-center justify-between">
         {/* 招标出处点得动：跳读标页把那一条招标要求滚出来并高亮。用户要核对的是「招标到底
             怎么要求的」，这行字以前只能看不能点，只好自己回读标页翻。
+            **用 tenderRef 而不是 chapter**：本弹窗里的 chapter 是**标书**章节（deriveHealthReport
+            映射自 chapterTitle），拿它去定位招标原文找的是错东西。
             出处太短（「技术」这种）时 tenderLocateHref 给 null，保持灰字不假装能跳。 */}
         {tenderHref ? (
           <a
@@ -80,7 +82,7 @@ function RiskCard({
             className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
           >
             <FileText className="size-3.5" />
-            {item.chapter} →
+            {item.tenderRef} →
           </a>
         ) : (
           <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">

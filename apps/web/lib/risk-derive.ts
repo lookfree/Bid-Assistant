@@ -14,7 +14,12 @@ export function deriveRisk(f: RealRisk) {
       { label: "中风险", value: f.mid, tone: "warning" },
       { label: "已通过", value: f.passed, tone: "success" },
     ],
-    riskItems: f.items.map((x) => ({ level: x.level, tone: x.tone, title: x.title, chapter: x.tenderRef, advice: x.advice })),
+    // chapter = 招标出处（点回招标原文）；chapterTitle/anchorText = 标书侧位置（点回标书原文）。
+    // 两个方向的定位字段必须都带上，混用会定位到错的文档（#97 实测）。
+    riskItems: f.items.map((x) => ({
+      level: x.level, tone: x.tone, title: x.title, chapter: x.tenderRef, advice: x.advice,
+      chapterTitle: x.chapterTitle, anchorText: x.anchorText ?? "",
+    })),
     passed: f.passedItems,
   }
 }
@@ -43,7 +48,10 @@ export type CheckItem = {
   level: string
   tone: "destructive" | "warning"
   title: string
+  /** **标书**里的章节标题（跳转到本章修改用）。注意与 tenderRef 不是一回事。 */
   chapter: string
+  /** **招标**出处（点回招标原文用）。混用过一次：把 chapter 当出处去定位招标原文，定位的是错东西。 */
+  tenderRef: string
   advice: string
   targetTab: "tech" | "business"
   targetId: string
@@ -72,6 +80,7 @@ export function deriveHealthReport(f: RealRisk): HealthReport {
       tone: x.tone,
       title: x.title,
       chapter: x.chapterTitle,
+      tenderRef: x.tenderRef,
       advice: x.advice,
       targetTab: x.targetTab,
       targetId: x.targetId,

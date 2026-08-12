@@ -286,6 +286,7 @@ export type ProjectDeps = {
   presignGet: typeof presignGet
   getAgentModel: typeof client.getAgentModel
   renderDeck: typeof client.renderDeck
+  bidChapters: typeof client.bidChapters
   deleteObject: typeof deleteObject
   listObjectKeys: typeof listObjectKeys
   buildCredentialsChapterHtml: typeof credentialsChapter.buildCredentialsChapterHtml
@@ -441,6 +442,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
   const stateOverrides = deps.buildStateOverrides ?? buildStateOverrides
   const buildCredentialsChapterHtml = deps.buildCredentialsChapterHtml ?? credentialsChapter.buildCredentialsChapterHtml
   const syncCredentialsOutline = deps.syncCredentialsOutline ?? credentialsChapter.syncCredentialsOutline
+  const bidChapters = deps.bidChapters ?? client.bidChapters
 
   /** 回灌 state 前的权益守卫（评审二轮 F8）：落库 deck 里的企业模板 key 是「专业版时期设置」的
    *  持久物,export/present 重渲会原样复用——档位已不含 pptTemplate 时在此剥除（导出照跑,
@@ -1455,6 +1457,28 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
    *  没有预览图时回 200 + 空数组而不是 404：老项目的述标结果里本就没有这组图，
    *  前端据此回落到 CSS 预览，那不是错误。
    *  TTL 取 30 分钟：用户会在述标页停留翻页，5 分钟的下载短签会让后半程图全裂。 */
+  // 线下标书分章正文（#97②）：审查报告点「定位到标书原文」时按需解析，**不落库**——
+  // 审查结论里本来就不含正文，而正文动辄几十万字，塞进 project_steps.result 会让每次拉报告
+  // 都背上这份传输税（读标结果曾因此达 1MB，才有了 ?slim=1）。免费、不计费、不占步位。
+  r.get("/:id/bid-chapters", async (c) => {
+    const { id } = c.req.param()
+    if (!isUuid(id)) return c.json({ error: "not_found" }, 404)
+    const p = await ownedProject(id, c.get("user").id)
+    if (!p) return c.json({ error: "not_found" }, 404)
+    const keys = keysOf(p.bidFileKeys, p.bidFileKey)
+    // 没有线下投标文件（系统生成的标书正文在正文页，不走这条路）→ 明确 409，不是 404：
+    // 前端据此不渲染入口，而不是当成「项目不存在」。
+    if (!keys.length) return c.json({ error: "no_bid_file" }, 409)
+    try {
+      return c.json(await bidChapters(keys))
+    } catch (e) {
+      // 解析不出（加密/损坏/纯扫描件）对用户是「这份标书给不出可跳转的正文」，不是服务故障：
+      // 前端据此退回一句说明，而不是弹一个「稍后再试」让人白点。
+      const code = e instanceof client.AgentHttpError && e.status === 422 ? 422 : 502
+      return c.json({ error: code === 422 ? "unparsable" : "agent_unavailable" }, code)
+    }
+  })
+
   r.get("/:id/deck-previews", async (c) => {
     const { id } = c.req.param()
     if (!isUuid(id)) return c.json({ error: "not_found" }, 404)

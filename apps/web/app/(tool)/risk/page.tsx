@@ -25,6 +25,7 @@ import { stepPrereq, useStep } from "@/lib/use-step"
 import { phaseProgress } from "@/lib/project"
 import { isUploading } from "@/lib/upload-progress"
 import { tenderLocateHref } from "@/lib/tender-locate"
+import { BidTextDialog } from "./bid-text-dialog"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import { ContrastReviewCta } from "./contrast-run"
@@ -119,6 +120,9 @@ function RejectReview() {
   // 后面每步重复扣费；切回裸 /risk 则直接看到旧项目的报告，完全看不出还有一笔在传。
   // 惰性读一次即可：本组件不会在上传完成的那一刻重新挂载，跳转由上传方自己发起。
   const [uploading, setUploading] = useState(() => isUploading("/risk"))
+  // 点开「标书原文」时定位到哪一条（null = 弹层关闭）。线下标书没有可编辑正文，
+  // 报告卡片以前点哪儿都没反应，这是 #97② 补的那条路。
+  const [bidTextAt, setBidTextAt] = useState<{ chapterTitle: string; anchorText: string } | null>(null)
   const { projectId, info, data: real, dataLoading, running, phase, error, errorAction, start } = useStep<RealRisk>("review")
   const { overview: membershipOverview } = useMembership()
   const reviewCost = creditCostValue(membershipOverview, "review", 60)
@@ -277,6 +281,8 @@ function RejectReview() {
   // 没传招标文件）跳过去是一片空白，给个必然落空的链接比不给更糟。
   const tenderLocatable = !!info.project.tenderFileKey
     && info.steps.some((st) => st.step === "read" && st.status === "done")
+  // 线下上传的标书才有「标书原文」可看：系统生成的标书正文在正文页，那边点「定位到本章修改」。
+  const bidTextAvailable = info.project.kind === "review"
   return (
     <div className="flex flex-col gap-6">
         <EntryBar onOpen={goEntry} />
@@ -339,6 +345,15 @@ function RejectReview() {
           </div>
         </div>
 
+        {bidTextAt && (
+          <BidTextDialog
+            projectId={projectId}
+            chapterTitle={bidTextAt.chapterTitle}
+            anchorText={bidTextAt.anchorText}
+            onClose={() => setBidTextAt(null)}
+          />
+        )}
+
         {/* 风险项 */}
         <section className="flex flex-col gap-3">
           {riskItems.map((item, i) => (
@@ -352,6 +367,14 @@ function RejectReview() {
                       {item.level}
                     </span>
                     <TenderRefLink chapter={item.chapter} enabled={tenderLocatable} />
+                    {bidTextAvailable && (
+                      <button
+                        onClick={() => setBidTextAt({ chapterTitle: item.chapterTitle, anchorText: item.anchorText })}
+                        className="text-xs text-primary hover:underline"
+                      >
+                        定位到标书原文 →
+                      </button>
+                    )}
                   </div>
                   <h3 className="mt-2 text-sm font-semibold text-foreground">{item.title}</h3>
                   {/* 建议为空就整块不画：画一个只有「整改建议：」的空框，比不画更像出了故障
