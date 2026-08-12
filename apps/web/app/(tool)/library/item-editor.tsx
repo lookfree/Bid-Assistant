@@ -114,21 +114,25 @@ function initialPresetFields(catId: LibraryCategoryId, item: LibraryEntry | null
 export function ItemEditor({
   catId,
   item,
+  preset,
   onClose,
   onSave,
 }: {
   catId: LibraryCategoryId
   item: LibraryEntry | null
+  /** 新建时的预填（编辑既有条目时忽略）：企业信息骨架用它带进来，避免伪造一个无 id 的
+   *  item——那样标题会显示「编辑条目」，而保存走的仍是新建，两边说法不一致。 */
+  preset?: { title: string; body: string }
   onClose: () => void
   /** 保存回调：由页面调 createEntry / updateEntry，成功后关闭弹层 */
   onSave: (input: LibraryEntryInput, id?: string) => Promise<void>
 }) {
   useEscapeClose(onClose)
   const [form, setForm] = useState<EditorForm>({
-    title: item?.title ?? "",
+    title: item?.title ?? preset?.title ?? "",
     meta: item?.meta ?? "",
     expiry: item?.expiry ?? "",
-    body: item?.body ?? "",
+    body: item?.body ?? preset?.body ?? "",
     tags: (item?.tags ?? []).join("、"),
   })
   const [presetFields, setPresetFields] = useState<PresetFieldValues>(() => initialPresetFields(catId, item))

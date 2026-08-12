@@ -20,6 +20,7 @@ import { useLibrary } from "@/lib/use-library"
 import { fileDownloadUrl } from "@/lib/files"
 import { copyText } from "@/lib/clipboard"
 import { ItemEditor } from "./item-editor"
+import { COMPANY_PRESET, hasCompanyProfile } from "@/lib/company-profile"
 
 const expiryMeta: Record<"ok" | "soon" | "expired", { label: string; cls: string }> = {
   ok: { label: "有效", cls: "bg-success/10 text-success" },
@@ -27,7 +28,12 @@ const expiryMeta: Record<"ok" | "soon" | "expired", { label: string; cls: string
   expired: { label: "已过期", cls: "bg-destructive/10 text-destructive" },
 }
 
-type Editing = { catId: LibraryCategoryId; item: LibraryEntry | null }
+type Editing = {
+  catId: LibraryCategoryId
+  item: LibraryEntry | null
+  /** 新建时的预填（只在 item 为 null 时生效）：企业信息骨架走这条路。 */
+  preset?: { title: string; body: string }
+}
 
 export default function LibraryPage() {
   const { items, setItems, loading, error: loadError, reload } = useLibrary()
@@ -84,6 +90,14 @@ export default function LibraryPage() {
           setQuery("")
         }}
       />
+      {/* 企业信息引导：表单章（响应函/授权书/报价表）的空位就是按它填的，但用户无从知道
+          「要在常用文本里建一条、标题还得叫企业信息」——不提示就等于这个能力不存在。
+          已经建过就不再打扰。 */}
+      {activeCat === "text" && !loading && !hasCompanyProfile(catItems) && (
+        <CompanyProfileHint
+          onCreate={() => setEditing({ catId: "text", item: null, preset: COMPANY_PRESET })}
+        />
+      )}
       <CategoryPanel
         current={current}
         items={filtered}
@@ -97,6 +111,7 @@ export default function LibraryPage() {
 
       {editing && (
         <ItemEditor
+          preset={editing.preset}
           catId={editing.catId}
           item={editing.item}
           onClose={() => setEditing(null)}
@@ -414,6 +429,27 @@ function ItemRowActions({
         aria-label="删除"
       >
         <Trash2 className="size-4" />
+      </button>
+    </div>
+  )
+}
+
+/** 「还没建企业信息」引导卡：说清它有什么用，并一键带着骨架去建。 */
+function CompanyProfileHint({ onCreate }: { onCreate: () => void }) {
+  return (
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-primary/30 gradient-brand-soft px-4 py-3">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-foreground">建一条「企业信息」，表单就不用每次手填</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          生成标书时，招标文件自带格式的表单（响应函、授权书、报价表…）会照它填写单位名称、
+          统一社会信用代码、法定代表人等空位；没填的字段会原样留空，不会被编造。
+        </p>
+      </div>
+      <button
+        onClick={onCreate}
+        className="shrink-0 rounded-xl gradient-brand px-4 py-2 text-xs font-semibold text-white transition-opacity hover:opacity-90"
+      >
+        去创建
       </button>
     </div>
   )
