@@ -16,6 +16,7 @@ import {
   X,
   ChevronRight,
   History,
+  Loader2,
 } from "lucide-react"
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepPageHeader } from "@/components/tool/step-page-header"
@@ -47,6 +48,7 @@ import { TemplatePicker } from "./template-picker"
 import { SlidePreview } from "./slide-preview"
 import { LayoutDataEditor } from "./layout-editor"
 import { PresentEntry } from "./present-entry"
+import { isUploading } from "@/lib/upload-progress"
 
 // agent DeckSpec（camelCase）：slides/qa 与原型 Slide/QA 同构
 type RealDeck = { title: string; duration: number; template: string; slides: Slide[]; qa: { q: string; a: string }[] }
@@ -95,6 +97,7 @@ export default function PresentPage() {
      只由用户点击「生成述标大纲」（CreditEstimate 确认条，明示消耗）才跑，
      生成调用透传当前时长/模板（POST steps/present body {duration, template}）。 */
   const { projectId, info, data: realDeck, dataLoading, running: stepRunning, phase, error: stepError, errorAction: stepErrorAction, start } = useStep<RealDeck>("present")
+  const [uploading] = useState(() => isUploading("/present"))
   /* 存库结果不是 deck（slides 不是数组）：**不能静默当作没有 deck**——那样用户只会再点一次生成、
      再扣一次钱，而问题一直隐身。生产实测就是这个形状（present 行装了 export 的产物快照）让本页
      白屏；白屏很难看，但它是当时唯一把问题顶出水面的东西，所以这里换成**明确报错**而不是消音。 */
@@ -373,6 +376,26 @@ export default function PresentPage() {
       }
     })()
   }
+
+  // 在途上传（与审查页同一机制）：切菜单会把上传卡卸载，但那段 async 照跑完。
+  // **必须排在所有视图分支之前**——切回来时入口卡会重挂成一张空表单，用户以为没传成功就
+  // 再传一遍，建出重复项目、后面每步重复扣费（这正是审查页那次用户实测暴露的问题）。
+  if (uploading)
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
+        <FlowNav current="present" info={info} />
+        <StepPageHeader icon={Presentation} title="述标演示" desc="一键把标书提炼成述标/答辩 PPT，含演讲备注与预计问答" />
+        <div className="rounded-2xl border border-border bg-card px-5 py-6 text-sm">
+          <div className="flex items-center gap-2 font-medium text-primary">
+            <Loader2 className="size-4 animate-spin" />
+            正在上传并创建线下标书…（文件较大时需要几分钟，可以先去别处，传完回本页即可看到）
+          </div>
+          <a href="/projects" className="mt-3 inline-block text-xs font-medium text-primary hover:underline">
+            等太久了？去「我的标书」看看是否已经创建 →
+          </a>
+        </div>
+      </div>
+    )
 
   // 独立入口页：只有用户从卡片里点了「从我的标书选择 / 上传标书文件」（?view=entry），
   // 或压根没有当前项目时才到这里。「返回当前项目的述标」仅在当前项目确可述标时给出——
