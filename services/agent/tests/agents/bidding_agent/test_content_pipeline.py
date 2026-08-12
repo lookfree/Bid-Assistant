@@ -516,20 +516,19 @@ class TestFormFidelity:
         out = _run(self._state(), chat, monkeypatch=monkeypatch)
         assert "上海安几科技有限公司" in out["t1"]
 
-    def test_bidder_info_from_the_licence_reaches_only_the_form_chapter(self, monkeypatch):
+    def test_bidder_info_reaches_only_the_form_chapter(self, monkeypatch):
         """单位名称/信用代码/法定代表人是**表单空位**要填的东西。散文章用不上，
         发过去只是白占本来就紧的单章预算。"""
         st = self._state()
-        st["run_input"] = {"credentials": [{"title": "企业法人营业执照", "images": [
-            {"fileId": "f1", "key": "k1",
-             "ocrText": "营业执照\n统一社会信用代码 91310115MA1K35XY7B\n名　称 上海安几科技有限公司"}]}]}
+        st["run_input"] = {"library_refs": {"company": [
+            {"title": "企业信息", "fields": [{"label": "单位名称", "value": "上海安几科技有限公司"}]}]}}
         chat = _FakeChat()
         _run(st, chat, monkeypatch=monkeypatch)
         assert "上海安几科技有限公司" in _brief_of(chat, "报价函"), "表单章没拿到投标人信息"
         assert "上海安几科技有限公司" not in _brief_of(chat, "章节2"), "投标人信息发给了散文章"
 
-    def test_no_licence_leaves_the_brief_untouched(self, monkeypatch):
-        """没有营业执照的用户，简报里不该凭空多出一个空段落。"""
+    def test_no_company_entry_leaves_the_brief_untouched(self, monkeypatch):
+        """没录企业信息的用户，简报里不该凭空多出一个空段落。"""
         chat = _FakeChat()
         _run(self._state(), chat, monkeypatch=monkeypatch)
         assert "【投标人信息】" not in _brief_of(chat, "报价函")

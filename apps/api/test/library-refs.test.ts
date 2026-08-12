@@ -255,6 +255,29 @@ describe("libraryRefsRunInput body 超预算截断（Task 2 遗留，终审顺�
 })
 
 describe("下发时机：content 步下发 library_refs，export 步不下发", () => {
+  it("⑥常用文本里标题写着企业信息的条目 → content 步带 company；别的常用文本不带", async () => {
+    const [company] = await getDb()
+      .insert(libraryItems)
+      .values({ userId: userA, category: "text", title: "企业信息",
+                fields: [{ label: "单位名称", value: "上海安几科技有限公司" }] })
+      .returning()
+    // 常用文本里还放着技术方案片段等大段文字，只有标题命中的才下发，否则白占单章预算
+    const [noise] = await getDb()
+      .insert(libraryItems)
+      .values({ userId: userA, category: "text", title: "技术方案常用段落", body: "零信任架构概述……" })
+      .returning()
+
+    try {
+      const { id } = await createProject(tokenA, keyA)
+      await runToExport(id, tokenA)
+      expect(runInputsByStep.content?.library_refs?.company).toEqual([
+        { title: "企业信息", fields: [{ label: "单位名称", value: "上海安几科技有限公司" }] },
+      ])
+    } finally {
+      await getDb().delete(libraryItems).where(inArray(libraryItems.id, [company!.id, noise!.id]))
+    }
+  })
+
   it("⑤有人员/业绩条目 → content 步 run_input.library_refs 非空；export 步 run_input 无该键", async () => {
     const [p] = await getDb()
       .insert(libraryItems)
@@ -273,6 +296,9 @@ describe("下发时机：content 步下发 library_refs，export 步不下发", 
         personnel: [{ title: "李四", meta: "技术负责人" }],
         performance: [{ title: "XX 智能化改造工程", meta: "2023 年" }],
       })
+      // 没录企业信息 → 不带 company 键：正文缓存键吃的就是这份简报，凭空多一个空数组
+      // 会让全库断点缓存失效（上面的 toEqual 已经守住形状，这里点明意图）
+      expect(runInputsByStep.content?.library_refs).not.toHaveProperty("company")
       expect(runInputsByStep.export?.library_refs).toBeUndefined()
       expect(runInputsByStep.export?.credentials).toBeUndefined() // 回归：export 步仍不带 credentials（Task 1 既有约束未被本任务破坏）
     } finally {

@@ -75,13 +75,28 @@ const LIBRARY_REF_LIMIT = 20
 // （预算见 Global Constraints），两类都空则不下发该键，agent 侧按键缺失判断「库空」。
 export async function libraryRefsRunInput(
   userId: string,
-): Promise<{ library_refs?: { personnel: LibraryRefItem[]; performance: LibraryRefItem[] } }> {
-  const [personnel, performance] = await Promise.all([
+): Promise<{ library_refs?: { personnel: LibraryRefItem[]; performance: LibraryRefItem[]; company?: LibraryRefItem[] } }> {
+  const [personnel, performance, company] = await Promise.all([
     fetchLibraryRefs(userId, "personnel"),
     fetchLibraryRefs(userId, "performance"),
+    fetchCompanyProfile(userId),
   ])
-  if (personnel.length === 0 && performance.length === 0) return {}
-  return { library_refs: { personnel, performance } }
+  if (personnel.length === 0 && performance.length === 0 && company.length === 0) return {}
+  // company 有值才带键（同本文件既有口径）：没录企业信息的用户，下发内容与加这个功能之前
+  // 逐字节相同——正文断点续跑的缓存键吃的就是这份简报，凭空多一个空数组会让全库缓存失效。
+  return { library_refs: { personnel, performance, ...(company.length ? { company } : {}) } }
+}
+
+// 企业信息（常用文本里标题写着「企业信息」那类条目）：表单章的空位——单位名称、统一社会信用
+// 代码、法定代表人、住所、开户行——全出自这里。用户自己录的字段比从营业执照图片 OCR 出来的
+// 可靠得多（OCR 认错一个字，投标函上的单位名称就是错的），所以走这条路，不碰识别结果。
+// 只取标题命中的条目、最多 3 条：常用文本还放着技术方案片段等大段文字，全量下发只是白占预算。
+const COMPANY_TITLE_RE = /企业信息|公司信息|单位信息|投标人信息|企业基本信息|公司基本信息/
+const COMPANY_LIMIT = 3
+
+async function fetchCompanyProfile(userId: string): Promise<LibraryRefItem[]> {
+  const all = await fetchLibraryRefs(userId, "text")
+  return all.filter((r) => COMPANY_TITLE_RE.test(r.title)).slice(0, COMPANY_LIMIT)
 }
 
 // body 无 zod 字符上限（UI 侧 personnel/performance 表单目前没有 body 输入口，现实风险低），
@@ -89,7 +104,7 @@ export async function libraryRefsRunInput(
 // 只是白占带宽，这里先按同一预算裁一刀，别把注定被砍的字节传一遍（终审 Task 2 遗留 + 顺手）。
 const LIBRARY_REF_BODY_CHARS = 3000
 
-async function fetchLibraryRefs(userId: string, category: "personnel" | "performance"): Promise<LibraryRefItem[]> {
+async function fetchLibraryRefs(userId: string, category: "personnel" | "performance" | "text"): Promise<LibraryRefItem[]> {
   const rows = await getDb()
     .select({
       title: libraryItems.title,

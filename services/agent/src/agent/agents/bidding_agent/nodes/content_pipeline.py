@@ -499,8 +499,8 @@ def _shared_blocks(state: dict, read: dict, outline: dict, chapters: list[dict])
     # library_refs（Task 3）：App content 步下发，两类都空则键缺省——`or {}` 兜底后 .get 拿到 []，
     # `_library_ref_block` 对空列表返回空串，无 library_refs 的老行为逐字节不变。
     refs = (state.get("run_input") or {}).get("library_refs") or {}
-    from agent.agents.bidding_agent.nodes.bidder_profile import from_credentials, profile_block
-    bidder = profile_block(from_credentials((state.get("run_input") or {}).get("credentials") or []))
+    from agent.agents.bidding_agent.nodes.bidder_profile import profile_block
+    bidder = profile_block(((state.get("run_input") or {}).get("library_refs") or {}).get("company") or [])
     return {
         "bidder": bidder,
         "project": ("【项目信息】（响应函/表单/落款字段据此填写，未知处留（待补充：____））："
