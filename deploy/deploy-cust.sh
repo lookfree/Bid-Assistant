@@ -190,16 +190,21 @@ echo "=== 后置验证：请求发的组件是不是真的换了 ==="
 # 只看 ALLDONE 是不够的。--only 传错、某个组件被跳过、镜像没 load 进去，都会表现为
 # 「脚本很顺、容器没换」。这里按**容器 Up 时长**核对：刚重建的容器一定是秒/分钟级。
 # 这是 2026-08-11 那次 web 被静默跳过之后，我每次发版手工做的那步，固化进脚本。
-STALE=$(ssh $SSHOPT "$R230" '
-for c in bid-api-1 bid-agent-api-1 bid-agent-worker-1 bid-web-1; do
-  up=$(docker ps --format "{{.Names}}|{{.Status}}" | grep "^$c|" | sed "s/^.*|Up //")
-  case "$up" in *second*|*minute*) ;; *) echo "$c($up)";; esac
-done') || abort "后置验证连不上 230"
+# 核对清单必须跟着 --only 走：api/agent 无条件构建恒查；web/admin 只在本次要发时才查——
+# 2026-08-13 实测 `--only agent` 被固定清单里的 web 判成「组件被跳过」，切完流量、
+# 冒烟没跑就 ABORT，一次成功的发版被报成失败。
+CHECK="bid-api-1 bid-agent-api-1 bid-agent-worker-1"
+wants web && CHECK="$CHECK bid-web-1"
+wants admin && CHECK="$CHECK bid-admin-1"
+STALE=$(ssh $SSHOPT "$R230" "
+for c in $CHECK; do
+  up=\$(docker ps --format '{{.Names}}|{{.Status}}' | grep \"^\$c|\" | sed 's/^.*|Up //')
+  case \"\$up\" in *second*|*minute*) ;; *) echo \"\$c(\$up)\";; esac
+done") || abort "后置验证连不上 230"
 if [ -n "$STALE" ]; then
-  # api/agent 是无条件构建的，web 受 --only 控制；任何一个没换都要说出来。
   abort "这些容器没有被重建：$STALE —— 组件被跳过了（多半是 --only 没加引号），别当成发成功"
 fi
-echo "  所有目标容器均已重建"
+echo "  本次目标容器（$CHECK）均已重建"
 
 echo "=== 冒烟校验 ==="
 # OCR 健康：不静默吞掉——它挂了插图就没有识别文字，审查又会看不出材料在不在
