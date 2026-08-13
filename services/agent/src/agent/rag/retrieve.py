@@ -13,7 +13,11 @@ from agent.rag.embedder import Embedder
 
 logger = logging.getLogger(__name__)
 
-REF_HEADER = "【参考资料·仅供撰写引用】"
+# 头部必须自带「过往案例」隔离警示：检索命中的多是历史项目材料（合同/业绩/方案），
+# 只标「仅供撰写引用」时，模型会把案例客户名顺手写成本项目甲方——2026-08-13 云上江西
+# 实测：质保方案通篇「工银安盛（以下简称"甲方"）」，而那是资料库里某历史案例的客户。
+REF_HEADER = ("【参考资料·历史项目案例，仅供借鉴写法】"
+              "(其中的客户名/项目名/金额/日期均属过往项目，严禁写成本项目的采购人/甲方/招标人或本项目事实)")
 _TENDER_TOP_K = 2
 
 embedder = Embedder(settings.rag_embed_endpoint)

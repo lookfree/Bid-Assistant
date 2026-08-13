@@ -209,6 +209,22 @@ def test_draft_prompt_carries_length_discipline():
     assert "宁可略欠" not in CHAPTER_DRAFT_PROMPT, "减产许可还在 system 里，简报的下限被它顶掉"
 
 
+def test_reference_material_is_fenced_off_from_project_facts():
+    """历史案例隔离（2026-08-13 云上江西实测）：资料库里某业绩案例的客户「工银安盛」被
+    模型通篇写成本项目甲方——质保方案整章替错误的客户作保证。三道警示必须同时在场：
+    写手契约（甲方只认项目信息）、RAG 参考资料块头、资料库条目块头。
+    不做确定性替换：业绩/案例章介绍历史项目时用案例客户名是**正当**的，代码分不清
+    「案例叙述」与「冒充甲方」，硬替会把业绩章改坏——提示词三道闸 + 审查兜底。"""
+    from agent.agents.bidding_agent.prompts.content import CHAPTER_DRAFT_PROMPT
+    from agent.rag.retrieve import REF_HEADER
+    from agent.agents.bidding_agent.nodes.content_pipeline import _library_ref_block
+
+    assert "过往案例" in CHAPTER_DRAFT_PROMPT and "严禁写成本项目的甲方" in CHAPTER_DRAFT_PROMPT
+    assert "严禁写成本项目的采购人" in REF_HEADER, "参考资料块头没有案例隔离警示"
+    block = _library_ref_block([{"title": "某历史项目", "body": "x"}], "业绩")
+    assert "过往案例" in block, "资料库条目块头没有案例隔离警示"
+
+
 def test_deviation_block_caps_size_but_never_drops_stars():
     """偏离表条目段有字符预算（大标书几百条会把偏离章那次调用顶穿上下文）——
     预算不够时砍普通条目并如实注明,★/▲ 绝不砍（评审 2026-08-08）。"""

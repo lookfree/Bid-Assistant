@@ -256,7 +256,9 @@ def _library_ref_block(items: list, label: str) -> str:
     未列出条数——宁可少列,不放任一次调用被顶穿。零条目返回空串（无 library_refs 时逐字节不变）。"""
     if not items:
         return ""
-    header = f"【资料库·{label}】(供本章化用,不得整段照抄):"
+    # 「过往案例」隔离警示与 RAG 块（rag/retrieve.REF_HEADER）同一口径：业绩/人员条目里的
+    # 客户名会被模型当成本项目甲方（2026-08-13 云上江西实测，历史案例客户串进质保方案）
+    header = f"【资料库·{label}】(供本章化用,不得整段照抄；条目里的客户/项目名属过往案例,不得当成本项目信息):"
     lines = [_library_ref_line(it) for it in items if isinstance(it, dict)]
     kept: list[str] = []
     dropped = 0
