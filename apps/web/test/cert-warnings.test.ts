@@ -49,7 +49,7 @@ describe("missingCerts", () => {
   })
 
   test("CERT_KEYWORDS 与 agent 侧 cert_placement.py 逐字同形", () => {
-    expect(CERT_KEYWORDS).toEqual(["营业执照", "资质证书", "授权书", "法定代表人身份证明", "检测证书", "许可证",
+    expect(CERT_KEYWORDS).toEqual(["营业执照", "资质证书", "授权书", "厂家授权", "法定代表人身份证明", "检测证书", "许可证",
       "审计报告", "资产负债表", "利润表", "财务报表", "纳税证明",
       "社保证明", "银行资信证明", "开户许可证", "信用中国截图"])
   })

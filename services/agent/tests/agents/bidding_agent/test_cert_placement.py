@@ -346,11 +346,42 @@ class TestPlaceCertificates:
         html2 = place_certificates(out, state2)["f2"]
         assert "（待补充：法定代表人身份证明）" in html2
 
+    # ---- 2026-08-13 第二轮评审 CONFIRMED 项（章即文书抑制收窄） ----
+
+    def test_material_chapter_named_after_its_proof_keeps_the_reminder(self):
+        """㉔「社保证明」章（构词法命中表单尾字，但它是要**附**的材料不是要写的文书）
+        缺货必须照常提醒——抑制打到它头上，编造的正文就无声交付了（评审复现）。"""
+        out = {"b8": "<h3>社保证明</h3><p>我方按规定缴纳社会保险。</p>"}
+        state = {"outline": {"chapters": [_chapter("b8", "社保证明", ["sec-1-c1"])]},
+                 "read": _read_with("提供近三个月社保缴纳证明", ["sec-1-c1"]),
+                 "run_input": {"credentials": []}}
+        assert "（待补充：社保证明）" in place_certificates(out, state)["b8"]
+
+    def test_manufacturer_authorization_is_not_swallowed_by_the_letter_chapter(self):
+        """㉕授权书章里缺**厂家授权**（另一份真实材料，已拆独立组）→ 照常留待补充；
+        同组互吞时它会被「章即授权书」一并吞掉（评审复现）。"""
+        out = {"f2": "<h3>法定代表人授权书</h3><p>授权正文。</p>"}
+        state = {"outline": {"chapters": [_chapter("f2", "法定代表人授权书", ["sec-1-c1"])]},
+                 "read": _read_with("提供制造商（厂家授权）原件", ["sec-1-c1"]),
+                 "run_input": {"credentials": []}}
+        assert "（待补充：厂家授权）" in place_certificates(out, state)["f2"]
+
+    def test_stocked_own_group_scan_still_lands_in_its_chapter(self):
+        """㉖库里有签好的授权书扫描件、章内无锚点 → 章尾照常见下图插图；
+        抑制只吞「待补充」，不吞有货——签好的授权书正是评委要在这一章看到的（评审复现）。"""
+        out = {"f2": "<h3>法定代表人授权书</h3><p>授权正文。</p>"}
+        state = {"outline": {"chapters": [_chapter("f2", "法定代表人授权书", ["sec-1-c1"])]},
+                 "read": _read_with("提供法定代表人授权书", ["sec-1-c1"]),
+                 "run_input": {"credentials": [
+                     {"title": "已签署授权委托书", "images": [{"fileId": "s1", "key": "k", "name": "n"}]}]}}
+        html = place_certificates(out, state)["f2"]
+        assert 'data-file-id="s1"' in html and "见下图" in html
+
     def test_word_list_matches_global_constraints_literal(self):
         """词表字面量必须与 web 侧 lib/cert-keywords.ts 逐字同形（双端同表约定的锚点）。
         2026-08-11 扩入财务与资格类材料——康恒那单实测报「近三年经审计的资产负债表未提供」，
         而文件就在资料库「财务材料」分类里，此前词表只覆盖资质类，插不进去。"""
-        assert CERT_KEYWORDS == ("营业执照", "资质证书", "授权书", "法定代表人身份证明",
+        assert CERT_KEYWORDS == ("营业执照", "资质证书", "授权书", "厂家授权", "法定代表人身份证明",
                                  "检测证书", "许可证",
                                  "审计报告", "资产负债表", "利润表", "财务报表", "纳税证明",
                                  "社保证明", "银行资信证明", "开户许可证", "信用中国截图")

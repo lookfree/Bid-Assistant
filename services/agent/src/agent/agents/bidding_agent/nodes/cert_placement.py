@@ -29,7 +29,8 @@ from agent.agents.bidding_agent.nodes.form_locate import _looks_like_form_title
 CERT_GROUPS: tuple[tuple[str, ...], ...] = (
     ("营业执照", "营业执照", "工商执照", "公司执照", "营业执照副本", "三证合一"),
     ("资质证书", "资质证书", "资质证明", "企业资质", "等级证书"),
-    ("授权书", "授权书", "授权委托书", "法定代表人授权书", "原厂授权", "厂家授权"),
+    ("授权书", "授权书", "授权委托书", "法定代表人授权书"),
+    ("厂家授权", "厂家授权", "原厂授权", "制造商授权", "厂商授权"),
     ("法定代表人身份证明", "法定代表人身份证明", "法定代表人身份证", "法人身份证明",
      "法人身份证", "法人代表身份证", "法定代表人证明书"),
     ("检测证书", "检测证书", "检测报告", "检验报告", "型式试验"),
@@ -67,6 +68,9 @@ def _aliases_of(canonical: str) -> tuple[str, ...]:
 
 # post-pass 定位只看 read 结论里资格/商务两类条目——技术类要求命中证照字样极罕见且易误报。
 _CERT_CATEGORY_KEYS = ("qualification", "commercial")
+# 词表里**由投标人撰写**（而非附扫描件）的组——「章即此文书」的待补充抑制只对它们生效。
+# 其余组（各类证明/执照/报告/截图）都是要附的材料，章名恰好同名也照常提醒缺货。
+_WRITABLE_GROUPS = ("授权书",)
 # `_image_alt`（标题|ocrText 截前 120 字）现收在 credentials_chapter.py：附录章占位图 alt
 # 与本文件的章内插图 alt 是同一套格式（终审 I-4），不再各自持有一份实现。
 
@@ -282,15 +286,17 @@ def place_certificates(out: dict[str, str], state: dict,
         if not keywords:
             continue
         title = str(ch.get("title") or "")
-        # 章本身就是这份文书（「法定代表人授权书」章）时，同组关键词不再留痕：
+        # 章本身就是这份**要写的文书**（「法定代表人授权书」章）时，同组的「待补充」不再留：
         # 在授权书章尾写「（待补充：授权书）」等于说"这一章还没写"——审查照抄出一条
-        # 高风险、用户看着莫名其妙（2026-08-13 云上江西实测+审查双双反馈）。
-        # 只对表单章生效：材料章（「营业执照副本扫描件」）缺货仍要提醒。
+        # 高风险、用户看着莫名其妙（2026-08-13 云上江西实测+审查双双反馈）。三条边界
+        # （同日评审 CONFIRMED×2 收窄）：
+        # · 只限 _WRITABLE_GROUPS：词表里绝大多数组是**要附的材料**（社保证明/纳税证明/
+        #   银行资信证明…章名以证明收尾同样构词法命中表单），它们缺货必须照常提醒；
+        # · 只吞「待补充」不吞有货：库里有签好的授权书扫描件时，插进本章正是评委要看的；
+        # · 厂家授权已拆出独立组，不再与法定代表人授权书同组互吞。
         own_group = _group_of(title) if _looks_like_form_title(title) else None
         blocks = []
         for kw in keywords:
-            if kw == own_group:
-                continue
             if (cid, kw) in noted:
                 continue   # 材料小节里已留了待补充，章尾不再重复一条
             aliases = _aliases_of(kw)
@@ -298,6 +304,8 @@ def place_certificates(out: dict[str, str], state: dict,
             # 底下却一张图都没有（与 _in_stock 同一类幻影库存，评审 2026-08-13 扫同类）
             entry = next((c for c in credentials
                           if (c.get("images") or []) and any(a in str(c.get("title") or "") for a in aliases)), None)
+            if entry is None and kw == own_group and kw in _WRITABLE_GROUPS:
+                continue   # 本章即此文书，没货不算缺——正文就是它本身
             if entry is not None and id(entry) in placed:
                 continue   # 锚点已就位的材料不再章尾重复一份
             blocks.append(_cert_block(kw, entry))

@@ -146,6 +146,34 @@ class TestTemplateHtml:
         out2 = template_html("致：招标人 <不转义就破页>", title="报价函")
         assert "<h3>报价函</h3>" in out2
 
+    # ---- 2026-08-13 第二轮评审 CONFIRMED 项（版式细则） ----
+
+    def test_adjacent_blank_cells_stay_separate(self):
+        """相邻同文的**空位格**（____\\t____）不并 colspan——那是每列各一个的填空格，
+        并成一格横贯两列恰是「与招标版式不符」（评审复现）。"""
+        out = template_html("单价（元）\t总价（元）\n____\t____")
+        assert '<td>____</td><td>____</td>' in out
+        assert 'colspan' not in out
+
+    def test_blank_line_between_table_rows_does_not_split_the_table(self):
+        """表行间夹空行不冲表——冲掉后面的裸行号又碎回 <p>1</p> 孤立段落（评审复现）。"""
+        out = template_html("序号\t名称\t数量\n\n1\n2\n合计（大写）：\t合计（大写）：")
+        assert out.count("<table>") == 1
+        assert "<p>1</p>" not in out
+
+    def test_numbered_signature_clause_stays_left(self):
+        """「3、本响应函须由法定代表人签字：」是表单正文条款，原文靠左——
+        含签字字样就甩到右边距是误伤（评审复现）。"""
+        out = template_html("3、本响应函须由法定代表人签字：\n法定代表人签字或签章：")
+        assert "<p>3、本响应函须由法定代表人签字：</p>" in out
+        assert '<p style="text-align:right">法定代表人签字或签章：</p>' in out
+
+    def test_unrenderable_dup_title_keeps_the_chapter_heading(self):
+        """首行与章名同名但**渲染不成抬头**（带括注，is_form_title_line 拒收）→ 章名 h3
+        必须保留，否则整章一个标题都没有（评审复现）。"""
+        out = template_html("报价一览表（格式）\n序号\t名称", title="报价一览表（格式）")
+        assert "<h3>报价一览表（格式）</h3>" in out
+
     def test_form_title_line_renders_centered(self):
         """表单抬头（「响   应   函」）要排成**居中标题**——招标表单的抬头都是居中的，
         排成左对齐正文段落就是「格式跟招标书不一样」（2026-08-13 用户实测反馈）。

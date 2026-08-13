@@ -85,7 +85,10 @@ def keeps_template(html: str, template: str) -> bool:
 _ROW_FRAGMENT = re.compile(r"^\d{1,3}$|^[_＿]+$")
 # 落款行：签字/签章/盖章。招标表单里这些行靠右（原文前导空格被解析层剥掉，只能按惯例回排）。
 # 「日期：」不收——响应函的日期在左侧落款块里，靠右反而错。
+# 编号开头的不收——「3、本响应函须由法定代表人签字：」是表单正文条款，在原文里靠左
+# （评审 2026-08-13 CONFIRMED：正文条款被甩到右边距，恰是本渲染承诺保住的版式）。
 _SIGN_LINE = re.compile(r"(签字|签章|盖章)\s*[:：]")
+_NUMBERED_CLAUSE = re.compile(r"^\d{1,2}[、.．]|^[（(][一二三四五六七八九十0-9]{1,3}[）)]")
 
 
 def _rows_html(rows: list[list[str]]) -> str:
@@ -99,7 +102,9 @@ def _rows_html(rows: list[list[str]]) -> str:
         used, i = 0, 0
         while i < len(r):
             j = i
-            while j + 1 < len(r) and r[j + 1] == r[i] and r[i]:
+            # 空位格（____）相邻同文不并——那是每列各一个的填空格，不是摊平的合并格
+            # （评审 2026-08-13 CONFIRMED：两个独立填空并成一格横贯两列）
+            while j + 1 < len(r) and r[j + 1] == r[i] and r[i] and not _BLANK.fullmatch(r[i]):
                 j += 1
             span = j - i + 1
             if j == len(r) - 1 and span > 1:
@@ -123,7 +128,10 @@ def template_html(template: str, title: str = "") -> str:
     """
     lines = (template or "").splitlines()
     first = next((ln.strip() for ln in lines if ln.strip()), "")
-    dup_title = title and re.sub(r"[\s　]+", "", first) == re.sub(r"[\s　]+", "", title)
+    # 章名 h3 只有在首行**会渲染成居中抬头**且同名时才省——首行同名但渲染不了抬头
+    # （带括注/超长，is_form_title_line 拒收）时省掉章名，整章就一个标题都没有了
+    # （评审 2026-08-13 CONFIRMED）。
+    dup_title = title and is_form_title_line(first) and _norm(first) == _norm(title)
     out: list[str] = [f"<h3>{html_mod.escape(title)}</h3>"] if title and not dup_title else []
     rows: list[list[str]] = []
 
@@ -134,20 +142,20 @@ def template_html(template: str, title: str = "") -> str:
 
     for line in lines:
         s = line.strip()
+        if not s:
+            continue   # 空行不冲表：表行组里夹着空行是解析常态，冲掉表又碎回孤立段落
         if "\t" in line:
             rows.append([c.strip() for c in line.split("\t")])
             continue
-        if rows and s and _ROW_FRAGMENT.match(s):
+        if rows and _ROW_FRAGMENT.match(s):
             rows.append([s])
             continue
         flush()
-        if not s:
-            continue
         if is_form_title_line(line):
             # 表单抬头（「响   应   函」）居中——招标表单的抬头都是居中的，
             # 排成左对齐正文就是「格式跟招标书不一样」（2026-08-13 用户实测反馈）
             out.append(f'<h3 style="text-align:center">{html_mod.escape(s)}</h3>')
-        elif len(s) <= 24 and _SIGN_LINE.search(s):
+        elif len(s) <= 24 and _SIGN_LINE.search(s) and not _NUMBERED_CLAUSE.match(s):
             out.append(f'<p style="text-align:right">{html_mod.escape(s)}</p>')
         else:
             out.append(f"<p>{html_mod.escape(s)}</p>")
