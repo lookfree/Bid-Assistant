@@ -95,8 +95,16 @@ if wants web || wants admin; then
 fi
 
 cd "$SRC" || abort "源码目录不存在 $SRC"
+SELF_BEFORE=$(git rev-parse HEAD:deploy/deploy-cust.sh 2>/dev/null)
 git fetch origin main --quiet && git merge --ff-only origin/main || abort "同步 origin/main 失败"
 [ "$(git rev-parse --short HEAD)" = "$WANT" ] || abort "HEAD 不是 $WANT"
+# 自更新悖论（2026-08-13 两连实锤）：本脚本的修复常由**本次** pull 拉下来，而 bash 早在
+# pull 前就持有旧文件句柄——修了自己却整场跑着旧自己，同一个误报 ABORT 连出两次。
+# pull 后脚本自身有变化就 exec 新版从头重跑一次（幂等：失败点全在切流量前；环境变量防循环）。
+if [ -z "${BID_DEPLOY_REEXEC:-}" ] && [ "$SELF_BEFORE" != "$(git rev-parse HEAD:deploy/deploy-cust.sh)" ]; then
+  echo "=== 部署脚本自身已更新，用新版重跑 ==="
+  BID_DEPLOY_REEXEC=1 exec bash "$SRC/deploy/deploy-cust.sh" "$WANT" ${ONLY:+"$ONLY"}
+fi
 
 # 在途任务复查：部署会重启容器、打断用户正在跑的长任务（读标/正文动辄几十分钟）。
 inflight() {
