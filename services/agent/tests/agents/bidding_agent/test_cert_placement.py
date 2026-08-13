@@ -269,6 +269,65 @@ class TestPlaceCertificates:
         result = place_certificates(out, state)
         assert result["b3"].count("（待补充：信用中国截图）") == 1
 
+    # ---- 2026-08-13 评审 CONFIRMED 项的钉子测试（夹具照抄评审复现） ----
+
+    def test_h2_after_material_section_bounds_the_cut(self):
+        """⑱材料小节后面跟 <h2>（渲染层明确防御过的模型跑偏产物）→ 切割端点停在 h2，
+        h2 与其后正文一个字不丢。只认 h3-h6 当边界时这里会整段静默删光（评审复现）。"""
+        out = {"b3": ("<h3>六、信用中国截图</h3><p>本项提供信用记录截图说明。</p>"
+                      "<h2>第二部分 商务文件</h2><p>重要正文</p>")}
+        state = {"outline": {"chapters": [_chapter("b3", "资格文件", [])]},
+                 "read": {}, "run_input": {"credentials": []}}
+        html = place_certificates(out, state)["b3"]
+        assert "（待补充：信用中国截图）" in html
+        assert "<h2>第二部分 商务文件</h2>" in html and "重要正文" in html, "h2 之后被整段删光"
+
+    def test_nested_table_anchor_is_still_excluded(self):
+        """⑲嵌套表格：外层表格后半段的「提供营业执照扫描件」仍在表内，不得当锚——
+        插进 <td> 的图渲染层丢弃、附录又按 data-file-id 滤掉，材料两头消失（评审复现）。"""
+        out = {"b1": ("<table><tr><td><table><tr><td>内层</td></tr></table></td>"
+                      "<td><p>提供营业执照扫描件</p></td></tr></table>")}
+        state = {"outline": {"chapters": [_chapter("b1", "报价一览表", [])]},
+                 "read": {}, "run_input": {"credentials": [
+                     {"title": "营业执照", "images": [{"fileId": "f1", "key": "k1", "name": "n"}]}]}}
+        assert 'data-file-id="f1"' not in place_certificates(out, state)["b1"]
+
+    def test_title_only_entry_without_images_counts_as_missing(self):
+        """⑳条目建了、扫描件没传 → 依然算没货：正文清成待补充，而不是「以为有货」把
+        模型编的保证原样交付、图又一张都插不出（评审复现：两头都不管）。"""
+        out = {"b3": self._CREDIT_SECTION}
+        state = {"outline": {"chapters": [_chapter("b3", "资格文件", [])]},
+                 "read": {}, "run_input": {"credentials": [
+                     {"title": "信用中国查询截图", "images": []}]}}
+        html = place_certificates(out, state)["b3"]
+        assert "（待补充：信用中国截图）" in html
+        assert "我方不存在被暂停" not in html
+
+    def test_nested_material_sections_get_one_clean_cut(self):
+        """㉑材料小节嵌套（h3 财务报表复印件下挂 h4 资产负债表复印件）→ 只在父级切一刀，
+        一行待补充；不得出现无头孤行或被吞掉一半的子标题（评审复现）。"""
+        out = {"b3": ("<h3>三、财务报表复印件</h3><p>父级说明。</p>"
+                      "<h4>1. 资产负债表复印件</h4><p>子级说明一。</p>"
+                      "<h4>2. 利润表复印件</h4><p>子级说明二。</p>"
+                      "<h3>四、其他</h3><p>保留内容</p>")}
+        state = {"outline": {"chapters": [_chapter("b3", "资格文件", [])]},
+                 "read": {}, "run_input": {"credentials": []}}
+        html = place_certificates(out, state)["b3"]
+        assert html.count("（待补充：") == 1, "嵌套材料小节切出了多刀"
+        assert "（待补充：财务报表复印件）" in html
+        assert "<h3>四、其他</h3>" in html and "保留内容" in html
+        assert "子级说明一" not in html, "父级清除范围没盖住子级"
+
+    def test_tail_block_never_says_see_image_for_an_imageless_entry(self):
+        """㉒章尾通路同样只认带图条目：无图条目打「见下图」底下却没图=幻影库存（扫同类）。"""
+        out = {"t1": "<h3>正文</h3>"}
+        state = {"outline": {"chapters": [_chapter("t1", "资格声明", ["sec-1-c1"])]},
+                 "read": _read_with("提供营业执照", ["sec-1-c1"]),
+                 "run_input": {"credentials": [{"title": "营业执照", "images": []}]}}
+        html = place_certificates(out, state)["t1"]
+        assert "见下图" not in html
+        assert "（待补充：营业执照）" in html
+
     def test_word_list_matches_global_constraints_literal(self):
         """词表字面量必须与 web 侧 lib/cert-keywords.ts 逐字同形（双端同表约定的锚点）。
         2026-08-11 扩入财务与资格类材料——康恒那单实测报「近三年经审计的资产负债表未提供」，

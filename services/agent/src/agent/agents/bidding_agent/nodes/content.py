@@ -81,6 +81,12 @@ def _sec_of(clause_id: str) -> str | None:
     return clause_id.rsplit("-c", 1)[0] if "-c" in clause_id else None
 
 
+def _sec_doc_order(sec: str) -> tuple[int, str]:
+    """节 id 的文档序排序键：按尾部数字比大小（sec-10 在 sec-2 之后），无数字的排最前并按原串稳定。"""
+    m = re.search(r"(\d+)$", sec)
+    return (int(m.group(1)) if m else -1, sec)
+
+
 # 招标文件里集中放格式模板的那一章（「第四章 响应文件相关格式」「投标文件格式」…）。
 # 定位不到具体表单时整章兜底——**宁可多给几千字，也不能一个字不给**：什么都不给时模型只能
 # 凭常识自创一份表单，用户拿到的标书与招标格式对不上，而废标恰恰卡这里（2026-08-11 实测）。
@@ -142,7 +148,9 @@ def _template_entries(read: dict, outline: dict) -> dict[str, dict]:
         clause_ids = list((struct or {}).get("clause_ids") or [])
         for it in _iter_items(chapter.get("items", [])):  # 含小节:条款引用可能挂在第三层
             clause_ids += it.get("clause_ids") or []
-        secs = sorted({s for cid in clause_ids if (s := _sec_of(cid))})
+        # 按**文档序**（数值）排：字典序会把 sec-10 排到 sec-2 前面——单份闸的切割器按
+        # 行序开闭段，喂进乱序文本会把行算错段（评审 2026-08-13）
+        secs = sorted({s for cid in clause_ids if (s := _sec_of(cid))}, key=_sec_doc_order)
         sec_text = "\n".join(t for sec in secs for t in by_sec.get(sec, []) if t)
         text = slice_single_form(sec_text, title) if sec_text else ""
         cap, note = _TEMPLATE_CHAPTER_CHARS, f"本章「{title}」对应的招标格式原文"

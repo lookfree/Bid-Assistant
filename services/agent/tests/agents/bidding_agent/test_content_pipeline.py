@@ -370,6 +370,25 @@ class TestBriefTargeting:
         # 盯下一份表单的**正文**：表单名会出现在 TEMPLATE_GUIDE 的示例文字里，盯名字必误报
         assert "（供应商全称）法定代表人授权（全权代表姓名）" not in brief, "下一份表单混进了响应函的模板"
 
+    def test_clause_secs_feed_the_slicer_in_document_order(self, monkeypatch):
+        """章引用横跨 sec-2 与 sec-10 时必须按**文档序**拼文本——字典序把 sec-10 排到
+        sec-2 前面，单份闸的切割器按行序开闭段，边界之前的行会被当成"表单外"丢掉
+        （评审 2026-08-13：正文尾行在边界行之前出现 → 不进段）。"""
+        state = _state(2)
+        state["outline"]["chapters"][0]["title"] = "投标函"
+        state["outline"]["chapters"][0]["items"] = [
+            {"id": "i1", "label": "投标函", "clause_ids": ["sec-10-c1", "sec-2-c1"]}]
+        state["read"] = {"doc_sections": [
+            {"id": "sec-2-c1", "text": "1.投标函"},
+            {"id": "sec-2-c2", "text": "致：采购人"},
+            {"id": "sec-10-c1", "text": "我方愿意承担招标文件规定的全部义务。"},
+        ]}
+        chat = _FakeChat()
+        _run(state, chat, monkeypatch=monkeypatch)
+        brief = _brief_of(chat, "投标函")
+        assert "我方愿意承担招标文件规定的全部义务。" in brief, "sec-10 的正文行排到边界前被丢了"
+        assert "致：采购人" in brief
+
     def test_template_falls_back_to_matching_by_heading_when_clause_ids_miss(self, monkeypatch):
         """降级一:条款 id 定位不到就按**标题**找。条款编号靠读标切分,切歪整章就零模板——
         而招标与投标两侧对同一份表单的叫法通常一致(都叫「报价函」),标题比编号稳。"""

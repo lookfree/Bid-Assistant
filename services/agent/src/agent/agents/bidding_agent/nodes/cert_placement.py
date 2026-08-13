@@ -91,7 +91,27 @@ def _cert_block(keyword: str, entry: dict | None) -> str:
 _EVIDENCE = re.compile(r"扫描件|原件|复印件|证明材料|加盖公章")
 _ANCHOR = re.compile(r"<(h[3-6]|p)[^>]*>(.*?)</\1>", re.S)
 _TAG = re.compile(r"<[^>]+>")
-_TABLE_SPAN = re.compile(r"<table\b.*?</table>", re.S | re.I)
+_TABLE_TOKEN = re.compile(r"<table\b|</table\s*>", re.I)
+
+
+def _table_spans(html: str) -> list[tuple[int, int]]:
+    """最外层 <table>…</table> 的区间。**按开闭计数配平**，不能用非贪婪正则——
+    嵌套表格时非贪婪会停在第一个 </table>，外层表格的后半段被当成表外，
+    锚点照样插进 <td>（评审 2026-08-13 CONFIRMED 复现）。未闭合的表格视为一直到结尾。"""
+    spans: list[tuple[int, int]] = []
+    depth, start = 0, 0
+    for m in _TABLE_TOKEN.finditer(html or ""):
+        if not m.group(0).startswith("</"):
+            if depth == 0:
+                start = m.start()
+            depth += 1
+        elif depth:
+            depth -= 1
+            if depth == 0:
+                spans.append((start, m.end()))
+    if depth:
+        spans.append((start, len(html)))
+    return spans
 
 
 def _anchor_end(html: str, aliases: tuple[str, ...]) -> int:
@@ -100,8 +120,11 @@ def _anchor_end(html: str, aliases: tuple[str, ...]) -> int:
     普通段落还须同时含证据词（授权书表单的「附：…身份证原件扫描件」）。找不到 -1。
     表格内的提及一律不算锚（评审表/资格要求表里满是「提供营业执照扫描件」）：
     插进 <td> 的占位图渲染层会整个丢掉（_emit_table 只取文字），而 html 里已出现
-    data-file-id 又会让附录把它滤掉——材料在正文和附录**两头消失**。"""
-    tables = [(t.start(), t.end()) for t in _TABLE_SPAN.finditer(html or "")]
+    data-file-id 又会让附录把它滤掉——材料在正文和附录**两头消失**。
+    锚点/表格区间对每个（章×条目）都重扫一遍——量级实算约几百次对章级 HTML 的正则
+    扫描、总耗时秒级，发生在一次跑几分钟的 content 收尾；预计算+插入后失效管理换
+    这点收益不值（评审 2026-08-13 效率项，明确不做）。"""
+    tables = _table_spans(html or "")
     for m in _ANCHOR.finditer(html or ""):
         if any(s <= m.start() < e for s, e in tables):
             continue
@@ -139,7 +162,11 @@ def _place_by_anchor(result: dict[str, str], ordered_cids: list[str],
 
 # 材料小节：标题带这些词的小节，内容**只能是材料本身**（截图/扫描件），不存在"写出来"的正文
 _MATERIAL_HEAD = re.compile(r"截图|扫描件|复印件|证明材料")
-_HX = re.compile(r"<h([3-6])[^>]*>(.*?)</h\1>", re.S)
+# 全部标题层级都要进边界表——只认 h3-h6 的话，材料小节后面跟着 <h2>（渲染层明确防御过的
+# 模型跑偏产物）时切割端点会一路滑到章尾，h2 连同其后所有无关正文被静默删光
+# （评审 2026-08-13 CONFIRMED 复现）。h1/h2 只当**边界**，不当材料小节候选。
+_HX = re.compile(r"<h([1-6])[^>]*>(.*?)</h\1>", re.S)
+_MATERIAL_MIN_LEVEL = 3
 
 
 def _strip_section_no(text: str) -> str:
@@ -148,8 +175,12 @@ def _strip_section_no(text: str) -> str:
 
 
 def _in_stock(credentials: list[dict], group: str) -> bool:
+    """库里有没有**带图**的该组材料。只看标题不看图会把「建了条目还没传扫描件」当成有货：
+    锚点插不出图（无图可插）、清空通路又不清（以为有货），模型编的正文原样交付——
+    两头都不管，正是这条通路要堵的洞（评审 2026-08-13 CONFIRMED 复现）。"""
     aliases = _aliases_of(group)
-    return any(any(a in str(c.get("title") or "") for a in aliases) for c in credentials)
+    return any((c.get("images") or []) and any(a in str(c.get("title") or "") for a in aliases)
+               for c in credentials)
 
 
 def _replace_missing_materials(result: dict[str, str], ordered_cids: list[str],
@@ -169,6 +200,13 @@ def _replace_missing_materials(result: dict[str, str], ordered_cids: list[str],
         heads = list(_HX.finditer(html))
         cuts: list[tuple[int, int, str]] = []
         for i, m in enumerate(heads):
+            if int(m.group(1)) < _MATERIAL_MIN_LEVEL:
+                continue   # h1/h2 只当切割边界，不当材料小节
+            if cuts and m.start() < cuts[-1][1]:
+                # 已落在上一刀的清除范围里（材料小节嵌套：h3 财务报表下挂 h4 资产负债表）：
+                # 再切一刀会与父刀重叠，重组时父刀吞掉子标题、子刀的待补充成了无头孤行
+                # （评审 2026-08-13 CONFIRMED 复现）。父级一行待补充已覆盖整节。
+                continue
             text = _TAG.sub("", m.group(2))
             if not _MATERIAL_HEAD.search(text):
                 continue
@@ -247,8 +285,10 @@ def place_certificates(out: dict[str, str], state: dict,
             if (cid, kw) in noted:
                 continue   # 材料小节里已留了待补充，章尾不再重复一条
             aliases = _aliases_of(kw)
+            # 只认**带图**的条目：标题建了、扫描件没传的条目当没有——否则打出「见下图」
+            # 底下却一张图都没有（与 _in_stock 同一类幻影库存，评审 2026-08-13 扫同类）
             entry = next((c for c in credentials
-                          if any(a in str(c.get("title") or "") for a in aliases)), None)
+                          if (c.get("images") or []) and any(a in str(c.get("title") or "") for a in aliases)), None)
             if entry is not None and id(entry) in placed:
                 continue   # 锚点已就位的材料不再章尾重复一份
             blocks.append(_cert_block(kw, entry))

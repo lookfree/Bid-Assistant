@@ -248,21 +248,25 @@ def _style_cover(doc: Document, meta: dict, package: dict | None = None) -> None
     doc.add_page_break()
 
 
+def _fld_char(kind: str):
+    el = OxmlElement("w:fldChar")
+    el.set(qn("w:fldCharType"), kind)
+    return el
+
+
+def _fld_instr(instr_text: str):
+    instr = OxmlElement("w:instrText")
+    instr.set(qn("xml:space"), "preserve")   # 保住 instr 里的空格（TOC 开关之间的分隔）
+    instr.text = instr_text
+    return instr
+
+
 def _add_field(paragraph, instr_text: str) -> None:
     """在段落里插入一个 Word 域（fldChar begin/instrText/separate/end 四件套 OXML）；
-    TOC 域与页脚 PAGE 域复用同一拼接逻辑。"""
-    run = paragraph.add_run()
-    r = run._r
-    begin = OxmlElement("w:fldChar")
-    begin.set(qn("w:fldCharType"), "begin")
-    instr = OxmlElement("w:instrText")
-    instr.set(qn("xml:space"), "preserve")
-    instr.text = instr_text
-    separate = OxmlElement("w:fldChar")
-    separate.set(qn("w:fldCharType"), "separate")
-    end = OxmlElement("w:fldChar")
-    end.set(qn("w:fldCharType"), "end")
-    for node in (begin, instr, separate, end):
+    页脚 PAGE 域用这个整段版本；TOC 域要把缓存条目夹在 separate 与 end 之间，
+    用同一套 _fld_char/_fld_instr 零件自行拼开口版（评审 2026-08-13：域构造只许一份实现）。"""
+    r = paragraph.add_run()._r
+    for node in (_fld_char("begin"), _fld_instr(instr_text), _fld_char("separate"), _fld_char("end")):
         r.append(node)
 
 
@@ -281,19 +285,10 @@ def _add_toc_field(doc: Document):
     # 目录只收到四级：五级明细（① 值班安排）进目录会把目录撑得比正文还碎，
     # 评标专家反而找不到重点——五级仍在正文里有层级，只是不进目录。
     run = field_p.add_run()._r
-    begin = OxmlElement("w:fldChar")
-    begin.set(qn("w:fldCharType"), "begin")
-    instr = OxmlElement("w:instrText")
-    instr.set(qn("xml:space"), "preserve")
-    instr.text = 'TOC \\o "1-4" \\h \\z \\u'
-    separate = OxmlElement("w:fldChar")
-    separate.set(qn("w:fldCharType"), "separate")
-    for node in (begin, instr, separate):
+    for node in (_fld_char("begin"), _fld_instr('TOC \\o "1-4" \\h \\z \\u'), _fld_char("separate")):
         run.append(node)
     end_p = doc.add_paragraph()
-    end = OxmlElement("w:fldChar")
-    end.set(qn("w:fldCharType"), "end")
-    end_p.add_run()._r.append(end)
+    end_p.add_run()._r.append(_fld_char("end"))
     _set_update_fields_on_open(doc)
     doc.add_page_break()
     return end_p

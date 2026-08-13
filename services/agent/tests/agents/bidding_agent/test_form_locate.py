@@ -158,6 +158,54 @@ class TestSliceSingleForm:
         assert slice_single_form(text, "响应函") == ""
 
 
+class TestReviewFindings0813:
+    """2026-08-13 评审 CONFIRMED 项的钉子测试，夹具照抄评审复现。"""
+
+    def test_main_form_beats_its_own_appendix(self):
+        """「投标函」章同时命中「1.投标函」与「1-1.投标函附录」→ 必须要父段。
+        取子项等于把整份投标函交付成一张附录表（评审复现）。"""
+        read = {"doc_sections": [
+            {"id": "sec-1-c1", "text": "1.投标函"},
+            {"id": "sec-1-c2", "text": "致：招标人"},
+            {"id": "sec-1-c3", "text": "我方愿意按招标文件规定承担全部义务。"},
+            {"id": "sec-1-c4", "text": "1-1.投标函附录"},
+            {"id": "sec-1-c5", "text": "序号\t条款名称\t约定内容"},
+        ], "doc_headings": []}
+        idx = build_form_index(read)
+        for title in ("投标函", "投标函及投标函附录"):
+            text = find_form(idx, title)
+            assert "我方愿意按招标文件规定承担全部义务。" in text, f"{title}：正文被丢，只剩附录"
+            assert "约定内容" in text                       # 附录本就在父段里
+        # 专门要附录的章仍拿附录自己
+        assert find_form(idx, "投标函附录").splitlines()[0] == "序号\t条款名称\t约定内容"
+
+    def test_orphan_numbered_line_inside_a_form_is_not_a_boundary(self):
+        """表单体内凭空出现的「3.售后服务承诺」（前面没有 1、2 号边界）不是边界——
+        当边界会把报价函拦腰切断、尾部被保真机制钉死成"这就是全部"（评审复现）。"""
+        text = "报价函\n致：招标人（名称）\n本报价函自开标之日起90天内有效。\n3.售后服务承诺\n我们郑重承诺提供三年质保服务"
+        got = slice_single_form(text, "报价函")
+        assert "我们郑重承诺提供三年质保服务" in got, "表单尾部被孤立编号行切掉了"
+
+    def test_chained_numbered_boundary_still_terminates(self):
+        """编号链上的「4-2要求的资格文件」（紧接 4-1）仍是真边界——4-1 的段不得吞掉 4-2。"""
+        text = find_form(build_form_index(_read()), "承诺函与声明")
+        assert "如供应商是企业的" not in text, "4-2 的内容混进了 4-1 的表单"
+
+    def test_restarted_checklist_numbers_do_not_cut(self):
+        """表单里从 1 重新数起的材料清单（1.营业执照 2.资质证书）接不上最近边界的编号，
+        不是边界——否则资格文件段被清单切碎。"""
+        read = {"doc_sections": [
+            {"id": "sec-1-c1", "text": "1.资格声明函"},
+            {"id": "sec-1-c2", "text": "我方声明符合下列条件并附材料："},
+            {"id": "sec-1-c3", "text": "1.营业执照"},
+            {"id": "sec-1-c4", "text": "2.资质证书"},
+            {"id": "sec-1-c5", "text": "以上材料均加盖公章。"},
+        ], "doc_headings": []}
+        text = find_form(build_form_index(read), "资格声明函")
+        assert "以上材料均加盖公章。" in text
+        assert "2.资质证书" in text, "清单行被当成边界切走了"
+
+
 def test_morphology_still_exported_for_content_node():
     """content.py 从这里引用构词法——搬迁不改行为（报价函在、技术偏离表不在）。"""
     assert _looks_like_form_title("报价函")

@@ -68,11 +68,12 @@ _MAX_HEAD_NO = 30  # 首段编号大于它的多半是年份/金额（「2026年
 _MAX_FORM_CHARS = 12000  # 单份表单的体量上限：超过它说明切出来的根本不是一份表单
 
 
-def _boundary_of(line: str) -> tuple[int, str, bool] | None:
-    """一行是不是表单边界 → (层级, 表单名, 本行是否属于表单原文)。制表符行是表格内容，直接排除。
-    「1.响应函」的编号行是招标格式章的目录性文字，不进段；「报价函」这种裸表单名行
-    本身就是表单的标题（招标原文），必须进段——丢了它，保真校验的固定片段就少一行，
-    零模型退路渲染出的表单也没了抬头。"""
+def _boundary_of(line: str) -> tuple[int, str, bool, tuple[int, ...] | None] | None:
+    """一行是不是表单边界候选 → (层级, 表单名, 本行是否属于表单原文, 编号元组)。
+    制表符行是表格内容，直接排除。「1.响应函」的编号行是招标格式章的目录性文字，不进段；
+    「报价函」这种裸表单名行本身就是表单的标题（招标原文），必须进段——丢了它，
+    保真校验的固定片段就少一行，零模型退路渲染出的表单也没了抬头。
+    注意这里只做**词法**判定；非构词法命中的编号行还要过 _segments_of 的编号链语义门。"""
     if "\t" in line:
         return None
     s = line.strip()
@@ -83,13 +84,30 @@ def _boundary_of(line: str) -> tuple[int, str, bool] | None:
         name = m.group(2).strip()
         if (int(m.group(1).split("-")[0]) <= _MAX_HEAD_NO
                 and 2 <= len(name) <= _MAX_NAME and not _PROSE_PUNCT.search(name)):
-            return m.group(1).count("-") + 1, name, False
+            num = tuple(int(x) for x in m.group(1).split("-"))
+            return len(num), name, False, num
         return None
     # 无编号行只收构词法命中的短行，且不许带任何括注/句读——「付款方式」「供应商名称」
     # 这类栏目行不是表单名，放进来会把表单切碎
     if len(s) <= _MAX_NAME and _looks_like_form_title(s) and not _PROSE_PUNCT.search(s) and "（" not in s and "(" not in s:
-        return 1, s, True
+        return 1, s, True, None
     return None
+
+
+def _chains(recent: tuple[int, ...] | None, num: tuple[int, ...]) -> bool:
+    """编号是否紧接最近一个已认定的编号边界：同层递增（4-1 → 4-2、4 → 5）或
+    父编号后的第一个子编号（4 → 4-1）。
+
+    这道门只拦**非构词法命中**的编号行（「4-2要求的资格文件」这类真边界靠它放行）。
+    没有它，表单正文里的短编号行会把表单拦腰切断——「报价函」体内的「3.售后服务承诺」
+    编号凭空出现（前面没有 1、2 号边界），被当成边界后表单尾部整段丢失，还被保真机制
+    钉死成"这就是全部"（2026-08-13 评审 CONFIRMED 复现）。同理，表单里从 1 重新数起的
+    材料清单（「1.营业执照」「2.资质证书」）也因为接不上最近边界的编号而不成为边界。"""
+    if recent is None:
+        return False
+    if len(num) == len(recent) and num[:-1] == recent[:-1] and num[-1] == recent[-1] + 1:
+        return True
+    return num[:-1] == recent and num[-1] == 1
 
 
 def _doc_stream(read: dict) -> list[tuple[str, str]]:
@@ -119,17 +137,30 @@ def _segments_of(stream: list[tuple[str, str]]) -> list[dict]:
     这行是表单自己的标题，作为内容并入上一段，不另起段。"""
     segments: list[dict] = []
     open_segs: list[dict] = []
+    recent_num: tuple[int, ...] | None = None   # 最近一个已认定的编号边界（编号链语义门）
     for kind, text in stream:
+        num: tuple[int, ...] | None = None
         if kind == "heading":
             m = _NUM_LINE.match(_norm(text))
-            b = (m.group(1).count("-") + 1 if m else 1, text, True)
+            num = tuple(int(x) for x in m.group(1).split("-")) if m else None
+            b = (len(num) if num else 1, text, True, num)
         else:
             b = _boundary_of(text)
+        if b is not None and kind == "clause":
+            depth, name, own_line, num = b
+            # 语义门：非构词法命中的编号行必须接上编号链，否则是表单正文不是边界。
+            # 被拒的孤行同时**打断链**——表单里从 1 重新数起的材料清单（1.营业执照
+            # 2.资质证书），「1」接不上链被拒后，「2」会恰好接上表单自己的「1.XX函」；
+            # 断链让整串清单都进不了边界。失败方向是「宁可不切」，表单保持完整。
+            if num is not None and not _looks_like_form_title(name) and not _chains(recent_num, num):
+                b, recent_num = None, None
         if b is None:
             for seg in open_segs:
                 seg["lines"].append(text)
             continue
-        depth, name, own_line = b
+        depth, name, own_line, num = b
+        if num is not None:
+            recent_num = num
         last = open_segs[-1] if open_segs else None
         if last is not None and not last["lines"] and (
                 _norm(name) in _norm(last["name"]) or _norm(last["name"]) in _norm(name)):
@@ -159,28 +190,43 @@ def is_form_title_line(line: str) -> bool:
     return b is not None and b[2]
 
 
-def _match_name(chapter_core: str, name: str) -> bool:
-    """章名与边界名是否指同一份表单。互含直接算；复合章名（「承诺函与声明」
-    「法定代表人证明与授权书」）按连接词拆开，任一部件（≥3 字，防「声明」两字全中）
-    与边界名互含即算。「报价一览表」≠「供应商情况一览表」——互不包含，部件也对不上。"""
+def _match_tier(chapter_core: str, name: str) -> int | None:
+    """章名与边界名指同一份表单的**匹配强度**：0=全同、1=互含、2=拆部件命中；不匹配 None。
+    复合章名（「承诺函与声明」「法定代表人证明与授权书」）按连接词拆开，任一部件
+    （≥3 字，防「声明」两字全中）与边界名互含即算。「报价一览表」≠「供应商情况一览表」
+    ——互不包含，部件也对不上。"""
     nc, nb = _norm(chapter_core), _norm(name)
     if len(nc) < _MIN_LOOKUP_NAME or not nb:
-        return False
+        return None
+    if nc == nb:
+        return 0
     if nc in nb or nb in nc:
-        return True
-    return any(len(p) >= _MIN_LOOKUP_NAME and (p in nb or nb in p)
-               for p in re.split(r"[与及和、/]", nc))
+        return 1
+    if any(len(p) >= _MIN_LOOKUP_NAME and (p in nb or nb in p)
+           for p in re.split(r"[与及和、/]", nc)):
+        return 2
+    return None
 
 
 def find_form(index: list[dict], chapter_title: str) -> str:
     """按章名从索引里取**单份**表单原文；取不到返回空串（调用方走整章兜底/留痕）。
-    多个候选取层级最深的（「承诺函与声明」同时命中「4.资格文件及资格信用承诺函」和
-    「4-1.供应商资格信用承诺函」时要后者——前者是一整章，后者才是那份表单）。"""
+
+    多个候选先比匹配强度，同强度再按层级取舍，方向随强度而变：
+    · 强匹配（全同/互含）取**最浅**——「投标函」章同时命中「1.投标函」和其子项
+      「1-1.投标函附录」时必须要父段（父段本就含附录；取子项等于把整份投标函
+      交付成一张附录表，2026-08-13 评审 CONFIRMED 复现）；
+    · 弱匹配（拆部件）取**最深**——「承诺函与声明」同时命中「4.资格文件及资格
+      信用承诺函」（一整章）和「4-1.供应商资格信用承诺函」（那份表单）时要后者。"""
     core = _core_form_name(chapter_title)
-    hits = [s for s in index if _match_name(core, s["name"])]
+    hits = [(t, s) for s in index if (t := _match_tier(core, s["name"])) is not None]
     if not hits:
         return ""
-    best = max(hits, key=lambda s: (s["depth"], len(_norm(s["name"]))))
+    top = min(t for t, _ in hits)
+    cands = [s for t, s in hits if t == top]
+    if top <= 1:
+        best = min(cands, key=lambda s: (s["depth"], -len(_norm(s["name"]))))
+    else:
+        best = max(cands, key=lambda s: (s["depth"], len(_norm(s["name"]))))
     text = "\n".join(line for line in best["lines"] if line.strip())
     return text if 0 < len(text) <= _MAX_FORM_CHARS else ""
 
