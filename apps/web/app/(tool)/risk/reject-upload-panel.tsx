@@ -4,7 +4,7 @@ import { useRef, useState } from "react"
 import { Brain, EyeOff, Flame, FolderOpen, Loader2, Lock, Upload, X, Zap } from "lucide-react"
 import { createReviewProject, setCurrentProjectId } from "@/lib/project"
 import { clearUploading, markUploading } from "@/lib/upload-progress"
-import { uploadFile, uploadErrorMessage, uploadHint, checkFiles, ACCEPT_BID, ACCEPT_TENDER } from "@/lib/files"
+import { uploadFile, uploadErrorMessage, uploadHint, checkFiles, legacyDocAdvice, ACCEPT_BID, ACCEPT_TENDER } from "@/lib/files"
 
 /** 废标风险审查的默认入口：招标文件 + 投标文件双上传区（用户指定的版式）。
  *  **两份都必传**（用户口径：废标审查是拿招标要求逐条比对投标文件，两者是一体的，
@@ -193,6 +193,10 @@ function DropZone({
       )}
       <p className="mt-1 text-[11px] text-muted-foreground">{hint}</p>
       <p className="mt-1 text-[11px] text-muted-foreground">{uploadHint(accept)}</p>
+      {(() => {
+        const advice = legacyDocAdvice(files.map((f) => f.name))
+        return advice && <p className="mt-1 text-[11px] font-medium text-amber-600 dark:text-amber-500">{advice}</p>
+      })()}
       {reject && <p className="mt-1 text-[11px] font-medium text-destructive">{reject}</p>}
       <input
         ref={ref}

@@ -43,6 +43,15 @@ export function uploadHint(accept: string, opts: { multiple?: boolean } = {}): s
   return parts.join(" · ")
 }
 
+/** 旧格式 .doc 的另存建议（**不拦截**，返回文案不是错误）。
+ *  2026-08-14 实测：LibreOffice 导入 .doc 会静默丢图（授权书四张证件图转丢一张，
+ *  docx/odt/pdf 三条出口全少同一张＝导入滤镜缺陷，升级/换出口路线均无效）。
+ *  服务端已有原始字节对账的丢图兜底，但用户用 Word/WPS 另存 .docx 是保真度天花板。 */
+export function legacyDocAdvice(names: Array<string | null | undefined>): string | null {
+  const hit = names.some((n) => (n ?? "").toLowerCase().endsWith(".doc"))
+  return hit ? "检测到 .doc 文件：建议用 Word/WPS 另存为 .docx 后再上传，内容识别更完整" : null
+}
+
 export async function uploadFile(file: File): Promise<UploadedFile> {
   const contentType = file.type || "application/octet-stream"
   // presign 响应含 MinIO 对象 key（后端以 key 定位文件，如查重 fileKeys / 项目 fileKey）
