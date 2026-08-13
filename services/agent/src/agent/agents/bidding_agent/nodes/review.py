@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import logging
+import re
 from agent.framework.budget import run_with_shrink
 from agent.framework.create_agent import run_submit_agent
 from agent.agents.bidding_agent.nodes.common import (
@@ -9,9 +10,9 @@ from agent.agents.bidding_agent.nodes.common import (
     strip_clause_ids, MIN_CHAPTER_CHARS,
 )
 from agent.agents.bidding_agent.nodes.classify import classify_from_chapters, empty_category
-from agent.agents.bidding_agent.schemas import RiskReport
+from agent.agents.bidding_agent.schemas import ReviewVerdicts, RiskReport
 from agent.agents.bidding_agent.prompts.review import (
-    REVIEW_SYSTEM_PROMPT, SCAN_REVIEW_RULE, scan_pages_note,
+    REVIEW_SYSTEM_PROMPT, SCAN_REVIEW_RULE, scan_pages_note, verify_system_prompt,
 )
 from agent.agents.bidding_agent.prompts.categories import category_scope, industry_patches
 from agent.parsing.ocr import ocr_configured
@@ -82,7 +83,9 @@ async def _resolve_chapters(ctx, state: dict, run_input: dict) -> tuple[dict[str
 
 
 # 「看不见的页」类发现的标题前缀（与 SCAN_REVIEW_RULE 第 2 条的写法一致）。
-_SCAN_TITLE_PREFIX = "无法核验（扫描件）"
+# 任何「无法核验」抬头都归中风险——括注不限定（「（扫描件）」「（需人工）」都算）：
+# 418b1bf 教了模型新括注，写死旧括注会让新式标题带着假高风险漏network过（评审 2026-08-13）
+_SCAN_TITLE_PREFIX = "无法核验"
 
 
 def _force_scan_level(risk: dict) -> None:
@@ -194,66 +197,121 @@ def make_review_node(ctx):
                 "submit_risk_report", RiskReport, "提交审查报告")
 
         result = await run_with_shrink(_attempt, label="审查")
-        result = await _verify_findings(ctx, result, texts, scanned, system)
+        result = await _verify_findings(ctx, result, texts, scanned)
         return {"risk": _finalize_risk(result, category, self_detected, scanned)}
     return review_node
 
 
-_VERIFY_EXCERPT_CHARS = 3500   # 每章正文摘录上限：复核只需围绕发现处的证据，不用整章重灌
+_VERIFY_EXCERPT_CHARS = 3500   # 单条发现的正文摘录上限：围绕定位摘句开窗，不整章重灌
+_NOTE_REF = re.compile(r"【系统注记[^】]*】")
+_VALID_LEVELS = ("高风险", "中风险")
 
 
-async def _verify_findings(ctx, report, texts: dict, scanned: list, first_system: str):
+def _strip_note_refs(text: str) -> str:
+    """复核结论里引用的「【系统注记…】」换成「识别文字」——_derive_counts 会把谈论注记的
+    条目整条静默丢弃（那是防模型冤枉用户的闸），复核官**按要求引用材料原文**恰好会带上
+    注记前缀，不清洗的话：撤销审计条消失、被修正的真发现整条蒸发（评审 2026-08-13 CONFIRMED）。"""
+    return _NOTE_REF.sub("识别文字", text or "")
+
+
+def _finding_excerpt(texts: dict, target_id: str, anchor: str) -> str:
+    """摘录**锚定到发现位置**：长章开头 3500 字可能全是别的内容（两处签章区、先满后空），
+    按 anchor_text 开窗才是发现指的那一段（评审 2026-08-13）。找不到锚/无正文都要明说，
+    复核官不能把「没给材料」当反证。"""
+    text = texts.get(target_id) or ""
+    if not text:
+        return "（本章无可摘录正文——不得据此推翻或坐实任何发现）"
+    probe = (anchor or "").strip()[:24]
+    pos = text.find(probe) if probe else -1
+    if pos >= 0:
+        return text[max(0, pos - 900):pos + _VERIFY_EXCERPT_CHARS - 900]
+    return text[:_VERIFY_EXCERPT_CHARS]
+
+
+def _apply_verdicts(report, verdicts):
+    """把复核结论**逐条防御式**套用到首轮报告：序号越界/echo_title 对不上→该条结论作废
+    （串号错杀比漏杀危险）；revise 的 level 只认白名单、title/advice 清洗后非空才换——
+    单条越界只废那一条，绝不作废整批（评审 2026-08-13 CONFIRMED：一条「低风险」曾让
+    整批 model_validate 抛异常，全部有效撤销/修正陪葬）。"""
+    data = report.model_dump()
+    items = data["items"]
+    dropped: list[str] = []
+    kept = []
+    applied = {"drop": 0, "revise": 0, "skipped": 0}
+    by_index = {}
+    for v in verdicts.verdicts:
+        if 1 <= v.index <= len(items):
+            by_index[v.index] = v
+        else:
+            applied["skipped"] += 1
+
+    def norm(s):
+        return re.sub(r"\s+", "", s or "")
+
+    for i, it in enumerate(items):
+        v = by_index.get(i + 1)
+        title = str(it.get("title") or "")
+        if v is not None and not (norm(v.echo_title) in norm(title) or norm(title) in norm(v.echo_title)):
+            applied["skipped"] += 1     # 对齐失败=可能串号，按 keep 处理
+            v = None
+        if v is None or v.verdict == "keep":
+            kept.append(it)
+            continue
+        if v.verdict == "revise":
+            lv = v.level.strip()
+            if lv in _VALID_LEVELS:
+                it["level"], it["tone"] = lv, ("destructive" if lv == "高风险" else "warning")
+            if len(_strip_note_refs(v.title).strip()) >= 4:
+                it["title"] = _strip_note_refs(v.title).strip()
+            if len(_strip_note_refs(v.advice).strip()) >= 4:
+                it["advice"] = _strip_note_refs(v.advice).strip()
+            kept.append(it)
+            applied["revise"] += 1
+            continue
+        dropped.append(f"{title}（复核撤销：{_strip_note_refs(v.reason)[:80]}）")
+        applied["drop"] += 1
+    data["items"] = kept
+    data["passed_items"] = list(data.get("passed_items") or []) + dropped
+    result = type(report).model_validate(data)   # 计数由 _derive_counts 按新列表重推
+    logger.info("审查复核完成：%d 条发现，撤销 %d、修正 %d、作废结论 %d",
+                len(items), applied["drop"], applied["revise"], applied["skipped"])
+    return result
+
+
+async def _verify_findings(ctx, report, texts: dict, scanned: list):
     """复核轮（2026-08-13 用户点单）：对首轮发现逐条找反证，drop/revise 站不住的。
-    **best-effort**：复核调用失败/结论解析不出，原报告原样交付——复核是减法，
+    **best-effort**：复核调用失败/结论套用失败，原报告原样交付——复核是减法，
     垮掉不能连累整步（同 OCR/RAG 的降级铁律）。拿不准 keep 的保守方向写在提示词里。
-    只挑发现指向的章节喂摘录（含识别文字），token 约为首轮三成。"""
-    from agent.agents.bidding_agent.prompts.review import REVIEW_VERIFY_PROMPT
-    from agent.agents.bidding_agent.schemas import ReviewVerdicts
+    摘录按发现的 anchor_text 开窗、总量走 chapters_budget（大报告 30+ 条不设预算会撞窗，
+    白烧降级链后整轮浪费——评审 2026-08-13）。"""
     items = list(report.items or [])
     if not items:
         return report
     try:
         await publish_phase(ctx, "复核审查发现（逐条找反证）")
         findings = [{"index": i + 1, "level": it.level, "title": it.title, "advice": it.advice,
-                     "target_id": it.target_id, "tender_ref": it.tender_ref}
+                     "target_id": it.target_id, "tender_ref": it.tender_ref,
+                     "anchor_text": it.anchor_text}
                     for i, it in enumerate(items)]
-        cids = list(dict.fromkeys(it.target_id for it in items if it.target_id and it.target_id in texts))
-        excerpts = {cid: texts[cid][:_VERIFY_EXCERPT_CHARS] for cid in cids}
-        # 复核也要懂系统注记/识别文字/豁免那套纪律：直接沿用首轮 system 里已拼好的规则块
-        system = REVIEW_VERIFY_PROMPT + first_system.split("你是投标合规审查专家", 1)[0]
-        user = ("待复核的发现清单：\n" + json.dumps(findings, ensure_ascii=False)
-                + "\n\n各发现所指章节的正文摘录（含识别文字）：\n"
+        system = verify_system_prompt(bool(scanned))
+        scan_note = scan_pages_note(scanned)
+        fixed = system + scan_note + json.dumps(findings, ensure_ascii=False)
+        budget = chapters_budget(ctx, fixed)
+        excerpts = {}
+        used = 0
+        for i, it in enumerate(items):
+            ex = _finding_excerpt(texts, it.target_id, it.anchor_text)
+            if used + len(ex) > budget:
+                ex = "（预算不足，本条未附摘录——不得据此推翻或坐实任何发现）"
+            excerpts[str(i + 1)] = ex
+            used += len(ex)
+        user = (scan_note + "待复核的发现清单：\n" + json.dumps(findings, ensure_ascii=False)
+                + "\n\n各发现所在位置附近的正文摘录（键=发现序号，含识别文字）：\n"
                 + json.dumps(excerpts, ensure_ascii=False)
-                + "\n\n请逐条复核并用 submit_review_verdicts 提交全部结论。")
+                + "\n\n请逐条复核并用 submit_review_verdicts 提交全部结论（echo_title 原样抄回原标题）。")
         verdicts = await run_submit_agent(ctx, system, user,
                                           "submit_review_verdicts", ReviewVerdicts, "提交复核结论")
-        data = report.model_dump()
-        dropped: list[str] = []
-        by_index = {v.index: v for v in verdicts.verdicts}
-        kept = []
-        for i, it in enumerate(data["items"]):
-            v = by_index.get(i + 1)
-            if v is None or v.verdict == "keep":
-                kept.append(it)
-                continue
-            if v.verdict == "revise":
-                if v.level.strip():
-                    it["level"] = v.level.strip()
-                    it["tone"] = "destructive" if "高" in v.level else "warning"
-                if v.title.strip():
-                    it["title"] = v.title.strip()
-                if v.advice.strip():
-                    it["advice"] = v.advice.strip()
-                kept.append(it)
-                continue
-            dropped.append(f"{it.get('title', '')}（复核撤销：{v.reason[:80]}）")
-        data["items"] = kept
-        data["passed_items"] = list(data.get("passed_items") or []) + dropped
-        result = type(report).model_validate(data)   # 计数由 _derive_counts 按新列表重推
-        logger.info("审查复核完成：%d 条发现，撤销 %d、修正 %d",
-                    len(items), len(dropped),
-                    sum(1 for v in verdicts.verdicts if v.verdict == "revise"))
-        return result
+        return _apply_verdicts(report, verdicts)
     except Exception:  # noqa: BLE001 复核是减法，垮掉绝不连累审查交付
         logger.warning("审查复核轮失败，交付首轮报告", exc_info=True)
         return report

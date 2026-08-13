@@ -352,11 +352,13 @@ def test_verify_pass_drops_and_revises_findings(submit_gateway):
     """复核轮（2026-08-13 用户点单）：drop 的发现移出并进通过项（带撤销理由），
     revise 的按新级别/文案改写，计数由 _derive_counts 按新列表重推。"""
     verdicts = {"verdicts": [
-        {"index": 1, "verdict": "drop",
+        {"index": 1, "verdict": "drop", "echo_title": "无法核验（扫描件）：营业执照原件扫描件",
          "reason": "识别文字含统一社会信用代码91310104MA1FRF3K3N，材料已具备", "level": "", "title": "", "advice": ""},
-        {"index": 2, "verdict": "revise", "reason": "属实但属条件豁免范围",
+        {"index": 2, "verdict": "revise", "echo_title": "授权书签章空白", "reason": "属实但属条件豁免范围",
          "level": "中风险", "title": "授权书签章空白（若法定代表人亲自参加则无需授权书）",
-         "advice": "若由全权代表参加须补签章；法定代表人亲自参加则本项免除"}]}
+         "advice": "若由全权代表参加须补签章；法定代表人亲自参加则本项免除"},
+        # 越界/串号/坏级别的三条防御性结论：都只作废自己，不作废整批（评审 2026-08-13）
+        {"index": 3, "verdict": "drop", "echo_title": "不存在的发现", "reason": "越界", "level": "", "title": "", "advice": ""}]}
     gw = submit_gateway({"submit_risk_report": _TWO_FINDINGS, "submit_review_verdicts": verdicts})
     ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
     out = asyncio.run(make_review_node(ctx)({
@@ -390,3 +392,51 @@ def test_verify_prompt_is_subtraction_only():
     assert "不得新增发现" in REVIEW_VERIFY_PROMPT
     assert "拿不准就 keep" in REVIEW_VERIFY_PROMPT
     assert "找反证" in REVIEW_VERIFY_PROMPT
+
+
+def test_verify_verdict_defenses(submit_gateway):
+    """复核结论逐条防御（2026-08-13 评审 CONFIRMED×3）：坏级别只废该项修改不废整批、
+    echo_title 对不上按 keep、reason 里引用的【系统注记…】被清洗（否则撤销审计条
+    会被 _derive_counts 的注记闸静默吞掉）。"""
+    verdicts = {"verdicts": [
+        {"index": 1, "verdict": "drop", "echo_title": "无法核验（扫描件）：营业执照原件扫描件",
+         "reason": "识别文字（【系统注记·图片识别 第1张】后）含统一社会信用代码，材料已具备",
+         "level": "", "title": "", "advice": ""},
+        {"index": 2, "verdict": "revise", "echo_title": "完全对不上的标题",
+         "reason": "串号了", "level": "低风险", "title": "x", "advice": "y"}]}
+    gw = submit_gateway({"submit_risk_report": _TWO_FINDINGS, "submit_review_verdicts": verdicts})
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
+    out = asyncio.run(make_review_node(ctx)({
+        "read": {"risk_summary": ["x"]},
+        "outline": {"chapters": [{"id": "b4", "no": "四", "title": "资格文件", "group": "business"}]},
+        "chapters": {"b4": "<p>正文</p>"},
+    }))
+    risk = out["risk"]
+    # 第 1 条 drop 生效且撤销条**活着**（注记引用被洗成「识别文字」，没被注记闸吞）
+    assert any("复核撤销" in p and "识别文字" in p for p in risk["passed_items"]), \
+        "撤销审计条被注记闸吞了——reason 里的【系统注记】没洗"
+    # 第 2 条 echo 对不上 → 按 keep：高风险原样保留，坏级别「低风险」没有炸掉整批
+    assert len(risk["items"]) == 1
+    assert risk["items"][0]["title"] == "授权书签章空白" and risk["items"][0]["level"] == "高风险"
+
+
+def test_verify_system_prompt_carries_note_discipline():
+    """复核官必须识得系统注记（评审 CONFIRMED：split 摘规则块恒为空的静默空操作——
+    复核官把【系统注记】当投标内容判，2026-08-11 事故在复核轮重演）。"""
+    from agent.agents.bidding_agent.prompts.review import verify_system_prompt
+    assert "【系统注记" in verify_system_prompt(False)
+    assert "看不见的内容怎么判" in verify_system_prompt(True)
+    assert "看不见的内容怎么判" not in verify_system_prompt(False)
+
+
+def test_force_scan_level_covers_any_cannot_verify_bracket():
+    """「无法核验」强制降级不认括注（评审 CONFIRMED：只认（扫描件）时，
+    新式「无法核验（需人工）」标题带着假高风险漏过降级闸）。"""
+    from agent.agents.bidding_agent.nodes.review import _force_scan_level
+    risk = {"items": [
+        {"title": "无法核验（需人工）：授权书签字盖章真伪", "level": "高风险", "tone": "destructive"},
+        {"title": "无法核验（扫描件）：剩余1张图", "level": "高风险", "tone": "destructive"}],
+        "high": 2, "mid": 0}
+    _force_scan_level(risk)
+    assert all(i["level"] == "中风险" and i["tone"] == "warning" for i in risk["items"])
+    assert risk["high"] == 0 and risk["mid"] == 2

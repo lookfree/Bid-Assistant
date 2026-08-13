@@ -280,16 +280,22 @@ class RiskFinding(BaseModel):
 
 
 class ReviewVerdict(BaseModel):
-    """复核轮对单条发现的结论（2026-08-13 复核官设计）。字段全必填带描述——
-    可选+无描述的字段会被弱模型整个省略（2026-08-01 Qwen 实测教训）。"""
+    """复核轮对单条发现的结论（2026-08-13 复核官设计）。index/verdict/echo_title/reason
+    必填带描述（可选+无描述的字段会被弱模型整个省略——2026-08-01 Qwen 实测教训）；
+    level/title/advice 是 revise 专用改写位，非 revise 必须给空串（仍要出现在 JSON 里）。
+    节点侧对每个改写位**逐项防御**（级别白名单/空值跳过），单条越界绝不作废整批。"""
     index: int = Field(..., description="被复核发现的序号，与发现清单中的编号一致（从 1 起）")
     verdict: Literal["keep", "revise", "drop"] = Field(
         ..., description="keep=发现成立原样保留；revise=事实成立但表述/级别需修正；"
                          "drop=发现不成立（材料已具备/属豁免情形/与他条重复），撤销")
+    echo_title: str = Field(
+        ..., min_length=2,
+        description="被复核发现的**原标题原样抄回**（对齐校验用——抄错说明串号，该条结论会被丢弃）")
     reason: str = Field(
-        ..., description="一句话依据**必填**：drop/revise 须引用材料原文或豁免条款原文；keep 可写「成立」")
+        ..., min_length=2,
+        description="一句话依据**必填**：drop/revise 须引用材料原文或豁免条款原文；keep 可写「成立」")
     level: str = Field(
-        "", description="revise 时的新级别（高风险/中风险），不改级别给空串")
+        "", description="revise 时的新级别，只能是「高风险」或「中风险」；不改级别给空串")
     title: str = Field("", description="revise 时的新标题，不改给空串")
     advice: str = Field("", description="revise 时的新整改建议，不改给空串")
 
