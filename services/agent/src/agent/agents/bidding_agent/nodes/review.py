@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import json
 import logging
 import re
@@ -275,7 +276,7 @@ def _apply_verdicts(report, verdicts):
     result = type(report).model_validate(data)   # 计数由 _derive_counts 按新列表重推
     logger.info("审查复核完成：%d 条发现，撤销 %d、修正 %d、作废结论 %d",
                 len(items), applied["drop"], applied["revise"], applied["skipped"])
-    return result
+    return result, applied
 
 
 async def _verify_findings(ctx, report, texts: dict, scanned: list):
@@ -311,7 +312,20 @@ async def _verify_findings(ctx, report, texts: dict, scanned: list):
                 + "\n\n请逐条复核并用 submit_review_verdicts 提交全部结论（echo_title 原样抄回原标题）。")
         verdicts = await run_submit_agent(ctx, system, user,
                                           "submit_review_verdicts", ReviewVerdicts, "提交复核结论")
-        return _apply_verdicts(report, verdicts)
+        result, applied = _apply_verdicts(report, verdicts)
+        # 落观测表（agent_event_log）：复核撤了什么必须事后可查——容器日志会滚掉，
+        # 「报告为什么少了一条」这种追问只有这张表答得上（与 content 步 chapter.done 同一手法）
+        recorder = getattr(ctx, "recorder", None)
+        if recorder is not None and getattr(ctx, "run_id", None):
+            try:
+                await asyncio.to_thread(
+                    recorder.log_event, ctx.run_id, getattr(ctx, "agent_type", "bidding_agent"),
+                    "review_verified", node="review", level="info",
+                    data={"findings": len(items), **applied},
+                    thread_id=getattr(ctx, "thread_id", None))
+            except Exception:  # noqa: BLE001 埋点 best-effort
+                logger.warning("复核事件落库失败", exc_info=True)
+        return result
     except Exception:  # noqa: BLE001 复核是减法，垮掉绝不连累审查交付
         logger.warning("审查复核轮失败，交付首轮报告", exc_info=True)
         return report
