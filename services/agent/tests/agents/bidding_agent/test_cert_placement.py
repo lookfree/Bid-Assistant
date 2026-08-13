@@ -225,8 +225,9 @@ class TestPlaceCertificates:
         assert "creditchina" not in html
         assert "单位负责人与我方单位负责人不是同一人" in html, "相邻小节被误伤"
 
-    def test_material_section_with_stock_keeps_prose_and_gets_the_image(self):
-        """⑬库有信用中国截图 → 小节保留原文并由锚点通路插图，不清空。"""
+    def test_material_section_with_stock_becomes_image_only(self):
+        """⑬库有信用中国截图 → 图就是全部内容：锚点插图保留，模型编的描述性正文照删
+        （2026-08-13 用户口径：贴了照片就够了，不需要补充文本内容）。"""
         out = {"b3": self._CREDIT_SECTION}
         state = {"outline": {"chapters": [_chapter("b3", "资格文件", [])]},
                  "read": {}, "run_input": {"credentials": [
@@ -234,15 +235,20 @@ class TestPlaceCertificates:
         result = place_certificates(out, state)
         html = result["b3"]
         assert 'data-file-id="cx1"' in html
-        assert "本项提供投标截止时间前" in html, "有货时正文不该被清"
+        assert "见下图" in html
+        assert "本项提供投标截止时间前" not in html, "有货时模型编的正文也要删——图就是全部"
+        assert "我方不存在被暂停" not in html
 
-    def test_material_section_with_a_real_image_is_left_alone(self):
-        """⑭节里已有 <img>（用户在编辑器手插过）→ 有真材料，不清。"""
+    def test_material_section_with_a_real_image_keeps_the_image(self):
+        """⑭节里已有 <img>（用户手插过）→ 图保留、不打待补充；相邻小节一个字不动。"""
         out = {"b3": ('<h3>六、信用中国截图</h3><p><img src="data:image/png;base64,x" /></p>'
                       "<h3>七、其他</h3><p>y</p>")}
         state = {"outline": {"chapters": [_chapter("b3", "资格文件", [])]},
                  "read": {}, "run_input": {"credentials": []}}
-        assert place_certificates(out, state)["b3"] == out["b3"]
+        html = place_certificates(out, state)["b3"]
+        assert '<img src="data:image/png;base64,x" />' in html
+        assert "待补充" not in html
+        assert "<h3>七、其他</h3><p>y</p>" in html
 
     def test_material_replacement_never_touches_protected_form_chapters(self):
         """⑮表单模板章（raw 保真过闸）受保护：里面的「资格文件清单」是招标原文逐字
@@ -376,6 +382,41 @@ class TestPlaceCertificates:
                      {"title": "已签署授权委托书", "images": [{"fileId": "s1", "key": "k", "name": "n"}]}]}}
         html = place_certificates(out, state)["f2"]
         assert 'data-file-id="s1"' in html and "见下图" in html
+
+    def test_stocked_material_section_is_image_only_even_without_material_words(self):
+        """㉗2026-08-13 用户实测原样：「一、营业执照及主体资格证明文件」（标题不带
+        截图/扫描件字样）下执照图已就位，模型又补了整段声明+材料清单表格——
+        贴了照片就够了，文本一律删；「见下图」引导行保留。"""
+        out = {"b6": ("<h3>一、营业执照及主体资格证明文件</h3>"
+                      "<p>我方（供应商名称：（待补充：供应商全称））郑重声明并承诺：具备法定主体资格。</p>"
+                      "<table><tr><td>序号</td><td>证明文件名称</td></tr>"
+                      "<tr><td>1</td><td>企业法人营业执照（副本）</td></tr></table>"
+                      "<p>我方确认：响应文件中所有涉及供应商名称的表述均与营业执照登记名称完全一致。</p>"
+                      "<h3>二、其他说明</h3><p>保留内容</p>")}
+        state = {"outline": {"chapters": [_chapter("b6", "资格文件", [])]},
+                 "read": {}, "run_input": {"credentials": [
+                     {"title": "上海安几科技有限公司营业执照",
+                      "images": [{"fileId": "f1", "key": "k1", "name": "n"}]}]}}
+        html = place_certificates(out, state)["b6"]
+        assert 'data-file-id="f1"' in html and "见下图" in html
+        assert "郑重声明并承诺" not in html, "图下面模型编的声明没删干净"
+        assert "证明文件名称" not in html, "模型编的材料清单表格没删"
+        assert "完全一致" not in html
+        assert "<h3>二、其他说明</h3><p>保留内容</p>" in html, "相邻小节被误伤"
+
+    def test_material_placed_elsewhere_leaves_a_pointer_not_a_placeholder(self):
+        """㉘该组材料已在别章就位（全局只放第一处）→ 本节留一行去向说明，
+        既不重复插图撑大文件，也不误导成「待补充」。"""
+        out = {"b3": "<h3>一、营业执照副本扫描件</h3><p>说明文字。</p>",
+               "b7": "<h3>一、营业执照存档件</h3><p>另一处的说明。</p>"}
+        state = {"outline": {"chapters": [_chapter("b3", "资格文件", []), _chapter("b7", "附件", [])]},
+                 "read": {}, "run_input": {"credentials": [
+                     {"title": "营业执照", "images": [{"fileId": "f1", "key": "k1", "name": "n"}]}]}}
+        result = place_certificates(out, state)
+        assert 'data-file-id="f1"' in result["b3"]
+        assert 'data-file-id="f1"' not in result["b7"]
+        assert "已插入本文件前文对应章节" in result["b7"]
+        assert "待补充" not in result["b7"]
 
     def test_word_list_matches_global_constraints_literal(self):
         """词表字面量必须与 web 侧 lib/cert-keywords.ts 逐字同形（双端同表约定的锚点）。

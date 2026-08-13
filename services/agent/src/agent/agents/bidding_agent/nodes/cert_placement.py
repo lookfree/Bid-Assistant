@@ -165,13 +165,18 @@ def _place_by_anchor(result: dict[str, str], ordered_cids: list[str],
         result[cid] = html
 
 
-# 材料小节：标题带这些词的小节，内容**只能是材料本身**（截图/扫描件），不存在"写出来"的正文
-_MATERIAL_HEAD = re.compile(r"截图|扫描件|复印件|证明材料")
+# 材料小节 = 标题点名了词表里某个证照组的小节，内容**只能是材料本身**（图），不存在
+# "写出来"的正文。原先还要求标题带 截图/扫描件/复印件/证明材料 字样——
+# 「一、营业执照及主体资格证明文件」一个都不带，模型照样在执照图下面编了整段
+# 声明+材料清单表格（2026-08-13 用户实测：有图就够了，文本一律不要）。
 # 全部标题层级都要进边界表——只认 h3-h6 的话，材料小节后面跟着 <h2>（渲染层明确防御过的
 # 模型跑偏产物）时切割端点会一路滑到章尾，h2 连同其后所有无关正文被静默删光
 # （评审 2026-08-13 CONFIRMED 复现）。h1/h2 只当**边界**，不当材料小节候选。
 _HX = re.compile(r"<h([1-6])[^>]*>(.*?)</h\1>", re.S)
 _MATERIAL_MIN_LEVEL = 3
+# 材料节保留内容：带占位图的段落，和「【XX】见下图：」引导行
+_P_BLOCK = re.compile(r"<p[^>]*>.*?</p>", re.S)
+_SEE_IMG_LINE = re.compile(r"^【[^】]{1,24}】见下图：?$")
 
 
 def _strip_section_no(text: str) -> str:
@@ -188,16 +193,30 @@ def _in_stock(credentials: list[dict], group: str) -> bool:
                for c in credentials)
 
 
+def _material_body(span: str, label: str, group: str, stocked: bool) -> str:
+    """材料节正文的三态（2026-08-13 用户口径：贴了图就够了，不需要文本内容）：
+    · 节内有图（锚点已就位/用户手插）→ 只留「见下图」引导行与带图段落，模型编的
+      声明/材料清单表格全部删掉；
+    · 无图但该组材料已在**别的章**就位（全局只放第一处）→ 一行去向说明，不误导成缺货；
+    · 无图也无货 → 一行待补充。"""
+    if "<img" in span:
+        keep = [b for b in _P_BLOCK.findall(span)
+                if "<img" in b or _SEE_IMG_LINE.match(_TAG.sub("", b).strip())]
+        return "\n" + "\n".join(keep) + "\n"
+    if stocked:
+        return f"\n<p>（{_esc(label)}扫描件已插入本文件前文对应章节。）</p>\n"
+    return f"\n<p>（待补充：{_esc(label)}）</p>\n"
+
+
 def _replace_missing_materials(result: dict[str, str], ordered_cids: list[str],
                                credentials: list[dict], noted: set[tuple[str, str]]) -> None:
-    """材料小节而资料库没有对应材料 → 该节正文整体换成一行「（待补充：XX）」。
+    """材料小节（标题点名已知证照组）的正文由代码接管，见 _material_body 三态。
 
     模型编不出材料本身，只能编一段像模像样的描述、甚至替投标人作保证（「经查，我方
-    不存在被暂停或取消投标资格…」——2026-08-13 云上江西实测，用户口径：多余内容，
-    宁可空着待补充）。提示词拦不住这种脑补，删除由代码保证。
-    只动**命中已知证照组**的小节——组外材料判不了库存，不乱删；节内已有 <img>
-    （用户手插过/锚点已就位）视为有货不动。noted 记录 (章id, 组名)，章尾追加通路
-    据此不再重复一条待补充。原地更新 result。"""
+    不存在被暂停或取消投标资格…」——2026-08-13 云上江西实测）；有图时它也会在图下面
+    补一整段声明+材料清单表格（同日用户实测：多余内容，图就是全部）。提示词拦不住
+    这种脑补，删除由代码保证。组外材料判不了库存，不乱动。
+    noted 记录 (章id, 组名)，章尾追加通路据此不再重复一条待补充。原地更新 result。"""
     for cid in ordered_cids:
         html = result.get(cid)
         if not html:
@@ -210,19 +229,20 @@ def _replace_missing_materials(result: dict[str, str], ordered_cids: list[str],
             if cuts and m.start() < cuts[-1][1]:
                 # 已落在上一刀的清除范围里（材料小节嵌套：h3 财务报表下挂 h4 资产负债表）：
                 # 再切一刀会与父刀重叠，重组时父刀吞掉子标题、子刀的待补充成了无头孤行
-                # （评审 2026-08-13 CONFIRMED 复现）。父级一行待补充已覆盖整节。
+                # （评审 2026-08-13 CONFIRMED 复现）。父级一刀已覆盖整节。
                 continue
             text = _TAG.sub("", m.group(2))
-            if not _MATERIAL_HEAD.search(text):
-                continue
             group = _group_of(text)
-            if group is None or _in_stock(credentials, group):
-                continue   # 有货的小节由锚点通路插图，正文保留
-            end = next((n.start() for n in heads[i + 1:] if int(n.group(1)) <= int(m.group(1))), len(html))
-            if "<img" in html[m.end():end]:
+            # 要写的文书（授权书）不是材料节：它的小节正文就是表单本身，三态接管会把
+            # 表单正文当"模型编的说明"删光，只剩一张签署扫描件
+            if group is None or group in _WRITABLE_GROUPS:
                 continue
-            cuts.append((m.end(), end, f"\n<p>（待补充：{_esc(_strip_section_no(text))}）</p>\n"))
-            noted.add((cid, group))
+            end = next((n.start() for n in heads[i + 1:] if int(n.group(1)) <= int(m.group(1))), len(html))
+            span = html[m.end():end]
+            body = _material_body(span, _strip_section_no(text), group, _in_stock(credentials, group))
+            cuts.append((m.end(), end, body))
+            if "<img" not in span and not _in_stock(credentials, group):
+                noted.add((cid, group))
         if cuts:
             parts, last = [], 0
             for start, end, rep in cuts:
