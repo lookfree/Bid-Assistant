@@ -199,6 +199,76 @@ class TestPlaceCertificates:
         result = place_certificates(out, state)
         assert 'data-file-id="f1"' not in result["b1"], "图被插进了表格，渲染时会整个丢掉"
 
+    # 2026-08-13 云上江西实测原文：库无信用中国截图，模型在「六、信用中国截图」下编了
+    # 整段描述、甚至替投标人作保证。材料小节测试都用这个真实形状。
+    _CREDIT_SECTION = (
+        "<h3>六、信用中国截图</h3>"
+        "<p>本项提供投标截止时间前从“信用中国”网站（www.creditchina.gov.cn）查询的信用记录截图。截图内容包括：</p>"
+        "<ul><li>未被列入“失信被执行人”名单；</li><li>未被列入“经营异常名录”。</li></ul>"
+        "<p>经查，我方不存在被暂停或取消投标资格、责令停业、破产等情形。</p>"
+        "<p>(附：信用中国查询截图)</p>"
+        "<h3>七、单位负责人无关联关系声明</h3>"
+        "<p>我方声明：参与本次响应的供应商单位负责人与我方单位负责人不是同一人。</p>")
+
+    def test_missing_material_section_becomes_a_placeholder_line(self):
+        """⑫材料小节（信用中国截图）库无货 → 正文换成一行待补充，模型编的描述与
+        「经查，我方不存在…」这类替用户作的保证**整节删掉**（2026-08-13 用户口径：
+        多余内容，宁可空着待补充）。相邻小节一个字不动。"""
+        out = {"b3": self._CREDIT_SECTION}
+        state = {"outline": {"chapters": [_chapter("b3", "资格文件", [])]},
+                 "read": {}, "run_input": {"credentials": []}}
+        result = place_certificates(out, state)
+        html = result["b3"]
+        assert "<h3>六、信用中国截图</h3>" in html, "小节标题必须保留"
+        assert "（待补充：信用中国截图）" in html
+        assert "我方不存在被暂停" not in html, "替用户作的保证没删干净"
+        assert "creditchina" not in html
+        assert "单位负责人与我方单位负责人不是同一人" in html, "相邻小节被误伤"
+
+    def test_material_section_with_stock_keeps_prose_and_gets_the_image(self):
+        """⑬库有信用中国截图 → 小节保留原文并由锚点通路插图，不清空。"""
+        out = {"b3": self._CREDIT_SECTION}
+        state = {"outline": {"chapters": [_chapter("b3", "资格文件", [])]},
+                 "read": {}, "run_input": {"credentials": [
+                     {"title": "信用中国查询截图", "images": [{"fileId": "cx1", "key": "k", "name": "n"}]}]}}
+        result = place_certificates(out, state)
+        html = result["b3"]
+        assert 'data-file-id="cx1"' in html
+        assert "本项提供投标截止时间前" in html, "有货时正文不该被清"
+
+    def test_material_section_with_a_real_image_is_left_alone(self):
+        """⑭节里已有 <img>（用户在编辑器手插过）→ 有真材料，不清。"""
+        out = {"b3": ('<h3>六、信用中国截图</h3><p><img src="data:image/png;base64,x" /></p>'
+                      "<h3>七、其他</h3><p>y</p>")}
+        state = {"outline": {"chapters": [_chapter("b3", "资格文件", [])]},
+                 "read": {}, "run_input": {"credentials": []}}
+        assert place_certificates(out, state)["b3"] == out["b3"]
+
+    def test_material_replacement_never_touches_protected_form_chapters(self):
+        """⑮表单模板章（raw 保真过闸）受保护：里面的「资格文件清单」是招标原文逐字
+        保真的，清掉等于破坏保真——protected 集合由流水线按 templates.raw 传入。"""
+        out = {"b6": self._CREDIT_SECTION}
+        state = {"outline": {"chapters": [_chapter("b6", "承诺函与声明", [])]},
+                 "read": {}, "run_input": {"credentials": []}}
+        result = place_certificates(out, state, protected=frozenset({"b6"}))
+        assert result["b6"] == out["b6"]
+
+    def test_groupless_material_heading_is_left_alone(self):
+        """⑯词表不认识的材料（「某某认证材料复印件」）判不了库存 → 不乱删，维持原状。"""
+        out = {"b3": "<h3>三、某某认证材料复印件</h3><p>说明文字。</p>"}
+        state = {"outline": {"chapters": [_chapter("b3", "资格文件", [])]},
+                 "read": {}, "run_input": {"credentials": []}}
+        assert place_certificates(out, state)["b3"] == out["b3"]
+
+    def test_replaced_section_suppresses_the_chapter_tail_duplicate(self):
+        """⑰小节里已留待补充，条款交集通路不得在章尾再来一条同名待补充。"""
+        out = {"b3": self._CREDIT_SECTION}
+        state = {"outline": {"chapters": [_chapter("b3", "资格文件", ["sec-1-c1"])]},
+                 "read": _read_with("提供信用中国截图证明材料", ["sec-1-c1"]),
+                 "run_input": {"credentials": []}}
+        result = place_certificates(out, state)
+        assert result["b3"].count("（待补充：信用中国截图）") == 1
+
     def test_word_list_matches_global_constraints_literal(self):
         """词表字面量必须与 web 侧 lib/cert-keywords.ts 逐字同形（双端同表约定的锚点）。
         2026-08-11 扩入财务与资格类材料——康恒那单实测报「近三年经审计的资产负债表未提供」，
@@ -206,7 +276,7 @@ class TestPlaceCertificates:
         assert CERT_KEYWORDS == ("营业执照", "资质证书", "授权书", "法定代表人身份证明",
                                  "检测证书", "许可证",
                                  "审计报告", "资产负债表", "利润表", "财务报表", "纳税证明",
-                                 "社保证明", "银行资信证明", "开户许可证")
+                                 "社保证明", "银行资信证明", "开户许可证", "信用中国截图")
 
     def test_the_two_sides_may_use_different_wording_for_the_same_material(self):
         """归组的意义所在：招标要求写「法定代表人身份证明」、用户把条目命名成「法人身份证」，

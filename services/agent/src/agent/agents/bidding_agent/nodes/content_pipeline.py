@@ -581,7 +581,9 @@ async def run_content_pipeline(ctx, state: dict) -> dict[str, str]:
     # 证照定向插章 post-pass（Task 4,计划③）：在缓存读写之外单独跑——fresh 章刚写完、
     # 缓存命中章刚取出/补写章刚补完，此刻统一现算一遍插图，绝不写回上面的章节缓存
     # （只能跑一次：place_certificates 是纯追加、不去重，对同一 out 跑两遍会把证照块插两份）。
-    out = place_certificates(out, state)
+    # protected = 表单模板章（招标原文逐字保真过闸）：材料小节清空通路绝不动它们的文字
+    out = place_certificates(out, state, protected=frozenset(
+        cid for cid, tpl in (shared.get("templates") or {}).items() if (tpl or {}).get("raw")))
     if missing:
         logger.error("代码编排收尾仍缺 %d 章：%s（前端可免费补齐）", len(missing), missing)
         # 漏章落 observability 事件（与旧引擎同一事件名，复盘查询口径不变）

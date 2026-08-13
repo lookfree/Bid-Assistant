@@ -41,6 +41,7 @@ CERT_GROUPS: tuple[tuple[str, ...], ...] = (
     ("社保证明", "社保证明", "社会保险", "社保缴纳"),
     ("银行资信证明", "银行资信证明", "资信证明", "银行资信"),
     ("开户许可证", "开户许可证", "基本账户", "开户证明"),
+    ("信用中国截图", "信用中国", "信用记录截图", "信用查询截图"),
 )
 
 # 标准名列表（展示用，也是双端同表断言的锚点）。
@@ -136,6 +137,57 @@ def _place_by_anchor(result: dict[str, str], ordered_cids: list[str],
         result[cid] = html
 
 
+# 材料小节：标题带这些词的小节，内容**只能是材料本身**（截图/扫描件），不存在"写出来"的正文
+_MATERIAL_HEAD = re.compile(r"截图|扫描件|复印件|证明材料")
+_HX = re.compile(r"<h([3-6])[^>]*>(.*?)</h\1>", re.S)
+
+
+def _strip_section_no(text: str) -> str:
+    """「六、信用中国截图」→「信用中国截图」：待补充提示里不带小节编号。"""
+    return re.sub(r"^[（(]?[一二三四五六七八九十\d]+[）)、.．\s]*", "", text).strip()
+
+
+def _in_stock(credentials: list[dict], group: str) -> bool:
+    aliases = _aliases_of(group)
+    return any(any(a in str(c.get("title") or "") for a in aliases) for c in credentials)
+
+
+def _replace_missing_materials(result: dict[str, str], ordered_cids: list[str],
+                               credentials: list[dict], noted: set[tuple[str, str]]) -> None:
+    """材料小节而资料库没有对应材料 → 该节正文整体换成一行「（待补充：XX）」。
+
+    模型编不出材料本身，只能编一段像模像样的描述、甚至替投标人作保证（「经查，我方
+    不存在被暂停或取消投标资格…」——2026-08-13 云上江西实测，用户口径：多余内容，
+    宁可空着待补充）。提示词拦不住这种脑补，删除由代码保证。
+    只动**命中已知证照组**的小节——组外材料判不了库存，不乱删；节内已有 <img>
+    （用户手插过/锚点已就位）视为有货不动。noted 记录 (章id, 组名)，章尾追加通路
+    据此不再重复一条待补充。原地更新 result。"""
+    for cid in ordered_cids:
+        html = result.get(cid)
+        if not html:
+            continue
+        heads = list(_HX.finditer(html))
+        cuts: list[tuple[int, int, str]] = []
+        for i, m in enumerate(heads):
+            text = _TAG.sub("", m.group(2))
+            if not _MATERIAL_HEAD.search(text):
+                continue
+            group = _group_of(text)
+            if group is None or _in_stock(credentials, group):
+                continue   # 有货的小节由锚点通路插图，正文保留
+            end = next((n.start() for n in heads[i + 1:] if int(n.group(1)) <= int(m.group(1))), len(html))
+            if "<img" in html[m.end():end]:
+                continue
+            cuts.append((m.end(), end, f"\n<p>（待补充：{_esc(_strip_section_no(text))}）</p>\n"))
+            noted.add((cid, group))
+        if cuts:
+            parts, last = [], 0
+            for start, end, rep in cuts:
+                parts += [html[last:start], rep]
+                last = end
+            result[cid] = "".join(parts) + html[last:]
+
+
 def _matched_keywords(read: dict, clause_ids: set[str]) -> list[str]:
     """本章命中的证照词（去重,保持词表序）：资格/商务类条目 title 命中词表某词,且该条目
     clause_ids 与本章子项 clause_ids（调用方传入）有交集——定位手法与 content.py 的
@@ -155,12 +207,16 @@ def _matched_keywords(read: dict, clause_ids: set[str]) -> list[str]:
     return [kw for kw in CERT_KEYWORDS if kw in matched]
 
 
-def place_certificates(out: dict[str, str], state: dict) -> dict[str, str]:
-    """post-pass 入口（纯函数,返回新 dict,不改动入参）。两道通路，共享同一份 placed 去重：
+def place_certificates(out: dict[str, str], state: dict,
+                       protected: frozenset[str] = frozenset()) -> dict[str, str]:
+    """post-pass 入口（纯函数,返回新 dict,不改动入参）。三道通路，共享去重：
     ① 锚点定向就位（_place_by_anchor）：营业执照进「营业执照」小节、身份证进授权书的
        「附：…扫描件」行下——每个条目全局只放第一处；
-    ② 条款交集章尾追加（原有通路）：招标要求命中词表 × 章 clause_ids 交集 × 库存，
-       库有见下图、库无待补充；①已放过的条目这里不再重复。
+    ② 材料小节清空（_replace_missing_materials）：库无货的材料小节正文换成一行待补充——
+       模型编的"像模像样的描述"整节删掉（2026-08-13 用户口径）。protected（表单模板章，
+       内容是招标原文逐字保真）绝不参与此通路，删它们的文字等于破坏保真；
+    ③ 条款交集章尾追加（原有通路）：招标要求命中词表 × 章 clause_ids 交集 × 库存，
+       库有见下图、库无待补充；①已放过的条目、②已留过待补充的组不再重复。
     定位不到章或词表不命中 → 该章原样不动（附录天然兜底——appendix 只收没去处的，
     见 credentials_chapter.append_credentials_chapter）。sys-creds 结构性排除，双重兜底
     （id 与 system 标记，与 content_pipeline.py 净化系统章同一手法）——绝不触碰。"""
@@ -175,7 +231,9 @@ def place_certificates(out: dict[str, str], state: dict) -> dict[str, str]:
     ordered = [c.get("id") for c in outline.get("chapters") or []
                if c.get("id") in chapters and c.get("id") in result]
     placed: set[int] = set()
+    noted: set[tuple[str, str]] = set()
     _place_by_anchor(result, ordered, credentials, placed)
+    _replace_missing_materials(result, [c for c in ordered if c not in protected], credentials, noted)
     for cid in ordered:
         html = result.get(cid)
         ch = chapters.get(cid)
@@ -186,6 +244,8 @@ def place_certificates(out: dict[str, str], state: dict) -> dict[str, str]:
             continue
         blocks = []
         for kw in keywords:
+            if (cid, kw) in noted:
+                continue   # 材料小节里已留了待补充，章尾不再重复一条
             aliases = _aliases_of(kw)
             entry = next((c for c in credentials
                           if any(a in str(c.get("title") or "") for a in aliases)), None)
