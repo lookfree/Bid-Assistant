@@ -313,6 +313,9 @@ def test_recognized_image_text_counts_as_visible_content():
     # 且把"签章栏空白"这个看得见的事实塞进无法核验——两条配套纪律必须在场
     assert "标题只冠核不了的那个维度" in SCAN_REVIEW_RULE
     assert "识别文字里看得见的问题走正常判定" in SCAN_REVIEW_RULE
+    # 条件豁免（2026-08-13 实测）：模板明写「法定代表人参加采购，不用提供授权书」，
+    # 审查却对着授权书空白喊"须签章否则不过"——豁免条款必须进判定
+    assert "条件豁免条款" in SCAN_REVIEW_RULE and "不用提供授权书" in SCAN_REVIEW_RULE
     note = scan_pages_note([{"name": "响应文件.doc", "embedded_images": 1, "recognized_images": 10}])
     assert "11 张内嵌图片" in note
     assert "10 张已识别为文字" in note and "视同可见" in note
