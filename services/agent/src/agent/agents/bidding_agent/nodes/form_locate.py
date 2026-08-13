@@ -136,8 +136,13 @@ def _chains(recent: tuple[int, ...] | None, num: tuple[int, ...]) -> bool:
     材料清单（「1.营业执照」「2.资质证书」）也因为接不上最近边界的编号而不成为边界。"""
     if recent is None:
         return False
-    if len(num) == len(recent) and num[:-1] == recent[:-1] and num[-1] == recent[-1] + 1:
-        return True
+    # 与 recent 的**同深祖先**比较递进：recent=(3,1) 时 (4,) 也是合法续接——只比同深会把
+    # 「3-1 之后的 4.xxx」拒掉，那一行就混进明细表的段里成了垃圾固定片段，保真检对着它
+    # 必杀所有如实填表的稿（评审 2026-08-13 CONFIRMED）。
+    if len(recent) >= len(num):
+        anc = recent[:len(num)]
+        if num[:-1] == anc[:-1] and num[-1] == anc[-1] + 1:
+            return True
     return num[:-1] == recent and num[-1] == 1
 
 
@@ -283,27 +288,31 @@ def _sub_index(hay: list[str], needle: list[str]) -> int:
     return -1
 
 
-def dedupe_nested(matches: dict[str, dict]) -> dict[str, str]:
-    """{章id: 命中段} → {章id: 模板原文}，**父段裁掉已被别章认领的子段**。
+def dedupe_nested(texts: dict[str, str]) -> dict[str, str]:
+    """{章id: 模板原文} → 同表，**从父段里摘掉已被别章认领的子块**。
 
     「3.报价一览表」的段天然包含「3-1.报价明细表」（一览与明细一套，单章场景必须如此）；
     但提纲把明细表也立了章时，两章各拿全套 → 明细表在标书里出现两遍（2026-08-13 云上
-    重跑实测）。子段被别章认领的，父段裁到子段起点，子段的编号行（「3-1.报价明细表」）
-    一并裁掉；没人认领时父段原样保留。"""
+    重跑实测）。两个要点（同日评审 CONFIRMED×2 返工）：
+    · 在**最终文本**上做，不挑命中路径——struct/条款路切出的父段同样会连带子块；
+    · 只**摘除子块本身**（含紧贴其前的编号行），不是裁断到子块起点——裁断会把后面
+      没人认领的兄弟表单（「3-2.配件报价表」）一起扔掉，一份招标要求的表单就此消失。"""
     out: dict[str, str] = {}
-    segs = list(matches.values())
-    for cid, seg in matches.items():
-        lines = list(seg["lines"])
-        cut = len(lines)
-        for other in segs:
-            if other is seg or not other["lines"]:
+    items = list(texts.items())
+    for cid, text in items:
+        lines = text.splitlines()
+        for ocid, otext in items:
+            other = otext.splitlines()
+            if ocid == cid or not other or len(other) > len(lines):
                 continue
-            idx = _sub_index(lines, other["lines"])
-            if 0 <= idx < cut:
-                cut = idx
-                if cut and _norm(str(other["name"])) in _norm(lines[cut - 1]):
-                    cut -= 1   # 子段的编号行紧贴其前，一并让给子章
-        out[cid] = segment_text({**seg, "lines": lines[:cut]})
+            idx = _sub_index(lines, other)
+            if idx < 0 or (idx == 0 and len(other) == len(lines)):
+                continue   # 找不到，或两章文本完全相同（互相摘会双双清空）
+            start = idx
+            if start and _norm(other[0]) in _norm(lines[start - 1]):
+                start -= 1   # 子块的编号行（「3-1.报价明细表」）紧贴其前，一并让给子章
+            lines = lines[:start] + lines[idx + len(other):]
+        out[cid] = "\n".join(lines)
     return out
 
 

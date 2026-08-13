@@ -13,7 +13,8 @@ from agent.agents.bidding_agent.prompts.content import (
     CHAPTER_DRAFT_PROMPT, REWRITE_PROMPT,
     DEVIATION_TABLE_GUIDE, TEMPLATE_GUIDE)
 from agent.agents.bidding_agent.nodes.form_locate import (
-    _looks_like_form_title, build_form_index, dedupe_nested, find_form_segment, slice_single_form)
+    _looks_like_form_title, build_form_index, dedupe_nested, find_form_segment,
+    segment_text, slice_single_form)
 from agent.rag import retrieve as rag_retrieve
 from agent.agents.bidding_agent.render.sanitize import strip_document_shell, strip_chat_wrapper, clean_internal_ids
 
@@ -116,6 +117,59 @@ def _format_chapter_secs(read: dict) -> list[str]:
     return [sec for sec in out if sec]
 
 
+def _is_deviation_chapter(chapter: dict, structure: list[dict]) -> bool:
+    """本章是不是偏离表章（模板保真的排除闸）——查**全量** required_structure 而非表单
+    子集：kind=table 的偏离构成项不在 form_items 里，只查子集会让它一边收偏离条目一边
+    被模板保真钉死，197 字空壳事故换条路复发（评审 2026-08-13 CONFIRMED）。
+    章题与构成项标题都用「偏离表」整词，**不是**裸「偏离」：「无偏离承诺函」是真表单，
+    裸词（含 _deviation_structure_ids 的旧口径）会把它的模板保护误杀掉（同日评审
+    CONFIRMED）。指引投递侧仍是裸词旧口径——那边多发一段指引是噪音，这边误杀是丢保护，
+    宽严各取所需。"""
+    if "偏离表" in (chapter.get("title") or ""):
+        return True
+    ref = chapter.get("structure_ref")
+    return any(s.get("id") == ref and "偏离表" in (s.get("title") or "") for s in structure)
+
+
+def _locate_form_text(chapter: dict, struct: dict | None, title: str,
+                      by_sec: dict[str, list[str]]) -> str:
+    """定位路一：条款所指的节，取全文后过**单份闸**（slice_single_form）——闸内只切出
+    与本章同名的那份，切不出就当没找到。旧的「整节直发」正是把整份采购公告喂成
+    "响应函模板"、再被保真机制逐字钉死的事故根源（2026-08-12 云上江西）。
+    「无边界=整段即单份」的直通道**只对读标登记的构成项开放**：items 的 clause_ids
+    是需求条款引用，指着的常是公告/须知——那些文本恰恰没有表单边界，直通道一开，
+    整段磋商须知就成了"报价函模板"（2026-08-13 潍坊回放实证）。
+    节按**文档序**（数值）排：字典序把 sec-10 排到 sec-2 前面，切割器按行序开闭段，
+    乱序文本会把行算错段（评审 2026-08-13）。"""
+    def join(cids: list) -> str:
+        secs = sorted({s for cid in cids if (s := _sec_of(cid))}, key=_sec_doc_order)
+        return "\n".join(t for sec in secs for t in by_sec.get(sec, []) if t)
+
+    struct_text = join(list((struct or {}).get("clause_ids") or []))
+    text = slice_single_form(struct_text, title, allow_whole=True) if struct_text else ""
+    if not text:
+        item_ids = [cid for it in _iter_items(chapter.get("items", []))  # 含小节:引用可挂第三层
+                    for cid in (it.get("clause_ids") or [])]
+        item_text = join(item_ids)
+        text = slice_single_form(item_text, title, allow_whole=False) if item_text else ""
+    return text
+
+
+def _no_template_entry(chapter: dict, struct: dict | None, title: str) -> dict | None:
+    """三条路都空时的留痕。**只有读标明确登记成表单构成项才提醒**：构词法只是猜，猜错时
+    那句「未找到本表单的规定格式」会原样印进交付的 docx，出现在一个根本不是表单的章开头
+    （2026-08-12 评审实证）。不带 TEMPLATE_GUIDE：十几行「务必照抄」的规则配一份不存在的
+    模板，等于请模型编一份出来满足规则。"""
+    if struct is None:
+        return None
+    logger.warning("no tender template located for form chapter %s (%s)", chapter.get("id"), title)
+    return {"raw": "", "brief": (
+        f"— 招标文件中**未能找到**本章「{title}」对应的格式原文。"
+        "请按通行格式起草，并在本章开头加一句醒目提示："
+        "「（注意：招标文件中未找到本表单的规定格式，以下为通用格式，"
+        "递交前请人工比对招标文件原文）」。")}
+
+
 def _template_entries(read: dict, outline: dict) -> dict[str, dict]:
     """【招标格式模板】按章精确抠取：招标自带格式（响应函/法代证明/报价一览表/声明函等）的章 →
     其对应原文段（按条款所属节整节取）。返回 {chapter_id: 模板段}，**只发给对应的那一章**——
@@ -135,50 +189,33 @@ def _template_entries(read: dict, outline: dict) -> dict[str, dict]:
     form_items = {s.get("id"): s for s in (read.get("required_structure") or []) if _is_form_item(s)}
     index = build_form_index(read)   # 全文表单边界索引，各章共用（见 form_locate.py 文档串）
     out: dict[str, dict] = {}
-    pending: list[tuple] = []          # (chapter, struct, title, 前两路已取到的文)
-    seg_matches: dict[str, dict] = {}  # find_form 命中的段，集齐后统一父子裁剪
+    pending: list[tuple] = []       # (chapter, struct, title)
+    located: dict[str, str] = {}    # 章id → 命中的模板文本（各路统一收，集齐后做父子去重）
+    structure = read.get("required_structure") or []
     for chapter in outline.get("chapters", []):
         struct = form_items.get(chapter.get("structure_ref"))
         title = chapter.get("title") or ""
         if struct is None and not _looks_like_form_title(title):
             continue
         # 偏离表章**绝不走模板保真**：它有自己的「偏离表指引+条目数据」通路，产出本该是
-        # 填满响应的表。构词法当初特意不收「偏离表」，但读标把它登记成 kind=form 时
-        # struct 这条路绕过了构词法——保真把模型填好的偏离表判成"改写模板"，
-        # 打回招标的空表头（2026-08-13 云上重跑实测：偏离表章只剩 197 字空壳）。
-        if _DEVIATION_KEYWORD in title or (struct is not None and _DEVIATION_KEYWORD in (struct.get("title") or "")):
+        # 填满响应的表——保真会把模型填好的偏离表判成"改写模板"，打回招标的空表头
+        # （2026-08-13 云上重跑实测：偏离表章只剩 197 字空壳）。判定见 _is_deviation_chapter。
+        if _is_deviation_chapter(chapter, structure):
             continue
-        # 一：条款所指的节，取全文后必须过**单份闸**（slice_single_form）——闸内只切出
-        # 与本章同名的那份，切不出就当没找到。旧的「整节直发」正是把整份采购公告喂成
-        # "响应函模板"、再被保真机制逐字钉死的事故根源（2026-08-12 云上江西）。
-        # 「无边界=整段即单份」的直通道**只对读标登记的构成项开放**：items 的 clause_ids
-        # 是需求条款引用，指着的常是公告/须知——那些文本恰恰没有表单边界，直通道一开，
-        # 整段磋商须知就成了"报价函模板"（2026-08-13 潍坊回放实证）。
-        # 按**文档序**（数值）排：字典序会把 sec-10 排到 sec-2 前面——单份闸的切割器按
-        # 行序开闭段，喂进乱序文本会把行算错段（评审 2026-08-13）
-        def _sec_join(cids: list) -> str:
-            secs = sorted({s for cid in cids if (s := _sec_of(cid))}, key=_sec_doc_order)
-            return "\n".join(t for sec in secs for t in by_sec.get(sec, []) if t)
-
-        struct_text = _sec_join(list((struct or {}).get("clause_ids") or []))
-        text = slice_single_form(struct_text, title, allow_whole=True) if struct_text else ""
-        if not text:
-            item_ids = [cid for it in _iter_items(chapter.get("items", []))  # 含小节:引用可挂第三层
-                        for cid in (it.get("clause_ids") or [])]
-            item_text = _sec_join(item_ids)
-            text = slice_single_form(item_text, title, allow_whole=False) if item_text else ""
+        text = _locate_form_text(chapter, struct, title, by_sec)
         if not text:
             # 二：全文表单边界索引按章名取单份（「1.响应函」这类编号行、节标题、
             # 无编号表单名行都是边界；含子编号归并、复合章名拆部件匹配）。
-            # 先记段不取文——集齐各章命中后做父子裁剪（一览表章不再连带明细表章那份）
-            seg = find_form_segment(index, title)
-            if seg is not None:
-                seg_matches[chapter.get("id")] = seg
-        pending.append((chapter, struct, title, text))
+            text = segment_text(find_form_segment(index, title))
+        pending.append((chapter, struct, title))
+        if text:
+            located[chapter.get("id")] = text
 
-    seg_texts = dedupe_nested(seg_matches)
-    for chapter, struct, title, text in pending:
-        text = text or seg_texts.get(chapter.get("id"), "")
+    # 父子去重在**最终文本**上做,不分命中路径——struct/条款路切出的父段同样连带子块
+    #（评审 2026-08-13 CONFIRMED）;只摘被认领的子块,未被认领的兄弟表单留在父段。
+    located = dedupe_nested(located)
+    for chapter, struct, title in pending:
+        text = located.get(chapter.get("id"), "")
         cap, note = _TEMPLATE_CHAPTER_CHARS, f"本章「{title}」对应的招标格式原文"
         exact = bool(text)   # 精确命中 = 这一段**就是本章那一份表单**，可以逐字校验
         if not text:
@@ -188,20 +225,9 @@ def _template_entries(read: dict, outline: dict) -> dict[str, dict]:
             cap, note = _FORMAT_FALLBACK_CHARS, ("招标文件的「格式」章全文（未能定位到本章"
                                                  f"「{title}」的具体表单，请从中找出对应的一份照它写）")
         if not text:
-            # 三条路都空。**只有读标明确把它登记成表单构成项时才留痕**：构词法只是猜，
-            # 猜错时那句「未找到本表单的规定格式」会原样印进交付的 docx，出现在一个根本不是
-            # 表单的章开头（2026-08-12 评审实证）。猜错就安静跳过，猜对才提醒。
-            # 不带 TEMPLATE_GUIDE：那段开头写着「以下为招标文件自带的格式模板原文」，
-            # 后面却跟着「没找到原文」，十几行「务必照抄」的规则配一份不存在的模板，
-            # 反而是在请模型编一份出来满足规则。
-            if struct is not None:
-                out[chapter.get("id")] = {"raw": "", "brief": (
-                                          f"— 招标文件中**未能找到**本章「{title}」对应的格式原文。"
-                                          "请按通行格式起草，并在本章开头加一句醒目提示："
-                                          "「（注意：招标文件中未找到本表单的规定格式，以下为通用格式，"
-                                          "递交前请人工比对招标文件原文）」。")}
-                logger.warning("no tender template located for form chapter %s (%s)",
-                               chapter.get("id"), title)
+            entry = _no_template_entry(chapter, struct, title)
+            if entry is not None:
+                out[chapter.get("id")] = entry
             continue
         # raw 只在**精确命中本章那一份表单**时给：走了格式章整章兜底的话，这一段里装着
         # 报价函+授权书+声明函等好几份，而模型正确的做法是只写其中一份——拿整章去逐字校验，

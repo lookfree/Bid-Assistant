@@ -415,7 +415,7 @@ async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, share
     """写一章：断点命中直接用；否则限流下调模型，产出清洗后（必要时追一轮扩写）落缓存。
     残章/截断稿重试一次（截断稿绝不入库——半章缓存 24h 等于把残稿钉死,评审 2026-08-08）；
     两次失败 → 记缺章。简报构造/清洗抛错只废本章,绝不连累其他 19 章（gather 无隔离,评审）。"""
-    from agent.agents.bidding_agent.nodes.form_fidelity import first_missing_segment, keeps_template, template_html
+    from agent.agents.bidding_agent.nodes.form_fidelity import first_missing_segment, template_html
     from agent.agents.bidding_agent.render.sanitize import (
         clean_internal_ids, strip_chat_wrapper, strip_document_shell)
 
@@ -477,12 +477,12 @@ async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, share
     # 保真校验：模型只许填空。改写/漏行/乱序 → 丢弃产出，零模型拿招标原文渲染。
     # 交一份留着空位的招标原格式，比交一份措辞被改写、看着很完整的表单安全得多——
     # 后者要到评标现场才发现对不上（2026-08-11 潍坊那单实测：7 条固定条款被写成 6 条新措辞）。
-    if tpl_raw and not keeps_template(html, tpl_raw):
+    miss = first_missing_segment(html, tpl_raw) if tpl_raw else None
+    if tpl_raw and miss is not None:
         # 拒稿必须留痕（2026-08-13 云上实测教训）：企业信息齐全、模型填好了空，交付却
         # 退回留白模板——被拒原稿此前直接丢弃，误杀无从诊断。记第一个对不上的固定片段
         # 与稿件头部，拿真实样本才能校准豁免规则/提示词，让填空稿稳定存活。
         from agent.agents.bidding_agent.nodes.common import strip_inline_images as _strip_imgs
-        miss = first_missing_segment(html, tpl_raw)
         logger.warning("章 %s 改写了招标格式模板（首个对不上片段: %s），弃用产出，改用招标原文渲染",
                        cid, (miss or "")[:60])
         await _log_pg(ctx, "form_fidelity_reject", {
