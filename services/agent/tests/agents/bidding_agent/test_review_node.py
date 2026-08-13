@@ -336,6 +336,26 @@ def test_recognized_image_text_counts_as_visible_content():
     assert "11 张已识别为文字" in clean
 
 
+def test_review_scope_is_presence_and_content_not_carrier_attributes():
+    """2026-08-14 用户拍板：审查重心＝材料有没有、内容对不对；「是否原件彩色扫描/印章签字
+    真伪/骑缝章/截图覆盖维度/查询日期有效期」这类载体属性不是审查职责——上一版报告 6 条
+    无法核验里 3 条是这类（营业执照/财务报表/信用中国内容明明识别齐全），用户体感＝审查
+    看不见材料。复核官同样要认这条：超出职责的发现直接撤。"""
+    from agent.agents.bidding_agent.prompts.review import (
+        REVIEW_VERIFY_PROMPT, SCAN_REVIEW_RULE)
+
+    assert "审查重心" in SCAN_REVIEW_RULE
+    assert "载体属性" in SCAN_REVIEW_RULE
+    assert "有没有" in SCAN_REVIEW_RULE and "对不对" in SCAN_REVIEW_RULE
+    # 图片上的章几乎不会被识别成文字：「识别文字里没见到章」不构成「未盖章」的证据
+    # （2026-08-14 实测：承诺函识别文字未见公章 → 被报成"盖章真伪无法核验，若确无则须补盖"）
+    assert "不构成" in SCAN_REVIEW_RULE
+    # 旧口径的残留必须清干净：载体属性维度不再「保留无法核验」
+    assert "才保留「无法核验」" not in SCAN_REVIEW_RULE
+    # 复核官新增反驳方向：超出审查职责（载体属性）→ drop
+    assert "超出审查职责" in REVIEW_VERIFY_PROMPT
+
+
 _TWO_FINDINGS = {
     "score": 60, "items": [
         {"level": "中风险", "tone": "warning", "title": "无法核验（扫描件）：营业执照原件扫描件",
