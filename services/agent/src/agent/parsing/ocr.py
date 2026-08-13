@@ -101,6 +101,12 @@ def ocr_configured() -> bool:
     return bool((settings.ocr_base_url or "").strip())
 
 
+# 旧格式后缀单点（评审 2026-08-13：起表判据、就地转换触发两处各写一份会漂移——
+# 往词表加 ".wps" 却漏改转换分支，OLE 字节直喂 docx 解析，识别静默失效还报误导性警告）。
+# 只收 .doc：.xls 的转换目标是 xlsx，不是 docx_body_images 吃得下的东西。
+_LEGACY_DOC_SUFFIX = ".doc"
+
+
 def _splices_docx_images(key: str) -> bool:
     """这个 key 的内嵌图会不会真被送去识别。.docx 与 **.doc** 都认：.doc 解析时的转换
     产物早已释放，识别侧在共享预算内**就地再转一次**（2026-08-13 用户实测：
@@ -108,11 +114,11 @@ def _splices_docx_images(key: str) -> bool:
     当初"先不做"的权衡翻案——60s 转换吃在 OCR 预算里，只对有内嵌图的 .doc 发生）。
     判据单点在此——起算预算与真发请求必须同口径，否则会白起一张 20 分钟的表
     （首份要识别的文件之后的下载都吃预算）。"""
-    return key.lower().endswith((".docx", ".doc"))
+    return key.lower().endswith((".docx", _LEGACY_DOC_SUFFIX))
 
 
 def needs_ocr(doc: ParsedDoc, key: str) -> bool:
-    """这份文件要不要真发 OCR（部署了识别服务 + 确实有看得见的活可干：扫描页或 .docx 内嵌图）。
+    """这份文件要不要真发 OCR（部署了识别服务 + 确实有活可干：扫描页或 .docx/.doc 内嵌图）。
     调用方据此**惰性**起算时长预算：不含第一份要识别的文件到手之前的下载与解析
     （之后的二次下载与识别都吃在预算内，见 _TOTAL_BUDGET_S）。"""
     return ocr_configured() and bool(scanned_page_indices(doc)
@@ -186,7 +192,12 @@ async def ocr_docx_images(doc: ParsedDoc, key: str,
         return doc
     try:
         data = await asyncio.to_thread(read_bytes, key)
-        if key.lower().endswith(".doc"):
+        if key.lower().endswith(_LEGACY_DOC_SUFFIX):
+            # 转换前再核一次预算：大文件下载可能刚把余额吃光，此刻不拦，最重的
+            # 60s soffice 转换+整本重解析还会照跑，最后一张图都发不出去（评审 2026-08-13）
+            if time.monotonic() >= deadline:
+                logger.warning("内嵌图片 OCR 预算已用光，跳过 .doc 转换 key=%s", key)
+                return doc
             from agent.parsing.parsers import _convert_legacy
             data, _ = await asyncio.to_thread(_convert_legacy, data, "doc")
         blocks, images = await asyncio.to_thread(docx_body_images, data)

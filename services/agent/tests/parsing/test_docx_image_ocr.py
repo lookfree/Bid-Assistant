@@ -356,3 +356,24 @@ def test_needs_ocr_counts_a_doc_with_embedded_images(monkeypatch):
     doc = parse_bytes(_docx("第一章", "图：", _png()), "x.docx")
     assert ocr_mod.needs_ocr(doc, "uploads/u/响应文件.doc")
     assert not ocr_mod.needs_ocr(doc, "uploads/u/响应文件.wps")
+
+
+async def test_exhausted_budget_after_download_skips_the_doc_conversion(monkeypatch, ocr_stub):
+    """下载刚把预算吃光 → 不再跑 60s 转换与整本重解析（评审 2026-08-13：入口检查过了、
+    下载耗尽余额、最重的活反而照跑，一张图都发不出去）。"""
+    clock = {"now": 0.0}
+    monkeypatch.setattr(ocr_mod.time, "monotonic", lambda: clock["now"])
+
+    def slow_read(k):
+        clock["now"] = 100.0   # 下载期间预算耗尽
+        return b"\xd0\xcf\x11\xe0OLE"
+
+    def must_not_convert(data, ext):
+        raise AssertionError("预算已尽仍在跑 .doc 转换")
+
+    monkeypatch.setattr(ocr_mod, "read_bytes", slow_read)
+    monkeypatch.setattr("agent.parsing.parsers._convert_legacy", must_not_convert)
+    doc = parse_bytes(_docx("第一章", "图：", _png()), "x.docx")
+    after = await ocr_mod.ocr_docx_images(doc, "uploads/u/响应文件.doc", deadline=50.0)
+    assert after.embedded_images == doc.embedded_images
+    assert not ocr_stub.requests

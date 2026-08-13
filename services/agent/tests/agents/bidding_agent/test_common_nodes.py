@@ -265,7 +265,8 @@ async def test_a_legacy_doc_with_images_starts_the_ocr_budget(monkeypatch):
     monkeypatch.setattr(common_mod, "ocr_scanned_pages", _fake_ocr)
     monkeypatch.setattr(common_mod, "ocr_docx_images", _fake_ocr)
     await parse_bid_docs(["uploads/u/x/商务标.doc"])
-    assert all(d is not None for d in seen), ".doc 带内嵌图没有起 OCR 预算表"
+    # 长度必须一起断言：空列表上 all() 恒真，两条链路一条没跑到测试照样绿（评审 2026-08-13）
+    assert len(seen) == 2 and all(d is not None for d in seen), ".doc 带内嵌图没有起 OCR 预算表"
 
 
 def test_parse_bid_chapters_does_not_ocr(monkeypatch):
