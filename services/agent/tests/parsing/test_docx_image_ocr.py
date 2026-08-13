@@ -352,6 +352,45 @@ async def test_a_legacy_doc_that_fails_to_convert_keeps_the_honest_note(monkeypa
     assert not ocr_stub.requests
 
 
+async def test_images_the_converter_dropped_are_recovered_from_the_raw_doc(monkeypatch, ocr_stub):
+    """转换丢图兜底（2026-08-14 生产实测：授权书页四张证件图排版一样，LibreOffice 转换后
+    只剩三张——法定代表人人像面消失，审查因此报「身份证是否齐全无法核验」，而用户文件里
+    明明有）：原始 .doc 字节里扫得出、转换产物里像素比对不到的图，照样补送识别；
+    识别文字挂正文末尾并注明「格式转换未保留」；张数与 meta 同步上调。"""
+    survivor, dropped = _png(900, 700, "white"), _png(900, 700, "black")
+    docx = _docx("第一章 资格证明", "证件如下：", survivor)     # 转换产物只剩幸存的一张
+    raw = b"\xd0\xcf\x11\xe0OLE" + survivor + b"\x00" * 64 + dropped
+
+    monkeypatch.setattr("agent.parsing.parsers._convert_legacy", lambda d, e: (docx, "docx"))
+    monkeypatch.setattr(ocr_mod, "read_bytes", lambda k: raw)
+    doc = parse_bytes(docx, "x.docx")
+    after = await ocr_mod.ocr_docx_images(doc, "uploads/u/响应文件.doc")
+
+    assert len(ocr_stub.requests) == 2                    # 幸存 1 张 + 补送 1 张
+    assert after.meta.get("recovered_images") == 1
+    assert after.embedded_images == 0                     # 原有 1 + 恢复 1，全识别归零
+    lines = after.text.split("\n")
+    mark_at = next(i for i, ln in enumerate(lines) if "格式转换未保留" in ln)
+    assert "第2张" in lines[mark_at]                       # 挂正文末尾、顺着编号
+    assert mark_at > lines.index("证件如下：")
+
+
+async def test_recovered_images_are_counted_in_the_visibility_stats(monkeypatch, ocr_stub):
+    """可见性统计要把恢复的图算进「已识别」：不算的话注记写「共 1 张、识别 1 张」而正文里
+    有两段识别文字，审查模型对不上账又要开始怀疑人生。"""
+    import agent.agents.bidding_agent.nodes.common as common_mod
+    from agent.agents.bidding_agent.nodes.common import parse_bid_docs
+
+    survivor, dropped = _png(900, 700, "white"), _png(900, 700, "black")
+    docx = _docx("第一章 资格证明", "证件如下：", survivor)
+    raw = b"\xd0\xcf\x11\xe0OLE" + survivor + b"\x00" * 64 + dropped
+    monkeypatch.setattr("agent.parsing.parsers._convert_legacy", lambda d, e: (docx, "docx"))
+    monkeypatch.setattr(ocr_mod, "read_bytes", lambda k: raw)
+    monkeypatch.setattr(common_mod, "read_and_parse", lambda key: parse_bytes(docx, "x.docx"))
+    _chapters, scanned = await parse_bid_docs(["响应文件.doc"])
+    assert scanned == [{"name": "响应文件.doc", "embedded_images": 0, "recognized_images": 2}]
+
+
 def test_needs_ocr_counts_a_doc_with_embedded_images(monkeypatch):
     """预算起表口径与发请求同点：.doc 带内嵌图也要起表——否则表起晚了，
     识别做到一半被「预算已用光」拦腰截断。"""

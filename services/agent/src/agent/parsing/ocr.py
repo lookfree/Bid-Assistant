@@ -192,6 +192,7 @@ async def ocr_docx_images(doc: ParsedDoc, key: str,
         return doc
     try:
         data = await asyncio.to_thread(read_bytes, key)
+        raw = b""
         if key.lower().endswith(_LEGACY_DOC_SUFFIX):
             # 转换前再核一次预算：大文件下载可能刚把余额吃光，此刻不拦，最重的
             # 60s soffice 转换+整本重解析还会照跑，最后一张图都发不出去（评审 2026-08-13）
@@ -199,8 +200,13 @@ async def ocr_docx_images(doc: ParsedDoc, key: str,
                 logger.warning("内嵌图片 OCR 预算已用光，跳过 .doc 转换 key=%s", key)
                 return doc
             from agent.parsing.parsers import _convert_legacy
+            raw = data          # 原始 .doc 字节留给转换丢图兜底（见 _recover_lost）
             data, _ = await asyncio.to_thread(_convert_legacy, data, "doc")
         blocks, images = await asyncio.to_thread(docx_body_images, data)
+        notes: dict[int, str] = {}
+        if raw:
+            images, doc, notes = await asyncio.to_thread(_recover_lost, raw, blocks, images, doc)
+            raw = b""           # 15MB 级的原始字节别陪着整段分钟级识别活着
         reps, groups = _ocr_image_indices(images)
         if not reps:
             # 全是矢量图/装饰小图：一次请求都不该发，也别打「识别 0/0 张」的假完成日志
@@ -211,7 +217,7 @@ async def ocr_docx_images(doc: ParsedDoc, key: str,
                                    reps, on_progress, deadline, "内嵌图片")
         # 去重的结果回填给共用同一张图的每一处，正文各处照样有字
         texts = {j: t for i, t in picked.items() for j in groups[i]}
-        spliced = splice_docx_images(doc, blocks, images, texts)
+        spliced = splice_docx_images(doc, blocks, images, texts, notes)
     except Exception:  # noqa: BLE001 兜到最外层：识别是加分项，出什么意外都不该让审查步失败
         logger.warning("内嵌图片 OCR 失败，退回「无法核验」口径 key=%s", key, exc_info=True)
         return doc
@@ -222,6 +228,34 @@ async def ocr_docx_images(doc: ParsedDoc, key: str,
                 key, doc.embedded_images - spliced.embedded_images, len(texts),
                 len(reps), doc.embedded_images)
     return spliced
+
+
+def _recover_lost(raw: bytes, blocks: list, images: list[DocxImage],
+                  doc: ParsedDoc) -> tuple[list[DocxImage], ParsedDoc, dict[int, str]]:
+    """转换丢图兜底（案由见 parsing/legacy_doc_images 的模块注释：LibreOffice 把 .doc 里
+    四张证件图转丢一张，审查因此对着用户明明有的身份证喊「无法核验」）。
+    原 .doc 有、转换产物里按像素指纹找不到的图补进识别队列：位置挂正文末尾、
+    标记注明来源；张数与 meta 同步上调（可见性统计要用，不上调注记会少报）。
+    整体 best-effort：兜底自身出任何意外都不许把主识别链路拖下水。"""
+    from dataclasses import replace
+
+    try:
+        from agent.parsing.legacy_doc_images import lost_images
+        lost = lost_images(raw, [img.data for img in images])
+    except Exception:  # noqa: BLE001 见 docstring：兜底失败就当没有兜底
+        logger.warning("转换丢图兜底失败，按转换产物继续", exc_info=True)
+        return images, doc, {}
+    if not lost:
+        return images, doc, {}
+    logger.info("转换丢图兜底：原 .doc 含 %d 张转换产物中不存在的图，补送识别", len(lost))
+    start = len(images)
+    images = images + [
+        DocxImage(block_index=len(blocks), data=b,
+                  ext="png" if b.startswith(b"\x89PNG") else "jpeg") for b in lost]
+    notes = {i: "原文档内嵌图，格式转换未保留" for i in range(start, len(images))}
+    doc = replace(doc, embedded_images=doc.embedded_images + len(lost),
+                  meta={**doc.meta, "recovered_images": len(lost)})
+    return images, doc, notes
 
 
 def _ocr_image_indices(images: list[DocxImage]) -> tuple[list[int], dict[int, list[int]]]:

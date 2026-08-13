@@ -120,7 +120,11 @@ async def parse_bid_docs(keys: str | list[str], ctx=None) -> tuple[dict[str, str
         # 识别掉的张/页数也要报（2026-08-13 实测：11 张识别了 10，可见性说明只报"剩 1 张
         # 不可见"，审查模型把证照/信用/财务全挂到那一张头上判"无法核验"——识别文字明明
         # 就在正文里；报出"已识别 M"配合审查规则的"识别文字视同可见"才能拆掉这口大锅）。
-        rec_pages, rec_images = pre_pages - parsed.image_pages, pre_images - parsed.embedded_images
+        # 转换丢图兜底恢复的张数（ocr.py::_recover_lost）计入总账：不计的话正文里的识别
+        # 段落比注记报的张数多，审查模型对不上账
+        rec_pages = pre_pages - parsed.image_pages
+        rec_images = (pre_images + parsed.meta.get("recovered_images", 0)
+                      - parsed.embedded_images)
         if parsed.image_pages or rec_pages:
             entry = {"name": name, "pages": parsed.pages or parsed.image_pages,
                      "image_pages": parsed.image_pages}

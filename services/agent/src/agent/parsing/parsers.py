@@ -366,7 +366,7 @@ _DOCX_IMAGE_MARK = SYSTEM_NOTE_PREFIX + "·图片识别 第{n}张】"
 
 
 def splice_docx_images(doc: ParsedDoc, blocks: list[Block], images: list[DocxImage],
-                       texts: dict[int, str]) -> ParsedDoc:
+                       texts: dict[int, str], notes: dict[int, str] | None = None) -> ParsedDoc:
     """内嵌图片的识别文字按图片位置插回 → 新的 ParsedDoc（texts: {图序号: 识别文字}）。
 
     「已识别」的判据与扫描页共用 _recognized（比对基准是空串：图片本身一个字都提不出来）——
@@ -389,7 +389,12 @@ def splice_docx_images(doc: ParsedDoc, blocks: list[Block], images: list[DocxIma
     inserts: dict[int, list[Block]] = {}
     for i, text in readable.items():
         at = images[i].block_index
-        inserts.setdefault(at, []).append(Block(_DOCX_IMAGE_MARK.format(n=i + 1), synthetic=True))
+        mark = _DOCX_IMAGE_MARK.format(n=i + 1)
+        if notes and notes.get(i):
+            # 来源补注（如转换丢图兜底）插在「】」前：注记族的识别（提示词/泄漏过滤/前端）
+            # 都按「【系统注记」前缀走，后缀不影响任何一环
+            mark = mark[:-1] + "·" + notes[i] + "】"
+        inserts.setdefault(at, []).append(Block(mark, synthetic=True))
         inserts[at].extend(Block(line, synthetic=True)
                            for line in text.split("\n") if line.strip())
     merged: list[Block] = []
