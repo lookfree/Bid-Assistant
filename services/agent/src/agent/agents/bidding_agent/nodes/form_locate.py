@@ -57,6 +57,29 @@ def _norm(text: str) -> str:
 
 # 编号行：「1.响应函」「3-1.报价明细表」「4-2要求的资格文件」（点号/顿号可省）。
 _NUM_LINE = re.compile(r"^(\d+(?:-\d+)*)\s*[.、．]?\s*(\S.*)$")
+# 中文括号序号行：「（一）报价函」「（2）授权书」——潍坊式磋商文件的格式章用这种编法，
+# 只认阿拉伯编号会把真表单边界整个漏掉（2026-08-13 潍坊回放实证）。
+_CN_NUM_LINE = re.compile(r"^[（(]([0-9一二三四五六七八九十]{1,3})[）)]\s*(\S.*)$")
+_CN_DIGITS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+# 弹头符开头的短行是**清单项**不是表单抬头：磋商须知里的响应文件构成清单
+# 「◆报价函」「◆报价一览表」逐行列出全部表单名，当边界会把索引指向须知而不是表单
+# （2026-08-13 潍坊回放实证）。
+_BULLETS = "◆■□●○•·※▲△★☆"
+
+
+def _cn_val(s: str) -> int:
+    """「一」→1、「十二」→12、「3」→3；解析不了返回 0（会被编号链拒掉，安全方向）。"""
+    if s.isdigit():
+        return int(s)
+    if len(s) == 1:
+        return _CN_DIGITS.get(s, 0)
+    if s.startswith("十"):
+        return 10 + _CN_DIGITS.get(s[1:], 0)
+    if s.endswith("十") and len(s) == 2:
+        return _CN_DIGITS.get(s[0], 0) * 10
+    if "十" in s and len(s) == 3:
+        return _CN_DIGITS.get(s[0], 0) * 10 + _CN_DIGITS.get(s[2], 0)
+    return 0
 # 名字里出现句读/填空线即判为散句：「8.如确定我方成交：」「1.具有独立承担民事责任的能力；」
 # 「1、根据已收到的项目编号____的采购项目」都是表单**里面**的编号条款（云上江西 sec-2、
 # 潍坊报价函正文实测），拿它们当边界会把表单从中间切死。
@@ -87,9 +110,17 @@ def _boundary_of(line: str) -> tuple[int, str, bool, tuple[int, ...] | None] | N
             num = tuple(int(x) for x in m.group(1).split("-"))
             return len(num), name, False, num
         return None
-    # 无编号行只收构词法命中的短行，且不许带任何括注/句读——「付款方式」「供应商名称」
-    # 这类栏目行不是表单名，放进来会把表单切碎
-    if len(s) <= _MAX_NAME and _looks_like_form_title(s) and not _PROSE_PUNCT.search(s) and "（" not in s and "(" not in s:
+    m = _CN_NUM_LINE.match(s)
+    if m:
+        name = m.group(2).strip()
+        val = _cn_val(m.group(1))
+        if 0 < val <= _MAX_HEAD_NO and 2 <= len(name) <= _MAX_NAME and not _PROSE_PUNCT.search(name):
+            return 1, name, False, (val,)
+        return None
+    # 无编号行只收构词法命中的短行，且不许带弹头符/括注/句读——「◆报价函」是清单项、
+    # 「付款方式」「供应商名称」是栏目行，都不是表单抬头，放进来会把索引指错地方
+    if (len(s) <= _MAX_NAME and s[0] not in _BULLETS and _looks_like_form_title(s)
+            and not _PROSE_PUNCT.search(s) and "（" not in s and "(" not in s):
         return 1, s, True, None
     return None
 
@@ -124,7 +155,10 @@ def _doc_stream(read: dict) -> list[tuple[str, str]]:
             seen.add(sec)
             if sec in heading_by_sec:
                 stream.append(("heading", heading_by_sec[sec]))
-        stream.append(("clause", str(c.get("text") or "")))
+        # 条款文本按行展平：一条条款里可能嵌着多行（表格单元格/紧凑段落），
+        # 「报价函」抬头行嵌在多行条款里时整条当一行会漏掉这个边界
+        for line in str(c.get("text") or "").splitlines():
+            stream.append(("clause", line))
     return stream
 
 
@@ -231,12 +265,16 @@ def find_form(index: list[dict], chapter_title: str) -> str:
     return text if 0 < len(text) <= _MAX_FORM_CHARS else ""
 
 
-def slice_single_form(text: str, chapter_title: str) -> str:
-    """读标登记的条款段过「单份闸」：段里没有任何表单边界 → 它就是单份，原样可用；
-    有边界（粗粒度文档一节装好几份）→ 只切出与本章同名的那份；切不出 → 空串，
-    调用方当没找到处理——**宁可降级，也不把整节公告当模板下发**。"""
+def slice_single_form(text: str, chapter_title: str, allow_whole: bool = True) -> str:
+    """条款段过「单份闸」：有边界（粗粒度文档一节装好几份）→ 只切出与本章同名的那份；
+    切不出 → 空串，调用方当没找到处理——**宁可降级，也不把整节公告当模板下发**。
+
+    「没有任何边界 → 整段就是单份」的直通道只对 allow_whole=True（读标登记的构成项）
+    开放：构成项是读标模型明确登记的"这份表单在这里"。章 items 的 clause_ids 是
+    **需求条款引用**，指着的常是公告/须知——那些文本恰恰一个表单边界都没有，直通道
+    一开，整段须知就成了"报价函模板"（2026-08-13 潍坊回放实证；云上公告同一类）。"""
     stream: list[tuple[str, str]] = [("clause", ln) for ln in text.splitlines()]
     segments = _segments_of(stream)
     if not segments:
-        return text if 0 < len(text) <= _MAX_FORM_CHARS else ""
+        return text if allow_whole and 0 < len(text) <= _MAX_FORM_CHARS else ""
     return find_form(segments, chapter_title)

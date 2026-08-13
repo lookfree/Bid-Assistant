@@ -327,13 +327,16 @@ class TestBriefTargeting:
         """表单章的识别不能靠穷举词表。「报价函」曾不在表里（表里只有响应函/投标函/承诺函/
         报价表），于是整章拿不到招标格式原文，模型只能自己编——用户实测:招标 7 条固定条款
         被写成 6 条全新措辞，抬头、开场白、落款全变（2026-08-11 潍坊那单）。
-        这里刻意**不给 structure_ref**，只靠标题走构词法判定。"""
+        这里刻意**不给 structure_ref**，只靠标题走构词法判定。
+        夹具按 2026-08-13 拉到的潍坊真实数据补全：表单文本自带「（一）报价函」编号行
+        ——items 引用的「无边界=整段直取」直通道已封（它把整段磋商须知当过模板），
+        真表单靠这行边界从全文索引召回。"""
         state = _state(2)
         state["outline"]["chapters"][0]["title"] = "第一章 报价函（商务标）"
         state["outline"]["chapters"][0]["items"] = [
             {"id": "i1", "label": "一、报价函", "clause_ids": ["sec-8-c1"]}]
         state["read"] = {"doc_sections": [
-            {"id": "sec-8-c1", "text": "潍坊环境工程职业学院：\n1、根据已收到的项目编号____的采购项目"}]}
+            {"id": "sec-8-c1", "text": "（一）报价函\n潍坊环境工程职业学院：\n1、根据已收到的项目编号____的采购项目"}]}
         chat = _FakeChat()
         _run(state, chat, monkeypatch=monkeypatch)
         brief = _brief_of(chat, "第一章 报价函（商务标）")
@@ -481,7 +484,8 @@ class TestBriefTargeting:
         state = _state(2)
         state["outline"]["chapters"][0]["title"] = "投标函及投标函附录"
         state["outline"]["chapters"][0]["items"] = [{"id": "i1", "label": "投标函", "clause_ids": ["sec-8-c1"]}]
-        state["read"] = {"doc_sections": [{"id": "sec-8-c1", "text": "致：招标人，我方决定参加投标"}]}
+        # 表单文本自带抬头行（真实形态，2026-08-13 潍坊数据实证）——items 的整段直通道已封
+        state["read"] = {"doc_sections": [{"id": "sec-8-c1", "text": "投标函\n致：招标人，我方决定参加投标"}]}
         chat = _FakeChat()
         _run(state, chat, monkeypatch=monkeypatch)
         assert "我方决定参加投标" in _brief_of(chat, "投标函及投标函附录")

@@ -140,19 +140,25 @@ def _template_entries(read: dict, outline: dict) -> dict[str, dict]:
         title = chapter.get("title") or ""
         if struct is None and not _looks_like_form_title(title):
             continue
-        # 一：构成项/章内条款所指的节，取全文后必须过**单份闸**（slice_single_form）——
-        # 细粒度文档（潍坊式，一份表单一节）原样通过；粗粒度文档一个节里装着整份公告或
-        # 好几份表单（2026-08-12 云上江西实测），闸内只切出与本章同名的那份，切不出就当
-        # 没找到。旧的「整节直发」正是把整份采购公告喂成"响应函模板"、再被保真机制逐字
-        # 钉死的事故根源——items 的 clause_ids 是需求条款引用，不保证是表单位置。
-        clause_ids = list((struct or {}).get("clause_ids") or [])
-        for it in _iter_items(chapter.get("items", [])):  # 含小节:条款引用可能挂在第三层
-            clause_ids += it.get("clause_ids") or []
+        # 一：条款所指的节，取全文后必须过**单份闸**（slice_single_form）——闸内只切出
+        # 与本章同名的那份，切不出就当没找到。旧的「整节直发」正是把整份采购公告喂成
+        # "响应函模板"、再被保真机制逐字钉死的事故根源（2026-08-12 云上江西）。
+        # 「无边界=整段即单份」的直通道**只对读标登记的构成项开放**：items 的 clause_ids
+        # 是需求条款引用，指着的常是公告/须知——那些文本恰恰没有表单边界，直通道一开，
+        # 整段磋商须知就成了"报价函模板"（2026-08-13 潍坊回放实证）。
         # 按**文档序**（数值）排：字典序会把 sec-10 排到 sec-2 前面——单份闸的切割器按
         # 行序开闭段，喂进乱序文本会把行算错段（评审 2026-08-13）
-        secs = sorted({s for cid in clause_ids if (s := _sec_of(cid))}, key=_sec_doc_order)
-        sec_text = "\n".join(t for sec in secs for t in by_sec.get(sec, []) if t)
-        text = slice_single_form(sec_text, title) if sec_text else ""
+        def _sec_join(cids: list) -> str:
+            secs = sorted({s for cid in cids if (s := _sec_of(cid))}, key=_sec_doc_order)
+            return "\n".join(t for sec in secs for t in by_sec.get(sec, []) if t)
+
+        struct_text = _sec_join(list((struct or {}).get("clause_ids") or []))
+        text = slice_single_form(struct_text, title, allow_whole=True) if struct_text else ""
+        if not text:
+            item_ids = [cid for it in _iter_items(chapter.get("items", []))  # 含小节:引用可挂第三层
+                        for cid in (it.get("clause_ids") or [])]
+            item_text = _sec_join(item_ids)
+            text = slice_single_form(item_text, title, allow_whole=False) if item_text else ""
         cap, note = _TEMPLATE_CHAPTER_CHARS, f"本章「{title}」对应的招标格式原文"
         if not text:
             # 二：全文表单边界索引按章名取单份（「1.响应函」这类编号行、节标题、
