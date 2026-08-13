@@ -17,6 +17,7 @@ import re
 from agent.agents.bidding_agent.nodes.common import filter_read_by_package
 from agent.agents.bidding_agent.nodes.content import _collect_clause_ids
 from agent.agents.bidding_agent.nodes.credentials_chapter import SYS_CREDS_ID, _esc, _image_alt
+from agent.agents.bidding_agent.nodes.form_locate import _looks_like_form_title
 
 # 证照词表字面量——与计划 Global Constraints、web 侧 lib/cert-keywords.ts 逐字同形（两端各自
 # 持有确定性实现,字面量一改就要同步改另一处，注释互指）。
@@ -280,8 +281,16 @@ def place_certificates(out: dict[str, str], state: dict,
         keywords = _matched_keywords(read, _collect_clause_ids(ch.get("items")))
         if not keywords:
             continue
+        title = str(ch.get("title") or "")
+        # 章本身就是这份文书（「法定代表人授权书」章）时，同组关键词不再留痕：
+        # 在授权书章尾写「（待补充：授权书）」等于说"这一章还没写"——审查照抄出一条
+        # 高风险、用户看着莫名其妙（2026-08-13 云上江西实测+审查双双反馈）。
+        # 只对表单章生效：材料章（「营业执照副本扫描件」）缺货仍要提醒。
+        own_group = _group_of(title) if _looks_like_form_title(title) else None
         blocks = []
         for kw in keywords:
+            if kw == own_group:
+                continue
             if (cid, kw) in noted:
                 continue   # 材料小节里已留了待补充，章尾不再重复一条
             aliases = _aliases_of(kw)

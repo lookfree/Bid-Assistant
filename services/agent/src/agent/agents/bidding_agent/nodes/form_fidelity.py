@@ -45,10 +45,17 @@ def fixed_segments(template: str) -> list[str]:
     （表单章本来就需要标题）就会让跨行的片段找不到，整章被判死、退回一张空表。
     保真机制天天误伤比不做还糟。按行切之后：改写、漏行、乱序照样逮得住，
     行与行之间插了别的东西则放过——插入远不如改写危险，而且肉眼一看就发现。
+
+    行内**连续重复的表格格**先折叠成一个（「合计（大写）：\\t合计（大写）：」）：
+    重复文本来自解析层摊平合并单元格，把 N 份都当固定片段，等于禁止任何一方
+    （模型或零模型渲染）把它还原成合并格——正确的还原反而过不了检（2026-08-13
+    云上江西版式返工实证）。折叠后：合并渲染与摊平渲染都能通过，顺序约束不变。
     """
     out: list[str] = []
     for line in (template or "").splitlines():
-        marked = _PLACEHOLDER.sub("\x00", _BLANK.sub("\x00", line))
+        cells = line.split("\t")
+        cells = [c for i, c in enumerate(cells) if i == 0 or _norm(c) != _norm(cells[i - 1]) or not _norm(c)]
+        marked = _PLACEHOLDER.sub("\x00", _BLANK.sub("\x00", "\t".join(cells)))
         out += [seg for raw in marked.split("\x00") if len(seg := _norm(raw)) >= _MIN_SEG]
     return out
 
@@ -72,34 +79,77 @@ def keeps_template(html: str, template: str) -> bool:
     return True
 
 
-def _row_html(line: str) -> str:
-    cells = "".join(f"<td>{html_mod.escape(c.strip())}</td>" for c in line.split("\t"))
-    return f"<tr>{cells}</tr>"
+# 表行间的裸行号/空位行（「1」「2」「____」）：原表里是一格行号带一整行空格的空白行，
+# 解析摊平后制表符丢了。不归回表里，表格会被它们切成两张、行号成了表外的孤立段落
+# （2026-08-13 云上江西报价一览表实测：用户口径「格式和招标文件不一样」）。
+_ROW_FRAGMENT = re.compile(r"^\d{1,3}$|^[_＿]+$")
+# 落款行：签字/签章/盖章。招标表单里这些行靠右（原文前导空格被解析层剥掉，只能按惯例回排）。
+# 「日期：」不收——响应函的日期在左侧落款块里，靠右反而错。
+_SIGN_LINE = re.compile(r"(签字|签章|盖章)\s*[:：]")
+
+
+def _rows_html(rows: list[list[str]]) -> str:
+    """表行组 → 一张表。连续同文本的格并成 colspan（解析层把合并单元格摊平成重复文本，
+    这里还原回去）；合并行的尾格补满整行列宽（「合计（大写）」在原表横贯整行）；
+    短行（裸行号）右侧补空格——不补的话每行列数不一，Word 里表格参差不齐。"""
+    cols = max(len(r) for r in rows)
+    trs: list[str] = []
+    for r in rows:
+        tds: list[str] = []
+        used, i = 0, 0
+        while i < len(r):
+            j = i
+            while j + 1 < len(r) and r[j + 1] == r[i] and r[i]:
+                j += 1
+            span = j - i + 1
+            if j == len(r) - 1 and span > 1:
+                span += cols - len(r)
+            tds.append(f'<td colspan="{span}">{html_mod.escape(r[i])}</td>' if span > 1
+                       else f"<td>{html_mod.escape(r[i])}</td>")
+            used += span
+            i = j + 1
+        tds += ["<td></td>"] * (cols - used)
+        trs.append(f"<tr>{''.join(tds)}</tr>")
+    return f"<table>{''.join(trs)}</table>"
 
 
 def template_html(template: str, title: str = "") -> str:
-    """招标模板原文 → 章正文 HTML（**零模型**）。制表符分列的行还原成表格行，其余成段。
+    """招标模板原文 → 章正文 HTML（**零模型**）。制表符分列的行还原成表格行，
+    夹在表行间的裸行号/空位行归回同一张表，落款行靠右，表单抬头居中；
+    首行就是抬头时不再另出一个章名标题（一左一中两个标题，2026-08-13 实测反馈）。
 
     这是模型改写模板时的退路：交付一份**留着空位**的招标原格式，比交付一份措辞被改写、
     看着很完整的表单安全得多——后者要到评标现场才发现对不上。
     """
-    out: list[str] = [f"<h3>{html_mod.escape(title)}</h3>"] if title else []
-    rows: list[str] = []
-    for line in (template or "").splitlines():
-        if "\t" in line:
-            rows.append(_row_html(line))
-            continue
+    lines = (template or "").splitlines()
+    first = next((ln.strip() for ln in lines if ln.strip()), "")
+    dup_title = title and re.sub(r"[\s　]+", "", first) == re.sub(r"[\s　]+", "", title)
+    out: list[str] = [f"<h3>{html_mod.escape(title)}</h3>"] if title and not dup_title else []
+    rows: list[list[str]] = []
+
+    def flush() -> None:
         if rows:
-            out.append(f"<table>{''.join(rows)}</table>")
-            rows = []
-        if not line.strip():
+            out.append(_rows_html(rows))
+            rows.clear()
+
+    for line in lines:
+        s = line.strip()
+        if "\t" in line:
+            rows.append([c.strip() for c in line.split("\t")])
+            continue
+        if rows and s and _ROW_FRAGMENT.match(s):
+            rows.append([s])
+            continue
+        flush()
+        if not s:
             continue
         if is_form_title_line(line):
             # 表单抬头（「响   应   函」）居中——招标表单的抬头都是居中的，
             # 排成左对齐正文就是「格式跟招标书不一样」（2026-08-13 用户实测反馈）
-            out.append(f'<h3 style="text-align:center">{html_mod.escape(line.strip())}</h3>')
+            out.append(f'<h3 style="text-align:center">{html_mod.escape(s)}</h3>')
+        elif len(s) <= 24 and _SIGN_LINE.search(s):
+            out.append(f'<p style="text-align:right">{html_mod.escape(s)}</p>')
         else:
-            out.append(f"<p>{html_mod.escape(line.strip())}</p>")
-    if rows:
-        out.append(f"<table>{''.join(rows)}</table>")
+            out.append(f"<p>{html_mod.escape(s)}</p>")
+    flush()
     return "".join(out)

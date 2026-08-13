@@ -328,6 +328,24 @@ class TestPlaceCertificates:
         assert "见下图" not in html
         assert "（待补充：营业执照）" in html
 
+    def test_form_chapter_named_after_the_keyword_gets_no_placeholder(self):
+        """㉓「法定代表人授权书」章命中「授权书」词、库无授权书条目 → **不**留
+        「（待补充：授权书）」——这一章本身就是授权书，留痕等于说"这一章还没写"，
+        审查会照抄出一条高风险（2026-08-13 云上江西实测+审查双双反馈）。
+        材料章（「营业执照副本扫描件」非表单章）缺货仍要提醒，不受影响。"""
+        out = {"f2": "<h3>法定代表人授权书</h3><p>（供应商全称）法定代表人授权（全权代表姓名）。</p>"}
+        state = {"outline": {"chapters": [_chapter("f2", "法定代表人授权书", ["sec-1-c1"])]},
+                 "read": _read_with("提供法定代表人授权书", ["sec-1-c1"]),
+                 "run_input": {"credentials": []}}
+        html = place_certificates(out, state)["f2"]
+        assert "（待补充：授权书）" not in html
+        # 同章命中的**别组**材料（身份证明）不受抑制——授权书章要附身份证
+        state2 = {"outline": {"chapters": [_chapter("f2", "法定代表人授权书", ["sec-1-c1"])]},
+                  "read": _read_with("提供法定代表人身份证原件扫描件", ["sec-1-c1"]),
+                  "run_input": {"credentials": []}}
+        html2 = place_certificates(out, state2)["f2"]
+        assert "（待补充：法定代表人身份证明）" in html2
+
     def test_word_list_matches_global_constraints_literal(self):
         """词表字面量必须与 web 侧 lib/cert-keywords.ts 逐字同形（双端同表约定的锚点）。
         2026-08-11 扩入财务与资格类材料——康恒那单实测报「近三年经审计的资产负债表未提供」，

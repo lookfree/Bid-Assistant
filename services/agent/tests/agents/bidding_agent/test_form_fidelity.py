@@ -103,6 +103,49 @@ class TestTemplateHtml:
         """退路必须自洽：拿模板渲染出来的东西，再去判一次必须通过。"""
         assert keeps_template(template_html(TEMPLATE), TEMPLATE)
 
+    # 2026-08-13 云上江西第二轮实测原样（报价一览表）：表行间的「1」「2」是空行号行，
+    # 「合计（大写）：」重复文本是解析层摊平的合并单元格。
+    _PRICE_TPL = ("序号\t项目名称\t数量\t单价（元）\t总价（元）\t税率\n"
+                  "1\n2\n"
+                  "合计（大写）：\t合计（大写）：\n"
+                  "3-1.报价明细表")
+
+    def test_bare_row_numbers_stay_inside_the_table(self):
+        """空行号行归回表里：渲染成表外的孤立段落，表格被切成两张、中间夹着「1」「2」
+        两个光秃段——用户口径就是「格式和招标文件不一样」（2026-08-13 实测）。"""
+        out = template_html(self._PRICE_TPL, title="报价一览表")
+        assert out.count("<table>") == 1, "一张表被切碎了"
+        assert "<p>1</p>" not in out and "<p>2</p>" not in out
+        assert out.count("<tr>") == 4          # 表头 + 两个空行号行 + 合计行
+        assert "<td>1</td><td></td>" in out    # 行号行右侧补空格，列数对齐
+
+    def test_repeated_cells_become_one_merged_cell(self):
+        """「合计（大写）：」×N 还原成一格 colspan——重复文本本就是合并单元格摊平的产物。
+        还原后必须仍过保真自洽（fixed_segments 折叠行内重复格与此配套）。"""
+        out = template_html(self._PRICE_TPL, title="报价一览表")
+        assert '<td colspan="6">合计（大写）：</td>' in out
+        assert out.count("合计（大写）：") == 1
+        assert keeps_template(out, self._PRICE_TPL), "合并渲染过不了保真检=正确还原被判死"
+
+    def test_sign_lines_align_right_but_date_and_name_stay_left(self):
+        """落款（签字/签章/盖章）按表单惯例靠右；「供应商名称：」「日期：」在响应函里
+        属左侧落款块，不得跟着靠右。"""
+        tpl = "法定代表人签字或签章：\n供应商签章：\n供应商名称：\n日期： 年  月  日"
+        out = template_html(tpl)
+        assert '<p style="text-align:right">法定代表人签字或签章：</p>' in out
+        assert '<p style="text-align:right">供应商签章：</p>' in out
+        assert "<p>供应商名称：</p>" in out
+        assert "<p>日期： 年  月  日</p>" in out
+
+    def test_title_param_skipped_when_first_line_is_the_same_title(self):
+        """首行就是表单抬头时不再另出章名 h3——否则一左一中两个同名标题叠着
+        （2026-08-13 授权书实测）。首行不是抬头时章名照出。"""
+        out = template_html("法定代表人授权书\n致：云上（江西）安全技术有限公司", title="法定代表人授权书")
+        assert out.count("<h3") == 1
+        assert '<h3 style="text-align:center">法定代表人授权书</h3>' in out
+        out2 = template_html("致：招标人 <不转义就破页>", title="报价函")
+        assert "<h3>报价函</h3>" in out2
+
     def test_form_title_line_renders_centered(self):
         """表单抬头（「响   应   函」）要排成**居中标题**——招标表单的抬头都是居中的，
         排成左对齐正文段落就是「格式跟招标书不一样」（2026-08-13 用户实测反馈）。
