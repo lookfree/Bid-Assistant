@@ -144,11 +144,108 @@ def test_docx_counts_the_images_embedded_in_the_body():
     t.rows[0].cells[0].paragraphs[0].add_run().add_picture(_png_bytes())   # 表格单元格里的图
     run = d.add_paragraph().add_run()                            # 旧 Word 的 VML 图
     run._r.append(parse_xml(
-        '<w:pict xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>'))
+        '<w:pict xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+        ' xmlns:v="urn:schemas-microsoft-com:vml"'
+        ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<v:shape><v:imagedata r:id="rId99"/></v:shape></w:pict>'))
 
     parsed = parse_docx(_docx_bytes(d))
     assert parsed.embedded_images == 3
     assert "营业执照扫描件如下：" in parsed.text     # 正文解析一如既往
+
+
+# LibreOffice 把 .doc 里的占位文本框转成的真实形态（2026-08-13 生产实测「粘贴处」）：
+# mc:Choice 装现代 wps 形状、mc:Fallback 装旧 VML 文本框，**同一段字两份**。
+_TEXTBOX_SHAPE = (
+    '<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+    '<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">'
+    '<mc:Choice xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"'
+    ' Requires="wps"><w:drawing>'
+    '<wp:anchor xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">'
+    '<wp:extent cx="2912745" cy="2018665"/>'
+    '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+    '<a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+    '<wps:wsp><wps:spPr><a:prstGeom prst="flowChartAlternateProcess"/></wps:spPr>'
+    '<wps:txbx><w:txbxContent><w:p><w:r><w:t>粘贴处</w:t></w:r></w:p></w:txbxContent></wps:txbx>'
+    '</wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></mc:Choice>'
+    '<mc:Fallback><w:pict xmlns:v="urn:schemas-microsoft-com:vml">'
+    '<v:rect><v:textbox><w:txbxContent><w:p><w:r><w:t>粘贴处</w:t></w:r></w:p></w:txbxContent>'
+    '</v:textbox></v:rect></w:pict></mc:Fallback>'
+    '</mc:AlternateContent></w:r>'
+)
+
+
+def test_docx_textbox_shape_is_text_not_an_invisible_image():
+    """2026-08-13 生产误报：模板里的「粘贴处」占位文本框被报成「1 张内容不可见的内嵌图」，
+    用户翻遍全文找不到那张"图"。文本框的字不用识别就能读——并进正文、不计入图片数；
+    Fallback 里那份同款字整支跳过，不得插两遍。"""
+    from docx import Document
+    from docx.oxml import parse_xml
+    from agent.parsing.parsers import parse_docx
+
+    d = Document()
+    d.add_paragraph("供应商签章：")
+    d.add_paragraph()._p.append(parse_xml(_TEXTBOX_SHAPE))
+
+    parsed = parse_docx(_docx_bytes(d))
+    assert parsed.embedded_images == 0
+    assert parsed.text.count("粘贴处") == 1
+    assert parsed.text.index("供应商签章：") < parsed.text.index("粘贴处")
+
+
+def test_docx_chartlike_graphics_still_count_as_invisible():
+    """没位图也没文字、却真装着读不出来的内容的图形（SmartArt/外链图）照旧诚实计数——
+    不数的话审查会把画在图表里的方案判成「缺少」，退回治理之前的误判。"""
+    from docx import Document
+    from docx.oxml import parse_xml
+    from agent.parsing.parsers import parse_docx
+
+    d = Document()
+    d.add_paragraph("技术方案架构图如下：")
+    d.add_paragraph()._p.append(parse_xml(          # SmartArt：graphicData 指 diagram，无 r:embed
+        '<w:drawing xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">'
+        '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+        '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/diagram"/>'
+        '</a:graphic></wp:inline></w:drawing>'))
+    d.add_paragraph()._p.append(parse_xml(          # 外链图：a:blip 只有 r:link，没有 r:embed
+        '<w:drawing xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">'
+        '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+        '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+        '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+        '<pic:blipFill><a:blip'
+        ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+        ' r:link="rId77"/></pic:blipFill></pic:pic>'
+        '</a:graphicData></a:graphic></wp:inline></w:drawing>'))
+
+    assert parse_docx(_docx_bytes(d)).embedded_images == 2
+
+
+def test_docx_contentless_shape_is_not_counted():
+    """纯几何形状（空框/线条/空 w:pict）里没有内容可看——既不计图也不产字。
+    数它的话每份带排版线条的文档都会挂上「内容不可见」注记，吓唬用户去找不存在的图。"""
+    from docx import Document
+    from docx.oxml import parse_xml
+    from agent.parsing.parsers import parse_docx
+
+    d = Document()
+    d.add_paragraph("正文段落。")
+    d.add_paragraph()._p.append(parse_xml(          # 无字的 wps 形状（排版用的框）
+        '<w:drawing xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">'
+        '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+        '<a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+        '<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+        '<wps:spPr><a:prstGeom prst="line"/></wps:spPr></wps:wsp>'
+        '</a:graphicData></a:graphic></wp:inline></w:drawing>'))
+    run = d.add_paragraph().add_run()                # 空 w:pict（旧实现连它都数）
+    run._r.append(parse_xml(
+        '<w:pict xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>'))
+
+    parsed = parse_docx(_docx_bytes(d))
+    assert parsed.embedded_images == 0
+    assert parsed.text == "正文段落。"
 
 
 def test_docx_without_images_reports_zero(docgen):

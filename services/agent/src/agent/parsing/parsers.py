@@ -89,6 +89,39 @@ def _in_fallback(el, root) -> bool:
     return False
 
 
+_W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+
+def _shape_texts(el) -> list[str]:
+    """无位图形状（文本框）里的文字段落。现代 wps:txbx 与旧 VML 的 v:textbox 都把字装在
+    w:txbxContent > w:p 里，按段拼接。2026-08-13 生产实测：LibreOffice 把 .doc 模板里的
+    「粘贴处」占位框转成这种形状，它是文字不是图——不掏出来就被计成「1 张内容不可见的
+    内嵌图」，用户翻遍全文找不到那张"图"。"""
+    return [t for tx in el.iter(_W_NS + "txbxContent")
+            for p in tx.iter(_W_NS + "p")
+            if (t := "".join(n.text or "" for n in p.iter(_W_NS + "t")).strip())]
+
+
+# 既没位图部件也没文字、却真装着读不出来的内容的图形：SmartArt/图表/OLE/外链图。
+# 这些仍按「看不见的内嵌图」诚实计数；纯几何形状（排版框/线条）里没有内容，不数——
+# 数它的话每份带排版线条的文档都会挂上「内容不可见」注记。
+_A_BLIP = "{http://schemas.openxmlformats.org/drawingml/2006/main}blip"
+_A_GDATA = "{http://schemas.openxmlformats.org/drawingml/2006/main}graphicData"
+_O_OLE = "{urn:schemas-microsoft-com:office:office}OLEObject"
+_V_IMAGEDATA = "{urn:schemas-microsoft-com:vml}imagedata"
+
+
+def _opaque_graphic(el) -> bool:
+    """无 rid 无文字的图形是否仍算「看不见的内容」（SmartArt/图表/OLE/外链图）。"""
+    for node in el.iter():
+        if node.tag in (_A_BLIP, _O_OLE, _V_IMAGEDATA):
+            return True
+        if (node.tag == _A_GDATA
+                and node.get("uri", "").rsplit("/", 1)[-1] in ("chart", "diagram")):
+            return True
+    return False
+
+
 def _docx_lines_in_order(d) -> tuple[list[Block], list[tuple[int, str | None]]]:
     """按文档顺序遍历正文块（段落与表格交错）→ (正文块, 内嵌图片 [(插入块号, 关系id)])。
     表格行以 \t 连接单元格。
@@ -106,7 +139,8 @@ def _docx_lines_in_order(d) -> tuple[list[Block], list[tuple[int, str | None]]]:
     记的是「位置 + 关系 id」而不只是张数：识别出来的文字要插回这张图**原来所在的地方**
     （见 splice_docx_images）。位置 = 该块的正文写完时已有的块数——图片自成一段（纯图片段落
     没有文字、不产块）时就排在下一段之前，图片夹在段落中间时排在这段话之后。
-    关系 id 取不到（图表/OLE/外链这类没有位图部件的 drawing）→ None：仍计入张数，只是送不了识别。"""
+    关系 id 取不到时分三路：文本框的字直接并进正文（见 _shape_texts）；SmartArt/图表/OLE/外链
+    这类真读不了的记 (位置, None) 仍计张数；纯几何形状（排版框/线条）不数（见 _opaque_graphic）。"""
     from docx.oxml.ns import qn
     from docx.table import Table
     from docx.text.paragraph import Paragraph
@@ -128,9 +162,18 @@ def _docx_lines_in_order(d) -> tuple[list[Block], list[tuple[int, str | None]]]:
                     # 整行一个单元格的是**带框标题**：中文标书很常把「第一章 采购公告」套进
                     # 一个单格表里排版，一律不判标题的话，这一族文档重新变成"整本一节"。
                     blocks.append(Block(line, table=len(cells) > 1))
-        images.extend((len(blocks), _image_rid(el)) for el in child.iter()
-                      if el.tag in (qn("w:drawing"), qn("w:pict"))
-                      and not _in_fallback(el, child))
+        for el in child.iter():
+            if (el.tag not in (qn("w:drawing"), qn("w:pict"))
+                    or _in_fallback(el, child)):
+                continue
+            rid = _image_rid(el)
+            if rid is not None:
+                images.append((len(blocks), rid))
+            elif texts := _shape_texts(el):
+                # 文本框：字直接可读，并进正文而不是计成「看不见的图」（见 _shape_texts）
+                blocks.extend(Block(t) for t in texts)
+            elif _opaque_graphic(el):
+                images.append((len(blocks), None))
     return blocks, images
 
 
