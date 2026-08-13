@@ -60,23 +60,30 @@ def fixed_segments(template: str) -> list[str]:
     return out
 
 
+def first_missing_segment(html: str, template: str) -> str | None:
+    """第一个在产出里找不到（或顺序不对）的固定片段；全都在则 None。
+
+    被拒的模型稿此前直接丢弃——填空稿被误杀时无从诊断到底哪一行「改写」了
+    （2026-08-13 云上实测：企业信息齐全、模型填了空，交付却退回留白模板，黑箱）。
+    这个函数是拒稿观测的诊断核心：拒一次，记下第一处对不上的片段与稿件头部。"""
+    segments = fixed_segments(template)
+    hay = _plain(html)
+    pos = 0
+    for seg in segments:
+        found = hay.find(seg, pos)
+        if found < 0:
+            return seg
+        pos = found + len(seg)
+    return None
+
+
 def keeps_template(html: str, template: str) -> bool:
     """产出有没有原样保留模板的固定文字（顺序也要对）。
 
     顺序必须一起查：条款被打乱顺序重排，同样是「与招标格式不一致」。
     模板切不出任何固定片段（整份都是空位）时视为通过——没有可判定的东西，不该冤杀产出。
     """
-    segments = fixed_segments(template)
-    if not segments:
-        return True
-    hay = _plain(html)
-    pos = 0
-    for seg in segments:
-        found = hay.find(seg, pos)
-        if found < 0:
-            return False
-        pos = found + len(seg)
-    return True
+    return first_missing_segment(html, template) is None
 
 
 # 表行间的裸行号/空位行（「1」「2」「____」）：原表里是一格行号带一整行空格的空白行，
