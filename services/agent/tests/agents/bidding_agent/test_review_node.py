@@ -16,6 +16,12 @@ _RISK_ARGS = {
 }
 
 
+def _review_chat(gw):
+    """按系统提示认出**审查轮**的 chat：复核轮（2026-08-13）上线后 chats[-1] 是复核轮，
+    按位置取会拿错轮；按内容认不受后续再加轮次影响。"""
+    return next(c for c in gw.chats if c.last_messages and "投标合规审查专家" in c.last_messages[0].content)
+
+
 def test_review_node_flags_iso_high_risk(submit_gateway):
     ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t",
                      gateway=submit_gateway({"submit_risk_report": _RISK_ARGS}))
@@ -42,7 +48,7 @@ def test_review_node_without_required_structure_payload_unchanged(submit_gateway
              "outline": {"chapters": [{"id": "b4", "no": "第四章", "title": "企业资质", "group": "business"}]},
              "chapters": {"b4": "<h3>4.1 营业执照</h3>"}}
     asyncio.run(node(state))
-    user_msg = gw.chats[-1].last_messages[1].content
+    user_msg = _review_chat(gw).last_messages[1].content
     assert "required_structure" not in user_msg
 
 
@@ -54,7 +60,7 @@ def test_review_node_with_required_structure_injects_payload(submit_gateway):
     state = {"read": {"risk_summary": [], "required_structure": _REQUIRED_STRUCTURE},
              "outline": {"chapters": []}, "chapters": {}}
     asyncio.run(node(state))
-    user_msg = gw.chats[-1].last_messages[1].content
+    user_msg = _review_chat(gw).last_messages[1].content
     assert "required_structure" in user_msg and "投标报价一览表" in user_msg
 
 
@@ -75,7 +81,7 @@ def test_review_node_parses_external_bid_when_no_chapters(submit_gateway, monkey
     node = make_review_node(ctx)
     out = asyncio.run(node({"run_input": {"bid_file_key": "uploads/u/bid.docx"}}))
     assert out["risk"]["high"] == 1
-    user_msg = gw.chats[-1].last_messages[-1].content
+    user_msg = _review_chat(gw).last_messages[-1].content
     assert "第一部分正文A" in user_msg and "报价合计 100 万元" in user_msg  # 解析出的章进了审查材料
     assert "通用自查模式" in user_msg and "未提供招标文件" in user_msg      # 无 read → 明示局限
 
@@ -93,8 +99,8 @@ def test_review_node_notes_scanned_pages_and_bans_missing_high_risk(submit_gatew
     gw = submit_gateway({"submit_risk_report": _RISK_ARGS})
     ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
     asyncio.run(make_review_node(ctx)({"run_input": {"bid_file_key": "uploads/u/x/投标文件.pdf"}}))
-    system_msg = gw.chats[-1].last_messages[0].content
-    user_msg = gw.chats[-1].last_messages[-1].content
+    system_msg = _review_chat(gw).last_messages[0].content
+    user_msg = _review_chat(gw).last_messages[-1].content
     # 文件可见性说明进用户消息：多少页、多少页看不见、里面很可能是什么
     assert "投标文件.pdf" in user_msg and "366" in user_msg and "139" in user_msg
     assert "扫描图片页" in user_msg and "证照" in user_msg
@@ -116,8 +122,8 @@ def test_review_node_without_scanned_pages_keeps_prompt_unchanged(submit_gateway
     gw = submit_gateway({"submit_risk_report": _RISK_ARGS})
     ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
     asyncio.run(make_review_node(ctx)({"run_input": {"bid_file_key": "uploads/u/x/bid.pdf"}}))
-    assert gw.chats[-1].last_messages[0].content == REVIEW_SYSTEM_PROMPT
-    assert gw.chats[-1].last_messages[-1].content.startswith("招标与投标材料：")
+    assert _review_chat(gw).last_messages[0].content == REVIEW_SYSTEM_PROMPT
+    assert _review_chat(gw).last_messages[-1].content.startswith("招标与投标材料：")
 
 
 def _scanned_doc(pages: int = 366, image_pages: int = 139):
@@ -230,8 +236,8 @@ def test_docx_embedded_images_get_the_same_honest_notice_as_scanned_pages(
     ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
     risk = asyncio.run(make_review_node(ctx)(
         {"run_input": {"bid_file_key": "uploads/u/x/商务标.docx"}}))["risk"]
-    system_msg = gw.chats[-1].last_messages[0].content
-    user_msg = gw.chats[-1].last_messages[-1].content
+    system_msg = _review_chat(gw).last_messages[0].content
+    user_msg = _review_chat(gw).last_messages[-1].content
     assert "商务标.docx" in user_msg and "7" in user_msg and "内嵌图片" in user_msg
     assert "无法核验（扫描件）" in system_msg
     assert "embedded_images" not in system_msg and "embedded_images" not in user_msg
@@ -250,7 +256,7 @@ def test_review_node_with_tender_and_bid_file_uses_compare_mode(submit_gateway, 
     node = make_review_node(ctx)
     asyncio.run(node({"read": {"risk_summary": ["缺 ISO27001 即废标"]},
                       "run_input": {"bid_file_key": "uploads/u/bid.docx"}}))
-    user_msg = gw.chats[-1].last_messages[-1].content
+    user_msg = _review_chat(gw).last_messages[-1].content
     assert "响应正文" in user_msg
     assert "通用自查模式" not in user_msg
 
@@ -268,7 +274,7 @@ def test_review_caps_the_bid_text_it_feeds_the_model(submit_gateway):
     ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
     huge = {f"b{i}": f"<p>{'投标内容' * 20000}</p>" for i in range(1, 9)}   # 约 64 万字
     asyncio.run(make_review_node(ctx)({"read": {"risk_summary": []}, "outline": {}, "chapters": huge}))
-    user_msg = gw.chats[-1].last_messages[1].content
+    user_msg = _review_chat(gw).last_messages[1].content
     total = estimate_tokens(REVIEW_SYSTEM_PROMPT + user_msg) + _DEFAULT_OUTPUT_RESERVE
     assert total < DEFAULT_CONTEXT_WINDOW, f"整条输入 {total} tokens，装不进窗口"
 
@@ -285,7 +291,7 @@ def test_review_system_prompt_notes_render_time_constants(submit_gateway):
         "outline": {"chapters": []},
         "chapters": {},
     }))
-    system_msg = gw.chats[-1].last_messages[0].content
+    system_msg = _review_chat(gw).last_messages[0].content
     assert "【渲染恒定项】" in system_msg
     assert "封面、目录、投标人承诺与签章页、AI 生成说明页" in system_msg
     assert "已具备(导出恒定附加)" in system_msg
@@ -298,7 +304,7 @@ def test_review_feeds_everything_when_it_fits(submit_gateway):
     asyncio.run(make_review_node(ctx)(
         {"read": {"risk_summary": []}, "outline": {},
          "chapters": {"b1": "<p>" + "正文" * 500 + "结尾标记</p>"}}))
-    user_msg = gw.chats[-1].last_messages[1].content
+    user_msg = _review_chat(gw).last_messages[1].content
     assert "结尾标记" in user_msg and "【系统注记·截断】" not in user_msg
 
 
@@ -316,6 +322,10 @@ def test_recognized_image_text_counts_as_visible_content():
     # 条件豁免（2026-08-13 实测）：模板明写「法定代表人参加采购，不用提供授权书」，
     # 审查却对着授权书空白喊"须签章否则不过"——豁免条款必须进判定
     assert "条件豁免条款" in SCAN_REVIEW_RULE and "不用提供授权书" in SCAN_REVIEW_RULE
+    # 综合判断（2026-08-13 实测）：四张身份证识别齐全、授权书正文已填，报告却让人工核对
+    # "正反面是否完整"——图识别文字与正文必须合并清点后再下结论
+    assert "识别文字与正文合并成一个判断" in SCAN_REVIEW_RULE
+    assert "先清点再下结论" in SCAN_REVIEW_RULE
     note = scan_pages_note([{"name": "响应文件.doc", "embedded_images": 1, "recognized_images": 10}])
     assert "11 张内嵌图片" in note
     assert "10 张已识别为文字" in note and "视同可见" in note
@@ -324,3 +334,59 @@ def test_recognized_image_text_counts_as_visible_content():
     clean = scan_pages_note([{"name": "响应文件.doc", "embedded_images": 0, "recognized_images": 11}])
     assert "不可见" not in clean
     assert "11 张已识别为文字" in clean
+
+
+_TWO_FINDINGS = {
+    "score": 60, "items": [
+        {"level": "中风险", "tone": "warning", "title": "无法核验（扫描件）：营业执照原件扫描件",
+         "advice": "内容不可见请人工核对", "target_id": "b4", "target_tab": "business",
+         "tender_ref": "对应：资格要求", "chapter_title": "资格文件", "anchor_text": "营业执照"},
+        {"level": "高风险", "tone": "destructive", "title": "授权书签章空白",
+         "advice": "须签章", "target_id": "b4", "target_tab": "business",
+         "tender_ref": "对应：授权书（★）", "chapter_title": "资格文件", "anchor_text": "签章"}],
+    "passed_items": [],
+}
+
+
+def test_verify_pass_drops_and_revises_findings(submit_gateway):
+    """复核轮（2026-08-13 用户点单）：drop 的发现移出并进通过项（带撤销理由），
+    revise 的按新级别/文案改写，计数由 _derive_counts 按新列表重推。"""
+    verdicts = {"verdicts": [
+        {"index": 1, "verdict": "drop",
+         "reason": "识别文字含统一社会信用代码91310104MA1FRF3K3N，材料已具备", "level": "", "title": "", "advice": ""},
+        {"index": 2, "verdict": "revise", "reason": "属实但属条件豁免范围",
+         "level": "中风险", "title": "授权书签章空白（若法定代表人亲自参加则无需授权书）",
+         "advice": "若由全权代表参加须补签章；法定代表人亲自参加则本项免除"}]}
+    gw = submit_gateway({"submit_risk_report": _TWO_FINDINGS, "submit_review_verdicts": verdicts})
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
+    out = asyncio.run(make_review_node(ctx)({
+        "read": {"risk_summary": ["x"]},
+        "outline": {"chapters": [{"id": "b4", "no": "四", "title": "资格文件", "group": "business"}]},
+        "chapters": {"b4": "<p>正文【系统注记·图片识别 第1张】统一社会信用代码91310104MA1FRF3K3N</p>"},
+    }))
+    risk = out["risk"]
+    assert len(risk["items"]) == 1
+    assert risk["items"][0]["level"] == "中风险" and risk["items"][0]["tone"] == "warning"
+    assert "条件豁免" not in risk["items"][0]["title"] or "免除" in risk["items"][0]["advice"]
+    assert risk["high"] == 0 and risk["mid"] == 1
+    assert any("复核撤销" in p for p in risk["passed_items"])
+
+
+def test_verify_pass_failure_keeps_the_first_report(submit_gateway):
+    """复核是减法：复核轮拿不到结论（桩里没配该工具→当轮报错）→ 首轮报告原样交付。"""
+    gw = submit_gateway({"submit_risk_report": _TWO_FINDINGS})
+    ctx = RunContext(run_id="r", agent_type="bidding_agent", thread_id="t", gateway=gw)
+    out = asyncio.run(make_review_node(ctx)({
+        "read": {"risk_summary": ["x"]},
+        "outline": {"chapters": [{"id": "b4", "no": "四", "title": "资格文件", "group": "business"}]},
+        "chapters": {"b4": "<p>正文</p>"},
+    }))
+    assert len(out["risk"]["items"]) == 2, "复核垮了不能连累审查交付"
+
+
+def test_verify_prompt_is_subtraction_only():
+    """复核官纪律：只做减法(不得新增发现)、拿不准 keep、drop/revise 必须引材料原文。"""
+    from agent.agents.bidding_agent.prompts.review import REVIEW_VERIFY_PROMPT
+    assert "不得新增发现" in REVIEW_VERIFY_PROMPT
+    assert "拿不准就 keep" in REVIEW_VERIFY_PROMPT
+    assert "找反证" in REVIEW_VERIFY_PROMPT

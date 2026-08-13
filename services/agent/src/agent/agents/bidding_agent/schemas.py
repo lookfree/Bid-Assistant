@@ -279,6 +279,26 @@ class RiskFinding(BaseModel):
         return self
 
 
+class ReviewVerdict(BaseModel):
+    """复核轮对单条发现的结论（2026-08-13 复核官设计）。字段全必填带描述——
+    可选+无描述的字段会被弱模型整个省略（2026-08-01 Qwen 实测教训）。"""
+    index: int = Field(..., description="被复核发现的序号，与发现清单中的编号一致（从 1 起）")
+    verdict: Literal["keep", "revise", "drop"] = Field(
+        ..., description="keep=发现成立原样保留；revise=事实成立但表述/级别需修正；"
+                         "drop=发现不成立（材料已具备/属豁免情形/与他条重复），撤销")
+    reason: str = Field(
+        ..., description="一句话依据**必填**：drop/revise 须引用材料原文或豁免条款原文；keep 可写「成立」")
+    level: str = Field(
+        "", description="revise 时的新级别（高风险/中风险），不改级别给空串")
+    title: str = Field("", description="revise 时的新标题，不改给空串")
+    advice: str = Field("", description="revise 时的新整改建议，不改给空串")
+
+
+class ReviewVerdicts(BaseModel):
+    verdicts: list[ReviewVerdict] = Field(
+        ..., description="逐条复核结论**必填**：每条被复核的发现都要有一条结论，一条都不可省略")
+
+
 class RiskReport(BaseModel):
     score: int = Field(ge=0, le=100)              # 体检分 0–100
     high: int = 0                                 # 高风险数（按 items 推导，见下）

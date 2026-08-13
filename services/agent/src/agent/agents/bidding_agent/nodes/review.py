@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import logging
 from agent.framework.budget import run_with_shrink
 from agent.framework.create_agent import run_submit_agent
 from agent.agents.bidding_agent.nodes.common import (
@@ -14,6 +15,8 @@ from agent.agents.bidding_agent.prompts.review import (
 )
 from agent.agents.bidding_agent.prompts.categories import category_scope, industry_patches
 from agent.parsing.ocr import ocr_configured
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -191,5 +194,66 @@ def make_review_node(ctx):
                 "submit_risk_report", RiskReport, "提交审查报告")
 
         result = await run_with_shrink(_attempt, label="审查")
+        result = await _verify_findings(ctx, result, texts, scanned, system)
         return {"risk": _finalize_risk(result, category, self_detected, scanned)}
     return review_node
+
+
+_VERIFY_EXCERPT_CHARS = 3500   # 每章正文摘录上限：复核只需围绕发现处的证据，不用整章重灌
+
+
+async def _verify_findings(ctx, report, texts: dict, scanned: list, first_system: str):
+    """复核轮（2026-08-13 用户点单）：对首轮发现逐条找反证，drop/revise 站不住的。
+    **best-effort**：复核调用失败/结论解析不出，原报告原样交付——复核是减法，
+    垮掉不能连累整步（同 OCR/RAG 的降级铁律）。拿不准 keep 的保守方向写在提示词里。
+    只挑发现指向的章节喂摘录（含识别文字），token 约为首轮三成。"""
+    from agent.agents.bidding_agent.prompts.review import REVIEW_VERIFY_PROMPT
+    from agent.agents.bidding_agent.schemas import ReviewVerdicts
+    items = list(report.items or [])
+    if not items:
+        return report
+    try:
+        await publish_phase(ctx, "复核审查发现（逐条找反证）")
+        findings = [{"index": i + 1, "level": it.level, "title": it.title, "advice": it.advice,
+                     "target_id": it.target_id, "tender_ref": it.tender_ref}
+                    for i, it in enumerate(items)]
+        cids = list(dict.fromkeys(it.target_id for it in items if it.target_id and it.target_id in texts))
+        excerpts = {cid: texts[cid][:_VERIFY_EXCERPT_CHARS] for cid in cids}
+        # 复核也要懂系统注记/识别文字/豁免那套纪律：直接沿用首轮 system 里已拼好的规则块
+        system = REVIEW_VERIFY_PROMPT + first_system.split("你是投标合规审查专家", 1)[0]
+        user = ("待复核的发现清单：\n" + json.dumps(findings, ensure_ascii=False)
+                + "\n\n各发现所指章节的正文摘录（含识别文字）：\n"
+                + json.dumps(excerpts, ensure_ascii=False)
+                + "\n\n请逐条复核并用 submit_review_verdicts 提交全部结论。")
+        verdicts = await run_submit_agent(ctx, system, user,
+                                          "submit_review_verdicts", ReviewVerdicts, "提交复核结论")
+        data = report.model_dump()
+        dropped: list[str] = []
+        by_index = {v.index: v for v in verdicts.verdicts}
+        kept = []
+        for i, it in enumerate(data["items"]):
+            v = by_index.get(i + 1)
+            if v is None or v.verdict == "keep":
+                kept.append(it)
+                continue
+            if v.verdict == "revise":
+                if v.level.strip():
+                    it["level"] = v.level.strip()
+                    it["tone"] = "destructive" if "高" in v.level else "warning"
+                if v.title.strip():
+                    it["title"] = v.title.strip()
+                if v.advice.strip():
+                    it["advice"] = v.advice.strip()
+                kept.append(it)
+                continue
+            dropped.append(f"{it.get('title', '')}（复核撤销：{v.reason[:80]}）")
+        data["items"] = kept
+        data["passed_items"] = list(data.get("passed_items") or []) + dropped
+        result = type(report).model_validate(data)   # 计数由 _derive_counts 按新列表重推
+        logger.info("审查复核完成：%d 条发现，撤销 %d、修正 %d",
+                    len(items), len(dropped),
+                    sum(1 for v in verdicts.verdicts if v.verdict == "revise"))
+        return result
+    except Exception:  # noqa: BLE001 复核是减法，垮掉绝不连累审查交付
+        logger.warning("审查复核轮失败，交付首轮报告", exc_info=True)
+        return report
