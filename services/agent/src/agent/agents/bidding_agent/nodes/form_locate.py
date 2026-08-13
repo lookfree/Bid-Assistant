@@ -242,8 +242,8 @@ def _match_tier(chapter_core: str, name: str) -> int | None:
     return None
 
 
-def find_form(index: list[dict], chapter_title: str) -> str:
-    """按章名从索引里取**单份**表单原文；取不到返回空串（调用方走整章兜底/留痕）。
+def find_form_segment(index: list[dict], chapter_title: str) -> dict | None:
+    """按章名从索引里取**单份**表单段；取不到返回 None（调用方走整章兜底/留痕）。
 
     多个候选先比匹配强度，同强度再按层级取舍，方向随强度而变：
     · 强匹配（全同/互含）取**最浅**——「投标函」章同时命中「1.投标函」和其子项
@@ -254,15 +254,57 @@ def find_form(index: list[dict], chapter_title: str) -> str:
     core = _core_form_name(chapter_title)
     hits = [(t, s) for s in index if (t := _match_tier(core, s["name"])) is not None]
     if not hits:
-        return ""
+        return None
     top = min(t for t, _ in hits)
     cands = [s for t, s in hits if t == top]
     if top <= 1:
-        best = min(cands, key=lambda s: (s["depth"], -len(_norm(s["name"]))))
-    else:
-        best = max(cands, key=lambda s: (s["depth"], len(_norm(s["name"]))))
-    text = "\n".join(line for line in best["lines"] if line.strip())
+        return min(cands, key=lambda s: (s["depth"], -len(_norm(s["name"]))))
+    return max(cands, key=lambda s: (s["depth"], len(_norm(s["name"]))))
+
+
+def segment_text(seg: dict | None) -> str:
+    """段 → 模板原文；空段/超体量（切出来的根本不是一份表单）都给空串。"""
+    if seg is None:
+        return ""
+    text = "\n".join(line for line in seg["lines"] if line.strip())
     return text if 0 < len(text) <= _MAX_FORM_CHARS else ""
+
+
+def find_form(index: list[dict], chapter_title: str) -> str:
+    """find_form_segment 的取文版（slice_single_form 与测试用）。"""
+    return segment_text(find_form_segment(index, chapter_title))
+
+
+def _sub_index(hay: list[str], needle: list[str]) -> int:
+    n = len(needle)
+    for i in range(len(hay) - n + 1):
+        if hay[i:i + n] == needle:
+            return i
+    return -1
+
+
+def dedupe_nested(matches: dict[str, dict]) -> dict[str, str]:
+    """{章id: 命中段} → {章id: 模板原文}，**父段裁掉已被别章认领的子段**。
+
+    「3.报价一览表」的段天然包含「3-1.报价明细表」（一览与明细一套，单章场景必须如此）；
+    但提纲把明细表也立了章时，两章各拿全套 → 明细表在标书里出现两遍（2026-08-13 云上
+    重跑实测）。子段被别章认领的，父段裁到子段起点，子段的编号行（「3-1.报价明细表」）
+    一并裁掉；没人认领时父段原样保留。"""
+    out: dict[str, str] = {}
+    segs = list(matches.values())
+    for cid, seg in matches.items():
+        lines = list(seg["lines"])
+        cut = len(lines)
+        for other in segs:
+            if other is seg or not other["lines"]:
+                continue
+            idx = _sub_index(lines, other["lines"])
+            if 0 <= idx < cut:
+                cut = idx
+                if cut and _norm(str(other["name"])) in _norm(lines[cut - 1]):
+                    cut -= 1   # 子段的编号行紧贴其前，一并让给子章
+        out[cid] = segment_text({**seg, "lines": lines[:cut]})
+    return out
 
 
 def slice_single_form(text: str, chapter_title: str, allow_whole: bool = True) -> str:

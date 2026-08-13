@@ -13,7 +13,7 @@ from agent.agents.bidding_agent.prompts.content import (
     CHAPTER_DRAFT_PROMPT, REWRITE_PROMPT,
     DEVIATION_TABLE_GUIDE, TEMPLATE_GUIDE)
 from agent.agents.bidding_agent.nodes.form_locate import (
-    _looks_like_form_title, build_form_index, find_form, slice_single_form)
+    _looks_like_form_title, build_form_index, dedupe_nested, find_form_segment, slice_single_form)
 from agent.rag import retrieve as rag_retrieve
 from agent.agents.bidding_agent.render.sanitize import strip_document_shell, strip_chat_wrapper, clean_internal_ids
 
@@ -135,10 +135,18 @@ def _template_entries(read: dict, outline: dict) -> dict[str, dict]:
     form_items = {s.get("id"): s for s in (read.get("required_structure") or []) if _is_form_item(s)}
     index = build_form_index(read)   # 全文表单边界索引，各章共用（见 form_locate.py 文档串）
     out: dict[str, dict] = {}
+    pending: list[tuple] = []          # (chapter, struct, title, 前两路已取到的文)
+    seg_matches: dict[str, dict] = {}  # find_form 命中的段，集齐后统一父子裁剪
     for chapter in outline.get("chapters", []):
         struct = form_items.get(chapter.get("structure_ref"))
         title = chapter.get("title") or ""
         if struct is None and not _looks_like_form_title(title):
+            continue
+        # 偏离表章**绝不走模板保真**：它有自己的「偏离表指引+条目数据」通路，产出本该是
+        # 填满响应的表。构词法当初特意不收「偏离表」，但读标把它登记成 kind=form 时
+        # struct 这条路绕过了构词法——保真把模型填好的偏离表判成"改写模板"，
+        # 打回招标的空表头（2026-08-13 云上重跑实测：偏离表章只剩 197 字空壳）。
+        if _DEVIATION_KEYWORD in title or (struct is not None and _DEVIATION_KEYWORD in (struct.get("title") or "")):
             continue
         # 一：条款所指的节，取全文后必须过**单份闸**（slice_single_form）——闸内只切出
         # 与本章同名的那份，切不出就当没找到。旧的「整节直发」正是把整份采购公告喂成
@@ -159,12 +167,20 @@ def _template_entries(read: dict, outline: dict) -> dict[str, dict]:
                         for cid in (it.get("clause_ids") or [])]
             item_text = _sec_join(item_ids)
             text = slice_single_form(item_text, title, allow_whole=False) if item_text else ""
-        cap, note = _TEMPLATE_CHAPTER_CHARS, f"本章「{title}」对应的招标格式原文"
         if not text:
             # 二：全文表单边界索引按章名取单份（「1.响应函」这类编号行、节标题、
             # 无编号表单名行都是边界；含子编号归并、复合章名拆部件匹配）。
-            text = find_form(index, title)
-        exact = bool(text)   # 前两条路命中 = 这一段**就是本章那一份表单**，可以逐字校验
+            # 先记段不取文——集齐各章命中后做父子裁剪（一览表章不再连带明细表章那份）
+            seg = find_form_segment(index, title)
+            if seg is not None:
+                seg_matches[chapter.get("id")] = seg
+        pending.append((chapter, struct, title, text))
+
+    seg_texts = dedupe_nested(seg_matches)
+    for chapter, struct, title, text in pending:
+        text = text or seg_texts.get(chapter.get("id"), "")
+        cap, note = _TEMPLATE_CHAPTER_CHARS, f"本章「{title}」对应的招标格式原文"
+        exact = bool(text)   # 精确命中 = 这一段**就是本章那一份表单**，可以逐字校验
         if not text:
             # 降级二：整份招标的格式章兜底。给多了模型自己挑，给零它只能编。
             secs = _format_chapter_secs(read)

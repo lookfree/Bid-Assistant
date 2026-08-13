@@ -392,6 +392,47 @@ class TestBriefTargeting:
         assert "我方愿意承担招标文件规定的全部义务。" in brief, "sec-10 的正文行排到边界前被丢了"
         assert "致：采购人" in brief
 
+    def test_deviation_chapter_never_gets_a_form_template(self, monkeypatch):
+        """偏离表章绝不走模板保真——它有「偏离表指引+条目数据」通路，产出本该是填满响应的表。
+        读标把它登记成 kind=form 时 struct 路曾绕过构词法：保真把模型**填好的**偏离表判成
+        "改写模板"，打回招标的空表头（2026-08-13 云上重跑实测：偏离表章只剩 197 字空壳）。"""
+        state = _state(2)
+        state["outline"]["chapters"][0].update({"title": "技术需求/服务偏离表", "structure_ref": "s7"})
+        state["read"] = {
+            "required_structure": [{"id": "s7", "title": "技术需求/服务偏离表", "kind": "form",
+                                    "clause_ids": ["sec-7-c1"]}],
+            "categories": [{"key": "technical", "title": "技术", "items": [
+                {"title": "零信任网关吞吐量", "value": "10Gbps", "star": True, "clause_ids": ["sec-7-c1"]}]}],
+            "doc_sections": [{"id": "sec-7-c1", "text": "5.技术需求/服务偏离表"},
+                             {"id": "sec-7-c2", "text": "序号\t条目号\t需求\t响应\t偏离\t说明"}]}
+        chat = _FakeChat()
+        _run(state, chat, monkeypatch=monkeypatch)
+        brief = _brief_of(chat, "技术需求/服务偏离表")
+        assert "偏离表指引" in brief, "偏离章丢了自己的指引通路"
+        assert "招标格式模板" not in brief, "偏离章收到了模板保真指令——填好的表会被打回空表"
+
+    def test_detail_table_claimed_by_its_own_chapter_leaves_the_parent(self, monkeypatch):
+        """提纲把报价一览表与报价明细表各立一章时，一览表章不再连带明细表——否则明细表
+        在标书里出现两遍（2026-08-13 云上重跑实测）。单章场景父段含子段的行为不变
+        （test_price_table_includes_its_sub_numbered_detail_table 钉着）。"""
+        state = _state(2)
+        state["outline"]["chapters"][0].update({"title": "报价一览表", "items": []})
+        state["outline"]["chapters"][1].update({"title": "报价明细表", "items": []})
+        state["read"] = {"doc_sections": [
+            {"id": "sec-2-c1", "text": "3.报价一览表"},
+            {"id": "sec-2-c2", "text": "序号\t项目名称\t数量\t单价（元）"},
+            {"id": "sec-2-c3", "text": "3-1.报价明细表"},
+            {"id": "sec-2-c4", "text": "报价明细表"},
+            {"id": "sec-2-c5", "text": "序号\t产品名称\t品牌\t型号"},
+            {"id": "sec-2-c6", "text": "4.资格文件"},
+        ]}
+        chat = _FakeChat()
+        _run(state, chat, monkeypatch=monkeypatch)
+        parent = _brief_of(chat, "报价一览表")
+        child = _brief_of(chat, "报价明细表")
+        assert "序号\t项目名称" in parent and "品牌" not in parent, "一览表章还连带着明细表"
+        assert "品牌" in child, "明细表章没拿到自己的表"
+
     def test_template_falls_back_to_matching_by_heading_when_clause_ids_miss(self, monkeypatch):
         """降级一:条款 id 定位不到就按**标题**找。条款编号靠读标切分,切歪整章就零模板——
         而招标与投标两侧对同一份表单的叫法通常一致(都叫「报价函」),标题比编号稳。"""
