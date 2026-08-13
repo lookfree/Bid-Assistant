@@ -65,17 +65,38 @@ SCAN_REVIEW_RULE = """
 3. advice 写明该材料可能已在扫描页或图片中、本次无法读取，请人工核对具体是哪一项/哪一份并确认；
 4. 只有当看不见的页/图极少、明显装不下该材料时（例如全书只有一两页扫描件、只有一两张图），
    才允许判「缺少」的高风险。
+5. **识别文字视同可见正文**：正文里以「【系统注记·图片识别」「【系统注记·扫描页识别」开头的
+   段落，是图片/扫描页经文字识别得到的内容——**那就是图里的字**。凭识别文字能确认的材料
+   （营业执照信息、信用查询结果、财务数字、承诺内容等）按确认处理，**不得**再写「内容不可见/
+   无法核验」；识别文字确认不了的维度（签字/盖章是否真实、是否原件彩色扫描、图像清晰度）
+   才保留「无法核验」，且 advice 要写清是哪个维度核不了，不许笼统说内容不可见。
 在正文文字里确有内容、只是内容本身不合要求的，照常按原规则判定，不受本条影响。
 """
 
 
 def _visibility_line(f: dict) -> str:
-    """一份文件的可见性说明。扫描 PDF 报页数，docx 报正文内嵌图片张数——对模型是同一件事：
-    这些内容你看不到，别据此断言人家缺材料。docx 没有「页」的口径，只能报张数。"""
+    """一份文件的可见性说明。扫描 PDF 报页数，docx 报正文内嵌图片张数——没识别出来的
+    内容你看不到，别据此断言人家缺材料。**已识别的要单独说**（2026-08-13 实测：11 张识别
+    了 10，只报"剩 1 张不可见"会让模型把所有证照都挂到那一张头上判无法核验——识别文字
+    明明在正文里）。全部识别成功时不再扣"内容不可见"的帽子，只指路识别文字在哪。"""
     unseen = "其内容对你不可见——很可能包含证照、身份证明、盖章表格、签字页。"
-    if f.get("image_pages"):
-        return f"- 《{f['name']}》共 {f['pages']} 页，其中 {f['image_pages']} 页为扫描图片页，{unseen}"
-    return f"- 《{f['name']}》正文中含 {f.get('embedded_images', 0)} 张内嵌图片，{unseen}"
+    seen_note = "其识别文字已标注在正文中（【系统注记】开头的段落），视同可见内容参与核验"
+    if f.get("image_pages") or f.get("recognized_pages"):
+        rec = f.get("recognized_pages", 0)
+        parts = [f"- 《{f['name']}》共 {f['pages']} 页"]
+        if rec:
+            parts.append(f"其中 {rec} 页扫描页已识别为文字，{seen_note}")
+        if f.get("image_pages"):
+            parts.append(f"另有 {f['image_pages']} 页扫描图片页{unseen}")
+        return "，".join(parts) + ("。" if not f.get("image_pages") else "")
+    rec = f.get("recognized_images", 0)
+    remain = f.get("embedded_images", 0)
+    parts = [f"- 《{f['name']}》正文原有 {rec + remain} 张内嵌图片"]
+    if rec:
+        parts.append(f"其中 {rec} 张已识别为文字，{seen_note}")
+    if remain:
+        parts.append(f"其余 {remain} 张{unseen}")
+    return "，".join(parts) + ("。" if not remain else "")
 
 
 def scan_pages_note(scanned: list[dict]) -> str:

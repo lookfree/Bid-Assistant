@@ -300,3 +300,20 @@ def test_review_feeds_everything_when_it_fits(submit_gateway):
          "chapters": {"b1": "<p>" + "正文" * 500 + "结尾标记</p>"}}))
     user_msg = gw.chats[-1].last_messages[1].content
     assert "结尾标记" in user_msg and "【系统注记·截断】" not in user_msg
+
+
+def test_recognized_image_text_counts_as_visible_content():
+    """识别文字视同可见（2026-08-13 实测：11 张识别了 10，审查仍写「营业执照以图片识别
+    形式呈现，内容不可见」——自相矛盾的四条假无法核验）。两处必须同时在场：
+    规则里明写识别文字按确认处理、可见性说明分开报「已识别 M 张（可核验）/剩 K 张不可见」。"""
+    from agent.agents.bidding_agent.prompts.review import SCAN_REVIEW_RULE, scan_pages_note
+
+    assert "识别文字视同可见正文" in SCAN_REVIEW_RULE
+    note = scan_pages_note([{"name": "响应文件.doc", "embedded_images": 1, "recognized_images": 10}])
+    assert "11 张内嵌图片" in note
+    assert "10 张已识别为文字" in note and "视同可见" in note
+    assert "1 张" in note and "不可见" in note
+    # 全识别:不再扣「内容不可见」帽子,只指路识别文字
+    clean = scan_pages_note([{"name": "响应文件.doc", "embedded_images": 0, "recognized_images": 11}])
+    assert "不可见" not in clean
+    assert "11 张已识别为文字" in clean

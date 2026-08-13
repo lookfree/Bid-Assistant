@@ -114,14 +114,24 @@ async def parse_bid_docs(keys: str | list[str], ctx=None) -> tuple[dict[str, str
         # 先扫描页后内嵌图：一份文件只会走其中一条（PDF 有页、docx 有图），顺序在实际数据上
         # 无差别；写成固定顺序是为了让"预算怎么花的"可预期——真要有既有扫描页又有内嵌图的
         # 格式出现，页是整版材料、图是零散贴图，先花在页上更划算。
+        pre_pages, pre_images = parsed.image_pages, parsed.embedded_images
         parsed = await ocr_scanned_pages(parsed, key, _ocr_progress(ctx, name), deadline)
         parsed = await ocr_docx_images(parsed, key, _ocr_progress(ctx, name, "内嵌图片"), deadline)
-        if parsed.image_pages:
-            scanned.append({"name": name,
-                            "pages": parsed.pages or parsed.image_pages,
-                            "image_pages": parsed.image_pages})
-        elif parsed.embedded_images:
-            scanned.append({"name": name, "embedded_images": parsed.embedded_images})
+        # 识别掉的张/页数也要报（2026-08-13 实测：11 张识别了 10，可见性说明只报"剩 1 张
+        # 不可见"，审查模型把证照/信用/财务全挂到那一张头上判"无法核验"——识别文字明明
+        # 就在正文里；报出"已识别 M"配合审查规则的"识别文字视同可见"才能拆掉这口大锅）。
+        rec_pages, rec_images = pre_pages - parsed.image_pages, pre_images - parsed.embedded_images
+        if parsed.image_pages or rec_pages:
+            entry = {"name": name, "pages": parsed.pages or parsed.image_pages,
+                     "image_pages": parsed.image_pages}
+            if rec_pages:
+                entry["recognized_pages"] = rec_pages
+            scanned.append(entry)
+        elif parsed.embedded_images or rec_images:
+            entry = {"name": name, "embedded_images": parsed.embedded_images}
+            if rec_images:
+                entry["recognized_images"] = rec_images
+            scanned.append(entry)
         _aggregate(parsed, out)
     return out, scanned
 

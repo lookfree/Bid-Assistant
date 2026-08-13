@@ -309,7 +309,10 @@ async def test_both_ocr_paths_share_one_run_level_deadline(monkeypatch, ocr_stub
     assert len(ocr_stub.requests) == 2                # 两条链路都真发了请求
     assert len(starts) == 1                           # 预算只起了一次表
     assert len(used) == 2 and used[0] == used[1]      # 两条链路吃的是同一条预算
-    assert scanned == []                              # 都识别出来了 → 注记消失
+    # 都识别出来了 → 留下「已识别」统计（供审查提示词解释正文里的识别文字段落，
+    # 2026-08-13 实测：统计消失时模型对着识别文字照样判"内容不可见"）
+    assert scanned == [{"name": "a.pdf", "pages": 1, "image_pages": 0, "recognized_pages": 1},
+                       {"name": "b.docx", "embedded_images": 0, "recognized_images": 1}]
     assert "识别文字" in "".join(chapters.values())    # 识别文字真进了审查材料
 
 

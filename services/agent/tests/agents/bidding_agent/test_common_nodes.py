@@ -166,7 +166,10 @@ async def test_parse_bid_docs_feeds_ocr_text_into_the_chapters(monkeypatch):
     monkeypatch.setattr(common_mod, "ocr_scanned_pages", _fake_ocr)
     chapters, scanned = await parse_bid_docs(["uploads/u/x/投标文件.pdf"])
     assert seen["key"] == "uploads/u/x/投标文件.pdf"
-    assert scanned == []                                   # 全识别出来了 → 没有「看不见的页」
+    # 全识别出来了 → 不再有「看不见」的帽子，但**保留一条已识别统计**：正文里那些
+    # 【系统注记·识别】段落得有人向审查模型解释"这就是图/页的内容，视同可见"——
+    # 统计消失的话模型对着识别文字照样说"内容不可见"（2026-08-13 实测，四条假无法核验）
+    assert scanned == [{"name": "投标文件.pdf", "pages": 3, "image_pages": 0, "recognized_pages": 2}]
     assert "法定代表人身份证 张三" in chapters["sec-1"]
     assert "【系统注记·扫描页识别 第2页】" in chapters["sec-1"]
 
