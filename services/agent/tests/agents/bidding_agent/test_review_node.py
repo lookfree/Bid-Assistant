@@ -309,6 +309,10 @@ def test_recognized_image_text_counts_as_visible_content():
     from agent.agents.bidding_agent.prompts.review import SCAN_REVIEW_RULE, scan_pages_note
 
     assert "识别文字视同可见正文" in SCAN_REVIEW_RULE
+    # 2026-08-13 二轮实测：识别都用上了，标题仍写「身份证原件扫描件无法核验」的大帽子，
+    # 且把"签章栏空白"这个看得见的事实塞进无法核验——两条配套纪律必须在场
+    assert "标题只冠核不了的那个维度" in SCAN_REVIEW_RULE
+    assert "识别文字里看得见的问题走正常判定" in SCAN_REVIEW_RULE
     note = scan_pages_note([{"name": "响应文件.doc", "embedded_images": 1, "recognized_images": 10}])
     assert "11 张内嵌图片" in note
     assert "10 张已识别为文字" in note and "视同可见" in note
