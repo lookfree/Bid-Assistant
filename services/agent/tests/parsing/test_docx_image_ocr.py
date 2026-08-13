@@ -311,3 +311,48 @@ async def test_both_ocr_paths_share_one_run_level_deadline(monkeypatch, ocr_stub
     assert len(used) == 2 and used[0] == used[1]      # 两条链路吃的是同一条预算
     assert scanned == []                              # 都识别出来了 → 注记消失
     assert "识别文字" in "".join(chapters.values())    # 识别文字真进了审查材料
+
+
+async def test_a_legacy_doc_is_converted_once_and_its_images_recognized(monkeypatch, ocr_stub):
+    """.doc 内嵌图打通（2026-08-13 实测：《响应文件.doc》11 张证照图只出"内容不可见"注记）：
+    识别侧就地转换一次（计入共享预算），图识别、拼回、注记归零——与 .docx 同一口径。"""
+    docx = _docx("第一章 资格证明", "执照如下：", _png())
+    ole = b"\xd0\xcf\x11\xe0OLE-LEGACY-BYTES"
+    seen = {}
+
+    def fake_convert(data, ext):
+        seen["ext"], seen["data"] = ext, data
+        return docx, "docx"
+
+    monkeypatch.setattr("agent.parsing.parsers._convert_legacy", fake_convert)
+    monkeypatch.setattr(ocr_mod, "read_bytes", lambda k: ole)
+    doc = parse_bytes(docx, "x.docx")           # .doc 解析产物本就是转换后的 docx 形状
+    after = await ocr_mod.ocr_docx_images(doc, "uploads/u/响应文件.doc")
+    assert seen == {"ext": "doc", "data": ole}, "识别侧没有对 .doc 做就地转换"
+    assert len(ocr_stub.requests) == 1
+    assert after.embedded_images == 0, "识别成功后注记没归零"
+    assert "识别文字1" in after.text
+
+
+async def test_a_legacy_doc_that_fails_to_convert_keeps_the_honest_note(monkeypatch, ocr_stub):
+    """.doc 转换失败（soffice 缺失/超时）→ 原样返回，注记保持「无法核验」，审查步不炸。"""
+    from agent.parsing.types import UnsupportedDocument
+
+    def boom(data, ext):
+        raise UnsupportedDocument("soffice 不可用")
+
+    monkeypatch.setattr("agent.parsing.parsers._convert_legacy", boom)
+    monkeypatch.setattr(ocr_mod, "read_bytes", lambda k: b"\xd0\xcf\x11\xe0OLE")
+    doc = parse_bytes(_docx("第一章", "图：", _png()), "x.docx")
+    after = await ocr_mod.ocr_docx_images(doc, "uploads/u/响应文件.doc")
+    assert after.embedded_images == doc.embedded_images == 1
+    assert not ocr_stub.requests
+
+
+def test_needs_ocr_counts_a_doc_with_embedded_images(monkeypatch):
+    """预算起表口径与发请求同点：.doc 带内嵌图也要起表——否则表起晚了，
+    识别做到一半被「预算已用光」拦腰截断。"""
+    monkeypatch.setattr(ocr_mod.settings, "ocr_base_url", "http://ocr:8100")
+    doc = parse_bytes(_docx("第一章", "图：", _png()), "x.docx")
+    assert ocr_mod.needs_ocr(doc, "uploads/u/响应文件.doc")
+    assert not ocr_mod.needs_ocr(doc, "uploads/u/响应文件.wps")

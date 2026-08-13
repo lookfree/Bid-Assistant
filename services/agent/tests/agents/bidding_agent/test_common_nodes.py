@@ -248,11 +248,10 @@ async def test_parse_bid_docs_owns_up_to_images_embedded_in_a_docx(monkeypatch):
     assert scanned == [{"name": "商务标.docx", "embedded_images": 4}]
 
 
-async def test_a_legacy_doc_with_images_does_not_start_the_ocr_budget(monkeypatch):
-    """`.doc` 里的内嵌图这条链路根本不识别（识别侧只吃 .docx），就不该为它起 20 分钟的表。
-
-    起表判据与「真会发请求」的判据必须同口径：首份是 .doc、后面跟着 9 份大 PDF 时，预算会被
-    它之后的下载啃掉，第一次识别还没发出去就报「预算已用光」——张冠李戴。"""
+async def test_a_legacy_doc_with_images_starts_the_ocr_budget(monkeypatch):
+    """`.doc` 的内嵌图**也识别了**（2026-08-13 打通：识别侧就地转换一次），
+    起表判据必须跟着同口径变——.doc 带内嵌图就要起表，否则表起晚了，
+    识别做到一半被「预算已用光」拦腰截断。"""
     seen: list[float | None] = []
 
     async def _fake_ocr(doc, key, on_progress=None, deadline=None):
@@ -266,7 +265,7 @@ async def test_a_legacy_doc_with_images_does_not_start_the_ocr_budget(monkeypatc
     monkeypatch.setattr(common_mod, "ocr_scanned_pages", _fake_ocr)
     monkeypatch.setattr(common_mod, "ocr_docx_images", _fake_ocr)
     await parse_bid_docs(["uploads/u/x/商务标.doc"])
-    assert seen == [None, None]           # 两条链路都拿到「还没起表」
+    assert all(d is not None for d in seen), ".doc 带内嵌图没有起 OCR 预算表"
 
 
 def test_parse_bid_chapters_does_not_ocr(monkeypatch):

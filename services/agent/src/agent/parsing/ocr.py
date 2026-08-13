@@ -102,11 +102,13 @@ def ocr_configured() -> bool:
 
 
 def _splices_docx_images(key: str) -> bool:
-    """这个 key 的内嵌图会不会真被送去识别。**只认 .docx**：.doc 存的是旧格式字节，
-    解析时那份 docx 是 LibreOffice 转出来的临时产物，识别侧要用就得再转一次。
-    判据单点在此——起算预算与真发请求必须同口径，否则 .doc 会白起一张 20 分钟的表
-    （首份是 .doc、后面跟着 9 份大 PDF 时，预算被它之后的下载啃掉）。"""
-    return key.lower().endswith(".docx")
+    """这个 key 的内嵌图会不会真被送去识别。.docx 与 **.doc** 都认：.doc 解析时的转换
+    产物早已释放，识别侧在共享预算内**就地再转一次**（2026-08-13 用户实测：
+    《响应文件.doc》11 张证照图只出"内容不可见"注记，客户传 .doc 的比例不低，
+    当初"先不做"的权衡翻案——60s 转换吃在 OCR 预算里，只对有内嵌图的 .doc 发生）。
+    判据单点在此——起算预算与真发请求必须同口径，否则会白起一张 20 分钟的表
+    （首份要识别的文件之后的下载都吃预算）。"""
+    return key.lower().endswith((".docx", ".doc"))
 
 
 def needs_ocr(doc: ParsedDoc, key: str) -> bool:
@@ -168,9 +170,9 @@ async def ocr_docx_images(doc: ParsedDoc, key: str,
     未配置 OCR / 没有内嵌图 / 预算已用光 → **原样返回**（零 HTTP 调用、零字节读取）。
     deadline 与扫描页那条链路**共用一条**（缺省时自建，仅供单文件直调/测试）。
 
-    **只认 .docx**：.doc 存的是旧格式字节，解析时那份 docx 是 LibreOffice 转出来的临时产物，
-    这里要用就得再转一次（单份最多 60s，还要多占一个 soffice 实例）。先不做——那些图照旧
-    计入注记，行为与改前一致，审查说「无法核验」而不是「缺少」。
+    .doc 在这里**就地再转一次**（LibreOffice，计入共享预算）：解析时的转换产物早已释放，
+    与其把几十 MB 的转换字节/临时文件跨层带给识别侧（读标路还会白建、泄漏难兜），
+    不如对"有内嵌图的 .doc"多花一次 60s 转换；转换失败走既有兜底，照旧「无法核验」。
     字节要重新取一次、docx 也重解析一次（解析时的 bytes 与图片字节都已释放）：156 张图的
     标书若把字节留在 ParsedDoc 里，就是几十上百 MB 跟着整个 run 的状态走；而识别本来
     就是分钟量级的重活，多一次 MinIO 读取 + 一次解析可以忽略。
@@ -184,6 +186,9 @@ async def ocr_docx_images(doc: ParsedDoc, key: str,
         return doc
     try:
         data = await asyncio.to_thread(read_bytes, key)
+        if key.lower().endswith(".doc"):
+            from agent.parsing.parsers import _convert_legacy
+            data, _ = await asyncio.to_thread(_convert_legacy, data, "doc")
         blocks, images = await asyncio.to_thread(docx_body_images, data)
         reps, groups = _ocr_image_indices(images)
         if not reps:
