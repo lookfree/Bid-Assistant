@@ -189,6 +189,20 @@ class OutlineChapter(BaseModel):
 class Outline(BaseModel):
     chapters: list[OutlineChapter]
 
+    @model_validator(mode="after")
+    def _both_groups_present(self) -> "Outline":
+        """技术标与商务标**两组都必须非空**（2026-08-14 生产实测：提纲模型 1505 token
+        收工，8 章全是 business，技术标整组弃写——读标构成里明明有技术偏离表）。
+        校验失败走「提交被拒绝→修正重交」的既有通道，把省力输出顶回去。"""
+        missing = [name for name, group in (("技术标（tech）", self.tech),
+                                            ("商务标（business）", self.business)) if not group]
+        if missing:
+            raise ValueError(
+                f"提纲缺少{ '与'.join(missing) }分组：技术标与商务标两组章节都必须生成——"
+                "技术标至少应含技术需求响应/技术方案类章节（招标构成清单是下限不是上限，"
+                "评标办法要评的技术内容必须有章可落），商务标承载表单与商务响应。请补全后重新提交。")
+        return self
+
     @property
     def tech(self) -> list[OutlineChapter]:
         return [c for c in self.chapters if c.group == "tech"]

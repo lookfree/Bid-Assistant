@@ -13,6 +13,8 @@ from agent.agents.bidding_agent.nodes.review import make_review_node
 from agent.agents.bidding_agent.checklist_gen import generate_checklist
 
 _OUTLINE_ARGS = {"chapters": [{"id": "t1", "no": "第一章", "title": "整体方案", "group": "tech",
+                               "sourced": True, "items": []},
+                              {"id": "b1", "no": "第二章", "title": "商务响应", "group": "business",
                                "sourced": True, "items": []}]}
 _RISK_ARGS = {"score": 80, "items": [], "passed_items": []}
 _CHECKLIST_ARGS = {"groups": [{"title": "资格与资质", "items": ["营业执照在有效期内"]}]}

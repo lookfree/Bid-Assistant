@@ -22,7 +22,9 @@ def test_outline_chapter_structure_ref_defaults_none_and_accepted():
     """旧提纲无 structure_ref → 默认 None（向后兼容）；新提纲可显式设置对齐 required_structure（spec321）。"""
     o = Outline(**_SAMPLE)
     assert o.chapters[0].structure_ref is None
-    sample = {"chapters": [{**_SAMPLE["chapters"][1], "structure_ref": "s1"}]}
+    sample = {"chapters": [{**_SAMPLE["chapters"][1], "structure_ref": "s1"},
+                           {"id": "t1", "no": "第二章", "title": "技术方案", "group": "tech",
+                            "sourced": True, "items": []}]}
     o2 = Outline(**sample)
     assert o2.chapters[0].structure_ref == "s1"
 
@@ -63,3 +65,31 @@ def test_chapter_without_items_is_rejected():
     bad = {"chapters": [{"id": "t1", "no": "第一章", "title": "技术标书", "group": "tech", "sourced": True}]}
     with pytest.raises(ValidationError):
         Outline(**bad)
+
+
+class TestBothGroupsRequired:
+    """2026-08-14 生产实测（云上江西新项目 11:58）：提纲模型 1505 token 收工，8 章全是
+    business，技术标整组弃写——读标构成里明明有「5.技术需求/服务偏离表」。用户口径：
+    技术标大纲与商务标大纲**必须都生成**。校验失败会走提交拒绝→模型重交的既有通道。"""
+
+    def _ch(self, cid, group, title="某章"):
+        return {"id": cid, "no": "第一章", "title": title, "group": group, "items": []}
+
+    def test_all_business_is_rejected(self):
+        import pytest
+        from agent.agents.bidding_agent.schemas import Outline
+        with pytest.raises(Exception, match="技术标"):
+            Outline.model_validate({"chapters": [self._ch("b1", "business"),
+                                                 self._ch("b2", "business")]})
+
+    def test_all_tech_is_rejected(self):
+        import pytest
+        from agent.agents.bidding_agent.schemas import Outline
+        with pytest.raises(Exception, match="商务标"):
+            Outline.model_validate({"chapters": [self._ch("t1", "tech")]})
+
+    def test_both_groups_pass(self):
+        from agent.agents.bidding_agent.schemas import Outline
+        o = Outline.model_validate({"chapters": [self._ch("t1", "tech", "技术方案"),
+                                                 self._ch("b1", "business", "响应函")]})
+        assert len(o.tech) == 1 and len(o.business) == 1

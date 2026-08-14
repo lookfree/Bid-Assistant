@@ -12,6 +12,8 @@ _READ_ARGS = {
 _OUTLINE_ARGS = {"chapters": [
     {"id": "t1", "no": "第一章", "title": "项目理解", "group": "tech", "sourced": True,
      "items": [{"id": "t1-1", "label": "1.1 需求理解"}]},
+    {"id": "b1", "no": "第二章", "title": "商务响应", "group": "business", "sourced": True,
+     "items": []},
 ]}
 _ARGS_BY_TOOL = {"submit_read_result": _READ_ARGS, "submit_outline": _OUTLINE_ARGS}
 
@@ -97,7 +99,7 @@ def test_run2_resumes_to_outline(submit_gateway):
     evs = asyncio.run(go())
     done = [e for e in evs if e["type"] == "step.done"][-1]
     assert done["node"] == "outline"              # 续跑推进到了下一节点
-    assert [c["id"] for c in done["data"]["result"]["chapters"]] == ["t1"]
+    assert [c["id"] for c in done["data"]["result"]["chapters"]] == ["t1", "b1"]
 
 def test_run1_seeds_files_into_state(submit_gateway, monkeypatch):
     """spec320 回归（评审 Critical）：agent.astream 播种 input['files'] 进 BiddingState——
