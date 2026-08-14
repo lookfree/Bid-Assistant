@@ -19,6 +19,19 @@ logger = logging.getLogger(__name__)
 _CID_RE = re.compile(r"^[tb]\d+$")
 
 
+def _pristine_eq(baseline: str | None, now: str | None) -> bool:
+    """基线与现稿**文字相同**即视为未改。字节比较不行（2026-08-14 云上实测）：
+    前端编辑器打开章节即重序列化——换行被吃、表格补 min-width/colgroup 装饰——
+    「看过一眼」被当成「改过」，b1 响应函因此掉出复印队列。剥标签归一后比文字：
+    真改了字才让路（手改必赢的承诺不变），版式装饰噪声不算编辑——表单章的版式
+    本就以招标 XML 为准，HTML 层的样式属性在复印路线上无一落纸。"""
+    from agent.agents.bidding_agent.nodes.form_fidelity import _plain
+
+    if not baseline or not now:
+        return False
+    return _plain(str(baseline)) == _plain(str(now))
+
+
 def _copier_baseline(thread_id: str) -> dict:
     """最新 content run 的原始章表（pristine 判定基准：App 编辑只覆写 project_steps，
     agent_request.result 是模型产出的未动副本）。SQL 侧按「键长得像章 id」直接锁定那一行，
@@ -86,7 +99,7 @@ async def _copier_nodes(ctx, state: dict, outline: dict) -> dict[str, list]:
         logger.warning("复印机基线查询失败，整体让路", exc_info=True)
         return {}
     pristine = {cid for cid in candidates
-                if original.get(cid) and original.get(cid) == chapters_now.get(cid)}
+                if _pristine_eq(original.get(cid), chapters_now.get(cid))}
     if not pristine:
         return {}
     try:

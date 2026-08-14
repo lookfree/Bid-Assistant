@@ -245,6 +245,16 @@ class TestExportWiring:
         out = self._run(monkeypatch, original={**self._CHAPTERS, "b1": "<p>模型原稿</p>"})
         assert out == {}
 
+    def test_editor_serialization_noise_stays_pristine(self, monkeypatch):
+        """2026-08-14 云上实测：编辑器**打开即重序列化**——换行被吃、表格补 min-width/
+        colgroup 装饰——字节比较把「看过一眼」当成「改过」，b1 响应函掉出复印队列。
+        文字一个没变=未改，照常复印；真改了字（上一条用例）仍让路。"""
+        noisy = {"b1": '<p style="min-width: 25px;">\n承诺函生成稿  \n</p>',
+                 "b2": self._CHAPTERS["b2"], "t5": self._CHAPTERS["t5"]}
+        assert noisy["b1"] != self._CHAPTERS["b1"]      # 字节确实不同,测试不许扑空
+        out = self._run(monkeypatch, original=noisy)
+        assert set(out) == {"b1"}
+
     def test_non_docx_main_tender_disables_the_copier(self, monkeypatch):
         """主文件位（files[0]）非 docx 即让路——**不许**退而取任意第一个 docx，
         多文件项目里那可能是答疑册（评审 F13）。"""
