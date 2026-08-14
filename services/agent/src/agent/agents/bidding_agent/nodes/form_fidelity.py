@@ -46,8 +46,12 @@ def _plain(html: str) -> str:
     return _norm(html_mod.unescape(_TAG.sub("", html or "")))
 
 
-def fixed_segments(template: str) -> list[str]:
+def fixed_segments(template: str, title: str = "") -> list[str]:
     """模板 → 必须原样保留的固定片段（按出现顺序），**逐行切**。
+
+    与章标题同文的片段（含去段首编号后同文）**剔除**（2026-08-14 云上 b7 实测）：
+    模板首行往往就是表单名（「供应商情况一览表」，≥6 字入片段），而模型正文从不
+    重复章标题——标题由渲染层出。留着它等于每章必拒、退回碎版式模板。
 
     为什么按行而不是把整份模板连成一条：连起来的话，模型在两行之间多写一个章标题
     （表单章本来就需要标题）就会让跨行的片段找不到，整章被判死、退回一张空表。
@@ -77,6 +81,9 @@ def fixed_segments(template: str) -> list[str]:
         joined = "\t".join(c if _norm(c) else "\x00" for c in cells)
         marked = _PLACEHOLDER.sub("\x00", _BLANK.sub("\x00", joined))
         out += [seg for raw in marked.split("\x00") if len(seg := _norm(raw)) >= _MIN_SEG]
+    ntitle = _norm(title)
+    if ntitle:
+        out = [s for s in out if s != ntitle and _SEG_NO.sub("", s) != ntitle]
     return out
 
 
@@ -86,7 +93,7 @@ def fixed_segments(template: str) -> list[str]:
 _SEG_NO = re.compile(r"^\d+(?:[-.]\d+)*[.、．]?")
 
 
-def first_missing_segment(html: str, template: str) -> str | None:
+def first_missing_segment(html: str, template: str, title: str = "") -> str | None:
     """第一个在产出里找不到（或顺序不对）的固定片段；全都在则 None。
 
     被拒的模型稿此前直接丢弃——填空稿被误杀时无从诊断到底哪一行「改写」了
@@ -94,7 +101,7 @@ def first_missing_segment(html: str, template: str) -> str | None:
     这个函数是拒稿观测的诊断核心：拒一次，记下第一处对不上的片段与稿件头部。
     段首编号豁免（见 _SEG_NO）：原文找不到时去掉编号再找一次——HTML 有序列表的编号
     不在文本层，行内其余每个字仍逐字校验，顺序约束不变。"""
-    segments = fixed_segments(template)
+    segments = fixed_segments(template, title)
     hay = _plain(html)
     pos = 0
     for seg in segments:
@@ -111,13 +118,13 @@ def first_missing_segment(html: str, template: str) -> str | None:
     return None
 
 
-def keeps_template(html: str, template: str) -> bool:
+def keeps_template(html: str, template: str, title: str = "") -> bool:
     """产出有没有原样保留模板的固定文字（顺序也要对）。
 
     顺序必须一起查：条款被打乱顺序重排，同样是「与招标格式不一致」。
     模板切不出任何固定片段（整份都是空位）时视为通过——没有可判定的东西，不该冤杀产出。
     """
-    return first_missing_segment(html, template) is None
+    return first_missing_segment(html, template, title) is None
 
 
 # 表行间的裸行号/空位行（「1」「2」「____」）：原表里是一格行号带一整行空格的空白行，

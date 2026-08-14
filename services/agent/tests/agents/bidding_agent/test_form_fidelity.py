@@ -250,3 +250,41 @@ class TestFalseRejects0814Round2:
         draft = ("<table><tr><td>联络方式</td><td>联系人</td><td></td><td>联系电话</td></tr></table>"
                  "<p>供应商签章处如下所示</p>")
         assert first_missing_segment(draft, tpl) is not None
+
+
+class TestTitleSegmentExemption:
+    """2026-08-14 云上实测(b7 情况一览表)：模板首行就是章标题（≥6 字入了固定片段），
+    而模型正文从不重复章标题（标题由渲染层出）→ 两稿必拒、退回碎版式模板。
+    与章标题同文的片段（含去段首编号后同文）不当固定片段。"""
+
+    TPL = "供应商情况一览表\n统一社会信用代码\t\n企业性质与经营范围\t"
+    HTML = ("<table><tr><td>统一社会信用代码</td><td>91310104MA1FRF3K3N</td></tr>"
+            "<tr><td>企业性质与经营范围</td><td></td></tr></table>")
+
+    def test_title_line_is_exempt(self):
+        from agent.agents.bidding_agent.nodes.form_fidelity import first_missing_segment
+        assert first_missing_segment(self.HTML, self.TPL, title="供应商情况一览表") is None
+
+    def test_numbered_title_line_is_exempt(self):
+        """招标目录里的「7.供应商情况一览表」形态：去段首编号后与标题同文，同样豁免。"""
+        from agent.agents.bidding_agent.nodes.form_fidelity import first_missing_segment
+        tpl = "7.供应商情况一览表\n统一社会信用代码\t"
+        html = "<p>统一社会信用代码：91310104MA1FRF3K3N</p>"
+        assert first_missing_segment(html, tpl, title="供应商情况一览表") is None
+
+    def test_without_title_stays_strict(self):
+        """不传标题（旧调用面）行为不变——豁免只在知道章标题时生效。"""
+        from agent.agents.bidding_agent.nodes.form_fidelity import first_missing_segment
+        assert first_missing_segment(self.HTML, self.TPL) == "供应商情况一览表"
+
+    def test_other_segments_still_checked(self):
+        """豁免只豁标题这一片：别的固定行漏了照拒。"""
+        from agent.agents.bidding_agent.nodes.form_fidelity import first_missing_segment
+        html = "<p>统一社会信用代码：91310104MA1FRF3K3N</p>"
+        assert first_missing_segment(html, self.TPL,
+                                     title="供应商情况一览表") == "企业性质与经营范围"
+
+    def test_keeps_template_passthrough(self):
+        from agent.agents.bidding_agent.nodes.form_fidelity import keeps_template
+        assert keeps_template(self.HTML, self.TPL, title="供应商情况一览表")
+        assert not keeps_template(self.HTML, self.TPL)

@@ -44,7 +44,9 @@ logger = logging.getLogger(__name__)
 # p7：保真豁免二轮（ol 编号/合并格行头/邻节标题剥尾）——被冤杀的留白模板已钉进缓存，
 # 不升版重跑仍端回空表（与 p4/p5 同坑第三次）。
 # p8：正文收尾同值填空（审查材料=最终交付）——填空后的 HTML 进缓存，不升版吃旧缓存等于没填。
-_PROMPT_VER = "p8"
+# p9：保真豁免章标题片段（b7 情况一览表两稿全拒在自己标题上）——被冤杀的碎版式模板
+# 已钉进缓存，不升版重跑仍端回碎表（与 p4/p5/p7 同坑第四次）。
+_PROMPT_VER = "p9"
 _CACHE_TTL_S = 24 * 3600
 # 产出下限：短于此视为残章，重试一次；两次都残按缺章记，交给前端「补齐」按钮（免费）。
 _MIN_CHAPTER_CHARS = 120
@@ -428,7 +430,8 @@ async def _fidelity_gate(ctx, chat, system_prompt: str, user: str, ch: dict, tpl
         clean_internal_ids, strip_chat_wrapper, strip_document_shell, strip_template_disclaimers)
 
     cid = ch.get("id") or ""
-    miss = first_missing_segment(html, tpl_raw)
+    title = ch.get("title") or ""
+    miss = first_missing_segment(html, tpl_raw, title)
     if miss is None:
         return html
     # 拒稿必须留痕（2026-08-13 云上实测教训）：被拒原稿此前直接丢弃，误杀无从诊断。
@@ -456,7 +459,7 @@ async def _fidelity_gate(ctx, chat, system_prompt: str, user: str, ch: dict, tpl
         raise                       # 配置/鉴权类照旧整步失败，不吞进表单退路
     except Exception as e:  # noqa: BLE001 纠偏是加分项：失败就走模板退路
         logger.warning("章 %s 表单纠偏重写失败（%s），走模板退路", cid, str(e)[:120])
-    miss2 = (first_missing_segment(retry, tpl_raw)
+    miss2 = (first_missing_segment(retry, tpl_raw, title)
              if len(retry) >= min_chars and "<" in retry else "（重写稿过短/非HTML/被截断）")
     if miss2 is None:
         logger.info("章 %s 纠偏重写过检，保住填空稿", cid)

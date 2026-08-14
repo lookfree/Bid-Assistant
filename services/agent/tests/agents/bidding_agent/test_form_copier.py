@@ -348,9 +348,10 @@ class TestReviewFixes0814:
         assert "明细专属列" not in xml, "手改的子表单仍留在被复印的父表里（去重晚于 pristine 过滤）"
         assert "报价明细表" not in xml
 
-    def test_hyperlink_and_inline_sectpr_are_refused(self):
-        """评审 F4：超链接/段内分节符引用目标文档没有的关系与分节序列，搬过去轻则修复
-        弹窗重则版面断裂——诚实拒收走 HTML 退路。"""
+    def test_hyperlink_is_refused(self):
+        """评审 F4：超链接引用目标文档没有的关系，搬过去轻则修复弹窗重则版面断裂——
+        诚实拒收走 HTML 退路。（顶层段落的段内 sectPr 2026-08-14 起改为抽取时剥离，
+        见 TestInlineSectPrStripped；藏在表格里的仍拒。）"""
         from docx import Document
         from docx.oxml import parse_xml
         from agent.agents.bidding_agent.render.form_copier import (
@@ -366,14 +367,6 @@ class TestReviewFixes0814:
         d.save(buf)
         with pytest.raises(CopierUnsupported, match="超链接"):
             extract_form_nodes(buf.getvalue(), FormSpan(0, 0, -1))
-
-        d2 = Document()
-        p2 = d2.add_paragraph("横版报价表尾")
-        p2._p.get_or_add_pPr().append(parse_xml(f"<w:sectPr {W}/>"))
-        buf2 = io.BytesIO()
-        d2.save(buf2)
-        with pytest.raises(CopierUnsupported, match="分节"):
-            extract_form_nodes(buf2.getvalue(), FormSpan(0, 0, -1))
 
     def test_colon_slot_placeholder_is_filled_but_label_bracket_is_not(self):
         """评审 F5 收窄：「致：【XX公司[采购人名称]】：」冒号后的括注是值槽 → 替换；
@@ -503,3 +496,232 @@ class TestHtmlFillHardening:
                 "<tr><td>银行账号</td><td> </td></tr></table>")
         out, n = fill_blanks_html(html, [("开户银行", "招行徐家汇"), ("银行账号", "121932027710506")], {})
         assert n == 2 and "招行徐家汇" in out and "121932027710506" in out
+
+
+def _colon_docx() -> bytes:
+    """行尾冒号落款（2026-08-14 云上导出实测形态）：招标落款行冒号后**没有下划线**，
+    此前 XML 填空无落点（filled=0）——审查页模型填了值，导出却是空标签。"""
+    from docx import Document
+
+    d = Document()
+    d.add_paragraph("供应商名称：")                       # body#0 别名 → 单位名称
+    d.add_paragraph("地址：")                             # body#1 别名 → 注册地址
+    d.add_paragraph("联系地址和电话：")                    # body#2 组合值
+    d.add_paragraph("电子邮箱：")                          # body#3 无档案 → 留白
+    d.add_paragraph("我方承诺如下内容：")                   # body#4 正文引导句 → 绝不填
+    p = d.add_paragraph()                                  # body#5 带空位的行归空位规则管
+    p.add_run("供应商盖章：")
+    p.add_run("________")
+    buf = io.BytesIO()
+    d.save(buf)
+    return buf.getvalue()
+
+
+_COLON_FIELDS = [("单位名称", "上海安几科技有限公司"),
+                 ("注册地址", "上海市普陀区祁连山路111弄6号"),
+                 ("联系电话", "021-52808586")]
+
+
+class TestLineEndColonFill:
+    """2026-08-14 云上导出实测：响应函/承诺函/报价明细表落款 filled=0 的根修。"""
+
+    def _filled(self):
+        from agent.agents.bidding_agent.render.form_copier import (
+            extract_form_nodes, fill_blanks)
+        nodes = extract_form_nodes(_colon_docx(), FormSpan(0, 5, -1))
+        n = fill_blanks(nodes, _COLON_FIELDS, {})
+        xml = "".join(__import__("lxml").etree.tostring(x, encoding="unicode") for x in nodes)
+        return n, xml
+
+    def test_label_colon_line_gets_value_appended(self):
+        n, xml = self._filled()
+        assert "供应商名称：" in xml and "上海安几科技有限公司" in xml
+        assert "地址：" in xml and "上海市普陀区祁连山路111弄6号" in xml
+
+    def test_combined_address_phone_label(self):
+        """「联系地址和电话：」一行要装两个字段，组合成一个值。"""
+        _, xml = self._filled()
+        assert "上海市普陀区祁连山路111弄6号" in xml and "021-52808586" in xml
+
+    def test_unknown_and_prose_lines_stay_blank(self):
+        """无档案的标签留白；正文引导句（「我方承诺如下内容：」）一个字不加。"""
+        _, xml = self._filled()
+        assert "电子邮箱：</w:t>" in xml or "电子邮箱：" in xml
+        import re as _re
+        mail = _re.search(r"电子邮箱：([^<]*)", xml)
+        assert mail and not mail.group(1).strip()
+        prose = _re.search(r"我方承诺如下内容：([^<]*)", xml)
+        assert prose is None or not prose.group(1).strip()
+
+    def test_blank_carrying_line_not_double_filled(self):
+        """带下划线空位的行归空位规则管——盖章无档案，下划线原样留白。"""
+        n, xml = self._filled()
+        assert "供应商盖章：" in xml and "________" in xml
+        assert n == 3            # 供应商名称 + 地址 + 联系地址和电话，一处不多
+
+    def test_table_label_cell_not_line_end_filled(self):
+        """表格标签格「单位名称：」的值走**右侧空格**，标签格自身绝不追加——否则双份。"""
+        from docx import Document
+        from agent.agents.bidding_agent.render.form_copier import extract_form_nodes, fill_blanks
+        d = Document()
+        t = d.add_table(rows=1, cols=2)
+        t.cell(0, 0).text = "单位名称："
+        buf = io.BytesIO()
+        d.save(buf)
+        nodes = extract_form_nodes(buf.getvalue(), FormSpan(0, 0, -1))
+        n = fill_blanks(nodes, _COLON_FIELDS, {})
+        xml = "".join(__import__("lxml").etree.tostring(x, encoding="unicode") for x in nodes)
+        assert n == 1 and xml.count("上海安几科技有限公司") == 1
+
+    def test_html_line_end_parity(self):
+        """HTML 引擎同形态同值（同值三视图：审查/编辑器与导出一个规则）。"""
+        from agent.agents.bidding_agent.render.form_copier import fill_blanks_html
+        html = "<p>供应商名称：</p><p>电子邮箱：</p><p>我方承诺如下内容：</p>"
+        out, n = fill_blanks_html(html, _COLON_FIELDS, {})
+        assert n == 1
+        assert "<p>供应商名称：上海安几科技有限公司</p>" in out
+        assert "<p>电子邮箱：</p>" in out
+        assert "<p>我方承诺如下内容：</p>" in out
+
+    def test_html_line_end_value_is_escaped(self):
+        from agent.agents.bidding_agent.render.form_copier import fill_blanks_html
+        out, n = fill_blanks_html("<p>单位名称：</p>", [("单位名称", "A<B>&C")], {})
+        assert n == 1 and "A&lt;B&gt;&amp;C" in out and "<B>" not in out
+
+
+class TestFallbackImageExempt:
+    """2026-08-14 云上 b2 授权书白拒根修：招标身份证粘贴框的 imagedata 全在 mc:Fallback
+    （Word 只读 mc:Choice 的兼容降级层）且不引用任何图片文件——搬运无害，不该拒。"""
+
+    _NS = ('xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+           'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+           'xmlns:v="urn:schemas-microsoft-com:vml" '
+           'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+           'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"')
+
+    def _p(self, inner: str):
+        from lxml import etree
+        return etree.fromstring(f"<w:p {self._NS}><w:r>{inner}</w:r></w:p>")
+
+    def test_fallback_imagedata_without_rel_passes(self):
+        from agent.agents.bidding_agent.render.form_copier import _check_portable
+        el = self._p("<mc:AlternateContent><mc:Choice Requires=\"wps\"><w:t>框</w:t></mc:Choice>"
+                     "<mc:Fallback><w:pict><v:shape><v:imagedata/></v:shape></w:pict>"
+                     "</mc:Fallback></mc:AlternateContent>")
+        _check_portable(el)      # 不抛 = 通过
+
+    def test_fallback_imagedata_with_rel_still_rejected(self):
+        """Fallback 里带 r:id 关系引用的，搬过去是悬空 rId——照旧诚实拒收。"""
+        from agent.agents.bidding_agent.render.form_copier import CopierUnsupported, _check_portable
+        el = self._p("<mc:AlternateContent><mc:Fallback><w:pict><v:shape>"
+                     "<v:imagedata r:id=\"rId9\"/></v:shape></w:pict></mc:Fallback>"
+                     "</mc:AlternateContent>")
+        with pytest.raises(CopierUnsupported):
+            _check_portable(el)
+
+    def test_real_image_outside_fallback_still_rejected(self):
+        from agent.agents.bidding_agent.render.form_copier import CopierUnsupported, _check_portable
+        el = self._p("<w:drawing><a:blip r:embed=\"rId5\"/></w:drawing>")
+        with pytest.raises(CopierUnsupported):
+            _check_portable(el)
+
+
+class TestInlineSectPrStripped:
+    """2026-08-14 云上 b2 授权书第二道白拒：表单末行挂着段内分节符（几何与文档级相同，
+    只带招标页脚引用）。原样搬=悬空引用+招标页面设置改写全书；整章拒=版式退回 HTML 重建。
+    根修：抽取时剥掉顶层段落的 sectPr——内容并入输出文档当前节；藏在表格里的照拒。"""
+
+    _NS = ('xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+           'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"')
+
+    def _sect_p(self):
+        from lxml import etree
+        return etree.fromstring(
+            f"<w:p {self._NS}><w:pPr><w:sectPr>"
+            "<w:footerReference r:id=\"rId4\" w:type=\"default\"/>"
+            "<w:pgSz w:w=\"11906\" w:h=\"16838\"/></w:sectPr></w:pPr>"
+            "<w:r><w:t>说明：法定代表人参加采购，不用提供授权书</w:t></w:r></w:p>")
+
+    def test_top_level_sectpr_is_stripped_not_rejected(self):
+        from agent.agents.bidding_agent.render.form_copier import extract_span
+        nodes = extract_span([self._sect_p()], FormSpan(0, 0, -1))
+        xml = __import__("lxml").etree.tostring(nodes[0], encoding="unicode")
+        assert "说明：法定代表人参加采购" in xml
+        assert "sectPr" not in xml and "footerReference" not in xml
+
+    def test_original_node_is_untouched(self):
+        """剥离只发生在深拷贝上——招标文档的节点一个字不动。"""
+        from agent.agents.bidding_agent.render.form_copier import extract_span
+        src = self._sect_p()
+        extract_span([src], FormSpan(0, 0, -1))
+        xml = __import__("lxml").etree.tostring(src, encoding="unicode")
+        assert "sectPr" in xml
+
+    def test_sectpr_hidden_in_table_still_rejected(self):
+        from lxml import etree
+        from agent.agents.bidding_agent.render.form_copier import CopierUnsupported, extract_span
+        tbl = etree.fromstring(
+            f"<w:tbl {self._NS}><w:tr><w:tc><w:p><w:pPr><w:sectPr/></w:pPr>"
+            "</w:p></w:tc></w:tr></w:tbl>")
+        with pytest.raises(CopierUnsupported):
+            extract_span([tbl], FormSpan(0, 0, -1))
+
+
+class TestUnderlinedSpaceBlank:
+    """2026-08-14 云上授权书实证（V1 注释预留的形态）：空位是**带下划线格式的纯空格 run**
+    （「（供应商全称）法定代表人 ____ 授权 ____（全权代表姓名）为全权代表」）。
+    下划线是「在此线上填写」的显式标记——比放宽到任意长空格安全得多；
+    值写回原 run（rPr 原样），字落在横线上。"""
+
+    def _auth_docx(self) -> bytes:
+        """按云上招标授权正文的真实 run 结构造：缩进空格 run（无下划线）＋
+        下划线空格 run×3，标签分别是后括注/前文/后括注。"""
+        from docx import Document
+
+        d = Document()
+        p = d.add_paragraph()
+        p.add_run("    ")                                    # 纯缩进,不是空位
+        p.add_run("                 ").underline = True       # 空位1 ← 后括注(供应商全称)
+        p.add_run("（供应商全称）法定代表人")
+        p.add_run("           ").underline = True             # 空位2 ← 前文 法定代表人
+        p.add_run("授权")
+        p.add_run("         ").underline = True               # 空位3 ← 后括注(全权代表姓名)
+        p.add_run("（全权代表姓名）为全权代表，参加贵处组织的询比活动。")
+        buf = io.BytesIO()
+        d.save(buf)
+        return buf.getvalue()
+
+    def _filled_xml(self):
+        from agent.agents.bidding_agent.render.form_copier import (
+            extract_form_nodes, fill_blanks)
+        nodes = extract_form_nodes(self._auth_docx(), FormSpan(0, 0, -1))
+        n = fill_blanks(nodes, [("单位名称", "上海安几科技有限公司"),
+                                ("法定代表人", "于新宇"),
+                                ("全权代表姓名", "胡月")], {})
+        return n, "".join(__import__("lxml").etree.tostring(x, encoding="unicode") for x in nodes)
+
+    def test_three_slots_filled_via_bracket_and_leading_labels(self):
+        n, xml = self._filled_xml()
+        assert n == 3
+        assert "上海安几科技有限公司" in xml and "于新宇" in xml and "胡月" in xml
+
+    def test_value_keeps_underline_and_indent_run_untouched(self):
+        """值写在原下划线 run 里（字在横线上）；无下划线的缩进空格 run 一个字不动。"""
+        n, xml = self._filled_xml()
+        assert '<w:t xml:space="preserve">    </w:t>' in xml   # 缩进 run 原样
+        assert xml.count('w:val="single"') >= 3 or xml.count("<w:u ") >= 3
+
+    def test_unknown_label_slot_stays_blank(self):
+        from agent.agents.bidding_agent.render.form_copier import (
+            extract_form_nodes, fill_blanks)
+        from docx import Document
+        d = Document()
+        p = d.add_paragraph()
+        p.add_run("神秘字段")
+        p.add_run("        ").underline = True
+        buf = io.BytesIO()
+        d.save(buf)
+        nodes = extract_form_nodes(buf.getvalue(), FormSpan(0, 0, -1))
+        n = fill_blanks(nodes, [("单位名称", "上海安几科技有限公司")], {})
+        xml = "".join(__import__("lxml").etree.tostring(x, encoding="unicode") for x in nodes)
+        assert n == 0 and "上海安几科技有限公司" not in xml

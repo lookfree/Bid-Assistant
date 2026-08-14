@@ -49,16 +49,37 @@ _UNPORTABLE = {
     _W_NS + "endnoteReference": "尾注引用",
     _W_NS + "commentReference": "批注引用",
     _W_NS + "object": "OLE 对象",
+    # 顶层段落的段内 sectPr 在抽取时已剥离（_strip_inline_sectpr）；走到这条说明它藏在
+    # 表格等异常位置——不敢碰结构，照拒。
     _SECTPR: "段内分节符（sectPr）",
 }
 
 
+_MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+_R_ATTR_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+
+
+def _rel_free(el) -> bool:
+    """子树里一个关系引用属性（r:id / r:embed / r:link…）都没有。"""
+    return not any(k.startswith(_R_ATTR_NS) for node in el.iter() for k in node.attrib)
+
+
 def _check_portable(el) -> None:
-    """节点能不能安全搬运；不能则抛 CopierUnsupported（原因进异常文本，观测事件要用）。"""
-    for node in el.iter():
+    """节点能不能安全搬运；不能则抛 CopierUnsupported（原因进异常文本，观测事件要用）。
+
+    mc:Fallback 豁免（2026-08-14 云上 b2 授权书实测）：身份证粘贴框的 v:imagedata 全在
+    兼容降级层里——Word 只读 mc:Choice，降级层随行搬运无害——且不引用任何图片部件，
+    此前被当悬空图片引用白拒，整章退回 HTML 重建路线。降级层里但凡有关系引用，
+    搬过去仍是悬空 rId（Word 弹修复），照旧诚实拒收。"""
+    stack = [el]
+    while stack:
+        node = stack.pop()
+        if node.tag == _MC_FALLBACK and _rel_free(node):
+            continue
         reason = _UNPORTABLE.get(node.tag)
         if reason:
             raise CopierUnsupported(f"含{reason}")
+        stack.extend(node)
 
 
 def body_children(tender_docx: bytes) -> list:
@@ -69,16 +90,33 @@ def body_children(tender_docx: bytes) -> list:
     return list(Document(io.BytesIO(tender_docx)).element.body.iterchildren())
 
 
+def _strip_inline_sectpr(el) -> None:
+    """顶层段落的段内分节符剥离（2026-08-14 云上 b2 授权书实测）：表单末行常挂着
+    「本节到此为止」标记，页面几何与文档级完全相同，只是带着指向招标页脚的引用。
+    原样搬＝悬空引用＋招标页面设置改写全书；整章拒＝版式退回 HTML 重建路线。
+    剥掉它，表单内容并入输出文档当前节，页面设置由导出格式统辖——即使原表单真是横版，
+    剥后与 HTML 退路同为竖版，不比拒收差。只剥顶层段落；藏在别处的照走黑名单拒收。"""
+    if el.tag != _P_TAG:
+        return
+    ppr = el.find(_W_PPR)
+    sect = ppr.find(_SECTPR) if ppr is not None else None
+    if sect is not None:
+        ppr.remove(sect)
+
+
 def extract_span(kids: list, span: FormSpan) -> list:
-    """body 子节点列表 + 区间 → 深拷贝出的内容节点（只收 w:p / w:tbl）。"""
+    """body 子节点列表 + 区间 → 深拷贝出的内容节点（只收 w:p / w:tbl）。
+    可修复的不可搬因素先修（段内 sectPr 剥离，只动拷贝不动原文档），修不了的诚实拒收。"""
     if not (0 <= span.start <= span.end < len(kids)):
         raise CopierUnsupported(f"区间越界（{span.start}-{span.end}/{len(kids)}）")
     nodes = []
     for el in kids[span.start:span.end + 1]:
         if el.tag not in (_P_TAG, _TBL_TAG):
             continue                      # 书签等非内容节点不搬
-        _check_portable(el)
-        nodes.append(copy.deepcopy(el))
+        c = copy.deepcopy(el)
+        _strip_inline_sectpr(c)
+        _check_portable(c)
+        nodes.append(c)
     if not nodes:
         raise CopierUnsupported("区间内没有可搬运的内容节点")
     return nodes
@@ -174,6 +212,18 @@ def _set_run_text(r, text: str) -> None:
 # 空位**后面**的括注标签：「____（供应商全称）」——纸质表单常把"填什么"写在横线后的括注里
 # （授权书正是这形态）。前看无标签时按它查值；括注本身是模板文字，原样保留。
 _TRAILING_LABEL = re.compile(r"^[（(]([^（）()]{2,14})[）)]")
+_W_U = _W_NS + "u"
+
+
+def _is_underlined_blank(r, text: str) -> bool:
+    """下划线格式的纯空格 run＝手写留空线（2026-08-14 云上授权书实证，V1 预留形态）：
+    整个 run 是一个空位。放宽到任意长空格不敢——缩进/对齐空格遍地都是，
+    下划线格式才是「在此线上填写」的凭证。"""
+    if text.strip() or len(text) < 2:
+        return False
+    rpr = r.find(_W_RPR)
+    u = rpr.find(_W_U) if rpr is not None else None
+    return u is not None and u.get(_W_NS + "val") != "none"
 
 
 def _fill_paragraph(p, lut: dict[str, str]) -> int:
@@ -186,6 +236,18 @@ def _fill_paragraph(p, lut: dict[str, str]) -> int:
     for i, r in enumerate(runs):
         text = _run_text(r)
         if not text:
+            continue
+        if _is_underlined_blank(r, text):
+            val = lut.get(_lab_norm(label_buf))
+            if not val:
+                nxt = _run_text(runs[i + 1]) if i + 1 < len(runs) else ""
+                tm = _TRAILING_LABEL.match(nxt)
+                if tm:
+                    val = _alias_value(tm.group(1), lut)
+            if val:
+                _set_run_text(r, val)   # 值写回原 run，rPr（含下划线）原样＝字在横线上
+                filled += 1
+            label_buf = ""
             continue
         if not _BLANK.search(text):
             label_buf += text
@@ -278,6 +340,40 @@ def _fill_slots(p, lut: dict[str, str]) -> int:
     return filled
 
 
+_W_RPR = _W_NS + "rPr"
+# 行尾冒号空位（2026-08-14 云上导出实测）：招标落款「供应商名称：」冒号后**什么都没有**
+# ——不是下划线形态，此前 XML 填空无落点（filled=0），审查页模型填了值、导出却是空标签，
+# 同值原则被反向打破。整行归一后必须是**短**标签（≤14 字）才候选：长句引导语
+# （「我方承诺如下内容：」）天然出局，再由查表命中把关——名单查不到一律留白。
+_MAX_LINE_LABEL = 14
+
+
+def _fill_line_end(p, lut: dict[str, str]) -> int:
+    """整段=「标签：」的行 → 冒号后追加值 run（沿用末 run 的 rPr，值与标签同格式）。
+    只在**顶层段落**上跑：表格标签格的值走右侧空格（_fill_table），标签格自身再追加就是双份。"""
+    from lxml import etree
+
+    text = "".join(t.text or "" for t in p.iter(_W_T))
+    s = text.rstrip(" \t　")
+    if not s.endswith(("：", ":")) or _BLANK.search(text):
+        return 0
+    label = s[:-1]
+    if not label or len(_lab_norm(label)) > _MAX_LINE_LABEL:
+        return 0
+    val = _alias_value(label, lut)
+    if not val:
+        return 0
+    runs = p.findall(_W_R)
+    r = etree.SubElement(p, _W_R)
+    rpr = runs[-1].find(_W_RPR) if runs else None
+    if rpr is not None:
+        r.append(copy.deepcopy(rpr))
+    t = etree.SubElement(r, _W_T)
+    t.set(_XML_SPACE, "preserve")
+    t.text = val
+    return 1
+
+
 def copy_forms(tender_docx: bytes, spans: dict[str, FormSpan], fields: list[tuple[str, str]],
                meta: dict) -> tuple[dict[str, tuple[list, int]], dict[str, str]]:
     """批量抽取+填空（同步重活，调用方丢线程池）→ ({章: (节点, 填空数)}, {章: 失败原因})。
@@ -306,7 +402,7 @@ def fill_blanks(nodes: list, fields: list[tuple[str, str]], meta: dict) -> int:
     n = 0
     for el in nodes:
         if el.tag == _P_TAG:
-            n += _fill_paragraph(el, lut) + _fill_slots(el, lut)
+            n += _fill_paragraph(el, lut) + _fill_slots(el, lut) + _fill_line_end(el, lut)
         elif el.tag == _TBL_TAG:
             n += _fill_table(el, lut)
     return n
@@ -329,6 +425,16 @@ _TD_PAIR = re.compile(r"(<t[dh][^>]*>)(.{0,120}?)(</t[dh]>\s*<t[dh][^>]*>)(.{0,4
                       re.S)
 _INVISIBLE = re.compile(r"(?:<[^>]*>|&nbsp;|\s)+")
 _TAG_RE = re.compile(r"<[^>]+>")
+# 行尾冒号段落（与 XML 版 _fill_line_end 同形态同规则）：<p>供应商名称：</p> → 冒号后插值。
+# 只认**纯文本**段落——内容里有任何标签就不动，避免命中已插过值/结构复杂的块。
+_P_LINE = re.compile(r"(<p[^>]*>)([^<>]{1,24}[：:])(\s*)(</p>)")
+
+
+# 标签别名（2026-08-14 云上导出实测 filled=0 的另一半原因）：招标落款写「供应商名称」，
+# 资料库标签是「单位名称」——槽位路径有别名而普通查表路径没有。别名统一进查表本身，
+# 段落/表格/HTML 三条路径一次修齐；用户自录同名标签优先（setdefault 不覆盖）。
+_LABEL_ALIASES = {"供应商名称": "单位名称", "供应商全称": "单位名称", "投标人名称": "单位名称",
+                  "地址": "注册地址", "联系地址": "注册地址", "电话": "联系电话"}
 
 
 def build_lut(fields: list[tuple[str, str]], meta: dict) -> dict[str, str]:
@@ -338,6 +444,14 @@ def build_lut(fields: list[tuple[str, str]], meta: dict) -> dict[str, str]:
         key = _lab_norm(label)
         if key and value and key not in lut:
             lut[key] = str(value)
+    for alias, src in _LABEL_ALIASES.items():
+        val = lut.get(_lab_norm(src))
+        if val:
+            lut.setdefault(_lab_norm(alias), val)
+    # 「联系地址和电话：」一行装两个字段（承诺函实测形态）：有啥拼啥，缺一半也比留白强
+    both = [lut.get(_lab_norm(k)) for k in ("注册地址", "联系电话")]
+    if any(both):
+        lut.setdefault(_lab_norm("联系地址和电话"), " ".join(v for v in both if v))
     return lut
 
 
@@ -408,4 +522,19 @@ def fill_blanks_html(html: str, fields: list[tuple[str, str]], meta: dict) -> tu
         return m.group(0)
 
     html = _TD_PAIR.sub(_td_sub, html)
+
+    def _p_line_sub(m: "re.Match[str]") -> str:
+        # 本遍能看到前面遍插过值的段落，但闸在查表：整段文本（含插入值）归一后
+        # 必须恰好是已知短标签才动手——已填过值的行不可能再命中，模板字符零改动不破
+        nonlocal filled
+        label = m.group(2)[:-1]
+        if not label or len(_lab_norm(label)) > _MAX_LINE_LABEL:
+            return m.group(0)
+        val = _alias_value(label, lut)
+        if not val:
+            return m.group(0)
+        filled += 1
+        return m.group(1) + m.group(2) + html_mod.escape(val) + m.group(4)
+
+    html = _P_LINE.sub(_p_line_sub, html)
     return html, filled
