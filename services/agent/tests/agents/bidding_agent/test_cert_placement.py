@@ -158,8 +158,8 @@ class TestPlaceCertificates:
         assert not (html.index("凭身份证办理") < pos_img < html.index("附：全权代表人"))
 
     def test_id_card_prefers_its_paste_box_over_the_attachment_line(self):
-        """粘贴框锚（2026-08-14 深夜实测）：身份证图要贴在**本人**的粘贴框行后，
-        不是「附：…」行后。框行＝人名词＋身份证＋粘贴同段；正反面框成对，图落成对框之后。"""
+        """粘贴框锚（2026-08-14 深夜实测＋终验口径）：身份证图**顶替本人第一个空框的
+        说明行**，不是缀在「附：…」行后；各留一行说明给反面，替换不带引导行。"""
         out = {"b2": ("<h3>法定代表人授权书</h3>"
                       "<p>法定代表人的合法有效身份证明复印件或扫描件粘贴处</p>"
                       "<p>法定代表人的合法有效身份证明复印件或扫描件粘贴处</p>"
@@ -175,10 +175,11 @@ class TestPlaceCertificates:
         html = place_certificates(out, state)["b2"]
         i_fa = html.index('data-file-id="fa"')
         i_hu = html.index('data-file-id="hu"')
-        i_wt = html.index("委托代理人的")
         i_fu = html.index("附：全权代表人")
-        assert i_fa < i_wt, "法代证没贴在法代框后（跑到委托框之后/附行去了）"
-        assert i_wt < i_hu < i_fu, "被授权人证没贴在委托框后、附行前"
+        assert i_fa < i_hu < i_fu, "两证没按各自框位落点"
+        assert html.count("法定代表人的合法有效身份证明复印件或扫描件粘贴处") == 1
+        assert html.count("委托代理人的合法有效身份证明复印件或扫描件粘贴处") == 1
+        assert "见下图" not in html, "框位替换不带引导行"
 
     def test_split_line_box_anchors_after_its_paste_line(self):
         """2026-08-14 夜实测：法代框的文字被解析层拆成两行（「…复印件或扫描件」/「粘贴处」
@@ -198,10 +199,12 @@ class TestPlaceCertificates:
         html = place_certificates(out, state)["b2"]
         i_fa = html.index('data-file-id="fa"')
         i_hu = html.index('data-file-id="hu"')
-        i_wt = html.index("委托代理人的")
         i_fu = html.index("附：全权代表人")
-        assert i_fa < i_wt, "法代证没落在法代粘贴行后（掉到附行/委托框去了）"
-        assert i_wt < i_hu < i_fu, "被授权人证的位置被带偏"
+        # 拆行框替换：标签行＋粘贴行整对被图顶替，第二对留给反面
+        assert i_fa < i_hu < i_fu, "两证没按各自框位落点（法代掉到附行/委托框去了）"
+        assert html.count("<p>法定代表人的合法有效身份证明复印件或扫描件</p>") == 1
+        assert html.count("<p>粘贴处</p>") == 1
+        assert html.count("委托代理人的合法有效身份证明复印件或扫描件粘贴处") == 1
 
     def test_box_gets_its_copy_even_when_another_chapter_has_a_heading(self):
         """2026-08-14 dc4cdc34 轮实测：标题锚全局优先曾把法代证整组抢进资格文件章，

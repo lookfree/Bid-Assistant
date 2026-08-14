@@ -463,10 +463,27 @@ _A_EXT = "{http://schemas.openxmlformats.org/drawingml/2006/main}ext"
 _WP_EXTENT = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}extent"
 
 
+_WP_NS = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}"
+
+
+def _box_x(choice) -> int | None:
+    """框的水平位置（wp:positionH/wp:posOffset，EMU）；拿不到返回 None。"""
+    pos = next(iter(choice.iter(_WP_NS + "positionH")), None)
+    if pos is None:
+        return None
+    po = next(iter(pos.iter(_WP_NS + "posOffset")), None)
+    try:
+        return int((po.text or "").strip()) if po is not None else None
+    except ValueError:
+        return None
+
+
 def _anchor_boxes(anchor) -> list[dict]:
-    """锚元素里的粘贴框，按出现序（正/反面框成对）。每框收 Choice 内容区、Fallback
-    内容区（评审五轮 C2：LibreOffice 转 PDF 可能读降级层，只装 Choice 的话 PDF 预览里
-    扫描件整体消失——两层同装镜像）、框尺寸与框上文字（按人配框用）。"""
+    """锚元素里的粘贴框。**按水平位置左→右排序**（2026-08-14 用户终验：正面照要进
+    左框，而 XML 里右框常排在前——文档序≠版面序）；任一框拿不到位置则保持文档序。
+    每框收 Choice 内容区、Fallback 内容区（评审五轮 C2：LibreOffice 转 PDF 可能读
+    降级层，只装 Choice 的话 PDF 预览里扫描件整体消失——两层同装镜像）、框尺寸与
+    框上文字（按人配框用）。"""
     out = []
     for ac in anchor.iter(_MC_NS + "AlternateContent"):
         choice = next((c for c in ac if c.tag == _MC_NS + "Choice"), None)
@@ -478,10 +495,12 @@ def _anchor_boxes(anchor) -> list[dict]:
         fb = next((c for c in ac if c.tag == _MC_NS + "Fallback"), None)
         fb_tx = next(iter(fb.iter(qn("w:txbxContent"))), None) if fb is not None else None
         ext = next(iter(choice.iter(_A_EXT)), None)
-        out.append({"tx": tx, "fb": fb_tx,
+        out.append({"tx": tx, "fb": fb_tx, "x": _box_x(choice),
                     "cx": int(ext.get("cx") or 0) if ext is not None else 0,
                     "cy": int(ext.get("cy") or 0) if ext is not None else 0,
                     "text": "".join(t.text or "" for t in choice.iter(qn("w:t")))})
+    if out and all(b["x"] is not None for b in out):
+        out.sort(key=lambda b: b["x"])
     return out
 
 
@@ -514,15 +533,23 @@ def _fill_boxes(boxes: list[dict], used: set, label: str, units: list) -> list:
         i = cand[0]
         used.add(i)
         _shrink_drawing(unit, boxes[i]["cx"], boxes[i]["cy"])
-        if boxes[i]["fb"] is not None:
-            boxes[i]["fb"].append(copy.deepcopy(unit))
-        boxes[i]["tx"].append(unit)
+        # 收到**图**的框清空说明文字（2026-08-14 用户终验：扫描件本就该盖住「粘贴处」
+        # 提示，留着更乱）；取图失败的占位段不清——空框失去标签只剩一行报错更糟。
+        has_img = next(iter(unit.iter(qn("w:drawing"))), None) is not None
+        for layer in (boxes[i]["tx"], boxes[i]["fb"]):
+            if layer is None:
+                continue
+            if has_img:
+                for old in list(layer):
+                    layer.remove(old)
+            layer.append(copy.deepcopy(unit) if layer is boxes[i]["fb"] else unit)
         placed.append(unit)
     return placed
 
 
 def _shrink_drawing(img_el, box_cx: int, box_cy: int) -> None:
-    """图片段的尺寸等比缩进框内（宽 ≤92% 框宽、高 ≤65% 框高——框顶还有标签文字）。
+    """图片段等比适配框内（宽 96% 框宽、高 ≤92% 框高，**允许放大**——2026-08-14 用户
+    终验「贴入宽」：收图的框说明文字已清空，整框都是图的，缩得小气不如贴满）。
     框尺寸缺失/图无尺寸则不动，宁可原样也不写出 0 尺寸的图。"""
     if not box_cx or not box_cy:
         return
@@ -532,7 +559,7 @@ def _shrink_drawing(img_el, box_cx: int, box_cy: int) -> None:
     cx, cy = int(exts[0].get("cx") or 0), int(exts[0].get("cy") or 0)
     if not cx or not cy:
         return
-    scale = min(box_cx * 0.92 / cx, box_cy * 0.65 / cy, 1.0)
+    scale = min(box_cx * 0.96 / cx, box_cy * 0.92 / cy)
     ncx, ncy = int(cx * scale), int(cy * scale)
     for e in exts:
         e.set("cx", str(ncx))

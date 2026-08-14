@@ -77,20 +77,25 @@ _WRITABLE_GROUPS = ("授权书",)
 # 与本文件的章内插图 alt 是同一套格式（终审 I-4），不再各自持有一份实现。
 
 
-def _cert_block(keyword: str, entry: dict | None) -> str:
-    """单个证照词命中后的章尾追加块：库有该词对应条目 → 见下图 + 该条目逐图占位
-    （三属性同 credentials_chapter.py 的 build_credentials_chapter,无 src 无字节）；
-    库无 → 待补充提示。"""
-    if entry is None:
-        return f"<p>（待补充：{_esc(keyword)}）</p>"
+def _entry_images_html(entry: dict) -> str:
+    """条目逐图占位段（三属性同 credentials_chapter.py 的 build_credentials_chapter，
+    无 src 无字节）。框位替换时单独用——图顶替框行，不带引导行。"""
     title = str(entry.get("title") or "").strip()
-    parts = [f"<p>【{_esc(keyword)}】见下图：</p>"]
+    parts = []
     for img in entry.get("images") or []:
         file_id = _esc(img.get("fileId"))
         key = _esc(img.get("key"))
         alt = _image_alt(title, img.get("ocrText"))
         parts.append(f'<p><img data-file-id="{file_id}" data-object-key="{key}" alt="{alt}" /></p>')
     return "\n".join(parts)
+
+
+def _cert_block(keyword: str, entry: dict | None) -> str:
+    """单个证照词命中后的章尾追加块：库有该词对应条目 → 见下图 + 该条目逐图占位；
+    库无 → 待补充提示。"""
+    if entry is None:
+        return f"<p>（待补充：{_esc(keyword)}）</p>"
+    return "\n".join([f"<p>【{_esc(keyword)}】见下图：</p>", _entry_images_html(entry)])
 
 
 # 证据词：段落锚点必须带其一。「响应函里顺嘴提到营业执照」不是要材料的地方，
@@ -161,31 +166,29 @@ def _anchor_end(html: str, aliases: tuple[str, ...], headings_only: bool = False
     return -1
 
 
-def _box_anchor_end(html: str, group: str) -> int:
-    """身份证组的**粘贴框锚**（2026-08-14 dc4cdc34 轮实测）：人名词＋「身份证」＋「粘贴」
-    同段（表外 p），取该组**最后一处**命中——正反面框成对出现，图落在成对框之后。
-    **拆行形态**（同日夜实测）：法代框的文字被解析层拆成两行（「…复印件或扫描件」/
-    「粘贴处」分开），同段判定落空、法代证掉回「附」行——本行有人名词＋身份证、
-    **下一行是短粘贴行**（≤12 字，防长段落里顺嘴带「粘贴」被冒认）时同样算框，
-    落点取粘贴行之后。此前身份证只能靠别名子串锚：「附：…身份证原件扫描件」抢走
-    被授权人的证，法代证则被别章「法定代表人身份证明」小节标题全局抢注。
-    非身份证组返回 -1，照走原有标题/段落锚。"""
+def _box_anchor_span(html: str, group: str) -> tuple[int, int] | None:
+    """身份证组的**粘贴框替换区间**（2026-08-14 用户终验口径：收图的框说明文字不要了，
+    图直接顶替——与导出侧"清空框内文字再放图"同语义）：第一个命中的框行（人名词＋
+    「身份证」＋「粘贴」同段，表外 p）整行替换；**拆行形态**（法代框被解析层拆成
+    「…复印件或扫描件」/「粘贴处」两行）连粘贴行（≤12 字，防长段顺嘴带「粘贴」被
+    冒认）一起替换。取**第一处**＝本人第一个空框；第二个框的说明行留给反面。
+    此前身份证只能靠别名子串锚：「附：…身份证原件扫描件」抢走被授权人的证，
+    法代证被别章小节标题全局抢注。非身份证组返回 None，照走原有标题/段落锚。"""
     words = id_person_words(group)
     if not words:
-        return -1
+        return None
     tables = _table_spans(html or "")
-    blocks = [(m.end(), _TAG.sub("", m.group(2)))
+    blocks = [(m.start(), m.end(), _TAG.sub("", m.group(2)))
               for m in _ANCHOR.finditer(html or "")
               if not any(s <= m.start() < e for s, e in tables)]
-    best = -1
-    for i, (end, text) in enumerate(blocks):
+    for i, (start, end, text) in enumerate(blocks):
         if "身份证" not in text or not any(w in text for w in words):
             continue
         if "粘贴" in text:
-            best = end
-        elif i + 1 < len(blocks) and "粘贴" in blocks[i + 1][1] and len(blocks[i + 1][1]) <= 12:
-            best = blocks[i + 1][0]
-    return best
+            return (start, end)
+        if i + 1 < len(blocks) and "粘贴" in blocks[i + 1][2] and len(blocks[i + 1][2]) <= 12:
+            return (start, blocks[i + 1][1])
+    return None
 
 
 def _place_by_anchor(result: dict[str, str], ordered_cids: list[str],
@@ -207,12 +210,28 @@ def _place_by_anchor(result: dict[str, str], ordered_cids: list[str],
     各插一份——纸质标书本就把同一张身份证复印进授权书框和资格文件小节两处，全局只放
     一次会让另一处空着；段落锚只是兜底，前两类锚任一放过就不再插。同一章内不重复
     （按 fileId 查重），同类锚全局仍只取第一处。"""
+    done: dict[str, set[int]] = {"box": set(), "heading": set(), "para": set()}
+    for cid in ordered_cids:                       # ①框轮：图**替换**本人第一个空框的说明行
+        html = result.get(cid)
+        if not html:
+            continue
+        for entry in credentials:
+            if id(entry) in done["box"] or not entry.get("images"):
+                continue
+            group = _group_of(str(entry.get("title") or ""))
+            if group is None:
+                continue
+            span = _box_anchor_span(html, group)
+            if span is None:
+                continue
+            html = html[:span[0]] + _entry_images_html(entry) + html[span[1]:]
+            done["box"].add(id(entry))
+            placed.add(id(entry))
+        result[cid] = html
     rounds = (
-        ("box", _box_anchor_end),                                   # ①粘贴框锚（身份证组专属）
         ("heading", lambda h, g: _anchor_end(h, _aliases_of(g), True)),   # ②标题锚（材料小节）
         ("para", lambda h, g: _anchor_end(h, _aliases_of(g), False)),     # ③段落锚（兜底）
     )
-    done: dict[str, set[int]] = {"box": set(), "heading": set(), "para": set()}
     for kind, locate in rounds:
         for cid in ordered_cids:
             html = result.get(cid)

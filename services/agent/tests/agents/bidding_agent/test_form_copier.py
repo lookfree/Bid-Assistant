@@ -1156,10 +1156,13 @@ class TestInBoxPlacement:
         # 评审五轮 C2:Fallback 层**同装镜像**——LibreOffice 转 PDF 可能读降级层,
         # 只装 Choice 的话预览里扫描件整体消失
         assert fb.findall(".//" + "{http://schemas.openxmlformats.org/drawingml/2006/main}blip")
-        # 尺寸缩进框内(框 cx=2743200):图 extent cx ≤ 92% 框宽
+        # 贴满口径(2026-08-14 终验):宽=96% 框宽(允许放大),收图框的说明文字被清空
         WP = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}"
         img_exts = [e for e in choice.iter(WP + "extent")]
-        assert img_exts and int(img_exts[0].get("cx")) <= int(2743200 * 0.92) + 1, "图没缩进框内"
+        assert img_exts and abs(int(img_exts[0].get("cx")) - int(2743200 * 0.96)) <= 2, "图没贴满框宽"
+        W2 = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        box_text = "".join(t.text or "" for t in choice.iter(W2 + "t"))
+        assert "粘贴处" not in box_text, "收图的框说明文字没清掉"
         # 框外文档流不再有这张图:body 直属段落(框 AC 之外)一个 drawing 都不许有
         W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
         stray = [p for p in doc.paragraphs
@@ -1215,8 +1218,8 @@ class TestInBoxRound5:
                 '<p>【被授权人身份证明】见下图：</p><p></p>'
                 '<img alt="b" data-file-id="hu" data-object-key="k/hu.jpg">')
         boxes = self._boxes_with_imgs(self._render([p], tail))
-        assert boxes[0][0].startswith("法定代表人"[:5]) and boxes[0][1] == 1, boxes
-        assert boxes[1][1] == 1, f"第二人的证没进自己的框: {boxes}"
+        assert [b[1] for b in boxes] == [1, 1], f"两证没有各占一框: {boxes}"
+        assert all("粘贴处" not in b[0] for b in boxes), "收图框的说明文字没清掉"
 
     def test_failed_fetch_occupies_its_box_slot(self):
         """C3:正面取图失败 → 失败占位进正面框占住位,反面照进反面框,不许顶位。"""
