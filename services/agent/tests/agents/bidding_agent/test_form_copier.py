@@ -817,3 +817,50 @@ class TestReviewFixesRound3:
         out, n = fill_blanks_html('<p>供应商名称：&nbsp; </p>', self._F, {})
         assert n == 1
         assert "供应商名称：上海安几科技有限公司&nbsp; </p>" in out
+
+
+class TestRowHeadCompositeAndLicenseAlias:
+    """2026-08-14 云上 b7 截图实证的两类留白：
+    ① 「法定代表人|姓名|_|技术职称|_」——值标签在**行头**，格子只写子标签「姓名」；
+    ② 「营业执照号」——三证合一后就是资料库里的统一社会信用代码。"""
+
+    _F = [("单位名称", "上海安几科技有限公司"), ("法定代表人", "于新宇"),
+          ("统一社会信用代码", "91310104MA1FRF3K3N")]
+
+    def _tbl_docx(self) -> bytes:
+        from docx import Document
+        d = Document()
+        t = d.add_table(rows=3, cols=6)
+        for j, txt in enumerate(["法定代表人", "姓名", "", "技术职称", "", ""]):
+            t.cell(0, j).text = txt
+        for j, txt in enumerate(["技术负责人", "姓名", "", "技术职称", "", ""]):
+            t.cell(1, j).text = txt
+        t.cell(2, 0).text = "营业执照号"
+        buf = io.BytesIO()
+        d.save(buf)
+        return buf.getvalue()
+
+    def test_xml_row_head_composite_fills_name_only(self):
+        """法定代表人行的「姓名」格组合行头查到于新宇；技术负责人行同构但库里没人——留白；
+        技术职称/电话这类组合查不到的照样留白。"""
+        from agent.agents.bidding_agent.render.form_copier import extract_form_nodes, fill_blanks
+        nodes = extract_form_nodes(self._tbl_docx(), FormSpan(0, 0, -1))
+        n = fill_blanks(nodes, self._F, {})
+        xml = "".join(__import__("lxml").etree.tostring(x, encoding="unicode") for x in nodes)
+        assert "于新宇" in xml
+        assert "91310104MA1FRF3K3N" in xml          # 营业执照号 ← 统一社会信用代码
+        assert n == 2
+        import re as _re
+        row2 = _re.search(r"技术负责人.*?</w:tr>", xml, _re.S).group(0)
+        assert "于新宇" not in row2                  # 别把法代名塞进技术负责人行
+
+    def test_html_row_head_composite_parity(self):
+        from agent.agents.bidding_agent.render.form_copier import fill_blanks_html
+        html = ("<table>"
+                "<tr><td>法定代表人</td><td>姓名</td><td></td><td>技术职称</td><td></td></tr>"
+                "<tr><td>技术负责人</td><td>姓名</td><td></td><td>技术职称</td><td></td></tr>"
+                "<tr><td>营业执照号</td><td></td></tr></table>")
+        out, n = fill_blanks_html(html, self._F, {})
+        assert n == 2
+        assert "于新宇" in out and "91310104MA1FRF3K3N" in out
+        assert out.count("于新宇") == 1

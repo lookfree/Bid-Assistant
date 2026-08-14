@@ -314,12 +314,19 @@ def _write_cell(tc, text: str) -> None:
 
 
 def _fill_table(tbl, lut: dict[str, str]) -> int:
-    """表格型空位：标签格 → 右侧**空**格写值；格内段落的下划线空位照段落规则填。"""
+    """表格型空位：标签格 → 右侧**空**格写值；格内段落的下划线空位照段落规则填。
+    直查不中时试**行头+子标签**组合（2026-08-14 云上 b7 截图实证：「法定代表人|姓名|_」
+    的值标签在行头，格子只写「姓名」）——组合同样走名单查表，查不到照旧留白，
+    「技术负责人|姓名」这类库里没人的行自然不受影响。"""
     filled = 0
     for tr in tbl.findall(_W_TR):
         tcs = tr.findall(_W_TC)
+        head = _lab_norm(_cell_text(tcs[0])) if tcs else ""
         for i, tc in enumerate(tcs[:-1]):
-            val = lut.get(_lab_norm(_cell_text(tc)))
+            lab = _lab_norm(_cell_text(tc))
+            val = lut.get(lab)
+            if not val and i > 0 and head and lab:
+                val = lut.get(head + lab)
             if val and not _cell_text(tcs[i + 1]).strip():
                 _write_cell(tcs[i + 1], val)
                 filled += 1
@@ -445,12 +452,40 @@ def fill_blanks(nodes: list, fields: list[tuple[str, str]], meta: dict) -> int:
 # 裸「<」必须自成 token（评审 F5 实证：findall 丢弃不匹配片段，「x < y」的 < 被静默吞掉）
 _HTML_TOKEN = re.compile(r"<[^>]*>|[^<]+|<")
 _BLOCK_OPEN = re.compile(r"^<(?:p|h[1-6]|tr|li|table|div)\b", re.I)
-# 标签格→右侧空格（评审 F2 放宽到与 XML 版同宽容度）：格内允许内联标签（<strong>加粗
-# 标签格）、th 也算格、空格判定剥标签与 &nbsp; 后看不见字才算空。
-_TD_PAIR = re.compile(r"(<t[dh][^>]*>)(.{0,120}?)(</t[dh]>\s*<t[dh][^>]*>)(.{0,40}?)(</t[dh]>)",
-                      re.S)
 _INVISIBLE = re.compile(r"(?:<[^>]*>|&nbsp;|\s)+")
 _TAG_RE = re.compile(r"<[^>]+>")
+# 标签格遍按行切并**逐格配对**（2026-08-14 三批实测）：此前用正则对扫 </td><td>，
+# 非重叠消耗让「行头|姓名|空」里的「姓名|空」永远配不出来。行是组合查表的语境边界。
+_TR_BLOCK = re.compile(r"<tr\b.*?</tr>", re.S | re.I)
+_CELL = re.compile(r"<t[dh][^>]*>(.*?)</t[dh]>", re.S | re.I)
+
+
+def _fill_row_cells(row: str, lut: dict[str, str]) -> tuple[str, int]:
+    """一行内的标签格 → 右邻**空**格写值（HTML 版，与 XML _fill_table 同规则）。
+    格宽容度沿袭评审 F2 口径：th 也算格、格内允许内联标签（剥标签查表）、
+    剥标签与 &nbsp; 后看不见字才算空。直查不中试行头+子标签组合（「法定代表人|姓名|_」），
+    行头格自身不组合；标签取自原格文本，插进去的值不参与后续配对。"""
+    cells = list(_CELL.finditer(row))
+    if not cells:
+        return row, 0
+    head = _lab_norm(_TAG_RE.sub("", cells[0].group(1)))
+    fills: dict[int, str] = {}
+    for i in range(len(cells) - 1):
+        lab = _lab_norm(_TAG_RE.sub("", cells[i].group(1)))
+        val = lut.get(lab) or (lut.get(head + lab)
+                               if head and lab and lab != head else None)
+        if val and i + 1 not in fills and _INVISIBLE.fullmatch(cells[i + 1].group(1) or " "):
+            fills[i + 1] = val
+    if not fills:
+        return row, 0
+    out: list[str] = []
+    last = 0
+    for j, c in enumerate(cells):
+        if j in fills:
+            out += [row[last:c.start(1)], html_mod.escape(fills[j])]
+            last = c.end(1)
+    out.append(row[last:])
+    return "".join(out), len(fills)
 # 行尾冒号段落（与 XML 版 _fill_line_end 同形态同规则）：<p>供应商名称：</p> → 冒号后插值。
 # 只认**纯文本**段落——内容里有任何标签就不动，避免命中已插过值/结构复杂的块。
 # 冒号后的 &nbsp;/空白不挡填（评审三轮 F8：XML 版 rstrip 后能填，HTML 不填就是同值缝）。
@@ -466,7 +501,11 @@ _HTML_BLANK = re.compile(r"[_＿]{2,}|[ \t　]{4,}")
 # 资料库标签是「单位名称」——槽位路径有别名而普通查表路径没有。别名统一进查表本身，
 # 段落/表格/HTML 三条路径一次修齐；用户自录同名标签优先（setdefault 不覆盖）。
 _LABEL_ALIASES = {"供应商名称": "单位名称", "供应商全称": "单位名称", "投标人名称": "单位名称",
-                  "地址": "注册地址", "联系地址": "注册地址", "电话": "联系电话"}
+                  "地址": "注册地址", "联系地址": "注册地址", "电话": "联系电话",
+                  # 三证合一后营业执照号=统一社会信用代码（2026-08-14 云上 b7 截图立案）
+                  "营业执照号": "统一社会信用代码",
+                  # 行头组合标签（「法定代表人|姓名|_」→ 法定代表人姓名）落到档案字段
+                  "法定代表人姓名": "法定代表人"}
 
 
 def build_lut(fields: list[tuple[str, str]], meta: dict) -> dict[str, str]:
@@ -544,16 +583,13 @@ def fill_blanks_html(html: str, fields: list[tuple[str, str]], meta: dict) -> tu
         out.append(new)
     html = "".join(out)
 
-    def _td_sub(m: "re.Match[str]") -> str:
+    def _tr_sub(m: "re.Match[str]") -> str:
         nonlocal filled
-        label = _TAG_RE.sub("", m.group(2))
-        val = lut.get(_lab_norm(label))
-        if val and _INVISIBLE.fullmatch(m.group(4) or " "):
-            filled += 1
-            return m.group(1) + m.group(2) + m.group(3) + html_mod.escape(val) + m.group(5)
-        return m.group(0)
+        new_row, n = _fill_row_cells(m.group(0), lut)
+        filled += n
+        return new_row
 
-    html = _TD_PAIR.sub(_td_sub, html)
+    html = _TR_BLOCK.sub(_tr_sub, html)
 
     def _p_line_sub(m: "re.Match[str]") -> str:
         # 本遍能看到前面遍插过值的段落，但闸在查表：整段文本（含插入值）归一后
@@ -569,7 +605,7 @@ def fill_blanks_html(html: str, fields: list[tuple[str, str]], meta: dict) -> tu
         filled += 1
         return m.group(1) + m.group(2) + html_mod.escape(val) + m.group(3) + m.group(4)
 
-    # 行尾冒号段只在**表格之外**跑（评审三轮 F1）：格内 <p>标签：</p> 的值走 _TD_PAIR
+    # 行尾冒号段只在**表格之外**跑（评审三轮 F1）：格内 <p>标签：</p> 的值走标签格遍
     # 邻格，这里再补一份就是双份——与 XML 版「只跑顶层段落」同一条界。
     parts: list[str] = []
     last = 0
