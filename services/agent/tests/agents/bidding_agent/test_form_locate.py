@@ -212,3 +212,47 @@ def test_morphology_still_exported_for_content_node():
     assert _looks_like_form_title("投标函及投标函附录")
     assert not _looks_like_form_title("技术偏离表")
     assert not _looks_like_form_title("服务承诺")
+
+
+class TestNodeSpans:
+    """复印机 T2（spec 2026-08-14 form-xml-copier）：表单段落带出 body 节点区间，
+    导出时按区间深拷贝招标 docx 的 XML。"""
+
+    _READ = {"doc_sections": [
+        {"id": "sec-8-c1", "text": "3.报价一览表", "src": 40},
+        {"id": "sec-8-c2", "text": "序号\t项目名称\t数量\n合计（大写）：", "src": 41},  # 多行条款共号
+        {"id": "sec-8-c3", "text": "3-1.报价明细表", "src": 42},
+        {"id": "sec-8-c4", "text": "序号\t产品名称\t品牌\t数量", "src": 43},
+        {"id": "sec-8-c5", "text": "4.资格文件", "src": 45},
+        {"id": "sec-8-c6", "text": "按资格要求提供原件扫描件。", "src": 46},
+    ], "doc_headings": []}
+
+    def test_form_segment_carries_its_node_span(self):
+        """内容区间不含边界编号行（「3-1.报价明细表」是目录式编号，segment_text 同样排除），
+        编号行记在 head 上供去重截断。父段天然含子段内容。"""
+        from agent.agents.bidding_agent.nodes.form_locate import (
+            FormSpan, build_form_index, form_node_span)
+        index = build_form_index(self._READ)
+        assert form_node_span(index, "报价明细表") == FormSpan(43, 43, 42)
+        assert form_node_span(index, "报价一览表") == FormSpan(41, 43, 40)
+
+    def test_missing_src_returns_none(self):
+        """旧读标结果没有 src（发版前入库的）→ 返回 None，复印机自然回退 HTML 路线。"""
+        from agent.agents.bidding_agent.nodes.form_locate import build_form_index, form_node_span
+        read = {"doc_sections": [{"id": "s-c1", "text": "3.报价一览表"},
+                                 {"id": "s-c2", "text": "序号\t名称"}], "doc_headings": []}
+        assert form_node_span(build_form_index(read), "报价一览表") is None
+
+    def test_dedupe_spans_truncates_the_parent_before_a_claimed_child(self):
+        """一览表(41-43) 含 明细表(43-43,head=42)：两章各自复印时父区间连子段的编号行
+        一起截掉（与文本级 dedupe_nested 摘「前导编号行」同语义），不截明细表就重复一遍。"""
+        from agent.agents.bidding_agent.nodes.form_locate import FormSpan, dedupe_spans
+        spans = {"b1": FormSpan(41, 43, 40), "b2": FormSpan(43, 43, 42)}
+        out = dedupe_spans(spans)
+        assert out["b1"] == FormSpan(41, 41, 40)
+        assert out["b2"] == FormSpan(43, 43, 42)
+
+    def test_dedupe_spans_leaves_disjoint_spans_alone(self):
+        from agent.agents.bidding_agent.nodes.form_locate import FormSpan, dedupe_spans
+        spans = {"a": FormSpan(1, 5, 0), "b": FormSpan(7, 9, 6)}
+        assert dedupe_spans(spans) == spans

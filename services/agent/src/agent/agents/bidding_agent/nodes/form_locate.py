@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import re
+from typing import NamedTuple
 
 # 表单类章节的识别：**按构词法判，不靠穷举**。平表穷举栽过——「报价函」不在表里，
 # 整章拿不到招标格式原文，模型只能自己编（2026-08-11 潍坊实测：招标 7 条固定条款 →
@@ -149,9 +150,9 @@ def _chains(recent: tuple[int, ...] | None, num: tuple[int, ...]) -> bool:
 def _doc_stream(read: dict) -> list[tuple[str, str]]:
     """doc_sections + doc_headings 按文档序展平成 (kind, text) 流；节标题插在本节条款之前。
     kind 只有 "heading"/"clause" 两种——标题必是边界候选，条款要过 _boundary_of。"""
-    heading_by_sec = {h.get("sec"): str(h.get("title") or "")
+    heading_by_sec = {h.get("sec"): (str(h.get("title") or ""), int(h.get("src", -1) or -1))
                       for h in (read.get("doc_headings") or [])}
-    stream: list[tuple[str, str]] = []
+    stream: list[tuple[str, str, int]] = []
     seen: set[str] = set()
     for c in read.get("doc_sections") or []:
         cid = str(c.get("id") or "")
@@ -159,11 +160,14 @@ def _doc_stream(read: dict) -> list[tuple[str, str]]:
         if sec and sec not in seen:
             seen.add(sec)
             if sec in heading_by_sec:
-                stream.append(("heading", heading_by_sec[sec]))
+                title, hsrc = heading_by_sec[sec]
+                stream.append(("heading", title, hsrc))
         # 条款文本按行展平：一条条款里可能嵌着多行（表格单元格/紧凑段落），
-        # 「报价函」抬头行嵌在多行条款里时整条当一行会漏掉这个边界
+        # 「报价函」抬头行嵌在多行条款里时整条当一行会漏掉这个边界。
+        # src 多行共号（复印机 T2）：旧读标结果没有 src → -1，节点区间自然给 None。
+        src = int(c.get("src", -1) or -1)
         for line in str(c.get("text") or "").splitlines():
-            stream.append(("clause", line))
+            stream.append(("clause", line, src))
     return stream
 
 
@@ -177,7 +181,7 @@ def _segments_of(stream: list[tuple[str, str]]) -> list[dict]:
     segments: list[dict] = []
     open_segs: list[dict] = []
     recent_num: tuple[int, ...] | None = None   # 最近一个已认定的编号边界（编号链语义门）
-    for kind, text in stream:
+    for kind, text, src in stream:
         num: tuple[int, ...] | None = None
         if kind == "heading":
             m = _NUM_LINE.match(_norm(text))
@@ -196,6 +200,7 @@ def _segments_of(stream: list[tuple[str, str]]) -> list[dict]:
         if b is None:
             for seg in open_segs:
                 seg["lines"].append(text)
+                seg["srcs"].append(src)
             continue
         depth, name, own_line, num = b
         if num is not None:
@@ -205,11 +210,14 @@ def _segments_of(stream: list[tuple[str, str]]) -> list[dict]:
                 _norm(name) in _norm(last["name"]) or _norm(last["name"]) in _norm(name)):
             for seg in open_segs:        # 表单自己的标题行，不是新边界；父段也要这行原文
                 seg["lines"].append(text)
+                seg["srcs"].append(src)
             continue
         open_segs = [s for s in open_segs if s["depth"] < depth]
         for seg in open_segs:            # 子边界行（「3-1.报价明细表」）是父段（3.）的原文：
             seg["lines"].append(text)    # 丢掉它，一览表与明细表两张表在父段里就连成一张
-        seg = {"name": name, "depth": depth, "lines": ([text] if own_line else [])}
+            seg["srcs"].append(src)
+        seg = {"name": name, "depth": depth, "lines": ([text] if own_line else []),
+               "srcs": ([src] if own_line else []), "head_src": src}
         segments.append(seg)
         open_segs.append(seg)
     return segments
@@ -324,8 +332,49 @@ def slice_single_form(text: str, chapter_title: str, allow_whole: bool = True) -
     开放：构成项是读标模型明确登记的"这份表单在这里"。章 items 的 clause_ids 是
     **需求条款引用**，指着的常是公告/须知——那些文本恰恰一个表单边界都没有，直通道
     一开，整段须知就成了"报价函模板"（2026-08-13 潍坊回放实证；云上公告同一类）。"""
-    stream: list[tuple[str, str]] = [("clause", ln) for ln in text.splitlines()]
+    stream: list[tuple[str, str, int]] = [("clause", ln, -1) for ln in text.splitlines()]
     segments = _segments_of(stream)
     if not segments:
         return text if allow_whole and 0 < len(text) <= _MAX_FORM_CHARS else ""
     return find_form(segments, chapter_title)
+
+
+class FormSpan(NamedTuple):
+    """表单在招标 docx 里的 body 节点定位（复印机 T2，spec 2026-08-14）。
+    start/end=正文内容闭区间（不含边界编号行——「3-1.报价明细表」是目录式编号，
+    复印进章会跟我们自己的章标题打架，文本路径的 segment_text 同样排除它）；
+    head=边界行自己的节点号（-1=无，如裸抬头已计入内容），去重截断用。"""
+
+    start: int
+    end: int
+    head: int
+
+
+def form_node_span(index: list[dict], chapter_title: str) -> FormSpan | None:
+    """章名 → FormSpan。旧读标结果没有 src（发版前入库）或段超体量 → None，
+    复印机自然回退 HTML 渲染路线。"""
+    seg = find_form_segment(index, chapter_title)
+    if seg is None or not segment_text(seg):
+        return None
+    srcs = [s for s in seg.get("srcs") or [] if isinstance(s, int) and s >= 0]
+    if not srcs:
+        return None
+    head = seg.get("head_src", -1)
+    return FormSpan(min(srcs), max(srcs), head if isinstance(head, int) else -1)
+
+
+def dedupe_spans(spans: dict[str, FormSpan]) -> dict[str, FormSpan]:
+    """{章id: FormSpan} → 同表，**父区间截到被别章认领的子表单之前**。
+
+    「3.报价一览表」(41-43) 天然含「3-1.报价明细表」(43-43,head=42)：两章各自复印时
+    不截父区间，明细表在一览表章里重复一遍。截断点取子段的 head（连它的编号行一起
+    从父段摘掉——与文本级 dedupe_nested 同语义）；子段无 head 则截到其内容起点前。"""
+    out = dict(spans)
+    for a, sp_a in spans.items():
+        for b, sp_b in spans.items():
+            if a == b:
+                continue
+            cut = sp_b.head if 0 <= sp_b.head else sp_b.start
+            if sp_a.start < cut <= sp_a.end:
+                out[a] = out[a]._replace(end=min(out[a].end, cut - 1))
+    return out
