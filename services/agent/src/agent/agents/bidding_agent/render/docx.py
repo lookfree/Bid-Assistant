@@ -1,5 +1,6 @@
 from __future__ import annotations
 import base64
+import copy
 import io
 import re
 from typing import Callable
@@ -456,15 +457,16 @@ def _find_cert_anchor(nodes: list, label: str):
     return None
 
 
-_MC_NS = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
+from agent.agents.bidding_agent.render.form_copier import MC_NS as _MC_NS
+
 _A_EXT = "{http://schemas.openxmlformats.org/drawingml/2006/main}ext"
 _WP_EXTENT = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}extent"
 
 
-def _anchor_boxes(anchor) -> list[tuple]:
-    """锚段落里的粘贴框 [(txbxContent, 框cx, 框cy)]，按出现序（正/反面框成对）。
-    只取 mc:Choice 分支——Word 读的那层；Fallback 里的 v:textbox 同样带 txbxContent，
-    塞错层图在 Word 里根本不渲染（2026-08-14 深夜实测立案）。"""
+def _anchor_boxes(anchor) -> list[dict]:
+    """锚元素里的粘贴框，按出现序（正/反面框成对）。每框收 Choice 内容区、Fallback
+    内容区（评审五轮 C2：LibreOffice 转 PDF 可能读降级层，只装 Choice 的话 PDF 预览里
+    扫描件整体消失——两层同装镜像）、框尺寸与框上文字（按人配框用）。"""
     out = []
     for ac in anchor.iter(_MC_NS + "AlternateContent"):
         choice = next((c for c in ac if c.tag == _MC_NS + "Choice"), None)
@@ -473,11 +475,50 @@ def _anchor_boxes(anchor) -> list[tuple]:
         tx = next(iter(choice.iter(qn("w:txbxContent"))), None)
         if tx is None:
             continue
+        fb = next((c for c in ac if c.tag == _MC_NS + "Fallback"), None)
+        fb_tx = next(iter(fb.iter(qn("w:txbxContent"))), None) if fb is not None else None
         ext = next(iter(choice.iter(_A_EXT)), None)
-        cx = int(ext.get("cx") or 0) if ext is not None else 0
-        cy = int(ext.get("cy") or 0) if ext is not None else 0
-        out.append((tx, cx, cy))
+        out.append({"tx": tx, "fb": fb_tx,
+                    "cx": int(ext.get("cx") or 0) if ext is not None else 0,
+                    "cy": int(ext.get("cy") or 0) if ext is not None else 0,
+                    "text": "".join(t.text or "" for t in choice.iter(qn("w:t")))})
     return out
+
+
+def _boxable_units(new_els: list) -> list:
+    """与框位一一配对的单元：图段，以及**取图失败的占位段**——失败也要占住本框位，
+    否则反面扫描件会顶进正面的框（评审五轮 C3）。"""
+    units = []
+    for e in new_els:
+        if next(iter(e.iter(qn("w:drawing"))), None) is not None:
+            units.append(e)
+        elif "".join(t.text or "" for t in e.iter(qn("w:t"))).startswith("（图片加载失败"):
+            units.append(e)
+    return units
+
+
+def _fill_boxes(boxes: list[dict], used: set, label: str, units: list) -> list:
+    """单元逐一装框 → 已装单元。**本人词匹配的空框优先**，无匹配才取下一空框——
+    两组共用一个锚（合并框段落）时占用跟踪+按框上标签配人，绝不把两人的证叠进
+    同一框（评审五轮 C1）。Choice/Fallback 双层同装镜像（C2）。"""
+    from agent.agents.bidding_agent.nodes.cert_placement import id_person_words
+
+    words = id_person_words(label)
+    placed = []
+    for unit in units:
+        cand = ([i for i, b in enumerate(boxes) if i not in used
+                 and any(w in b["text"] for w in words)]
+                or [i for i in range(len(boxes)) if i not in used])
+        if not cand:
+            break
+        i = cand[0]
+        used.add(i)
+        _shrink_drawing(unit, boxes[i]["cx"], boxes[i]["cy"])
+        if boxes[i]["fb"] is not None:
+            boxes[i]["fb"].append(copy.deepcopy(unit))
+        boxes[i]["tx"].append(unit)
+        placed.append(unit)
+    return placed
 
 
 def _shrink_drawing(img_el, box_cx: int, box_cy: int) -> None:
@@ -512,6 +553,7 @@ def _graft_cert_tail(doc: Document, nodes: list, tail: str, fetch_object) -> Non
             per_key[anchor[0]] = per_key.get(anchor[0], 0) + 1
     body = doc.element.body
     cursors: dict = {}
+    box_used: dict = {}
     for label, lead, blocks, anchor in found:
         keep_lead = anchor is None or per_key[anchor[0]] > 1
         # 新元素按**位置**圈定,绝不用 id() 集合——lxml 元素是代理对象,同一节点两次迭代
@@ -526,25 +568,20 @@ def _graft_cert_tail(doc: Document, nodes: list, tail: str, fetch_object) -> Non
         end = len(kids) - 1 if kids and kids[-1].tag == qn("w:sectPr") else len(kids)
         start = n_before - 1 if end != len(kids) else n_before
         key, target, mode = anchor
-        if mode == "cell":
-            for el in kids[start:end]:
-                target.append(el)
-            continue
         # 图**进框内**（2026-08-14 深夜实测：图在框后的文档流里会被排到下一页,框空着）：
-        # 锚段落里有 wps 文本框时,图逐一移进各框的 txbxContent 并等比缩到框尺寸——
-        # 正/反面各进一框;框不够装的、以及引导行/空段,照旧跟在锚点后。
+        # 锚元素里有 wps 文本框时,单元逐一装进各框（占用跟踪+本人词配框,五轮 C1;
+        # 表格格里的框同样装,五轮 C4）;框不够装的、引导行/空段,照旧跟在锚点后。
         new_els = kids[start:end]
         boxes = _anchor_boxes(target)
-        imgs = [e for e in new_els if next(iter(e.iter(qn("w:drawing"))), None) is not None]
-        boxed = []
-        for (tx, bcx, bcy), img_el in zip(boxes, imgs):
-            _shrink_drawing(img_el, bcx, bcy)
-            tx.append(img_el)
-            boxed.append(img_el)
+        boxed = _fill_boxes(boxes, box_used.setdefault(key, set()), label,
+                            _boxable_units(new_els)) if boxes else []
+        rest = [el for el in new_els if not any(el is b for b in boxed)]
+        if mode == "cell":
+            for el in rest:
+                target.append(el)
+            continue
         ins = cursors.get(key, target)
-        for el in new_els:
-            if any(el is b for b in boxed):
-                continue
+        for el in rest:
             ins.addnext(el)
             ins = el
         cursors[key] = ins

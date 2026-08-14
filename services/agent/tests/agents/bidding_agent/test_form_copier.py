@@ -1153,14 +1153,96 @@ class TestInBoxPlacement:
         blips = choice.findall(".//" + "{http://schemas.openxmlformats.org/drawingml/2006/main}blip")
         assert blips, "图没进第一个框的 Choice 层"
         fb = next(c for c in acs[0] if c.tag == MC + "Fallback")
-        assert not fb.findall(".//" + "{http://schemas.openxmlformats.org/drawingml/2006/main}blip")
+        # 评审五轮 C2:Fallback 层**同装镜像**——LibreOffice 转 PDF 可能读降级层,
+        # 只装 Choice 的话预览里扫描件整体消失
+        assert fb.findall(".//" + "{http://schemas.openxmlformats.org/drawingml/2006/main}blip")
         # 尺寸缩进框内(框 cx=2743200):图 extent cx ≤ 92% 框宽
         WP = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}"
         img_exts = [e for e in choice.iter(WP + "extent")]
         assert img_exts and int(img_exts[0].get("cx")) <= int(2743200 * 0.92) + 1, "图没缩进框内"
-        # 框外文档流不再有这张图(段落层无 drawing 图)
-        texts_after = False
-        for p in doc.paragraphs:
-            if "说明：法定代表人参加采购" in p.text:
-                texts_after = True
-        assert texts_after
+        # 框外文档流不再有这张图:body 直属段落(框 AC 之外)一个 drawing 都不许有
+        W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        stray = [p for p in doc.paragraphs
+                 if p._p.getparent().tag == W + "body"
+                 and p._p.findall(".//" + W + "drawing")
+                 and not p._p.findall(".//" + MC + "AlternateContent")]
+        assert not stray, "文档流里残留散图"
+        assert any("说明：法定代表人参加采购" in p.text for p in doc.paragraphs)
+
+
+class TestInBoxRound5:
+    """评审五轮(a67b4ee):共享锚点占用跟踪/按框上标签配人/取图失败占框位/格内框同装。"""
+
+    _NS = TestInBoxPlacement._NS
+
+    def _box(self, label):
+        return TestInBoxPlacement._box_ac(TestInBoxPlacement(), label)
+
+    def _render(self, nodes, tail, fetch=None):
+        import io as io2
+        from PIL import Image
+        from docx import Document
+        from agent.agents.bidding_agent.render.docx import render_docx
+        buf = io2.BytesIO()
+        Image.new("RGB", (60, 40), "white").save(buf, format="PNG")
+        data = render_docx({"chapters": [{"id": "b3", "no": "第七章",
+                                          "title": "法定代表人授权书", "group": "business"}]},
+                           {"b3": "<p>x</p>"},
+                           copier_nodes={"b3": {"nodes": nodes, "tail": tail}},
+                           fetch_object=fetch or (lambda k: buf.getvalue()))
+        return Document(io.BytesIO(data))
+
+    def _boxes_with_imgs(self, doc):
+        MC = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
+        A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+        W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        out = []
+        for ac in doc.element.body.iter(MC + "AlternateContent"):
+            ch = next(c for c in ac if c.tag == MC + "Choice")
+            label = "".join(t.text or "" for t in ch.iter(W + "t"))
+            out.append((label[:6], len(ch.findall(".//" + A + "blip")),
+                        "加载失败" in label))
+        return out
+
+    def test_shared_anchor_pairs_each_person_to_their_labeled_box(self):
+        """C1:两组共用一个锚段落(合并框)——按框上标签配人+占用跟踪,
+        绝不把两人的证叠进同一框。"""
+        from docx.oxml import parse_xml
+        p = parse_xml(f"<w:p {self._NS}><w:r>{self._box('法定代表人身份证粘贴处')}</w:r>"
+                      f"<w:r>{self._box('委托代理人身份证粘贴处')}</w:r></w:p>")
+        tail = ('<p>【法定代表人身份证明】见下图：</p><p></p>'
+                '<img alt="a" data-file-id="fa" data-object-key="k/yu.jpg">'
+                '<p>【被授权人身份证明】见下图：</p><p></p>'
+                '<img alt="b" data-file-id="hu" data-object-key="k/hu.jpg">')
+        boxes = self._boxes_with_imgs(self._render([p], tail))
+        assert boxes[0][0].startswith("法定代表人"[:5]) and boxes[0][1] == 1, boxes
+        assert boxes[1][1] == 1, f"第二人的证没进自己的框: {boxes}"
+
+    def test_failed_fetch_occupies_its_box_slot(self):
+        """C3:正面取图失败 → 失败占位进正面框占住位,反面照进反面框,不许顶位。"""
+        import io as io2
+        from PIL import Image
+        from docx.oxml import parse_xml
+        buf = io2.BytesIO()
+        Image.new("RGB", (60, 40), "white").save(buf, format="PNG")
+        p = parse_xml(f"<w:p {self._NS}><w:r>{self._box('委托代理人身份证粘贴处')}</w:r>"
+                      f"<w:r>{self._box('委托代理人身份证粘贴处')}</w:r></w:p>")
+        tail = ('<p>【被授权人身份证明】见下图：</p><p></p>'
+                '<img alt="正" data-file-id="f1" data-object-key="k/front.jpg">'
+                '<img alt="反" data-file-id="f2" data-object-key="k/back.jpg">')
+        doc = self._render([p], tail,
+                           fetch=lambda k: None if "front" in k else buf.getvalue())
+        boxes = self._boxes_with_imgs(doc)
+        assert boxes[0][2] and boxes[0][1] == 0, f"失败占位没进正面框: {boxes}"
+        assert boxes[1][1] == 1, f"反面被顶进了错框: {boxes}"
+
+    def test_box_inside_table_cell_gets_the_image_in_box(self):
+        """C4:粘贴框长在表格格里 → 图同样进框内,不是缀在格内流里。"""
+        from docx.oxml import parse_xml
+        tbl = parse_xml(f"<w:tbl {self._NS}><w:tr><w:tc>"
+                        f"<w:p><w:r>{self._box('委托代理人身份证粘贴处')}</w:r></w:p>"
+                        f"</w:tc></w:tr></w:tbl>")
+        tail = ('<p>【被授权人身份证明】见下图：</p><p></p>'
+                '<img alt="b" data-file-id="hu" data-object-key="k/hu.jpg">')
+        boxes = self._boxes_with_imgs(self._render([tbl], tail))
+        assert boxes and boxes[0][1] == 1, f"格内框没拿到图: {boxes}"

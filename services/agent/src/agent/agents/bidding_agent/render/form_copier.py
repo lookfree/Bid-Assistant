@@ -67,7 +67,9 @@ _UNPORTABLE = {
 }
 
 
-_MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+# 兼容命名空间前缀——render 包内唯一一份（评审五轮 C6：docx.py 手抄第二份必然漂移）
+MC_NS = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
+_MC_FALLBACK = MC_NS + "Fallback"
 _R_ATTR_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 _O_RELID = "{urn:schemas-microsoft-com:office:office}relid"
 
