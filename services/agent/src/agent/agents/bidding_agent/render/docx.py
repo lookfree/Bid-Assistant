@@ -531,6 +531,36 @@ def _boxable_units(new_els: list) -> list:
     return units
 
 
+_WPS_NS = "{http://schemas.microsoft.com/office/word/2010/wordprocessingShape}"
+
+
+def _center_unit(unit) -> None:
+    """图段水平居中（2026-08-15 用户实测：图贴左上角不像"贴上去的"）。"""
+    ppr = unit.find(qn("w:pPr"))
+    if ppr is None:
+        ppr = OxmlElement("w:pPr")
+        unit.insert(0, ppr)
+    jc = ppr.find(qn("w:jc"))
+    if jc is None:
+        jc = OxmlElement("w:jc")
+        ppr.append(jc)
+    jc.set(qn("w:val"), "center")
+
+
+def _anchor_middle(tx) -> None:
+    """框内容垂直居中：wps:bodyPr anchor="ctr"（只动收图的框；bodyPr 在 wsp 子序列
+    里位于 txbx 之后，SubElement 追加即合法）。Fallback 层无对应属性，不动。"""
+    txbx = tx.getparent()
+    wsp = txbx.getparent() if txbx is not None else None
+    if wsp is None or not str(wsp.tag).endswith("}wsp"):
+        return
+    body = wsp.find(_WPS_NS + "bodyPr")
+    if body is None:
+        from lxml import etree
+        body = etree.SubElement(wsp, _WPS_NS + "bodyPr")
+    body.set("anchor", "ctr")
+
+
 def _fill_boxes(boxes: list[dict], used: set, label: str, units: list) -> list:
     """单元逐一装框 → 已装单元。**本人词匹配的空框优先**，无匹配才取下一空框——
     两组共用一个锚（合并框段落）时占用跟踪+按框上标签配人，绝不把两人的证叠进
@@ -548,9 +578,12 @@ def _fill_boxes(boxes: list[dict], used: set, label: str, units: list) -> list:
         i = cand[0]
         used.add(i)
         _shrink_drawing(unit, boxes[i]["cx"], boxes[i]["cy"])
+        _center_unit(unit)
         # 收到**图**的框清空说明文字（2026-08-14 用户终验：扫描件本就该盖住「粘贴处」
         # 提示，留着更乱）；取图失败的占位段不清——空框失去标签只剩一行报错更糟。
         has_img = next(iter(unit.iter(qn("w:drawing"))), None) is not None
+        if has_img:
+            _anchor_middle(boxes[i]["tx"])
         for layer in (boxes[i]["tx"], boxes[i]["fb"]):
             if layer is None:
                 continue
@@ -563,8 +596,9 @@ def _fill_boxes(boxes: list[dict], used: set, label: str, units: list) -> list:
 
 
 def _shrink_drawing(img_el, box_cx: int, box_cy: int) -> None:
-    """图片段等比适配框内（宽 96% 框宽、高 ≤92% 框高，**允许放大**——2026-08-14 用户
-    终验「贴入宽」：收图的框说明文字已清空，整框都是图的，缩得小气不如贴满）。
+    """图片段等比适配框内（宽 ≤84%、高 ≤72%，允许放大）。上限从 96/92 收紧
+    （2026-08-15 用户实测：92% 高仍溢出框底——a:ext 是外框尺寸，文本框内边距
+    （默认左右 0.1"/上下 0.05"）与圆角都要吃掉可用空间）。
     框尺寸缺失/图无尺寸则不动，宁可原样也不写出 0 尺寸的图。"""
     if not box_cx or not box_cy:
         return
@@ -574,7 +608,7 @@ def _shrink_drawing(img_el, box_cx: int, box_cy: int) -> None:
     cx, cy = int(exts[0].get("cx") or 0), int(exts[0].get("cy") or 0)
     if not cx or not cy:
         return
-    scale = min(box_cx * 0.96 / cx, box_cy * 0.92 / cy)
+    scale = min(box_cx * 0.84 / cx, box_cy * 0.72 / cy)
     ncx, ncy = int(cx * scale), int(cy * scale)
     for e in exts:
         e.set("cx", str(ncx))

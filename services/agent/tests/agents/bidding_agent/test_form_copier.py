@@ -1156,10 +1156,17 @@ class TestInBoxPlacement:
         # 评审五轮 C2:Fallback 层**同装镜像**——LibreOffice 转 PDF 可能读降级层,
         # 只装 Choice 的话预览里扫描件整体消失
         assert fb.findall(".//" + "{http://schemas.openxmlformats.org/drawingml/2006/main}blip")
-        # 贴满口径(2026-08-14 终验):宽=96% 框宽(允许放大),收图框的说明文字被清空
+        # 适配口径(2026-08-15 用户实测:92% 高仍溢出框底——内边距+圆角没算)：
+        # 宽 ≤84%、高 ≤72%,等比、允许放大;图段水平居中、框内容垂直居中
         WP = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}"
         img_exts = [e for e in choice.iter(WP + "extent")]
-        assert img_exts and abs(int(img_exts[0].get("cx")) - int(2743200 * 0.96)) <= 2, "图没贴满框宽"
+        assert img_exts and int(img_exts[0].get("cx")) <= int(2743200 * 0.84) + 2, "图超出安全宽度"
+        W3 = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        jc = [e for e in choice.iter(W3 + "jc")]
+        assert jc and jc[0].get(W3 + "val") == "center", "图段没有水平居中"
+        WPS = "{http://schemas.microsoft.com/office/word/2010/wordprocessingShape}"
+        bodyprs = [e for e in choice.iter(WPS + "bodyPr")]
+        assert bodyprs and bodyprs[0].get("anchor") == "ctr", "框内容没有垂直居中"
         W2 = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
         box_text = "".join(t.text or "" for t in choice.iter(W2 + "t"))
         assert "粘贴处" not in box_text, "收图的框说明文字没清掉"
