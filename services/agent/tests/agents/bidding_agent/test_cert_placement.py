@@ -180,9 +180,10 @@ class TestPlaceCertificates:
         assert i_fa < i_wt, "法代证没贴在法代框后（跑到委托框之后/附行去了）"
         assert i_wt < i_hu < i_fu, "被授权人证没贴在委托框后、附行前"
 
-    def test_box_anchor_beats_heading_theft_in_another_chapter(self):
-        """标题锚全局优先曾把法代证抢进资格文件章的「法定代表人身份证明」小节
-        （2026-08-14 dc4cdc34 轮实测）——框锚轮先跑：有粘贴框的授权书章赢，哪怕章序靠后。"""
+    def test_box_gets_its_copy_even_when_another_chapter_has_a_heading(self):
+        """2026-08-14 dc4cdc34 轮实测：标题锚全局优先曾把法代证整组抢进资格文件章，
+        授权书框空着。需求分级后：框和材料小节是两处**真需求**，各得一份——
+        授权书框绝不再空。"""
         out = {"b6": "<h3>一、法定代表人身份证明</h3><p>x</p>",
                "b9": "<p>法定代表人的合法有效身份证明复印件或扫描件粘贴处</p>"}
         state = {"outline": {"chapters": [_chapter("b6", "资格文件", []),
@@ -191,8 +192,26 @@ class TestPlaceCertificates:
                  "run_input": {"credentials": [
                      {"title": "法定代表人身份证", "images": [{"fileId": "fa", "key": "k", "name": "n"}]}]}}
         result = place_certificates(out, state)
-        assert 'data-file-id="fa"' in result["b9"], "框锚没赢过别章标题锚"
-        assert 'data-file-id="fa"' not in result["b6"]
+        assert 'data-file-id="fa"' in result["b9"], "授权书框没拿到——框锚被别章标题抢注"
+        assert 'data-file-id="fa"' in result["b6"], "材料小节的真需求也该有一份"
+
+    def test_id_card_fills_both_box_and_material_section(self):
+        """需求分级（2026-08-14 用户口径「需要的地方就插入」）：授权书**粘贴框**与
+        资格文件**身份证明小节**都是真需求，各插一份——纸质标书本就把同一张身份证
+        复印两处；只放一处会让另一处空着。段落顺嘴提及仍不插（兜底轮已被满足）。"""
+        out = {"b2": "<p>法定代表人的合法有效身份证明复印件或扫描件粘贴处</p>",
+               "b6": "<h3>一、法定代表人身份证明</h3><p>x</p>",
+               "b1": "<p>所附法定代表人身份证均为原件扫描件。</p>"}
+        state = {"outline": {"chapters": [_chapter("b1", "响应函", []),
+                                          _chapter("b2", "法定代表人授权书", []),
+                                          _chapter("b6", "资格文件", [])]},
+                 "read": {},
+                 "run_input": {"credentials": [
+                     {"title": "法定代表人身份证", "images": [{"fileId": "fa", "key": "k", "name": "n"}]}]}}
+        result = place_certificates(out, state)
+        assert 'data-file-id="fa"' in result["b2"], "粘贴框没拿到"
+        assert 'data-file-id="fa"' in result["b6"], "材料小节没拿到——真需求被全局去重误伤"
+        assert 'data-file-id="fa"' not in result["b1"], "段落顺嘴提及不该插（强锚已满足）"
 
     def test_anchor_places_each_entry_only_once_globally(self):
         """⑨两个章都有营业执照小节 → 只进提纲序靠前的那章一次。到处重复插图

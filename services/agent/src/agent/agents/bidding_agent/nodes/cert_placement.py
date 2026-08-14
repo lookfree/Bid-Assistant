@@ -195,27 +195,38 @@ def _place_by_anchor(result: dict[str, str], ordered_cids: list[str],
     全书都没有标题锚的条目第二轮才允许段落锚。
     **粘贴框锚在两轮之前**（2026-08-14 dc4cdc34 轮）：身份证的「XX的…身份证明…粘贴处」
     框行是比任何小节标题都强的定位——不先跑框锚，法代证被资格文件章的小节标题全局
-    抢注、被授权人证错落在「附：…」行后。"""
+    抢注、被授权人证错落在「附：…」行后。
+    **需求分级**（2026-08-14 用户口径「需要的地方就插入」）：框锚与标题锚是**真需求**，
+    各插一份——纸质标书本就把同一张身份证复印进授权书框和资格文件小节两处，全局只放
+    一次会让另一处空着；段落锚只是兜底，前两类锚任一放过就不再插。同一章内不重复
+    （按 fileId 查重），同类锚全局仍只取第一处。"""
     rounds = (
-        _box_anchor_end,                                       # ①粘贴框锚（身份证组专属）
-        lambda h, g: _anchor_end(h, _aliases_of(g), True),     # ②标题锚（材料小节）
-        lambda h, g: _anchor_end(h, _aliases_of(g), False),    # ③段落锚（带证据词）
+        ("box", _box_anchor_end),                                   # ①粘贴框锚（身份证组专属）
+        ("heading", lambda h, g: _anchor_end(h, _aliases_of(g), True)),   # ②标题锚（材料小节）
+        ("para", lambda h, g: _anchor_end(h, _aliases_of(g), False)),     # ③段落锚（兜底）
     )
-    for locate in rounds:
+    done: dict[str, set[int]] = {"box": set(), "heading": set(), "para": set()}
+    for kind, locate in rounds:
         for cid in ordered_cids:
             html = result.get(cid)
             if not html:
                 continue
             for entry in credentials:
-                if id(entry) in placed or not entry.get("images"):
+                if id(entry) in done[kind] or not entry.get("images"):
                     continue
+                if kind == "para" and id(entry) in placed:
+                    continue                      # 兜底轮：强锚放过的不再插
                 group = _group_of(str(entry.get("title") or ""))
                 if group is None:
                     continue
+                fid = str((entry["images"][0] or {}).get("fileId") or "")
+                if fid and f'data-file-id="{fid}"' in html:
+                    continue                      # 同一章不放第二份（跨轮查重）
                 pos = locate(html, group)
                 if pos < 0:
                     continue
                 html = html[:pos] + "\n" + _cert_block(group, entry) + html[pos:]
+                done[kind].add(id(entry))
                 placed.add(id(entry))
             result[cid] = html
 
