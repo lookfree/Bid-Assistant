@@ -218,3 +218,35 @@ class TestFalseRejects20260814:
         tpl = "供应商资格信用承诺函\n我单位自愿参加本次采购询价活动并郑重承诺守信。"
         draft = "<h3>供应商资格信用承诺书</h3><p>我单位自愿参加本次采购询价活动并郑重承诺守信。</p>"
         assert first_missing_segment(draft, tpl) == "供应商资格信用承诺函"
+
+
+class TestFalseRejects0814Round2:
+    """2026-08-14 下午生产二轮冤杀（agent_event_log 真实 missing_segment）。"""
+
+    def test_ordered_list_numbers_are_exempt(self):
+        """b5 案：承诺函六项资格条件被模型写成 <ol><li>——编号由渲染器生成，纯文本层
+        没有「1.」，整章冤死在「1.具有独立承担民事责任的能力;」。去编号再找一次。"""
+        tpl = ("我单位郑重承诺符合下列资格条件：\n1.具有独立承担民事责任的能力；\n"
+               "2.具有良好的商业信誉和健全的财务会计制度；")
+        draft = ("<p>我单位郑重承诺符合下列资格条件：</p><ol>"
+                 "<li>具有独立承担民事责任的能力；</li>"
+                 "<li>具有良好的商业信誉和健全的财务会计制度；</li></ol>")
+        assert keeps_template(draft, tpl)
+
+    def test_vertical_merge_row_head_is_exempt(self):
+        """b7 案：竖向合并格摊平成两行同头「联系方式|联系人…」「联系方式|传真…」，
+        模型 rowspan 正确还原后第二行没有「联系方式」——重复行头当空格子断段。"""
+        tpl = ("联系方式\t联系人\t\t联系电话\t\n联系方式\t传  真\t\t网址/邮箱\t\n"
+               "企业性质与注册资金情况说明如下")
+        draft = ("<table><tr><td rowspan=\"2\">联系方式</td><td>联系人</td><td>王敏</td>"
+                 "<td>联系电话</td><td>021-52808586</td></tr>"
+                 "<tr><td>传  真</td><td></td><td>网址/邮箱</td><td>a@b.cn</td></tr></table>"
+                 "<p>企业性质与注册资金情况说明如下</p>")
+        assert keeps_template(draft, tpl)
+
+    def test_rewriting_the_row_head_is_still_caught(self):
+        """豁免收准不放水：行头「联系方式」被改成「联络方式」照旧拒。"""
+        tpl = "联系方式\t联系人\t\t联系电话\t\n供应商签章处如下所示"
+        draft = ("<table><tr><td>联络方式</td><td>联系人</td><td></td><td>联系电话</td></tr></table>"
+                 "<p>供应商签章处如下所示</p>")
+        assert first_missing_segment(draft, tpl) is not None

@@ -60,8 +60,16 @@ def fixed_segments(template: str) -> list[str]:
     云上江西版式返工实证）。折叠后：合并渲染与摊平渲染都能通过，顺序约束不变。
     """
     out: list[str] = []
+    prev_first = ""
     for line in (template or "").splitlines():
         cells = line.split("\t")
+        # 竖向合并格摊平的重复行头（「联系方式|联系人…」「联系方式|传真…」）：模型用
+        # rowspan 正确还原时第二行不再有「联系方式」，粘着它的固定段必然断——重复行头
+        # 当空格子断段（2026-08-14 云上实测：供应商情况一览表整章冤死在「联系方式传真」）。
+        first_norm = _norm(cells[0]) if cells else ""
+        if len(cells) > 1 and first_norm and first_norm == prev_first:
+            cells[0] = ""
+        prev_first = first_norm if len(cells) > 1 else ""
         cells = [c for i, c in enumerate(cells) if i == 0 or _norm(c) != _norm(cells[i - 1]) or not _norm(c)]
         # 空格子＝填空位：固定段在空格子处断开。不断的话「联系人\t\t联系电话」折成一条
         # 「联系人联系电话」，模型往空格子里填了值段就断——填空反被判改写
@@ -72,18 +80,32 @@ def fixed_segments(template: str) -> list[str]:
     return out
 
 
+# 段首编号（「1.」「4-2」「3、」）：模型把编号条款写成 <ol><li> 时数字由渲染器生成，
+# 纯文本抽取里编号消失——「1.具有独立承担民事责任的能力」找不到，实为语义等价
+# （2026-08-14 云上实测：承诺函六项资格条件全走 <ol>，整章冤死）。
+_SEG_NO = re.compile(r"^\d+(?:[-.]\d+)*[.、．]?")
+
+
 def first_missing_segment(html: str, template: str) -> str | None:
     """第一个在产出里找不到（或顺序不对）的固定片段；全都在则 None。
 
     被拒的模型稿此前直接丢弃——填空稿被误杀时无从诊断到底哪一行「改写」了
     （2026-08-13 云上实测：企业信息齐全、模型填了空，交付却退回留白模板，黑箱）。
-    这个函数是拒稿观测的诊断核心：拒一次，记下第一处对不上的片段与稿件头部。"""
+    这个函数是拒稿观测的诊断核心：拒一次，记下第一处对不上的片段与稿件头部。
+    段首编号豁免（见 _SEG_NO）：原文找不到时去掉编号再找一次——HTML 有序列表的编号
+    不在文本层，行内其余每个字仍逐字校验，顺序约束不变。"""
     segments = fixed_segments(template)
     hay = _plain(html)
     pos = 0
     for seg in segments:
         found = hay.find(seg, pos)
         if found < 0:
+            bare = _SEG_NO.sub("", seg)
+            if len(bare) >= _MIN_SEG and bare != seg:
+                found = hay.find(bare, pos)
+                if found >= 0:
+                    pos = found + len(bare)
+                    continue
             return seg
         pos = found + len(seg)
     return None

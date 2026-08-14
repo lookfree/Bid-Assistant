@@ -88,12 +88,34 @@ def extract_form_nodes(tender_docx: bytes, span: FormSpan) -> list:
     return extract_span(body_children(tender_docx), span)
 
 
+_W_PPR = _W_NS + "pPr"
+_W_IND = _W_NS + "ind"
+
+
+def _immunize_indent(el) -> None:
+    """嫁接段落的缩进免疫（2026-08-14 生产实证）：输出文档配置了导出格式时 Normal 带
+    首行缩进，招标表单段落没写显式缩进就会被顶成缩进两字符——标签列全体右移。
+    给没有 w:ind 的段落补 firstLine=0；已有显式缩进的（招标自己的排版）一个不动。
+    字体/行距不免疫：随全书格式统一正是用户配置导出格式的意图。"""
+    from lxml import etree
+
+    for para in ([el] if el.tag == _P_TAG else []) + [n for n in el.iter(_P_TAG)]:
+        ppr = para.find(_W_PPR)
+        if ppr is None:
+            ppr = etree.SubElement(para, _W_PPR)
+            para.insert(0, ppr)
+        if ppr.find(_W_IND) is None:
+            ind = etree.SubElement(ppr, _W_IND)
+            ind.set(_W_NS + "firstLine", "0")
+
+
 def graft_nodes(doc, nodes: list) -> None:
     """把节点接进输出文档 body 末尾（调用方先写完章标题再嫁接，顺序即版面顺序）。
     sectPr 必须留在 body 最后——插到它后面 Word 直接打不开文档。"""
     body = doc.element.body
     sect = body.find(_SECTPR)
     for el in nodes:
+        _immunize_indent(el)
         if sect is not None:
             sect.addprevious(el)
         else:

@@ -57,8 +57,10 @@ async def _copier_nodes(ctx, state: dict, outline: dict) -> dict[str, list]:
     是 .docx（state["files"][0]，App 排主文件在前——不拿"任意第一个 docx"，答疑册会顶包，F13）
     → 基线锁行查询 → 定位**全体候选**再去重（先去重后过滤 pristine，否则手改的子表单
     留在被复印的父表里重复一遍，F2）→ pristine 过滤 → 批量抽取+填空整体丢线程池（F3）。
-    自定义导出格式（run_input.format）时整体让路：嫁接节点会继承输出文档被改过的 Normal
-    样式，"逐字节同源"变成谎话（F6）——诚实回退 HTML 路线。任何失败逐章让路。"""
+    自定义导出格式（run_input.format）**不再整体让路**（2026-08-14 生产实证：这家客户
+    每次导出都带格式配置，让路等于复印机永久关闭）：嫁接段落由 graft_nodes 打缩进免疫
+    （无显式缩进的补 firstLine=0），字体/行距随全书格式统一本就是用户配置的意图。
+    任何失败逐章让路。"""
     from agent.agents.bidding_agent.nodes.bidder_profile import bidder_fields
     from agent.agents.bidding_agent.nodes.form_locate import (
         _looks_like_form_title, build_form_index, dedupe_spans, form_node_span)
@@ -66,8 +68,6 @@ async def _copier_nodes(ctx, state: dict, outline: dict) -> dict[str, list]:
     from agent.parsing.parsers import parse_bytes
 
     run_input = state.get("run_input") or {}
-    if run_input.get("format"):
-        return {}
     files = state.get("files") or []
     main_key = str((files[0] or {}).get("key") or "") if files else ""
     if not main_key.lower().endswith(".docx"):

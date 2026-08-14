@@ -250,11 +250,19 @@ class TestExportWiring:
         out = self._run(monkeypatch, state=self._state(main="uploads/u/招标.pdf"))
         assert out == {}
 
-    def test_custom_export_format_disables_the_copier(self, monkeypatch):
-        """配置了导出格式（spec330）→ 让路：嫁接节点会继承被改过的 Normal 样式，
-        "逐字节同源"变谎话（评审 F6），诚实回退 HTML 路线。"""
+    def test_custom_export_format_keeps_the_copier_with_indent_immunity(self, monkeypatch):
+        """配置了导出格式（spec330）**不再让路**（2026-08-14 生产实证：这家客户每次导出都带
+        格式配置，让路等于复印机永久关闭）。嫁接段落打缩进免疫：无显式缩进的补 firstLine=0，
+        防被改过的 Normal 顶成首行缩进——标签列全体右移。"""
+        from docx import Document
+        from agent.agents.bidding_agent.render.form_copier import graft_nodes
+
         out = self._run(monkeypatch, state=self._state(fmt={"font": "仿宋"}))
-        assert out == {}
+        assert set(out) == {"b1"}
+        doc = Document()
+        graft_nodes(doc, out["b1"])            # 免疫发生在嫁接时（进入可能被改样式的文档）
+        xml = doc.element.body.xml
+        assert 'w:firstLine="0"' in xml
 
     def test_baseline_failure_falls_back_globally(self, monkeypatch):
         import asyncio

@@ -256,3 +256,16 @@ class TestNodeSpans:
         from agent.agents.bidding_agent.nodes.form_locate import FormSpan, dedupe_spans
         spans = {"a": FormSpan(1, 5, 0), "b": FormSpan(7, 9, 6)}
         assert dedupe_spans(spans) == spans
+
+
+class TestTrailingBoundaryTrim:
+    def test_trailing_numbered_heading_is_trimmed_from_the_template(self):
+        """b5 案二拒：局部切片里编号链未建立,「4-2要求的资格文件」邻节标题混进承诺函模板
+        尾巴——模型如实不抄它反被判改写。segment_text 尾部剥编号边界行;表单裸抬头不剥。"""
+        from agent.agents.bidding_agent.nodes.form_locate import segment_text
+        seg = {"name": "供应商资格信用承诺函",
+               "lines": ["供应商资格信用承诺函", "我单位郑重承诺守信经营。", "4-2要求的资格文件"],
+               "srcs": [1, 2, 3]}
+        text = segment_text(seg)
+        assert "4-2要求的资格文件" not in text
+        assert "供应商资格信用承诺函" in text and "郑重承诺" in text

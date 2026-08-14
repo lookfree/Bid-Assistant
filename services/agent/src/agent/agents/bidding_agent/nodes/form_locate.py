@@ -283,10 +283,21 @@ def find_form_segment(index: list[dict], chapter_title: str) -> dict | None:
 
 
 def segment_text(seg: dict | None) -> str:
-    """段 → 模板原文；空段/超体量（切出来的根本不是一份表单）都给空串。"""
+    """段 → 模板原文；空段/超体量（切出来的根本不是一份表单）都给空串。
+
+    尾部剥掉**编号边界行**（2026-08-14 云上实测：承诺函模板尾巴挂着「4-2要求的资格文件」
+    ——局部切片里编号链没建立、邻节标题被当成正文并进段，模型如实不抄它反被判改写）。
+    只剥尾部、只剥带编号且非表单构词的行，表单自己的裸抬头一个不动。"""
     if seg is None:
         return ""
-    text = "\n".join(line for line in seg["lines"] if line.strip())
+    lines = [line for line in seg["lines"] if line.strip()]
+    while lines:
+        b = _boundary_of(lines[-1].strip())
+        if b is not None and b[3] is not None and not _looks_like_form_title(b[1]):
+            lines.pop()
+            continue
+        break
+    text = "\n".join(lines)
     return text if 0 < len(text) <= _MAX_FORM_CHARS else ""
 
 
