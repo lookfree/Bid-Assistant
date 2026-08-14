@@ -176,7 +176,9 @@ class OutlineChapter(BaseModel):
     id: str                                       # t1..t5 / b1..b5
     no: str                                       # 第一章…
     title: str
-    group: Literal["tech", "business"]
+    group: Literal["tech", "business"] = Field(
+        ..., description="tech=技术标 / business=商务标。**两组都必须有章节**：全书只有一组会被拒绝重交"
+                         "（弱模型只读工具 schema，硬约束必须写在这里，2026-08-01 教训）")
     sourced: bool = True                          # 能否在招标文件索引到来源
     desc: str = Field(default="", description=_DESC_HAND_WRITTEN)
     # required（不是 default_factory）：这是全章唯一承载内容的字段，可省略 = 整份提纲退化成一串标题。
@@ -187,7 +189,9 @@ class OutlineChapter(BaseModel):
 
 
 class Outline(BaseModel):
-    chapters: list[OutlineChapter]
+    chapters: list[OutlineChapter] = Field(
+        ..., description="全部章节：**必须同时包含 group=tech 与 group=business 两组**——"
+                         "构成清单以表单为主时技术标仍要成组（技术需求响应/技术方案等），缺组提交会被拒绝")
 
     @model_validator(mode="after")
     def _both_groups_present(self) -> "Outline":
@@ -200,7 +204,8 @@ class Outline(BaseModel):
             raise ValueError(
                 f"提纲缺少{ '与'.join(missing) }分组：技术标与商务标两组章节都必须生成——"
                 "技术标至少应含技术需求响应/技术方案类章节（招标构成清单是下限不是上限，"
-                "评标办法要评的技术内容必须有章可落），商务标承载表单与商务响应。请补全后重新提交。")
+                "评标办法要评的技术内容必须有章可落），商务标承载表单与商务响应。"
+                "**新增**所缺分组的章节，不得把表单/报价类章节改标成 tech 凑数。请补全后重新提交。")
         return self
 
     @property

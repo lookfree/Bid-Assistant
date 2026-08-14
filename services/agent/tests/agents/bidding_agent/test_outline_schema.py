@@ -77,19 +77,28 @@ class TestBothGroupsRequired:
 
     def test_all_business_is_rejected(self):
         import pytest
-        from agent.agents.bidding_agent.schemas import Outline
         with pytest.raises(Exception, match="技术标"):
             Outline.model_validate({"chapters": [self._ch("b1", "business"),
                                                  self._ch("b2", "business")]})
 
     def test_all_tech_is_rejected(self):
         import pytest
-        from agent.agents.bidding_agent.schemas import Outline
         with pytest.raises(Exception, match="商务标"):
             Outline.model_validate({"chapters": [self._ch("t1", "tech")]})
 
     def test_both_groups_pass(self):
-        from agent.agents.bidding_agent.schemas import Outline
         o = Outline.model_validate({"chapters": [self._ch("t1", "tech", "技术方案"),
                                                  self._ch("b1", "business", "响应函")]})
         assert len(o.tech) == 1 and len(o.business) == 1
+
+
+def test_both_groups_invariant_is_described_in_the_tool_schema():
+    """评审 2026-08-14 F1：硬约束只写在校验器里，弱模型（只读工具 schema）撞闸后会三轮
+    原样重交直至整步失败退款——约束必须同时写进 chapters/group 的字段说明（2026-08-01 同款教训）。"""
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+
+    tool, _ = make_submit_tool("submit_outline", Outline, "提交提纲")
+    params = convert_to_openai_tool(tool)["function"]["parameters"]
+    assert "两组" in params["properties"]["chapters"]["description"]
+    group_desc = params["properties"]["chapters"]["items"]["properties"]["group"]["description"]
+    assert "两组" in group_desc and "拒绝" in group_desc

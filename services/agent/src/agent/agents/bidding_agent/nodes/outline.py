@@ -32,8 +32,10 @@ def make_outline_node(ctx):
         user += package_scope(state.get("run_input"))
         # 分类必备章节（spec334）：只取主类别——提纲结构只能有一套，两套会膨胀出重复骨架
         user += category_scope((state.get("run_input") or {}).get("bid_category"), "chapters")
+        # attempts=5（评审 2026-08-14）：两组必非空的语义校验上线后，省力模型可能连吃几轮
+        # 拒绝——3 轮耗尽=整步失败退款，比多跑两轮糟得多（present 骨架同因放宽的先例）。
         result = await run_submit_agent(
             ctx, OUTLINE_SYSTEM_PROMPT, user,
-            "submit_outline", Outline, "提交提纲")
+            "submit_outline", Outline, "提交提纲", attempts=5)
         return {"outline": result.model_dump()}
     return outline_node

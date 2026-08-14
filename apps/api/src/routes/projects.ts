@@ -74,6 +74,8 @@ const editBodySchema = z.object({
 
 // 按步结构校验（宽进：passthrough 保留未知键，只挡后续步/导出会炸的坏形状；
 // 必填集与 agent schemas.py 的 Outline/DeckSpec 对齐）。校验只做门禁，落库仍用原始 result。
+// 注：agent 侧 Outline 的「tech/business 两组必非空」不变量**有意不在此镜像**——编辑中间态
+// 允许暂时删空一组（用户重排时常见），生成侧的闸只拦模型提交，不拦人。
 const outlineChapterSchema = z
   .object({
     id: z.string(),
