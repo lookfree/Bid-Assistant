@@ -164,20 +164,27 @@ def _anchor_end(html: str, aliases: tuple[str, ...], headings_only: bool = False
 def _box_anchor_end(html: str, group: str) -> int:
     """身份证组的**粘贴框锚**（2026-08-14 dc4cdc34 轮实测）：人名词＋「身份证」＋「粘贴」
     同段（表外 p），取该组**最后一处**命中——正反面框成对出现，图落在成对框之后。
-    此前身份证只能靠别名子串锚：「附：全权代表人和法定代表人身份证原件扫描件」抢走
-    被授权人的证（错落点），法代证则被别章「法定代表人身份证明」小节标题全局抢注。
+    **拆行形态**（同日夜实测）：法代框的文字被解析层拆成两行（「…复印件或扫描件」/
+    「粘贴处」分开），同段判定落空、法代证掉回「附」行——本行有人名词＋身份证、
+    **下一行是短粘贴行**（≤12 字，防长段落里顺嘴带「粘贴」被冒认）时同样算框，
+    落点取粘贴行之后。此前身份证只能靠别名子串锚：「附：…身份证原件扫描件」抢走
+    被授权人的证，法代证则被别章「法定代表人身份证明」小节标题全局抢注。
     非身份证组返回 -1，照走原有标题/段落锚。"""
     words = id_person_words(group)
     if not words:
         return -1
     tables = _table_spans(html or "")
+    blocks = [(m.end(), _TAG.sub("", m.group(2)))
+              for m in _ANCHOR.finditer(html or "")
+              if not any(s <= m.start() < e for s, e in tables)]
     best = -1
-    for m in _ANCHOR.finditer(html or ""):
-        if any(s <= m.start() < e for s, e in tables):
+    for i, (end, text) in enumerate(blocks):
+        if "身份证" not in text or not any(w in text for w in words):
             continue
-        text = _TAG.sub("", m.group(2))
-        if "身份证" in text and "粘贴" in text and any(w in text for w in words):
-            best = m.end()
+        if "粘贴" in text:
+            best = end
+        elif i + 1 < len(blocks) and "粘贴" in blocks[i + 1][1] and len(blocks[i + 1][1]) <= 12:
+            best = blocks[i + 1][0]
     return best
 
 

@@ -180,6 +180,29 @@ class TestPlaceCertificates:
         assert i_fa < i_wt, "法代证没贴在法代框后（跑到委托框之后/附行去了）"
         assert i_wt < i_hu < i_fu, "被授权人证没贴在委托框后、附行前"
 
+    def test_split_line_box_anchors_after_its_paste_line(self):
+        """2026-08-14 夜实测：法代框的文字被解析层拆成两行（「…复印件或扫描件」/「粘贴处」
+        分开），同段判定落空、法代证掉到「附」行。拆行形态＝本行人名词＋身份证、
+        下一行是短粘贴行——落点在粘贴行后；单行框（委托）行为不变。"""
+        out = {"b2": ("<p>法定代表人的合法有效身份证明复印件或扫描件</p><p>粘贴处</p>"
+                      "<p>法定代表人的合法有效身份证明复印件或扫描件</p><p>粘贴处</p>"
+                      "<p>委托代理人的合法有效身份证明复印件或扫描件粘贴处</p>"
+                      "<p>委托代理人的合法有效身份证明复印件或扫描件粘贴处</p>"
+                      "<p>附：全权代表人和法定代表人身份证原件扫描件（正、反面）</p>"
+                      "<p>说明：法定代表人参加采购，不用提供授权书</p>")}
+        state = {"outline": {"chapters": [_chapter("b2", "法定代表人授权书", [])]},
+                 "read": {},
+                 "run_input": {"credentials": [
+                     {"title": "法定代表人身份证", "images": [{"fileId": "fa", "key": "k1", "name": "n"}]},
+                     {"title": "被授权人身份证", "images": [{"fileId": "hu", "key": "k2", "name": "n"}]}]}}
+        html = place_certificates(out, state)["b2"]
+        i_fa = html.index('data-file-id="fa"')
+        i_hu = html.index('data-file-id="hu"')
+        i_wt = html.index("委托代理人的")
+        i_fu = html.index("附：全权代表人")
+        assert i_fa < i_wt, "法代证没落在法代粘贴行后（掉到附行/委托框去了）"
+        assert i_wt < i_hu < i_fu, "被授权人证的位置被带偏"
+
     def test_box_gets_its_copy_even_when_another_chapter_has_a_heading(self):
         """2026-08-14 dc4cdc34 轮实测：标题锚全局优先曾把法代证整组抢进资格文件章，
         授权书框空着。需求分级后：框和材料小节是两处**真需求**，各得一份——
