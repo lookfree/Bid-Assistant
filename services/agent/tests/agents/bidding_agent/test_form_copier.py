@@ -1021,3 +1021,46 @@ class TestCertAnchorRound4:
         i_note = next(i for i, t in enumerate(kinds) if "说明：法定代表人参加" in str(t))
         assert "IMG" in kinds[i_note:], kinds
         assert any("见下图" in str(t) for t in kinds[i_note:])
+
+
+class TestEditorSplitCertBlock:
+    """2026-08-14 云上终验实锤：TipTap 把 <p><img/></p> 拆成**空段+裸图**存库
+    (「<p>【组名】见下图：</p><p></p><img …>」),共享正则第一分支配不上——
+    引导行被丢、组名丢失、图不锚,身份证又缀回章末。形状必须宽容编辑器拆段。"""
+
+    _TAIL = ('<p>【被授权人身份证明】见下图：</p><p></p>'
+             '<img alt="胡" data-file-id="f1" data-object-key="k/hu.jpg">')
+
+    def test_cert_tail_keeps_lead_with_editor_split_shape(self):
+        """export 侧:_cert_tail 抽尾巴必须把引导行和裸图当**一个块**收走。"""
+        from agent.agents.bidding_agent.nodes.export import _cert_tail
+        tail = _cert_tail("<p>正文</p>" + self._TAIL)
+        assert "【被授权人身份证明】见下图" in tail and "data-file-id" in tail
+
+    def test_editor_split_image_still_anchors_at_box(self):
+        """render 侧:拆段形状照样锚到粘贴框、独占锚点省引导行。"""
+        import io as io2
+        from PIL import Image
+        from docx import Document
+        from docx.oxml import parse_xml
+        from docx.oxml.ns import qn
+        from agent.agents.bidding_agent.render.docx import render_docx
+        NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+        nodes = [parse_xml(f"<w:p {NS}><w:r><w:t>"
+                           "委托代理人的合法有效身份证明复印件或扫描件粘贴处</w:t></w:r></w:p>"),
+                 parse_xml(f"<w:p {NS}><w:r><w:t>说明：法定代表人参加采购，不用提供授权书"
+                           "</w:t></w:r></w:p>")]
+        buf = io2.BytesIO()
+        Image.new("RGB", (6, 6), "white").save(buf, format="PNG")
+        data = render_docx({"chapters": [{"id": "b3", "no": "第七章",
+                                          "title": "法定代表人授权书", "group": "business"}]},
+                           {"b3": "<p>HTML稿</p>"},
+                           copier_nodes={"b3": {"nodes": nodes, "tail": self._TAIL}},
+                           fetch_object=lambda k: buf.getvalue())
+        doc = Document(io.BytesIO(data))
+        kinds = ["IMG" if p._p.findall(".//" + qn("w:drawing")) else p.text
+                 for p in doc.paragraphs]
+        i_box = next(i for i, t in enumerate(kinds) if "粘贴处" in str(t))
+        i_note = next(i for i, t in enumerate(kinds) if "说明：法定代表人参加" in str(t))
+        assert "IMG" in kinds[i_box + 1:i_note], kinds
+        assert all("见下图" not in str(t) for t in kinds)
