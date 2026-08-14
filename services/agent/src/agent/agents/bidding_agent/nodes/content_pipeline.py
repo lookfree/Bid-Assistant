@@ -47,7 +47,9 @@ logger = logging.getLogger(__name__)
 # p9：保真豁免章标题片段（b7 情况一览表两稿全拒在自己标题上）——被冤杀的碎版式模板
 # 已钉进缓存，不升版重跑仍端回碎表（与 p4/p5/p7 同坑第四次）。
 # p10：填空引擎行头组合+营业执照号别名——填空结果进缓存，不升版同代重跑端回旧留白。
-_PROMPT_VER = "p10"
+# p11：表单章模型彻底退场（模板零模型渲染+同值填空）——缓存里的模型稿(自加编号/编造节)
+# 必须整体作废，线上稿从此与导出复印机同构。
+_PROMPT_VER = "p11"
 _CACHE_TTL_S = 24 * 3600
 # 产出下限：短于此视为残章，重试一次；两次都残按缺章记，交给前端「补齐」按钮（免费）。
 _MIN_CHAPTER_CHARS = 120
@@ -416,64 +418,6 @@ async def _expand_short(ctx, chat, system_prompt: str, ch: dict, user: str, html
     return grown
 
 
-async def _fidelity_gate(ctx, chat, system_prompt: str, user: str, ch: dict, tpl_raw: str,
-                         html: str, min_chars: int, sem: asyncio.Semaphore,
-                         progress: _Progress) -> str:
-    """表单章保真闸：过检返回原稿；拒稿 → 留痕 + **一次纠偏重写**（把第一处对不上的固定段
-    指名道姓发回模型）→ 重写过检则用重写稿，否则零模型拿招标原文渲染；退路过短返回 ""。
-
-    纠偏重写（2026-08-14 云上实测立案）：五章拒稿全数退回留白，其中「抬头被加编号」「漏一行
-    固定文字」这类一次就能改对——直接退留白等于把模型填好的企业信息一起扔掉。真跑偏的
-    （自创表格）重写仍不过闸，照走模板退路，安全性不降。"""
-    from agent.agents.bidding_agent.nodes.common import strip_inline_images as _strip_imgs
-    from agent.agents.bidding_agent.nodes.form_fidelity import first_missing_segment, template_html
-    from agent.agents.bidding_agent.render.sanitize import (
-        clean_internal_ids, strip_chat_wrapper, strip_document_shell, strip_template_disclaimers)
-
-    cid = ch.get("id") or ""
-    title = ch.get("title") or ""
-    miss = first_missing_segment(html, tpl_raw, title)
-    if miss is None:
-        return html
-    # 拒稿必须留痕（2026-08-13 云上实测教训）：被拒原稿此前直接丢弃，误杀无从诊断。
-    logger.warning("章 %s 改写了招标格式模板（首个对不上片段: %s），发回纠偏重写一次",
-                   cid, miss[:60])
-    await _log_pg(ctx, "form_fidelity_reject", {
-        "chapter": cid, "title": ch.get("title") or "",
-        "missing_segment": miss[:300],
-        "draft_head": _strip_imgs(html)[:1000], "draft_chars": len(html)}, level="warn")
-    feedback = (f"\n\n上一稿因改动招标模板的固定文字被系统退回。第一处对不上的固定片段："
-                f"『{miss[:120]}』。请重新输出本章完整 HTML：模板抬头与每一行固定文字"
-                "一字不差保留（不加编号、不删字、不改措辞），只在空位（____）与括注占位处"
-                "填写已知信息；模板没有的行、说明、提示一律不加。")
-    retry = ""
-    try:
-        out = await _attempt(ctx, chat, [SystemMessage(content=system_prompt),
-                                         HumanMessage(content=user + feedback)], sem, progress)
-        if _finish_reason(out) == "length":
-            # 截断稿绝不入库（评审 2026-08-14 F11，同主循环口径）：最后一个模板段之后
-            # 被截掉的填空稿能过保真检，交付出去就是半张表钉进 24h 缓存
-            raise RuntimeError("纠偏重写被长度上限截断")
-        retry = strip_template_disclaimers(
-            clean_internal_ids(strip_document_shell(strip_chat_wrapper(_text_of(out)))))
-    except _PERMANENT_ERRORS:
-        raise                       # 配置/鉴权类照旧整步失败，不吞进表单退路
-    except Exception as e:  # noqa: BLE001 纠偏是加分项：失败就走模板退路
-        logger.warning("章 %s 表单纠偏重写失败（%s），走模板退路", cid, str(e)[:120])
-    miss2 = (first_missing_segment(retry, tpl_raw, title)
-             if len(retry) >= min_chars and "<" in retry else "（重写稿过短/非HTML/被截断）")
-    if miss2 is None:
-        logger.info("章 %s 纠偏重写过检，保住填空稿", cid)
-        await _log_pg(ctx, "form_fidelity_retry_ok", {"chapter": cid})
-        return retry
-    await _log_pg(ctx, "form_fidelity_reject", {
-        "chapter": cid, "title": ch.get("title") or "", "attempt": 2,
-        "missing_segment": (miss2 or "")[:300],
-        "draft_head": _strip_imgs(retry)[:1000], "draft_chars": len(retry)}, level="warn")
-    fallback = template_html(tpl_raw, ch.get("title") or "")
-    return fallback if len(fallback) >= min_chars else ""
-
-
 def _is_fill_chapter(ch: dict, shared: dict) -> bool:
     """要不要跑同值填空：有招标模板的章，或标题就是表单形态的章（评审 F4：导出复印机按
     形态学独立选章，正文侧不同口径就会留下「导出有值、审查没值」的缝）。"""
@@ -564,6 +508,27 @@ async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, share
         return cid, cached
     user = stable + (f"\n\n{ref}" if ref else "")
     min_chars = _NA_MIN_CHARS if "不适用" in (ch.get("title") or "") else _MIN_CHAPTER_CHARS
+    tpl_raw = ((shared.get("templates") or {}).get(cid) or {}).get("raw") or ""
+    # 表单章模型彻底退场（2026-08-14 用户终验口径：线上稿必须就是招标的样子）。此前线上稿
+    # 由模型写：自加「一、」小节编号、编造「双方身份证扫描件粘贴区域」整节、版式扁平——
+    # 保真闸只查固定文字与顺序，"插入"是放行的，拦不住画蛇添足。有招标模板的章直接
+    # 零模型渲染模板＋同值填空，与导出复印机同构同值；模型稿→保真闸→纠偏→冤案
+    # 整条链随之退役。偏离表章在 _template_entries 有排除闸永远无 raw，仍走模型
+    # （响应列必须模型写）；渲染过短说明模板抠歪，诚实记缺章。
+    if tpl_raw:
+        from agent.agents.bidding_agent.nodes.form_fidelity import template_html
+
+        html = template_html(tpl_raw, ch.get("title") or "")
+        # 模板口径的下限按**可见文字**量：120 字散文下限会把袖珍真表单（一句话声明函）
+        # 错判缺章；真正要挡的是模板抠歪只捞到一行表单名的空壳。
+        if len(re.sub(r"<[^>]+>", "", html)) < 12:
+            logger.error("章 %s 招标模板渲染过短，记为缺章", cid)
+            return cid, ""
+        html = await _fill_form_html(ctx, cid, html, shared)
+        await _log_pg(ctx, "form_template_rendered", {"chapter": cid, "chars": len(html)})
+        await _cache_set(ctx, key, html)
+        await progress.chapter_done(cid)
+        return cid, html
     html, truncated = await _draft_chapter(ctx, chat, system_prompt, user, cid,
                                            min_chars, sem, progress)
     if len(html) < min_chars or "<" not in html:
@@ -573,23 +538,9 @@ async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, share
     # 缓存就再也扩不动了。证照插图等下游 post-pass 在 run_content_pipeline 里跑，照常作用于终稿。
     # 撞过长度上限的章跳过：刚让它"压缩篇幅、确保完整收尾"，转头再让它扩写自相矛盾，而扩写是
     # 整章替换，再撞一次上限等于拿半章换成稿——不丢内容优先（评审裁量 2026-08-09）。
-    tpl_raw = ((shared.get("templates") or {}).get(cid) or {}).get("raw") or ""
     budget = int((shared.get("budgets") or {}).get(cid) or 0)
-    # 表单章**不扩写**：给报价函、授权书注水凑字数本身就是改格式，扩写还是整章替换，
-    # 一扩必然改写模板原文，等于自己把下面的保真校验逼到必然退回空表。
-    if budget and not truncated and not tpl_raw:
+    if budget and not truncated:
         html = await _expand_short(ctx, chat, system_prompt, ch, user, html, budget, sem, progress)
-    # 保真校验：模型只许填空。改写/漏行/乱序 → 一次纠偏重写 → 仍不过则零模型拿招标原文渲染。
-    # 交一份留着空位的招标原格式，比交一份措辞被改写、看着很完整的表单安全得多——
-    # 后者要到评标现场才发现对不上（2026-08-11 潍坊那单实测：7 条固定条款被写成 6 条新措辞）。
-    if tpl_raw:
-        html = await _fidelity_gate(ctx, chat, system_prompt, user, ch, tpl_raw, html,
-                                    min_chars, sem, progress)
-        # 退路也要过最短长度闸：模板抠歪了（只捞到一行）时渲染出来的是个残章，
-        # 而它非空就会被当成写成了，既不进缺章名单、也不给用户免费补齐，还被钉进 24h 缓存。
-        if not html:
-            logger.error("章 %s 的招标原文退路仍过短，记为缺章", cid)
-            return cid, ""
     # 同值填空（2026-08-14 用户口径：审查材料必须与最终交付同值）：同一套查表在这里先填
     # HTML——审查/编辑器/导出复印机三处从此同源；覆盖面与导出复印机同口径（含无模板的
     # 表单形态章），异常章内隔离。

@@ -58,8 +58,9 @@ class TestBriefTargeting:
                                                  "clause_ids": ["sec-8-c1"]}],
                          "doc_sections": [{"id": "sec-8-c1", "text": "致：（招标人名称）我方参加贵方组织的投标"}]}
         chat = _FakeChat()
-        _run(state, chat, monkeypatch=monkeypatch)
-        assert "招标格式模板" in _brief_of(chat, "投标函格式")
+        out = _run(state, chat, monkeypatch=monkeypatch)
+        # 零模型时代（2026-08-14）：模板章不再有简报，投递语义改盯**产出**——模板成为线上稿
+        assert "致：（招标人名称）我方参加贵方组织的投标" in out["t1"], "模板没成为表单章产出"
         assert "招标格式模板" not in _brief_of(chat, "章节2"), "格式模板发给了无关章"
 
     def test_a_form_chapter_gets_the_template_even_if_nobody_listed_its_name(self, monkeypatch):
@@ -77,10 +78,8 @@ class TestBriefTargeting:
         state["read"] = {"doc_sections": [
             {"id": "sec-8-c1", "text": "（一）报价函\n潍坊环境工程职业学院：\n1、根据已收到的项目编号____的采购项目"}]}
         chat = _FakeChat()
-        _run(state, chat, monkeypatch=monkeypatch)
-        brief = _brief_of(chat, "第一章 报价函（商务标）")
-        assert "招标格式模板" in brief, "报价函章没拿到招标格式原文"
-        assert "潍坊环境工程职业学院：" in brief, "模板原文没进简报"
+        out = _run(state, chat, monkeypatch=monkeypatch)
+        assert "潍坊环境工程职业学院：" in out["t1"], "报价函章没拿到招标格式原文"
 
     def test_coarse_section_never_ships_the_notice_as_a_template(self, monkeypatch):
         """2026-08-12 云上江西的事故本体：.doc 里表单名没做成标题样式，整份采购公告挤在
@@ -104,13 +103,12 @@ class TestBriefTargeting:
             {"id": "sec-2-c4", "text": "（供应商全称）法定代表人授权（全权代表姓名）为全权代表。"},
         ], "doc_headings": [{"sec": "sec-2", "level": 2, "title": "响   应   函"}]}
         chat = _FakeChat()
-        _run(state, chat, monkeypatch=monkeypatch)
-        brief = _brief_of(chat, "第一章 响应函（技术标）")
-        assert "致：【XX公司[采购人名称]】：" in brief, "没按边界切出响应函那一份"
-        assert "采购方案" not in brief, "整份公告被当成模板下发——事故复现"
-        assert "最高限价" not in brief
-        # 盯下一份表单的**正文**：表单名会出现在 TEMPLATE_GUIDE 的示例文字里，盯名字必误报
-        assert "（供应商全称）法定代表人授权（全权代表姓名）" not in brief, "下一份表单混进了响应函的模板"
+        out = _run(state, chat, monkeypatch=monkeypatch)
+        body = out["t1"]
+        assert "致：【XX公司[采购人名称]】：" in body, "没按边界切出响应函那一份"
+        assert "采购方案" not in body, "整份公告被当成模板下发——事故复现"
+        assert "最高限价" not in body
+        assert "（供应商全称）法定代表人授权（全权代表姓名）" not in body, "下一份表单混进了响应函"
 
     def test_clause_secs_feed_the_slicer_in_document_order(self, monkeypatch):
         """章引用横跨 sec-2 与 sec-10 时必须按**文档序**拼文本——字典序把 sec-10 排到
@@ -126,10 +124,9 @@ class TestBriefTargeting:
             {"id": "sec-10-c1", "text": "我方愿意承担招标文件规定的全部义务。"},
         ]}
         chat = _FakeChat()
-        _run(state, chat, monkeypatch=monkeypatch)
-        brief = _brief_of(chat, "投标函")
-        assert "我方愿意承担招标文件规定的全部义务。" in brief, "sec-10 的正文行排到边界前被丢了"
-        assert "致：采购人" in brief
+        out = _run(state, chat, monkeypatch=monkeypatch)
+        assert "我方愿意承担招标文件规定的全部义务。" in out["t1"], "sec-10 的正文行排到边界前被丢了"
+        assert "致：采购人" in out["t1"]
 
     def test_deviation_chapter_never_gets_a_form_template(self, monkeypatch):
         """偏离表章绝不走模板保真——它有「偏离表指引+条目数据」通路，产出本该是填满响应的表。
@@ -169,10 +166,9 @@ class TestBriefTargeting:
             {"id": "sec-2-c9", "text": "4.资格文件"},
         ]}
         chat = _FakeChat()
-        _run(state, chat, monkeypatch=monkeypatch)
-        parent = _brief_of(chat, "报价一览表")
-        child = _brief_of(chat, "报价明细表")
-        assert "序号\t项目名称" in parent and "品牌" not in parent, "一览表章还连带着明细表"
+        out = _run(state, chat, monkeypatch=monkeypatch)
+        parent, child = out["t1"], out["t2"]
+        assert "项目名称" in parent and "品牌" not in parent, "一览表章还连带着明细表"
         assert "分项报价" not in parent, "子块只摘走一半"
         assert "品牌" in child, "明细表章没拿到自己的表"
 
@@ -186,9 +182,8 @@ class TestBriefTargeting:
             "doc_headings": [{"sec": "sec-8", "title": "附件一 报价函", "level": 2}],
             "doc_sections": [{"id": "sec-8-c1", "text": "致：潍坊环境工程职业学院\n1、我方同意本报价函自开标之日起有效"}]}
         chat = _FakeChat()
-        _run(state, chat, monkeypatch=monkeypatch)
-        brief = _brief_of(chat, "第一章 报价函")
-        assert "我方同意本报价函自开标之日起有效" in brief, "条款 id 落空后没按标题兜到模板"
+        out = _run(state, chat, monkeypatch=monkeypatch)
+        assert "我方同意本报价函自开标之日起有效" in out["t1"], "条款 id 落空后没按标题兜到模板"
         assert "招标格式模板" not in _brief_of(chat, "章节2"), "兜底把模板漏给了无关章"
 
     def test_template_falls_back_to_the_whole_format_chapter(self, monkeypatch):
@@ -271,8 +266,8 @@ class TestBriefTargeting:
         # 表单文本自带抬头行（真实形态，2026-08-13 潍坊数据实证）——items 的整段直通道已封
         state["read"] = {"doc_sections": [{"id": "sec-8-c1", "text": "投标函\n致：招标人，我方决定参加投标"}]}
         chat = _FakeChat()
-        _run(state, chat, monkeypatch=monkeypatch)
-        assert "我方决定参加投标" in _brief_of(chat, "投标函及投标函附录")
+        out = _run(state, chat, monkeypatch=monkeypatch)
+        assert "我方决定参加投标" in out["t1"]
 
     def test_a_two_character_form_name_is_not_used_to_search_headings(self, monkeypatch):
         """按标题检索要设最短名。「证明」两个字会把「资质证明材料」「业绩证明」全捞进来，
@@ -335,23 +330,15 @@ class TestFormFidelity:
         assert "保留最终解释权" not in html, "改写稿被原样交付了——保真校验没接上"
         assert "自开标之日起 90 天内有效" in html, "退路没拿招标原文渲染"
 
-    def test_a_faithful_fill_is_kept(self, monkeypatch):
-        """只填空、没改原文的产出必须原样留下——否则等于把模型的活白干了。"""
-        class _Filler(_FakeChat):
-            async def ainvoke(self, msgs, config=None):
-                self.calls += 1
-                self.seen.append((msgs[0].content, msgs[-1].content))
-                if "报价函" in msgs[-1].content.split("请撰写本章")[-1]:
-                    return AIMessage(content=(
-                        "<h3>报价函</h3><p>致：潍坊环境工程职业学院</p>"
-                        "<p>1、我方同意本报价函自开标之日起 90 天内有效，并承诺不作任何保留。</p>"
-                        "<p>2、我方承诺在中标后按招标文件规定的期限完成全部供货与服务。</p>"
-                        "<p>投标人：上海安几科技有限公司（盖章）</p>" + "<p>补充说明。</p>" * 20))
-                return AIMessage(content=f"<h3>一、正文</h3><p>{'内容' * 60}</p>")
-
-        chat = _Filler()
-        out = _run(self._state(), chat, monkeypatch=monkeypatch)
-        assert "上海安几科技有限公司" in out["t1"]
+    def test_company_values_fill_the_template_slots(self, monkeypatch):
+        """零模型时代的同值填空：资料库企业信息由**查表**落进模板空位——值不再来自模型。"""
+        st = self._state()
+        st["read"]["doc_sections"][0]["text"] = self._TPL + "\n供应商名称：____"
+        st["run_input"] = {"library_refs": {"company": [
+            {"title": "企业信息", "fields": [{"label": "单位名称", "value": "上海安几科技有限公司"}]}]}}
+        out = _run(st, _FakeChat(), monkeypatch=monkeypatch)
+        assert "上海安几科技有限公司" in out["t1"], "企业信息没填进模板空位"
+        assert "自开标之日起 90 天内有效" in out["t1"]
 
     def test_the_whole_format_chapter_fallback_does_not_police_a_single_form(self, monkeypatch):
         """降级二给的是整份格式章（报价函+授权书+声明函…），而模型**正确的做法是只写其中一份**。
@@ -403,14 +390,13 @@ class TestFormFidelity:
             {"title": "企业信息", "fields": [{"label": "单位名称", "value": "上海安几科技有限公司"}]}]}}
         chat = _FakeChat()
         _run(st, chat, monkeypatch=monkeypatch)
-        assert "上海安几科技有限公司" in _brief_of(chat, "报价函"), "表单章没拿到投标人信息"
         assert "上海安几科技有限公司" not in _brief_of(chat, "章节2"), "投标人信息发给了散文章"
 
-    def test_no_company_entry_leaves_the_brief_untouched(self, monkeypatch):
-        """没录企业信息的用户，简报里不该凭空多出一个空段落。"""
+    def test_template_chapter_sends_no_brief_at_all(self, monkeypatch):
+        """零模型时代：模板章一条简报都不发——省下的是每单 4-6 次模型调用。"""
         chat = _FakeChat()
         _run(self._state(), chat, monkeypatch=monkeypatch)
-        assert "【投标人信息】" not in _brief_of(chat, "报价函")
+        assert not [u for _s, u in chat.seen if "报价函" in u.split("请撰写本章")[-1]]
 
     def test_a_form_chapter_is_never_padded_to_hit_the_word_budget(self, monkeypatch):
         """给报价函注水凑字数本身就是改格式；扩写还是整章替换，一扩必然改写模板原文，
@@ -457,8 +443,8 @@ def test_template_does_not_overmatch_by_title_substring(monkeypatch):
                                              "clause_ids": ["sec-8-c1"]}],
                      "doc_sections": [{"id": "sec-8-c1", "text": "致招标人：我方郑重作出服务承诺并参加投标"}]}
     chat = _FakeChat()
-    _run(state, chat, monkeypatch=monkeypatch)
-    assert "招标格式模板" in _brief_of(chat, "投标函格式")
+    out = _run(state, chat, monkeypatch=monkeypatch)
+    assert "我方郑重作出服务承诺并参加投标" in out["t1"], "表单章没拿到模板"
     assert "招标格式模板" not in _brief_of(chat, "服务承诺"), "标题子串误配——散文章收到了表单模板"
 
 
@@ -488,9 +474,9 @@ class TestReviewFindings0813Round3:
                                        "clause_ids": ["sec-2-c1", "sec-2-c2"]}]
         state["read"] = read
         chat = _FakeChat()
-        _run(state, chat, monkeypatch=monkeypatch)
-        assert "品牌" not in _brief_of(chat, "报价一览表"), "struct 路的父段没被去重"
-        assert "品牌" in _brief_of(chat, "报价明细表")
+        out = _run(state, chat, monkeypatch=monkeypatch)
+        assert "品牌" not in out["t1"], "struct 路的父段没被去重"
+        assert "品牌" in out["t2"]
 
     def test_unclaimed_sibling_form_stays_in_the_parent(self, monkeypatch):
         """②父段只摘被认领的子块：没人认领的「3-2.配件报价表」必须留在父段——
@@ -504,10 +490,9 @@ class TestReviewFindings0813Round3:
             {"id": "sec-2-c10", "text": "注：配件报价含备件与运杂费用。"},
         ])
         chat = _FakeChat()
-        _run(state, chat, monkeypatch=monkeypatch)
-        parent = _brief_of(chat, "报价一览表")
-        assert "配件名称" in parent, "没人认领的兄弟表单被去重误删——招标要求的表单消失"
-        assert "品牌" not in parent
+        out = _run(state, chat, monkeypatch=monkeypatch)
+        assert "配件名称" in out["t1"], "没人认领的兄弟表单被去重误删——招标要求的表单消失"
+        assert "品牌" not in out["t1"]
 
     def test_no_deviation_promise_letter_keeps_its_template(self, monkeypatch):
         """③「无偏离承诺函」是真表单：裸「偏离」子串会把它误判成偏离表章、剥掉模板保护，
@@ -520,10 +505,8 @@ class TestReviewFindings0813Round3:
             "doc_sections": [{"id": "sec-5-c1",
                               "text": "无偏离承诺函\n致：招标人\n我方郑重承诺：完全响应招标文件全部条款，无任何偏离。\n供应商盖章："}]}
         chat = _FakeChat()
-        _run(state, chat, monkeypatch=monkeypatch)
-        brief = _brief_of(chat, "无偏离承诺函")
-        assert "招标格式模板" in brief, "无偏离承诺函被偏离子串误杀，失去模板保护"
-        assert "完全响应招标文件全部条款" in brief
+        out = _run(state, chat, monkeypatch=monkeypatch)
+        assert "完全响应招标文件全部条款" in out["t1"], "无偏离承诺函被偏离子串误杀，失去模板保护"
 
     def test_deviation_struct_of_any_kind_skips_the_template_path(self, monkeypatch):
         """④判定与投递同口径：structure_ref 指向「技术偏离表」构成项（kind=table，不在表单
@@ -559,17 +542,14 @@ class TestReviewFindings0813Round3:
         assert "资格文件" not in text, "「4.xxx」没接上链，垃圾混进了明细表模板"
 
 
-class TestFidelityRetry:
-    """拒稿纠偏重写（2026-08-14 云上实测立案：五章拒稿全退留白，漏行/改抬头类
-    一次就能改对，直接退留白等于把模型填好的企业信息一起扔掉）。"""
+class TestZeroModelFormChapter:
+    """2026-08-14 用户终验口径：线上稿必须就是招标的样子。有招标模板的表单章**零模型**
+    ——模板渲染+同值填空,模型连问都不问;此前模型稿自加「一、」编号、编造「双方身份证
+    扫描件粘贴区域」整节,保真闸对"插入"是放行的,拦不住画蛇添足。"""
 
     _TPL = ("报价函\n致：潍坊环境工程职业学院\n"
             "1、我方同意本报价函自开标之日起 90 天内有效，并承诺不作任何保留。\n"
             "2、我方承诺在中标后按招标文件规定的期限完成全部供货与服务。")
-    _GOOD = ("<h3>报价函</h3><p>致：潍坊环境工程职业学院</p>"
-             "<p>1、我方同意本报价函自开标之日起 90 天内有效，并承诺不作任何保留。</p>"
-             "<p>2、我方承诺在中标后按招标文件规定的期限完成全部供货与服务。</p>"
-             "<p>投标人：上海安几科技有限公司（盖章）</p>" + "<p>补充。</p>" * 20)
 
     def _state(self):
         st = _state(2)
@@ -578,84 +558,29 @@ class TestFidelityRetry:
         st["read"] = {"doc_sections": [{"id": "sec-8-c1", "text": self._TPL}]}
         return st
 
-    def test_a_correctable_draft_is_rescued_by_one_retry(self, monkeypatch):
-        """首稿改了抬头被拒 → 纠偏重写给出忠实填空稿 → 交付重写稿（填好的信息保住）。
-        纠偏提示必须点名第一处对不上的固定段。"""
-        good = self._GOOD
-
-        class _Corrigible(_FakeChat):
+    def test_template_chapter_never_asks_the_model(self, monkeypatch):
+        """模板章一次模型调用都不许有——线上稿=招标模板渲染,不是模型改写的对象。"""
+        class _Chat(_FakeChat):
             async def ainvoke(self, msgs, config=None):
                 self.calls += 1
                 self.seen.append((msgs[0].content, msgs[-1].content))
-                if "被系统退回" in msgs[-1].content:
-                    return AIMessage(content=good)
-                if "报价函" in msgs[-1].content.split("请撰写本章")[-1]:
-                    return AIMessage(content="<h3>一、报价函件</h3><p>"
-                                             + "我方接受询比文件全部条款。" * 30 + "</p>")
                 return AIMessage(content=f"<h3>一、正文</h3><p>{'内容' * 60}</p>")
 
-        chat = _Corrigible()
+        chat = _Chat()
         out = _run(self._state(), chat, monkeypatch=monkeypatch)
-        assert "上海安几科技有限公司" in out["t1"], "纠偏重写的填空稿没被采用"
-        assert "自开标之日起 90 天内有效" in out["t1"]
-        retry_prompts = [u for _s, u in chat.seen if "被系统退回" in u]
-        assert retry_prompts and "报价函" in retry_prompts[0], "纠偏提示没点名对不上的固定段"
+        assert "自开标之日起 90 天内有效" in out["t1"], "模板没渲染进线上稿"
+        assert "一、正文" not in out["t1"], "模型稿混进了模板章"
+        asked = [u for _s, u in chat.seen if "报价函" in u.split("请撰写本章")[-1]]
+        assert not asked, "模板章仍在调模型"
 
-    def test_a_stubborn_draft_still_falls_back_to_the_template(self, monkeypatch):
-        """重写仍跑偏 → 照走招标原文退路，安全性不降。"""
-        class _Stubborn(_FakeChat):
+    def test_template_chapter_carries_no_model_numbering(self, monkeypatch):
+        """线上稿与招标同构:没有模型自加的小节编号,抬头就是表单名。"""
+        class _Chat(_FakeChat):
             async def ainvoke(self, msgs, config=None):
                 self.calls += 1
                 self.seen.append((msgs[0].content, msgs[-1].content))
-                tail = msgs[-1].content.split("请撰写本章")[-1]
-                if "被系统退回" in msgs[-1].content or "报价函" in tail:
-                    return AIMessage(content="<h3>报价说明</h3><p>"
-                                             + "我方自创格式坚决不改。" * 30 + "</p>")
                 return AIMessage(content=f"<h3>一、正文</h3><p>{'内容' * 60}</p>")
 
-        chat = _Stubborn()
-        out = _run(self._state(), chat, monkeypatch=monkeypatch)
-        assert "自创格式坚决不改" not in out["t1"]
-        assert "自开标之日起 90 天内有效" in out["t1"], "退路没拿招标原文渲染"
-
-    def test_model_disclaimer_lines_are_stripped(self, monkeypatch):
-        """「本表格式与招标文件模板可能存在差异」是旧提示词教出来的免责语——
-        规则已删，代码再兜一层：交付稿里一个都不许出现。"""
-        good = self._GOOD
-
-        class _Discl(_FakeChat):
-            async def ainvoke(self, msgs, config=None):
-                self.calls += 1
-                self.seen.append((msgs[0].content, msgs[-1].content))
-                if "报价函" in msgs[-1].content.split("请撰写本章")[-1]:
-                    return AIMessage(content=(
-                        "<p><strong>提示：本表格式与招标文件模板可能存在差异，"
-                        "请对照招标原文核对后使用。</strong></p>" + good))
-                return AIMessage(content=f"<h3>一、正文</h3><p>{'内容' * 60}</p>")
-
-        chat = _Discl()
-        out = _run(self._state(), chat, monkeypatch=monkeypatch)
-        assert "可能存在差异" not in out["t1"]
-        assert "上海安几科技有限公司" in out["t1"], "免责语连着正稿一起被误删"
-
-    def test_a_truncated_retry_is_refused(self, monkeypatch):
-        """评审 2026-08-14 F11：纠偏重写稿被长度上限截断时**不得**采用——最后一个模板段
-        之后被截掉的填空稿能过保真检，交付即半张表钉进 24h 缓存。照走模板退路。"""
-        good_but_cut = self._GOOD
-
-        class _CutRetry(_FakeChat):
-            async def ainvoke(self, msgs, config=None):
-                self.calls += 1
-                self.seen.append((msgs[0].content, msgs[-1].content))
-                if "被系统退回" in msgs[-1].content:
-                    return AIMessage(content=good_but_cut,
-                                     response_metadata={"finish_reason": "length"})
-                if "报价函" in msgs[-1].content.split("请撰写本章")[-1]:
-                    return AIMessage(content="<h3>一、报价函件</h3><p>"
-                                             + "我方接受询比文件全部条款。" * 30 + "</p>")
-                return AIMessage(content=f"<h3>一、正文</h3><p>{'内容' * 60}</p>")
-
-        chat = _CutRetry()
-        out = _run(self._state(), chat, monkeypatch=monkeypatch)
-        assert "上海安几科技有限公司" not in out["t1"], "截断的重写稿被采用了"
-        assert "自开标之日起 90 天内有效" in out["t1"], "退路没拿招标原文渲染"
+        out = _run(self._state(), _Chat(), monkeypatch=monkeypatch)
+        assert "一、报价函" not in out["t1"]
+        assert "致：潍坊环境工程职业学院" in out["t1"]

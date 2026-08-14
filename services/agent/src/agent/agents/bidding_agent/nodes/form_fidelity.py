@@ -209,6 +209,9 @@ def template_html(template: str, title: str = "") -> str:
         elif len(s) <= 24 and _SIGN_LINE.search(s) and not _NUMBERED_CLAUSE.match(s):
             out.append(f'<p style="text-align:right">{html_mod.escape(s)}</p>')
         else:
-            out.append(f"<p>{html_mod.escape(s)}</p>")
+            # 行首空格串保留（2026-08-14 零模型线上稿实测）：授权书首个空位在行首
+            # （缩进+长空格），strip 会把它连同缩进一起吃掉——填空引擎从此无处落笔，
+            # 供应商全称槽线上永远留白。浏览器渲染时多余空白自然折叠，不碍观感。
+            out.append(f"<p>{html_mod.escape(line.rstrip())}</p>")
     flush()
     return "".join(out)

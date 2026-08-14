@@ -308,3 +308,21 @@ class TestTitleVariantExemption:
     def test_unrelated_title_does_not_exempt(self):
         from agent.agents.bidding_agent.nodes.form_fidelity import first_missing_segment
         assert first_missing_segment(self.HTML, self.TPL, title="报价一览表") == "供应商情况一览表"
+
+
+class TestTemplateLeadingBlank:
+    """2026-08-14 零模型线上稿实测：授权书首个空位在**行首**（缩进+长空格串），
+    template_html 全 strip 会把它吃掉——填空引擎无处落笔，供应商全称槽线上永远留白。"""
+
+    def test_leading_space_blank_survives_and_fills(self):
+        from agent.agents.bidding_agent.nodes.form_fidelity import template_html
+        from agent.agents.bidding_agent.render.form_copier import fill_blanks_html
+        raw = ("法定代表人授权书\n"
+               "                 （供应商全称）法定代表人           授权"
+               "         （全权代表姓名）为全权代表，参加询比活动。")
+        html = template_html(raw, "法定代表人授权书")
+        out, n = fill_blanks_html(html, [("单位名称", "上海安几科技有限公司"),
+                                         ("法定代表人", "于新宇"),
+                                         ("全权代表姓名", "胡月")], {})
+        assert n == 3, f"行首空位没存活,只填了 {n} 处"
+        assert "上海安几科技有限公司" in out and "于新宇" in out and "胡月" in out
