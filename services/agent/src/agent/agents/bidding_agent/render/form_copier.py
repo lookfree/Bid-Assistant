@@ -38,9 +38,11 @@ class CopierUnsupported(Exception):
 
 
 # 证照块形态（引导行可选＋data-file-id 占位图）：export 抽章尾巴与 render 锚定分组
-# 共用同一份——两处各养一张必然漂移（同 _LAB_WIDTH 的教训）。
+# 共用同一份——两处各养一张必然漂移（同 _LAB_WIDTH 的教训；评审四轮 F5 把引导行
+# 解析也收编进来：group(1)=引导行 HTML,group(2)=组名,别处不许再手扒）。
 CERT_BLOCK_RE = re.compile(
-    r"(?:<p[^>]*>【[^】]{1,24}】见下图：?</p>\s*)?<p[^>]*>\s*<img[^>]*data-file-id[^>]*>\s*</p>"
+    r"(?:(<p[^>]*>【([^】]{1,24})】见下图：?</p>)\s*)?"
+    r"<p[^>]*>\s*<img[^>]*data-file-id[^>]*>\s*</p>"
     r"|<img[^>]*data-file-id[^>]*>", re.S)
 
 

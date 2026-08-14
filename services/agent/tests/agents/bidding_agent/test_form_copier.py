@@ -934,3 +934,90 @@ class TestCertAnchoredTail:
         texts = [p.text for p in doc.paragraphs]
         i_note = next(i for i, t in enumerate(texts) if "说明：法定代表人参加采购" in t)
         assert any("见下图" in t for t in texts[i_note:])
+
+
+class TestCertAnchorRound4:
+    """评审四轮(b1fb17d):锚定的四个真缺陷——正反面劈开/同锚点乱序去标/整表后插/法人二字误锚。"""
+
+    _NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+
+    def _render(self, nodes, tail):
+        import io as io2
+        from PIL import Image
+        from docx import Document
+        from agent.agents.bidding_agent.render.docx import render_docx
+        buf = io2.BytesIO()
+        Image.new("RGB", (6, 6), "white").save(buf, format="PNG")
+        outline = {"chapters": [{"id": "b2", "no": "第二章",
+                                 "title": "法定代表人授权书", "group": "business"}]}
+        data = render_docx(outline, {"b2": "<p>HTML稿</p>"},
+                           copier_nodes={"b2": {"nodes": nodes, "tail": tail}},
+                           fetch_object=lambda k: buf.getvalue())
+        return Document(io.BytesIO(data))
+
+    def _p(self, t):
+        from docx.oxml import parse_xml
+        return parse_xml(f"<w:p {self._NS}><w:r><w:t>{t}</w:t></w:r></w:p>")
+
+    def _kinds(self, doc):
+        from docx.oxml.ns import qn
+        return ["IMG" if p._p.findall(".//" + qn("w:drawing")) else p.text
+                for p in doc.paragraphs]
+
+    def test_front_and_back_images_stay_together_at_the_box(self):
+        """F1：一条引导行统辖其后所有无引导图块（证照条目正反面=1行引导+2张图），
+        整组一起锚到框旁，绝不把反面孤儿在章末。"""
+        nodes = [self._p("委托代理人的合法有效身份证明复印件或扫描件粘贴处"),
+                 self._p("说明：法定代表人参加采购，不用提供授权书")]
+        tail = ('<p>【被授权人身份证明】见下图：</p>\n'
+                '<p><img data-file-id="f1" data-object-key="k/正.jpg" alt="正面" /></p>\n'
+                '<p><img data-file-id="f2" data-object-key="k/反.jpg" alt="反面" /></p>')
+        kinds = self._kinds(self._render(nodes, tail))
+        i_box = next(i for i, t in enumerate(kinds) if "粘贴处" in str(t))
+        i_note = next(i for i, t in enumerate(kinds) if "说明：法定代表人参加" in str(t))
+        assert [t for t in kinds[i_box + 1:i_note] if t == "IMG"] == ["IMG", "IMG"], kinds
+        assert "IMG" not in kinds[i_note:]
+
+    def test_two_groups_on_shared_anchor_keep_labels_and_order(self):
+        """F2：两组锚到同一节点（合并框）→ 组名标签**保留**以防张冠李戴，
+        插入顺序与尾巴一致（法代组在前）。"""
+        nodes = [self._p("法定代表人及委托代理人身份证复印件粘贴处"),
+                 self._p("说明：法定代表人参加采购，不用提供授权书")]
+        tail = ('<p>【法定代表人身份证明】见下图：</p>\n'
+                '<p><img data-file-id="f1" data-object-key="k/yu.jpg" alt="法代" /></p>\n'
+                '<p>【被授权人身份证明】见下图：</p>\n'
+                '<p><img data-file-id="f2" data-object-key="k/hu.jpg" alt="被授权" /></p>')
+        kinds = self._kinds(self._render(nodes, tail))
+        texts = [str(t) for t in kinds]
+        i_lead1 = next(i for i, t in enumerate(texts) if "法定代表人身份证明】见下图" in t)
+        i_lead2 = next(i for i, t in enumerate(texts) if "被授权人身份证明】见下图" in t)
+        imgs = [i for i, t in enumerate(texts) if t == "IMG"]
+        assert i_lead1 < imgs[0] < i_lead2 < imgs[1], texts
+
+    def test_box_cell_inside_table_gets_image_in_cell(self):
+        """F3：粘贴框是大表格里的一个格 → 图进**格内**，不是整表之后。"""
+        from docx.oxml import parse_xml
+        from docx.oxml.ns import qn
+        tbl = parse_xml(
+            f"<w:tbl {self._NS}><w:tr><w:tc><w:p><w:r><w:t>"
+            "法定代表人身份证复印件粘贴处</w:t></w:r></w:p></w:tc></w:tr>"
+            "<w:tr><w:tc><w:p><w:r><w:t>后续签章行</w:t></w:r></w:p></w:tc></w:tr></w:tbl>")
+        nodes = [tbl, self._p("说明：法定代表人参加采购，不用提供授权书")]
+        tail = ('<p>【法定代表人身份证明】见下图：</p>\n'
+                '<p><img data-file-id="f1" data-object-key="k/yu.jpg" alt="法代" /></p>')
+        doc = self._render(nodes, tail)
+        cell0 = doc.tables[-1].rows[0].cells[0]
+        assert cell0._tc.findall(".//" + qn("w:drawing")), "图应在粘贴框格内"
+        assert "IMG" not in self._kinds(doc), "图不该散落在表格外"
+
+    def test_two_char_word_does_not_false_anchor(self):
+        """F4：二字词「法人」不当锚——「合法人员…身份证…粘贴」这类句子会被子串误中；
+        锚不上照旧章末带引导行。"""
+        nodes = [self._p("本公司合法人员相关身份证需粘贴存档备查"),
+                 self._p("说明：法定代表人参加采购，不用提供授权书")]
+        tail = ('<p>【法定代表人身份证明】见下图：</p>\n'
+                '<p><img data-file-id="f1" data-object-key="k/yu.jpg" alt="法代" /></p>')
+        kinds = self._kinds(self._render(nodes, tail))
+        i_note = next(i for i, t in enumerate(kinds) if "说明：法定代表人参加" in str(t))
+        assert "IMG" in kinds[i_note:], kinds
+        assert any("见下图" in str(t) for t in kinds[i_note:])

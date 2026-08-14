@@ -408,15 +408,15 @@ def _apply_custom_format(doc: Document, fmt: dict) -> None:
         _set_line_spacing(style.paragraph_format, f["line_spacing"])
 
 
-# 复印章证照锚定（2026-08-14 授权书截图立案）：引导行「【组名】见下图：」里的组名 →
-# 锚定用人名词;非身份证类（营业执照等）没有粘贴框,不锚。
-_CERT_LEAD_RE = re.compile(r"^<p[^>]*>【([^】]{1,24})】见下图：?</p>\s*", re.S)
+# 复印章证照锚定（2026-08-14 授权书截图立案）：引导行组名 → 锚定用人名词;
+# 非身份证类（营业执照等）没有粘贴框,不锚。
 _ID_SUFFIX_RE = re.compile(r"(身份证明?|证明书)$")
 
 
 def _cert_person_words(label: str) -> tuple[str, ...]:
     """证照组标准名 → 锚定人名词（「被授权人身份证明」→ 被授权人/全权代表/委托代理人…）。
-    组内别名剥「身份证(明)」后缀即人名词;含「和」的合称词有歧义,不当锚。"""
+    组内别名剥「身份证(明)」后缀即人名词;含「和」的合称词有歧义、二字词（「法人」）
+    是子串误锚源（「合法人员」也含它,评审四轮 F4）——都不当锚。"""
     if "身份证" not in label:
         return ()
     from agent.agents.bidding_agent.nodes.cert_placement import CERT_GROUPS
@@ -424,46 +424,88 @@ def _cert_person_words(label: str) -> tuple[str, ...]:
     for group in CERT_GROUPS:
         if label in group:
             words = {_ID_SUFFIX_RE.sub("", k) for k in group}
-            return tuple(w for w in words if w and "和" not in w)
+            return tuple(w for w in words if len(w) >= 3 and "和" not in w)
     return ()
 
 
+def _parse_cert_groups(tail: str) -> list[tuple[str, str, list[str]]]:
+    """证照尾巴 → [(组名, 引导行 HTML, [图块…])]。一条引导行统辖其后所有无引导图块——
+    证照条目正反面=1 行引导+N 张图(评审四轮 F1:按块劈开会把反面孤儿在章末)。"""
+    from agent.agents.bidding_agent.render.form_copier import CERT_BLOCK_RE
+
+    groups: list[tuple[str, str, list[str]]] = []
+    for m in CERT_BLOCK_RE.finditer(tail):
+        lead, label = m.group(1) or "", m.group(2) or ""
+        body = m.group(0)[len(lead):].lstrip() if lead else m.group(0)
+        if lead or not groups:
+            groups.append((label, lead, [body]))
+        else:
+            groups[-1][2].append(body)
+    return groups
+
+
+def _cell_text(el) -> str:
+    return "".join(t.text or "" for t in el.iter(qn("w:t")))
+
+
 def _find_cert_anchor(nodes: list, label: str):
-    """本章嫁接节点里找该证照组的粘贴框段落：人名词＋「身份证」＋「粘贴」同段
-    （.//w:t 连文本框内壁一起收）。找不到返回 None → 照旧落章末。"""
+    """本章嫁接节点里找该组的粘贴框 → (稳定键, 落点元素, 模式) 或 None。
+    段落框=("after")图插段后;表格里的框格=("cell")图直接进格——整表后插会离框一页远
+    (评审四轮 F3)。键用 (节点序, 格序)——lxml 代理 id 跨迭代不稳定,绝不当键。
+    判据:人名词＋「身份证」＋「粘贴」同段/同格（.//w:t 连文本框内壁一起收）。"""
     words = _cert_person_words(label)
     if not words:
         return None
-    for el in nodes:
-        text = "".join(t.text or "" for t in el.iter(qn("w:t")))
+    for i, el in enumerate(nodes):
+        if el.tag == qn("w:tbl"):
+            for j, tc in enumerate(el.iter(qn("w:tc"))):
+                text = _cell_text(tc)
+                if "身份证" in text and "粘贴" in text and any(w in text for w in words):
+                    return ((i, j), tc, "cell")
+            continue
+        text = _cell_text(el)
         if "身份证" in text and "粘贴" in text and any(w in text for w in words):
-            return el
+            return ((i, -1), el, "after")
     return None
 
 
 def _graft_cert_tail(doc: Document, nodes: list, tail: str, fetch_object) -> None:
-    """复印章证照块分组落位：能锚定的组插到粘贴框正后方,引导行省略——框本身就是标签;
-    锚不上的组保持章末原样（含引导行）。图先由 _emit_html 落到章末,再整段搬到锚点后
-    （逆序 addnext 保持组内顺序）。"""
-    from agent.agents.bidding_agent.render.form_copier import CERT_BLOCK_RE
-
+    """复印章证照块分组落位：整组（引导行+全部图）一起锚到粘贴框——段落框插正后方、
+    表格框进格内;独占锚点时引导行省略（框本身就是标签）,多组共享一个锚点时**保留**
+    组名引导行并按尾巴顺序排列（评审四轮 F2:去标+乱序=身份证张冠李戴）;
+    锚不上的组保持章末原样。"""
+    groups = _parse_cert_groups(tail)
+    found = [(label, lead, blocks, _find_cert_anchor(nodes, label))
+             for label, lead, blocks in groups]
+    per_key: dict = {}
+    for *_, anchor in found:
+        if anchor:
+            per_key[anchor[0]] = per_key.get(anchor[0], 0) + 1
     body = doc.element.body
-    for m in CERT_BLOCK_RE.finditer(tail):
-        block = m.group(0)
-        lead = _CERT_LEAD_RE.match(block)
-        anchor = _find_cert_anchor(nodes, lead.group(1)) if lead else None
+    cursors: dict = {}
+    for label, lead, blocks, anchor in found:
+        keep_lead = anchor is None or per_key[anchor[0]] > 1
         # 新元素按**位置**圈定,绝不用 id() 集合——lxml 元素是代理对象,同一节点两次迭代
         # 拿到的代理 id 不同,集合差把全书当"新元素"搬走(2026-08-14 首版实测全书错乱)。
         # _emit_html 只在 body 末尾(sectPr 之前)追加,位置切片是精确的。
         n_before = len(body)
-        _emit_html(doc, block[lead.end():] if lead and anchor is not None else block,
+        _emit_html(doc, ((lead + "\n") if keep_lead and lead else "") + "\n".join(blocks),
                    fetch_object)
-        if anchor is not None:
-            kids = list(body)
-            end = len(kids) - 1 if kids and kids[-1].tag == qn("w:sectPr") else len(kids)
-            start = n_before - 1 if end != len(kids) else n_before
-            for el in reversed(kids[start:end]):
-                anchor.addnext(el)
+        if anchor is None:
+            continue
+        kids = list(body)
+        end = len(kids) - 1 if kids and kids[-1].tag == qn("w:sectPr") else len(kids)
+        start = n_before - 1 if end != len(kids) else n_before
+        key, target, mode = anchor
+        if mode == "cell":
+            for el in kids[start:end]:
+                target.append(el)
+        else:
+            ins = cursors.get(key, target)
+            for el in kids[start:end]:
+                ins.addnext(el)
+                ins = el
+            cursors[key] = ins
 
 
 def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
