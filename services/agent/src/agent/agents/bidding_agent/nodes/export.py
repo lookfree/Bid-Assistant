@@ -195,9 +195,9 @@ def make_export_node(ctx):
     _tech/_biz 后缀，与全量键互不覆盖；过滤后空册抛 RuntimeError（防御，前端本已置灰）。
     缺省/未知 scope 一律按 full 处理，键与调用与今天逐字节一致；pptx 分支不受 scope 影响
     （终审 M2：未知字面量此前只在章节过滤/产物后缀两处按 full 兜底，传给 render_docx 的 scope
-    仍是原始未知值——渲染器据此决定「章标题是否带（技术标/商务标）组尾巴」，于是全量章节配上
-    了空尾巴，读者分不清这是不是分册；现在归一发生在读取 run_input 之后的唯一出口，三处下游
-    （过滤/后缀/render_docx）逐字节同看到 "full"）。
+    仍是原始未知值；现在归一发生在读取 run_input 之后的唯一出口，三处下游（过滤/后缀/
+    render_docx）逐字节同看到 "full"。注：章标题的组尾巴 2026-08-15 起任何 scope 都不再渲染，
+    scope 在渲染器里只驱动封面/页脚的「·XX标部分」后缀。）。
     终审 C1：artifacts 是跨 run 合并 reducer（present 的 pptx 与 export 的 docx 并存不覆盖），
     docx/docx_tech/docx_biz 一旦产出，键值永远不变（MinIO key 按 thread_id 确定性命名、原地覆盖），
     单看某一行 result 是否含某册的 docx 键，分不出「这行是不是真重渲了那册」——不同册各自导出时
