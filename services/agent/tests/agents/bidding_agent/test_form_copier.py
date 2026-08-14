@@ -1097,3 +1097,70 @@ class TestPlainSpaceRunBlank:
         d.save(buf)
         nodes = extract_form_nodes(buf.getvalue(), FormSpan(0, 0, -1))
         assert fill_blanks(nodes, [("单位名称", "上海安几科技有限公司")], {}) == 0
+
+
+class TestInBoxPlacement:
+    """2026-08-14 深夜终验（69/70 页实测）：图在框**后面的文档流**里会被排到下一页——
+    用户要的是贴**进框里**。粘贴框是 wps 文本框，图必须进 mc:Choice 的 txbxContent
+    （Fallback 里的 v:textbox 同样带 txbxContent，塞错层 Word 根本不渲染），
+    并等比缩到框内（宽 ≤92%、高 ≤65%）。"""
+
+    _NS = ('xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+           'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+           'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
+           'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+           'xmlns:v="urn:schemas-microsoft-com:vml" '
+           'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"')
+
+    def _box_ac(self, label: str) -> str:
+        return (f"<mc:AlternateContent><mc:Choice Requires=\"wps\"><w:drawing>"
+                f"<wp:inline><a:graphic><wps:wsp>"
+                f"<wps:spPr><a:xfrm><a:ext cx=\"2743200\" cy=\"2286000\"/></a:xfrm></wps:spPr>"
+                f"<wps:txbx><w:txbxContent><w:p><w:r><w:t>{label}</w:t></w:r></w:p>"
+                f"</w:txbxContent></wps:txbx></wps:wsp></a:graphic></wp:inline></w:drawing>"
+                f"</mc:Choice><mc:Fallback><w:pict><v:shape><v:textbox>"
+                f"<w:txbxContent><w:p><w:r><w:t>{label}</w:t></w:r></w:p></w:txbxContent>"
+                f"</v:textbox></v:shape></w:pict></mc:Fallback></mc:AlternateContent>")
+
+    def test_id_image_goes_inside_the_choice_textbox_scaled(self):
+        import io as io2
+        from PIL import Image
+        from docx import Document
+        from docx.oxml import parse_xml
+        from docx.oxml.ns import qn
+        from agent.agents.bidding_agent.render.docx import render_docx
+        label = "委托代理人的合法有效身份证明复印件或扫描件粘贴处"
+        box_p = parse_xml(f"<w:p {self._NS}><w:r>{self._box_ac(label)}</w:r>"
+                          f"<w:r>{self._box_ac(label)}</w:r></w:p>")
+        note = parse_xml(f'<w:p {self._NS.split(" ")[0]}><w:r><w:t>'
+                         "说明：法定代表人参加采购，不用提供授权书</w:t></w:r></w:p>")
+        buf = io2.BytesIO()
+        Image.new("RGB", (60, 40), "white").save(buf, format="PNG")
+        data = render_docx({"chapters": [{"id": "b3", "no": "第七章",
+                                          "title": "法定代表人授权书", "group": "business"}]},
+                           {"b3": "<p>HTML稿</p>"},
+                           copier_nodes={"b3": {"nodes": [box_p, note], "tail":
+                               '<p>【被授权人身份证明】见下图：</p><p></p>'
+                               '<img alt="胡" data-file-id="f1" data-object-key="k/hu.jpg">'}},
+                           fetch_object=lambda k: buf.getvalue())
+        doc = Document(io.BytesIO(data))
+        body_xml = doc.element.body
+        MC = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
+        acs = list(body_xml.iter(MC + "AlternateContent"))
+        assert len(acs) == 2
+        # 图在第一个框的 Choice txbxContent 里,不在 Fallback 里
+        choice = next(c for c in acs[0] if c.tag == MC + "Choice")
+        blips = choice.findall(".//" + "{http://schemas.openxmlformats.org/drawingml/2006/main}blip")
+        assert blips, "图没进第一个框的 Choice 层"
+        fb = next(c for c in acs[0] if c.tag == MC + "Fallback")
+        assert not fb.findall(".//" + "{http://schemas.openxmlformats.org/drawingml/2006/main}blip")
+        # 尺寸缩进框内(框 cx=2743200):图 extent cx ≤ 92% 框宽
+        WP = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}"
+        img_exts = [e for e in choice.iter(WP + "extent")]
+        assert img_exts and int(img_exts[0].get("cx")) <= int(2743200 * 0.92) + 1, "图没缩进框内"
+        # 框外文档流不再有这张图(段落层无 drawing 图)
+        texts_after = False
+        for p in doc.paragraphs:
+            if "说明：法定代表人参加采购" in p.text:
+                texts_after = True
+        assert texts_after

@@ -456,6 +456,48 @@ def _find_cert_anchor(nodes: list, label: str):
     return None
 
 
+_MC_NS = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
+_A_EXT = "{http://schemas.openxmlformats.org/drawingml/2006/main}ext"
+_WP_EXTENT = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}extent"
+
+
+def _anchor_boxes(anchor) -> list[tuple]:
+    """锚段落里的粘贴框 [(txbxContent, 框cx, 框cy)]，按出现序（正/反面框成对）。
+    只取 mc:Choice 分支——Word 读的那层；Fallback 里的 v:textbox 同样带 txbxContent，
+    塞错层图在 Word 里根本不渲染（2026-08-14 深夜实测立案）。"""
+    out = []
+    for ac in anchor.iter(_MC_NS + "AlternateContent"):
+        choice = next((c for c in ac if c.tag == _MC_NS + "Choice"), None)
+        if choice is None:
+            continue
+        tx = next(iter(choice.iter(qn("w:txbxContent"))), None)
+        if tx is None:
+            continue
+        ext = next(iter(choice.iter(_A_EXT)), None)
+        cx = int(ext.get("cx") or 0) if ext is not None else 0
+        cy = int(ext.get("cy") or 0) if ext is not None else 0
+        out.append((tx, cx, cy))
+    return out
+
+
+def _shrink_drawing(img_el, box_cx: int, box_cy: int) -> None:
+    """图片段的尺寸等比缩进框内（宽 ≤92% 框宽、高 ≤65% 框高——框顶还有标签文字）。
+    框尺寸缺失/图无尺寸则不动，宁可原样也不写出 0 尺寸的图。"""
+    if not box_cx or not box_cy:
+        return
+    exts = [e for e in img_el.iter() if e.tag in (_WP_EXTENT, _A_EXT) and e.get("cx")]
+    if not exts:
+        return
+    cx, cy = int(exts[0].get("cx") or 0), int(exts[0].get("cy") or 0)
+    if not cx or not cy:
+        return
+    scale = min(box_cx * 0.92 / cx, box_cy * 0.65 / cy, 1.0)
+    ncx, ncy = int(cx * scale), int(cy * scale)
+    for e in exts:
+        e.set("cx", str(ncx))
+        e.set("cy", str(ncy))
+
+
 def _graft_cert_tail(doc: Document, nodes: list, tail: str, fetch_object) -> None:
     """复印章证照块分组落位：整组（引导行+全部图）一起锚到粘贴框——段落框插正后方、
     表格框进格内;独占锚点时引导行省略（框本身就是标签）,多组共享一个锚点时**保留**
@@ -487,12 +529,25 @@ def _graft_cert_tail(doc: Document, nodes: list, tail: str, fetch_object) -> Non
         if mode == "cell":
             for el in kids[start:end]:
                 target.append(el)
-        else:
-            ins = cursors.get(key, target)
-            for el in kids[start:end]:
-                ins.addnext(el)
-                ins = el
-            cursors[key] = ins
+            continue
+        # 图**进框内**（2026-08-14 深夜实测：图在框后的文档流里会被排到下一页,框空着）：
+        # 锚段落里有 wps 文本框时,图逐一移进各框的 txbxContent 并等比缩到框尺寸——
+        # 正/反面各进一框;框不够装的、以及引导行/空段,照旧跟在锚点后。
+        new_els = kids[start:end]
+        boxes = _anchor_boxes(target)
+        imgs = [e for e in new_els if next(iter(e.iter(qn("w:drawing"))), None) is not None]
+        boxed = []
+        for (tx, bcx, bcy), img_el in zip(boxes, imgs):
+            _shrink_drawing(img_el, bcx, bcy)
+            tx.append(img_el)
+            boxed.append(img_el)
+        ins = cursors.get(key, target)
+        for el in new_els:
+            if any(el is b for b in boxed):
+                continue
+            ins.addnext(el)
+            ins = el
+        cursors[key] = ins
 
 
 def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
