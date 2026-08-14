@@ -1299,3 +1299,84 @@ class TestInBoxRound6:
                       f"<w:r>{box('column', 0, '乙')}</w:r></w:p>")
         boxes = _anchor_boxes(p)
         assert [b["text"] for b in boxes] == ["甲", "乙"], "基准不同还按裸数值排了"
+
+
+class TestBareBracketSlot:
+    """2026-08-14 深夜用户实测（响应函正文）：「（供应商名称）（以下称…」的括注**本身**
+    是占位——文本层行首空格被解析剥掉后,括注前没有任何空位,老规则无处落笔。
+    裸括注槽=前面没有空位的、精确查表命中的括注 → 整个替换;前面有空位的括注是
+    空位的**标签**（授权书「____（供应商全称）」）,一个字不动。"""
+
+    _FIELDS = [("单位名称", "上海安几科技有限公司")]
+    _META = {"name": "云上零信任采购项目"}
+
+    def test_xml_real_response_letter_line(self):
+        """真实 run 形态：下划线 run 内含「空格串+括注」→ 空位照旧填在横线上、括注标签
+        保留;单空格夹的「（询比项目名称）」无空位 → 括注整体替换成项目名。"""
+        import io as io2
+        from docx import Document
+        from agent.agents.bidding_agent.render.form_copier import extract_form_nodes, fill_blanks
+        d = Document()
+        p = d.add_paragraph()
+        p.add_run("     ")
+        p.add_run("     （供应商名称）").underline = True
+        p.add_run("（以下称“我方”）已仔细研究了")
+        p.add_run(" （询比项目名称） ").underline = True
+        p.add_run("询比文件的全部内容。")
+        buf = io2.BytesIO()
+        d.save(buf)
+        nodes = extract_form_nodes(buf.getvalue(), FormSpan(0, 0, -1))
+        n = fill_blanks(nodes, self._FIELDS, self._META)
+        xml = "".join(__import__("lxml").etree.tostring(x, encoding="unicode") for x in nodes)
+        assert "上海安几科技有限公司" in xml, "供应商空位没填"
+        assert "（供应商名称）" in xml, "有空位时括注是标签,不许替换"
+        assert "云上零信任采购项目" in xml, "询比项目名称槽没换成项目名"
+        assert "（询比项目名称）" not in xml, "裸括注槽应整体替换"
+        assert n >= 2
+
+    def test_html_text_layer_line_replaces_bare_brackets(self):
+        """文本层（线上模板）：行首空格被剥,两个槽都是裸括注 → 都替换。"""
+        from agent.agents.bidding_agent.render.form_copier import fill_blanks_html
+        html = ("<p>（供应商名称）（以下称“我方”）已仔细研究了 （询比项目名称） "
+                "询比文件的全部内容。</p>")
+        out, n = fill_blanks_html(html, self._FIELDS, self._META)
+        assert "上海安几科技有限公司（以下称" in out, "供应商裸括注没替换"
+        assert "云上零信任采购项目" in out
+        assert "（供应商名称）" not in out and "（询比项目名称）" not in out
+        assert n == 2
+
+    def test_label_bracket_after_blank_is_never_replaced_html(self):
+        """授权书回归：空位后的括注是标签——HTML 侧同样只填空位、留括注。"""
+        from agent.agents.bidding_agent.render.form_copier import fill_blanks_html
+        out, n = fill_blanks_html("<p>________（供应商全称）法定代表人授权书</p>",
+                                  self._FIELDS, {})
+        assert "上海安几科技有限公司" in out
+        assert "（供应商全称）" in out, "空位标签被裸槽规则误替换"
+        assert n == 1
+
+    def test_unknown_bracket_untouched(self):
+        from agent.agents.bidding_agent.render.form_copier import fill_blanks_html
+        out, n = fill_blanks_html("<p>（以下称“我方”）承诺（盖章）生效。</p>", self._FIELDS, {})
+        assert n == 0 and "（以下称“我方”）" in out and "（盖章）" in out
+
+
+class TestCrossRunColonSlot:
+    """2026-08-15 凌晨响应函实测：「致：」与「【XX公司[采购人名称]】」拆在两个 run 里,
+    槽的冒号前瞻在 run 内失效——线上(文本层单行)填了、导出没填,同值缝。"""
+
+    def test_slot_fills_when_colon_ends_previous_run(self):
+        import io as io2
+        from docx import Document
+        from agent.agents.bidding_agent.render.form_copier import extract_form_nodes, fill_blanks
+        d = Document()
+        p = d.add_paragraph()
+        p.add_run("致：")
+        p.add_run("【XX公司[采购人名称]】：")
+        buf = io2.BytesIO()
+        d.save(buf)
+        nodes = extract_form_nodes(buf.getvalue(), FormSpan(0, 0, -1))
+        n = fill_blanks(nodes, [], {"buyer": "云上（江西）安全技术有限公司"})
+        xml = "".join(__import__("lxml").etree.tostring(x, encoding="unicode") for x in nodes)
+        assert "致：" in xml and "云上（江西）安全技术有限公司" in xml, "跨 run 冒号槽没填"
+        assert "【XX公司[采购人名称]】" not in xml
+        assert n == 1

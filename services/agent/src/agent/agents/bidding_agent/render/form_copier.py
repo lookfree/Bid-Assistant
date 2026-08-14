@@ -373,18 +373,66 @@ def _alias_value(label: str, lut: dict[str, str]) -> str | None:
     return lut.get(_lab_norm(label))
 
 
-def _fill_slots(p, lut: dict[str, str]) -> int:
-    """冒号后的占位括注 → 值（整个括注含括号一起替换）。"""
+# 裸括注槽（2026-08-14 深夜响应函实测）：「（供应商名称）（以下称…」——括注**本身**是
+# 占位。判据=括注前**没有**空位（下划线/长空格）：有空位时括注是空位的标签（授权书
+# 「____（供应商全称）」），归空位规则、绝不双填。精确查表命中才换，查不到原样。
+_BRACKET = re.compile(r"[（(]([^（）()]{2,14})[）)]")
+_TAIL_BLANK = re.compile(r"(?:[_＿]{2,}|[ \t　]{4,})$")
+
+
+def _fill_bare_slots(p, lut: dict[str, str]) -> int:
+    """段落里的裸括注槽 → 整个括注（含括号）替换成值。单遍不回扫；跨 run 的"前有空位"
+    判定看上一 run 的尾部。"""
     filled = 0
-    for r in p.findall(_W_R):
+    runs = p.findall(_W_R)
+    for i, r in enumerate(runs):
         text = _run_text(r)
-        if not text or "：" not in text and ":" not in text:
+        if not text or ("（" not in text and "(" not in text):
             continue
+        out, pos, changed = "", 0, False
+        for m in _BRACKET.finditer(text):
+            if m.start() < pos:
+                continue
+            head = text[:m.start()] or (_run_text(runs[i - 1]) if i else "")
+            nxt_ch = (text[m.end():].lstrip()
+                      or (_run_text(runs[i + 1]).lstrip() if i + 1 < len(runs) else ""))[:1]
+            val = lut.get(_lab_norm(m.group(1)))
+            # 紧跟冒号的括注是**限定语**（「致（采购人）：」），不是槽——评审 F5 老钉子
+            if val and not _TAIL_BLANK.search(head) and nxt_ch not in "：:":
+                out += text[pos:m.start()] + val
+                filled += 1
+                changed = True
+            else:
+                out += text[pos:m.end()]
+            pos = m.end()
+        if changed:
+            _set_run_text(r, out + text[pos:])
+    return filled
+
+
+def _fill_slots(p, lut: dict[str, str]) -> int:
+    """冒号后的占位括注 → 值（整个括注含括号一起替换）。
+    冒号在**上一 run 尾**、槽在本 run 首的拆 run 形态同样认（2026-08-15 凌晨响应函实测：
+    「致：」+「【XX公司[采购人名称]】」拆两 run,冒号前瞻在 run 内失效——线上文本层
+    单行填了、导出没填,同值缝）:借一个虚拟冒号做前瞻,写回时剥掉。"""
+    filled = 0
+    runs = p.findall(_W_R)
+    for i, r in enumerate(runs):
+        text = _run_text(r)
+        if not text:
+            continue
+        prev_tail = (_run_text(runs[i - 1]).rstrip()[-1:] if i else "")
+        inject = prev_tail in "：:" and not text.startswith(("：", ":"))
+        if not inject and "：" not in text and ":" not in text:
+            continue
+        work = ("：" + text) if inject else text
+
         def _sub(m, _lut=lut):
             return _alias_value(m.group(1)[1:-1], _lut) or m.group(0)
-        new_text = _SLOT.sub(_sub, text)
-        if new_text != text:
-            _set_run_text(r, new_text)
+
+        new_work = _SLOT.sub(_sub, work)
+        if new_work != work:
+            _set_run_text(r, new_work[1:] if inject else new_work)
             filled += 1
     return filled
 
@@ -453,7 +501,10 @@ def fill_blanks(nodes: list, fields: list[tuple[str, str]], meta: dict) -> int:
     n = 0
     for el in nodes:
         if el.tag == _P_TAG:
-            n += _fill_paragraph(el, lut) + _fill_slots(el, lut) + _fill_line_end(el, lut)
+            # 裸括注槽必须**最先**跑（在空位被填掉之前判定"前有无空位"——填完再看,
+            # 标签括注前的空位已变成值,会被误判成裸槽双填,2026-08-14 首版实测）
+            n += (_fill_bare_slots(el, lut) + _fill_paragraph(el, lut)
+                  + _fill_slots(el, lut) + _fill_line_end(el, lut))
         elif el.tag == _TBL_TAG:
             n += _fill_table(el, lut)
     return n
@@ -522,6 +573,8 @@ _LABEL_ALIASES = {"供应商名称": "单位名称", "供应商全称": "单位�
                   "地址": "注册地址", "联系地址": "注册地址", "电话": "联系电话",
                   # 三证合一后营业执照号=统一社会信用代码（2026-08-14 云上 b7 截图立案）
                   "营业执照号": "统一社会信用代码",
+                  # 项目名称的招标侧叫法族（2026-08-14 深夜响应函实测：「（询比项目名称）」槽）
+                  "询比项目名称": "项目名称", "采购项目名称": "项目名称", "招标项目名称": "项目名称",
                   # 行头组合标签（「法定代表人|姓名|_」→ 法定代表人姓名）落到档案字段
                   "法定代表人姓名": "法定代表人"}
 
@@ -544,15 +597,21 @@ def build_lut(fields: list[tuple[str, str]], meta: dict) -> dict[str, str]:
     return lut
 
 
-def _fill_text_token(text: str, label_buf: str, nxt: str, lut: dict[str, str]) -> tuple[str, str, int]:
+def _fill_text_token(text: str, label_buf: str, nxt: str, lut: dict[str, str],
+                     skip_lead_bracket: bool = False) -> tuple[str, str, int, bool]:
     """一个文本 token 里的下划线空位/冒号槽 →（新文本, 新标签缓冲, 填空数）。
     **单遍从左到右**：空位与冒号槽按出现序合并处理，插进去的值只追加进输出、
     绝不回扫（评审 F6 实证：值里自带的【】/____ 会被后续 pass 再改写）。
     值一律 html 转义（评审 F1 实证：值里的 <>& 会碎成伪标签，编辑器 innerHTML 直接吃进去）。"""
     filled = 0
+    lead_used = False
     out, pos, buf = "", 0, label_buf
+    slot_spans = [(m.start(), m.end()) for m in _SLOT.finditer(text)]
+    # 裸括注槽（与 XML 版 _fill_bare_slots 同规则）：不与冒号槽重叠、前面无空位、精确命中
+    bares = [(m.start(), "bare", m) for m in _BRACKET.finditer(text)
+             if not any(s <= m.start() < e for s, e in slot_spans)]
     events = sorted([(m.start(), "blank", m) for m in _HTML_BLANK.finditer(text)]
-                    + [(m.start(), "slot", m) for m in _SLOT.finditer(text)])
+                    + [(m.start(), "slot", m) for m in _SLOT.finditer(text)] + bares)
     for _at, kind, m in events:
         if m.start() < pos:
             continue                     # 与已处理片段重叠（理论上不发生，防御）
@@ -564,7 +623,20 @@ def _fill_text_token(text: str, label_buf: str, nxt: str, lut: dict[str, str]) -
                 tm = _TRAILING_LABEL.match(after)
                 if tm:
                     val = lut.get(_lab_norm(tm.group(1)))   # 精确查表，同 XML（三轮 F3）
+                    if val and not text[m.end():]:
+                        lead_used = True    # 标签取自下一 token 开头的括注——裸槽遍不许再碰它
             buf = ""
+        elif kind == "bare":
+            # "前有无空位"看**原文**（本 token 原文头,token 首位则看原始入参标签段）——
+            # buf 在处理完前一个空位事件后已重置,拿它判定必然漏看刚被消费的空位
+            head = text[:m.start()] if m.start() else label_buf
+            nxt_ch = (text[m.end():].lstrip() or nxt.lstrip())[:1]
+            val = lut.get(_lab_norm(m.group(1)))
+            if val and (_TAIL_BLANK.search(head)
+                        or (skip_lead_bracket and m.start() == 0)   # 上一 token 的空位已认它作标签
+                        or nxt_ch in "：:"):                        # 紧跟冒号=限定语（「致（采购人）：」）
+                val = None
+            buf = buf + seg
         else:
             val = _alias_value(m.group(1)[1:-1], lut)
             buf = buf + seg              # 槽不重置标签段（槽在冒号后，本就自带语境）
@@ -575,7 +647,7 @@ def _fill_text_token(text: str, label_buf: str, nxt: str, lut: dict[str, str]) -
     tail = text[pos:]
     out += tail
     buf = (buf + tail) if not events else tail
-    return out, buf, filled
+    return out, buf, filled, lead_used
 
 
 def fill_blanks_html(html: str, fields: list[tuple[str, str]], meta: dict) -> tuple[str, int]:
@@ -589,6 +661,7 @@ def fill_blanks_html(html: str, fields: list[tuple[str, str]], meta: dict) -> tu
     tokens = _HTML_TOKEN.findall(html)
     out: list[str] = []
     label_buf = ""
+    skip_lead = False
     for i, tok in enumerate(tokens):
         if tok.startswith("<"):
             if _BLOCK_OPEN.match(tok):
@@ -596,7 +669,8 @@ def fill_blanks_html(html: str, fields: list[tuple[str, str]], meta: dict) -> tu
             out.append(tok)
             continue
         nxt = next((t for t in tokens[i + 1:i + 4] if not t.startswith("<")), "")
-        new, label_buf, n = _fill_text_token(tok, label_buf, nxt, lut)
+        new, label_buf, n, lead_used = _fill_text_token(tok, label_buf, nxt, lut, skip_lead)
+        skip_lead = lead_used
         filled += n
         out.append(new)
     html = "".join(out)
