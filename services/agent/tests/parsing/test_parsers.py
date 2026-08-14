@@ -299,3 +299,25 @@ def test_docx_clauses_include_table_rows_in_document_order():
     assert any("盖章" in t for t in sec2)
     sec3 = [t for i, t in by_id.items() if i.startswith("sec-3-")]
     assert sec3 == ["综合评分法。"]
+
+
+def test_docx_clauses_carry_their_source_body_index():
+    """复印机地基（spec 2026-08-14 form-xml-copier）：每条 clause 记它来自正文第几个
+    body 子节点——表单定位的行区间靠它换算成 XML 节点区间，才能整段深拷贝进导出文档。
+    段落各占一号；同一张表格的所有行共号；标题也要带号（表单常以编号行开头）。"""
+    from docx import Document
+    from agent.parsing.parsers import parse_docx
+
+    d = Document()
+    d.add_paragraph("致：采购人云上江西公司")          # body#0
+    t = d.add_table(rows=2, cols=2)                    # body#1
+    t.rows[0].cells[0].text = "序号"
+    t.rows[0].cells[1].text = "名称"
+    t.rows[1].cells[0].text = "1"
+    t.rows[1].cells[1].text = "零信任平台"
+    d.add_paragraph("供应商盖章：以下空白处签署")       # body#2
+    parsed = parse_docx(_docx_bytes(d))
+    by_text = {c["text"]: c.get("src") for c in parsed.clauses}
+    assert by_text["致：采购人云上江西公司"] == 0
+    assert by_text["序号\t名称"] == 1 and by_text["1\t零信任平台"] == 1
+    assert by_text["供应商盖章：以下空白处签署"] == 2

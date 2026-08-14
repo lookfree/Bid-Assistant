@@ -148,11 +148,12 @@ def _docx_lines_in_order(d) -> tuple[list[Block], list[tuple[int, str | None]]]:
     styles = heading_style_levels(d)
     blocks: list[Block] = []
     images: list[tuple[int, str | None]] = []
-    for child in body.iterchildren():
+    # src=body 子节点序号（复印机地基，见 docx_sections.Block.src）：段落各占一号、表格行共号
+    for src, child in enumerate(body.iterchildren()):
         if child.tag == qn("w:p"):
             p = Paragraph(child, d)
             if p.text.strip():
-                blocks.append(Block(p.text, level=paragraph_level(child, styles)))
+                blocks.append(Block(p.text, level=paragraph_level(child, styles), src=src))
         elif child.tag == qn("w:tbl"):
             for r in Table(child, d).rows:
                 cells = r.cells
@@ -161,7 +162,7 @@ def _docx_lines_in_order(d) -> tuple[list[Block], list[tuple[int, str | None]]]:
                     # 只有多单元格的行才算「表格数据行」（那种行里的编号是条目不是章节）。
                     # 整行一个单元格的是**带框标题**：中文标书很常把「第一章 采购公告」套进
                     # 一个单格表里排版，一律不判标题的话，这一族文档重新变成"整本一节"。
-                    blocks.append(Block(line, table=len(cells) > 1))
+                    blocks.append(Block(line, table=len(cells) > 1, src=src))
         for el in child.iter():
             if (el.tag not in (qn("w:drawing"), qn("w:pict"))
                     or _in_fallback(el, child)):
@@ -171,7 +172,7 @@ def _docx_lines_in_order(d) -> tuple[list[Block], list[tuple[int, str | None]]]:
                 images.append((len(blocks), rid))
             elif texts := _shape_texts(el):
                 # 文本框：字直接可读，并进正文而不是计成「看不见的图」（见 _shape_texts）
-                blocks.extend(Block(t) for t in texts)
+                blocks.extend(Block(t, src=src) for t in texts)
             elif _opaque_graphic(el):
                 images.append((len(blocks), None))
     return blocks, images

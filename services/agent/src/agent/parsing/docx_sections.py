@@ -69,6 +69,9 @@ class Block:
     level: int | None = None
     table: bool = False
     synthetic: bool = False
+    # 来源 body 子节点序号（段落各占一号，同一张表格的行共号）；-1=非文档原生（合成块）。
+    # 复印机地基（spec 2026-08-14 form-xml-copier）：表单定位的行区间靠它换算成 XML 节点区间。
+    src: int = -1
 
 
 def _outline_level(pPr) -> int | None:
@@ -169,15 +172,16 @@ def _group(blocks: list[Block], levels: list[int | None]) -> list[dict]:
     """按标题把块分组 → [{title, level, styled, texts}]。标题前的正文自成第一组（无标题）。
     styled 记住这个标题是不是**作者自己标的**大纲层级——那种标题任何模式下都不许被并掉
     （见 _merge_tiny_sections）。"""
-    secs: list[dict] = [{"title": None, "level": 0, "styled": False, "texts": []}]
+    secs: list[dict] = [{"title": None, "level": 0, "styled": False, "texts": [], "title_src": -1}]
     for b, lv in zip(blocks, levels):
         if lv:
             secs.append({"title": b.text.strip(), "level": lv,
-                         "styled": bool(b.level), "texts": []})
+                         "styled": bool(b.level), "texts": [], "title_src": b.src})
         else:
             # 条款文本去首尾空白：与既有 _split_clauses 同口径。前端把审查发现定位回原文时
             # 拿的就是这段文本去比对，留着首行缩进的全角空格会比对不上。
-            secs[-1]["texts"].append(b.text.strip())
+            # src 随行携带（复印机地基）：条款 → 它来自的 body 节点。
+            secs[-1]["texts"].append((b.text.strip(), b.src))
     if secs[0]["title"] is None and not secs[0]["texts"]:
         secs.pop(0)          # 文档以标题开头 → 首个标题即 sec-1（与既有口径一致）
     return secs
@@ -198,12 +202,12 @@ def _merge_tiny_sections(secs: list[dict]) -> list[dict]:
     out: list[dict] = []
     sizes: list[int] = []                       # 与 out 同步：每节已累积的正文字数
     for s in secs:
-        size = sum(len(t) for t in s["texts"])
+        size = sum(len(t) for t, _src in s["texts"])
         if (out and not s["styled"] and 0 < size < _MIN_SECTION_CHARS
                 and sizes[-1] < _MIN_SECTION_CHARS):
-            extra = ([s["title"]] if s["title"] else []) + s["texts"]
+            extra = ([(s["title"], s["title_src"])] if s["title"] else []) + s["texts"]
             out[-1]["texts"].extend(extra)
-            sizes[-1] += sum(len(t) for t in extra)
+            sizes[-1] += sum(len(t) for t, _src in extra)
             continue
         out.append(s)
         sizes.append(size)
@@ -217,9 +221,10 @@ def _emit(secs: list[dict]) -> tuple[list[dict], list[dict]]:
     for i, s in enumerate(secs, 1):
         sec_id = f"sec-{i}"
         if s["title"]:
-            headings.append({"sec": sec_id, "title": s["title"], "level": s["level"]})
-        for n, text in enumerate(s["texts"], 1):
-            clauses.append({"id": f"{sec_id}-c{n}", "text": text})
+            headings.append({"sec": sec_id, "title": s["title"], "level": s["level"],
+                             "src": s.get("title_src", -1)})
+        for n, (text, src) in enumerate(s["texts"], 1):
+            clauses.append({"id": f"{sec_id}-c{n}", "text": text, "src": src})
     return clauses, headings
 
 
