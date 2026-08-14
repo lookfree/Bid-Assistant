@@ -408,6 +408,64 @@ def _apply_custom_format(doc: Document, fmt: dict) -> None:
         _set_line_spacing(style.paragraph_format, f["line_spacing"])
 
 
+# 复印章证照锚定（2026-08-14 授权书截图立案）：引导行「【组名】见下图：」里的组名 →
+# 锚定用人名词;非身份证类（营业执照等）没有粘贴框,不锚。
+_CERT_LEAD_RE = re.compile(r"^<p[^>]*>【([^】]{1,24})】见下图：?</p>\s*", re.S)
+_ID_SUFFIX_RE = re.compile(r"(身份证明?|证明书)$")
+
+
+def _cert_person_words(label: str) -> tuple[str, ...]:
+    """证照组标准名 → 锚定人名词（「被授权人身份证明」→ 被授权人/全权代表/委托代理人…）。
+    组内别名剥「身份证(明)」后缀即人名词;含「和」的合称词有歧义,不当锚。"""
+    if "身份证" not in label:
+        return ()
+    from agent.agents.bidding_agent.nodes.cert_placement import CERT_GROUPS
+
+    for group in CERT_GROUPS:
+        if label in group:
+            words = {_ID_SUFFIX_RE.sub("", k) for k in group}
+            return tuple(w for w in words if w and "和" not in w)
+    return ()
+
+
+def _find_cert_anchor(nodes: list, label: str):
+    """本章嫁接节点里找该证照组的粘贴框段落：人名词＋「身份证」＋「粘贴」同段
+    （.//w:t 连文本框内壁一起收）。找不到返回 None → 照旧落章末。"""
+    words = _cert_person_words(label)
+    if not words:
+        return None
+    for el in nodes:
+        text = "".join(t.text or "" for t in el.iter(qn("w:t")))
+        if "身份证" in text and "粘贴" in text and any(w in text for w in words):
+            return el
+    return None
+
+
+def _graft_cert_tail(doc: Document, nodes: list, tail: str, fetch_object) -> None:
+    """复印章证照块分组落位：能锚定的组插到粘贴框正后方,引导行省略——框本身就是标签;
+    锚不上的组保持章末原样（含引导行）。图先由 _emit_html 落到章末,再整段搬到锚点后
+    （逆序 addnext 保持组内顺序）。"""
+    from agent.agents.bidding_agent.render.form_copier import CERT_BLOCK_RE
+
+    body = doc.element.body
+    for m in CERT_BLOCK_RE.finditer(tail):
+        block = m.group(0)
+        lead = _CERT_LEAD_RE.match(block)
+        anchor = _find_cert_anchor(nodes, lead.group(1)) if lead else None
+        # 新元素按**位置**圈定,绝不用 id() 集合——lxml 元素是代理对象,同一节点两次迭代
+        # 拿到的代理 id 不同,集合差把全书当"新元素"搬走(2026-08-14 首版实测全书错乱)。
+        # _emit_html 只在 body 末尾(sectPr 之前)追加,位置切片是精确的。
+        n_before = len(body)
+        _emit_html(doc, block[lead.end():] if lead and anchor is not None else block,
+                   fetch_object)
+        if anchor is not None:
+            kids = list(body)
+            end = len(kids) - 1 if kids and kids[-1].tag == qn("w:sectPr") else len(kids)
+            start = n_before - 1 if end != len(kids) else n_before
+            for el in reversed(kids[start:end]):
+                anchor.addnext(el)
+
+
 def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
                  package: dict | None = None,
                  fetch_object: Callable[[str], bytes | None] | None = None,
@@ -449,11 +507,11 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
         if copied is not None:
             from agent.agents.bidding_agent.render.form_copier import graft_nodes
             graft_nodes(doc, copied["nodes"] if isinstance(copied, dict) else copied)
-            # 已就位证照图追加在复印模板之后（2026-08-14 授权书实测：不追加,全书唯一一份
-            # 执照/身份证随被替换的 HTML 一起消失）
+            # 已就位证照图随复印章落位（2026-08-14 授权书实测两阶段）：不落,全书唯一一份
+            # 执照/身份证随被替换的 HTML 消失;只缀章末,身份证图离招标「粘贴处」框一页远
             tail = copied.get("tail") if isinstance(copied, dict) else ""
             if tail:
-                _emit_html(doc, tail, fetch_object)
+                _graft_cert_tail(doc, copied["nodes"], tail, fetch_object)
             continue
         # 防御清洗：库存章节可能带完整文档壳（<head><style>...），不剥会把样式文本吐进正文；
         # 再与提纲对齐（剥内嵌旧章标题 + 小节编号跟随当前章号）——标书必须按用户设置后的提纲出

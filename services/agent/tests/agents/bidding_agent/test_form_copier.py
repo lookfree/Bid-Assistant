@@ -874,3 +874,63 @@ class TestRowHeadCompositeAndLicenseAlias:
         assert n == 2
         assert "于新宇" in out and "91310104MA1FRF3K3N" in out
         assert out.count("于新宇") == 1
+
+
+class TestCertAnchoredTail:
+    """2026-08-14 授权书截图立案：证照尾巴统一缀章末，身份证图离招标「粘贴处」框一页远。
+    锚定规则：证照组人名词＋「身份证」＋「粘贴」同段（含文本框内壁）→ 图插到框正后方，
+    引导行省略（框本身就是标签）；锚不上的组照旧章末（营业执照等本就无框）。"""
+
+    _NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+
+    def _nodes(self):
+        from docx.oxml import parse_xml
+        def mk(t):
+            return parse_xml(f"<w:p {self._NS}><w:r><w:t>{t}</w:t></w:r></w:p>")
+        return [mk("授权正文：法定代表人授权胡月为全权代表。"),
+                mk("委托代理人的合法有效身份证明复印件或扫描件粘贴处"),
+                mk("说明：法定代表人参加采购，不用提供授权书")]
+
+    def _render(self, tail):
+        import io as io2
+        from PIL import Image
+        from docx import Document
+        from agent.agents.bidding_agent.render.docx import render_docx
+        buf = io2.BytesIO()
+        Image.new("RGB", (6, 6), "white").save(buf, format="PNG")
+        outline = {"chapters": [{"id": "b2", "no": "第二章",
+                                 "title": "法定代表人授权书", "group": "business"}]}
+        data = render_docx(outline, {"b2": "<p>HTML稿</p>"},
+                           copier_nodes={"b2": {"nodes": self._nodes(), "tail": tail}},
+                           fetch_object=lambda k: buf.getvalue())
+        return Document(io.BytesIO(data))
+
+    def test_id_image_lands_right_after_paste_box(self):
+        from docx.oxml.ns import qn
+        doc = self._render(
+            '<p>【被授权人身份证明】见下图：</p>\n'
+            '<p><img data-file-id="f1" data-object-key="library/u1/hu1.jpg" alt="被授权人身份证" /></p>')
+        kinds = ["IMG" if p._p.findall(".//" + qn("w:drawing")) else p.text
+                 for p in doc.paragraphs]
+        i_box = next(i for i, t in enumerate(kinds) if "粘贴处" in str(t))
+        i_note = next(i for i, t in enumerate(kinds) if "说明：法定代表人参加采购" in str(t))
+        assert "IMG" in kinds[i_box + 1:i_box + 4], f"图应紧随粘贴框(允许排版空行): {kinds}"
+        assert kinds.index("IMG") < i_note                    # 在说明行之前,不是章末
+        assert all("见下图" not in str(t) for t in kinds)     # 引导行省略,框本身就是标签
+
+    def test_legal_rep_words_do_not_anchor_on_agent_box(self):
+        """法定代表人组不得锚到委托代理人的框（人名词精确按组）；无匹配框=照旧章末带引导行。"""
+        doc = self._render(
+            '<p>【法定代表人身份证明】见下图：</p>\n'
+            '<p><img data-file-id="f2" data-object-key="library/u1/yu1.jpg" alt="法定代表人身份证" /></p>')
+        texts = [p.text for p in doc.paragraphs]
+        i_note = next(i for i, t in enumerate(texts) if "说明：法定代表人参加采购" in t)
+        assert any("见下图" in t for t in texts[i_note:]), "锚不上应落章末且保留引导行"
+
+    def test_non_id_group_stays_at_chapter_end(self):
+        doc = self._render(
+            '<p>【营业执照】见下图：</p>\n'
+            '<p><img data-file-id="f3" data-object-key="library/u1/lic.png" alt="营业执照" /></p>')
+        texts = [p.text for p in doc.paragraphs]
+        i_note = next(i for i, t in enumerate(texts) if "说明：法定代表人参加采购" in t)
+        assert any("见下图" in t for t in texts[i_note:])

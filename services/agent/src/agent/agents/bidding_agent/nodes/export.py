@@ -138,14 +138,12 @@ async def _copier_nodes(ctx, state: dict, outline: dict) -> dict[str, list]:
             for cid, (nodes, _f) in ok.items()}
 
 
-_CERT_TAIL_RE = re.compile(
-    r"(?:<p[^>]*>【[^】]{1,24}】见下图：?</p>\s*)?<p[^>]*>\s*<img[^>]*data-file-id[^>]*>\s*</p>"
-    r"|<img[^>]*data-file-id[^>]*>", re.S)
-
-
 def _cert_tail(html: str) -> str:
-    """当前章 HTML 里的证照块（引导行+占位图）→ 复印章的章尾 HTML；没有给空串。"""
-    return "\n".join(m.group(0) for m in _CERT_TAIL_RE.finditer(html or ""))
+    """当前章 HTML 里的证照块（引导行+占位图）→ 复印章的证照 HTML；没有给空串。
+    形态正则与 render 侧锚定分组共用 form_copier.CERT_BLOCK_RE。"""
+    from agent.agents.bidding_agent.render.form_copier import CERT_BLOCK_RE
+
+    return "\n".join(m.group(0) for m in CERT_BLOCK_RE.finditer(html or ""))
 
 
 def _fetch_object(key: str) -> bytes | None:
