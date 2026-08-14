@@ -37,7 +37,9 @@ const fileMaxBytes = () => getEnv().FILE_MAX_SIZE_MB * 1024 * 1024
 // 复用同一条预签名上传通道；agent 解析器对图片仍抛 UnsupportedDocument（白名单放宽不影响招标文件流）。
 // pptx/potx（企业 PPT 母版）：同理不进读标解析，只是资料库 presentation 分类条目挂的母版文件，
 // 供 present/export 步按 enterprise_template_key 取字节套用客户自有主题。
-const SUPPORTED_EXTS = new Set(["pdf", "docx", "xlsx", "doc", "xls", "png", "jpg", "jpeg", "pptx", "potx"])
+// .doc 2026-08-15 起停收（用户拍板）：LibreOffice 导入 .doc 静默丢图（2026-08-14 实测,
+// 三条出口路线全丢同一张=导入滤镜缺陷）,另存 .docx 是唯一保真路;.xls 转 xlsx 无此病,保留。
+const SUPPORTED_EXTS = new Set(["pdf", "docx", "xlsx", "xls", "png", "jpg", "jpeg", "pptx", "potx"])
 
 export class UnsupportedFileTypeError extends Error {
   constructor() {

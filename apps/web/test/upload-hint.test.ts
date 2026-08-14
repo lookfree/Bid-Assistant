@@ -56,3 +56,26 @@ describe("uploadErrorMessage 网络失败", () => {
     expect(uploadErrorMessage(new Error("boom"), "上传失败，请点击重试")).toBe("上传失败，请点击重试")
   })
 })
+
+// .doc 停收（2026-08-15 用户拍板：LibreOffice 转换静默丢图，另存 .docx 是唯一保真路）
+import { checkFiles, DOC_UNSUPPORTED_MSG, legacyDocAdvice } from "@/lib/files"
+
+describe("doc 停收", () => {
+  it("两个 accept 列表都不再含 .doc；PDF/Word/Excel 照常", () => {
+    expect(ACCEPT_BID.includes(".doc,") || ACCEPT_BID.endsWith(".doc")).toBe(false)
+    expect(ACCEPT_TENDER.includes(".doc,") || ACCEPT_TENDER.endsWith(".doc")).toBe(false)
+    expect(ACCEPT_TENDER).toContain(".pdf")
+    expect(ACCEPT_TENDER).toContain(".docx")
+    expect(ACCEPT_TENDER).toContain(".xlsx")
+  })
+
+  it("选中 .doc 的拒收文案带另存指引，不是干巴巴的「格式不支持」", () => {
+    const msg = checkFiles([new File(["x"], "老标书.doc")], ACCEPT_TENDER)
+    expect(msg).toContain("老标书.doc")
+    expect(msg).toContain("另存为 .docx")
+  })
+
+  it("说明横幅同步升级为停收口径", () => {
+    expect(legacyDocAdvice(["a.doc"])).toContain(DOC_UNSUPPORTED_MSG)
+  })
+})

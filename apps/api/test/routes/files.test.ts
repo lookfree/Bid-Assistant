@@ -88,13 +88,13 @@ describe("/files", () => {
     expect(new Uint8Array(await (await fetch(url)).arrayBuffer())).toEqual(body)
   })
 
-  it("扩展名白名单：.doc/.xls 老格式 → 200 现已支持（spec320 agent 侧 LibreOffice 转换）", async () => {
+  it("扩展名白名单：.doc 2026-08-15 起停收（LibreOffice 转换静默丢图）；.xls 仍支持", async () => {
     const doc = await app.request("/files/presign-upload", {
       method: "POST",
       headers: auth(),
       body: JSON.stringify({ filename: "老标书.doc", contentType: "application/msword", size: 10 }),
     })
-    expect(doc.status).toBe(200)
+    expect(doc.status).toBe(400)
     const xls = await app.request("/files/presign-upload", {
       method: "POST",
       headers: auth(),

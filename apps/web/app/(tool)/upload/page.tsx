@@ -3,7 +3,7 @@
 import { useState, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { api } from "@/lib/api"
-import { uploadHint, uploadErrorMessage, UPLOAD_MAX_MB, ACCEPT_TENDER } from "@/lib/files"
+import { uploadHint, uploadErrorMessage, UPLOAD_MAX_MB, ACCEPT_TENDER, DOC_UNSUPPORTED_MSG } from "@/lib/files"
 import { LegacyDocAdvice } from "@/components/tool/legacy-doc-advice"
 import { ApiError } from "@/lib/api-client"
 import { createProject } from "@/lib/project"
@@ -170,7 +170,7 @@ export default function UploadPage() {
           ...prev,
           {
             id, name: file.name, size: file.size, progress: 0, status: "error",
-            errorText: `格式不支持（${uploadHint(ACCEPT_TENDER)}）`,
+            errorText: ext === "doc" ? DOC_UNSUPPORTED_MSG : `格式不支持（${uploadHint(ACCEPT_TENDER)}）`,
           },
         ])
         continue

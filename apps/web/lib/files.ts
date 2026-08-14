@@ -15,10 +15,11 @@ export type UploadedFile = { fileId: string; key: string; name: string }
 /** 单文件大小上限（MB），与 API 的 FILE_MAX_SIZE_MB 默认值一致。 */
 export const UPLOAD_MAX_MB = 500
 
-/** 投标文件/标书：正文类文档。 */
-export const ACCEPT_BID = ".pdf,.docx,.doc"
-/** 招标文件：可能带清单/报价表格，故比标书多收 Excel。 */
-export const ACCEPT_TENDER = ".pdf,.docx,.doc,.xlsx,.xls"
+/** 投标文件/标书：正文类文档。.doc 2026-08-15 起停收（LibreOffice 导入静默丢图，
+ *  另存 .docx 是唯一保真路——见 DOC_UNSUPPORTED_MSG）。 */
+export const ACCEPT_BID = ".pdf,.docx"
+/** 招标文件：可能带清单/报价表格，故比标书多收 Excel。.doc 同上停收。 */
+export const ACCEPT_TENDER = ".pdf,.docx,.xlsx,.xls"
 /** 述标 PPT 母版与参考稿（服务端白名单不含 .ppt，别放行）。 */
 export const ACCEPT_PPT = ".pptx,.potx"
 /** 资质证照等图片附件。 */
@@ -43,13 +44,15 @@ export function uploadHint(accept: string, opts: { multiple?: boolean } = {}): s
   return parts.join(" · ")
 }
 
-/** 旧格式 .doc 的另存建议（**不拦截**，返回文案不是错误）。
- *  2026-08-14 实测：LibreOffice 导入 .doc 会静默丢图（授权书四张证件图转丢一张，
- *  docx/odt/pdf 三条出口全少同一张＝导入滤镜缺陷，升级/换出口路线均无效）。
- *  服务端已有原始字节对账的丢图兜底，但用户用 Word/WPS 另存 .docx 是保真度天花板。 */
+/** .doc 停收的统一文案（2026-08-15，用户拍板）：LibreOffice 导入 .doc 会静默丢图
+ *  （2026-08-14 实测：授权书四张证件图转丢一张，docx/odt/pdf 三条出口全少同一张
+ *  ＝导入滤镜缺陷，升级/换出口路线均无效）——从"建议另存"升级为"停止支持"。 */
+export const DOC_UNSUPPORTED_MSG = "已不再支持 .doc：请用 Word/WPS 另存为 .docx 后上传"
+
+/** .doc 说明横幅文案（选中/项目文件里有 .doc 才出现；存量项目的旧 .doc 也靠它解释）。 */
 export function legacyDocAdvice(names: Array<string | null | undefined>): string | null {
   const hit = names.some((n) => (n ?? "").toLowerCase().endsWith(".doc"))
-  return hit ? "检测到 .doc 文件：建议用 Word/WPS 另存为 .docx 后再上传，内容识别更完整" : null
+  return hit ? `检测到 .doc 文件：${DOC_UNSUPPORTED_MSG}` : null
 }
 
 export async function uploadFile(file: File): Promise<UploadedFile> {
@@ -100,7 +103,10 @@ export const UPLOAD_MAX_FILES = 10
 export function checkFiles(picked: File[], accept: string, already = 0): string | null {
   const exts = accept.split(",").map((e) => e.trim().toLowerCase())
   const bad = picked.find((f) => !exts.some((e) => f.name.toLowerCase().endsWith(e)))
-  if (bad) return `「${bad.name}」格式不支持（${uploadHint(accept)}）`
+  if (bad) {
+    if (bad.name.toLowerCase().endsWith(".doc")) return `「${bad.name}」${DOC_UNSUPPORTED_MSG}`
+    return `「${bad.name}」格式不支持（${uploadHint(accept)}）`
+  }
   const tooBig = picked.find((f) => f.size > UPLOAD_MAX_MB * 1024 * 1024)
   if (tooBig) return `「${tooBig.name}」超过 ${UPLOAD_MAX_MB}MB，请压缩或拆分后再传`
   if (already + picked.length > UPLOAD_MAX_FILES) return `最多 ${UPLOAD_MAX_FILES} 份，请先移除多余文件`
