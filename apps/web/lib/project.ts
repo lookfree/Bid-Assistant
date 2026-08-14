@@ -173,6 +173,10 @@ export type ProjectInfo = {
     status: string
     currentStep: string
     tenderFileKey: string | null
+    // 文件 key 列（末段即原始文件名）。slim 详情回的是整行 project，这两列一直都在响应里，
+    // 此前只是类型没声明；.doc 另存提示要按它判断项目里有没有旧格式文件。
+    bidFileKeys?: string[] | null
+    tenderFileKeys?: string[] | null
     kind?: "bid" | "review" // spec328：审查专用项目（工具页据此改导航,不进生成流水线）
     // 已选投标包件（spec324，多包件招标才有；单包/未选包为 null，outline 及之后步骤行为不变）
     selectedPackage: { id: string; name: string } | null

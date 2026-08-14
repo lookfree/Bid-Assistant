@@ -29,6 +29,7 @@ import { BidTextDialog } from "./bid-text-dialog"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import { ContrastReviewCta } from "./contrast-run"
+import { LegacyDocAdvice } from "@/components/tool/legacy-doc-advice"
 import { Checklist } from "./checklist"
 import { DedupReview } from "./dedup-review"
 import { toneClasses } from "./shared"
@@ -201,6 +202,12 @@ function RejectReview() {
   // - 前序（标书生成）未完成 → 只有上传面板：审查是独立能力，不强制先在库内生成正文。
   // - 前序已就绪 → 面板之上再给一张「直接审查当前项目」的卡：本项目的招标文件与正文都在库里，
   //   不该逼用户把已有的东西重传一遍（六步流水线的正常下一步，丢了就断链）。
+  // 项目文件名（.doc 另存提示用）：key 末段即上传时的原始文件名
+  const projectDocNames = [
+    ...(info.project.bidFileKeys ?? []),
+    ...(info.project.tenderFileKeys ?? (info.project.tenderFileKey ? [info.project.tenderFileKey] : [])),
+  ].map((k) => k.split("/").pop() ?? k)
+
   if (!real) {
     const gap = stepPrereq(info, "review")
     // review-kind 项目（对照审查）读标一旦跑完，currentStep 就推进到 review，gap 随即变 null——
@@ -228,6 +235,7 @@ function RejectReview() {
         {/* 上传了招标文件与投标文件的独立审查项目：**不再把用户支去招标解读**。
             读标是对照审查的必需输入（要求清单从那儿来），但它是内部步骤，这里一并跑掉。
             其它形态（库内项目缺正文等）保留原来的"前往上一步"引导。 */}
+        <LegacyDocAdvice names={projectDocNames} className="text-xs" />
         {contrastReady ? (
           <ContrastReviewCta
             projectId={projectId}
@@ -287,6 +295,7 @@ function RejectReview() {
     <div className="flex flex-col gap-6">
         <EntryBar onOpen={goEntry} />
         <AiNotice />
+        <LegacyDocAdvice names={projectDocNames} className="text-xs" />
         {/* 扫描页/内嵌图横条：这些内容一个字都没进过比对（pdf 识别不出来，或没部署识别服务；
             docx 内嵌图片本身没有文字，1a09214 加），报告里与它们有关的结论——尤其是「缺少某材料」
             ——必须由人再看一眼。不说的话，一份大半是扫描件/内嵌图的标书看起来和一份完整审查过的标书一模一样。 */}
