@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import copy
+import html as html_mod
 import io
 import re
 
@@ -315,12 +316,19 @@ def fill_blanks(nodes: list, fields: list[tuple[str, str]], meta: dict) -> int:
 # 复印机只在导出时作用于 XML；正文步交付的 HTML（审查/编辑器都看它）若留白，
 # 审查结论描述的就不是用户最终拿到的文件。同一套查表在正文收尾先填 HTML，
 # 导出再填招标 XML——三处同值，版式各自最优。
+# 结构性债务（评审 2026-08-14 F9，显式接受）：HTML 与 XML 两套填空适配器并存，规则以
+# XML 版为准绳、共用 build_lut/_lab_norm/_SLOT/_TRAILING_LABEL；后续规则改动两处都要动，
+# 彻底统一（单规则核+双适配器）待表单链路稳定后再做，先不为它冒重构险。
 
-_HTML_TOKEN = re.compile(r"<[^>]+>|[^<]+")
+# 裸「<」必须自成 token（评审 F5 实证：findall 丢弃不匹配片段，「x < y」的 < 被静默吞掉）
+_HTML_TOKEN = re.compile(r"<[^>]*>|[^<]+|<")
 _BLOCK_OPEN = re.compile(r"^<(?:p|h[1-6]|tr|li|table|div)\b", re.I)
-# 标签格→右侧空格：<td>开户银行</td><td></td>（空格里许可夹空白/换行）
-_TD_LABEL_EMPTY = re.compile(
-    r"(<td[^>]*>)([^<]{1,24})(</td>\s*<td[^>]*>)(\s*)(</td>)", re.S)
+# 标签格→右侧空格（评审 F2 放宽到与 XML 版同宽容度）：格内允许内联标签（<strong>加粗
+# 标签格）、th 也算格、空格判定剥标签与 &nbsp; 后看不见字才算空。
+_TD_PAIR = re.compile(r"(<t[dh][^>]*>)(.{0,120}?)(</t[dh]>\s*<t[dh][^>]*>)(.{0,40}?)(</t[dh]>)",
+                      re.S)
+_INVISIBLE = re.compile(r"(?:<[^>]*>|&nbsp;|\s)+")
+_TAG_RE = re.compile(r"<[^>]+>")
 
 
 def build_lut(fields: list[tuple[str, str]], meta: dict) -> dict[str, str]:
@@ -335,56 +343,46 @@ def build_lut(fields: list[tuple[str, str]], meta: dict) -> dict[str, str]:
 
 def _fill_text_token(text: str, label_buf: str, nxt: str, lut: dict[str, str]) -> tuple[str, str, int]:
     """一个文本 token 里的下划线空位/冒号槽 →（新文本, 新标签缓冲, 填空数）。
-    规则与 XML 版逐条同源：前文标签、空位后括注标签（nxt=下一文本 token 供跨 token 回看）、
-    冒号后的占位括注槽。"""
+    **单遍从左到右**：空位与冒号槽按出现序合并处理，插进去的值只追加进输出、
+    绝不回扫（评审 F6 实证：值里自带的【】/____ 会被后续 pass 再改写）。
+    值一律 html 转义（评审 F1 实证：值里的 <>& 会碎成伪标签，编辑器 innerHTML 直接吃进去）。"""
     filled = 0
     out, pos, buf = "", 0, label_buf
-    for m in _BLANK.finditer(text):
+    events = sorted([(m.start(), "blank", m) for m in _BLANK.finditer(text)]
+                    + [(m.start(), "slot", m) for m in _SLOT.finditer(text)])
+    for _at, kind, m in events:
+        if m.start() < pos:
+            continue                     # 与已处理片段重叠（理论上不发生，防御）
         seg = text[pos:m.start()]
-        val = lut.get(_lab_norm(buf + seg))
-        if not val:
-            after = text[m.end():] or nxt
-            tm = _TRAILING_LABEL.match(after)
-            if tm:
-                val = _alias_value(tm.group(1), lut)
-        out += seg + (val if val else m.group(0))
+        if kind == "blank":
+            val = lut.get(_lab_norm(buf + seg))
+            if not val:
+                after = text[m.end():] or nxt
+                tm = _TRAILING_LABEL.match(after)
+                if tm:
+                    val = _alias_value(tm.group(1), lut)
+            buf = ""
+        else:
+            val = _alias_value(m.group(1)[1:-1], lut)
+            buf = buf + seg              # 槽不重置标签段（槽在冒号后，本就自带语境）
+        out += seg + (html_mod.escape(val) if val else m.group(0))
         if val:
             filled += 1
-        buf = ""
         pos = m.end()
     tail = text[pos:]
     out += tail
-    buf = buf + tail if pos == 0 else tail
-
-    def _slot_sub(m: "re.Match[str]") -> str:
-        nonlocal filled
-        v = _alias_value(m.group(1)[1:-1], lut)
-        if v:
-            filled += 1
-            return v
-        return m.group(0)
-
-    out = _SLOT.sub(_slot_sub, out)
+    buf = (buf + tail) if not events else tail
     return out, buf, filled
 
 
 def fill_blanks_html(html: str, fields: list[tuple[str, str]], meta: dict) -> tuple[str, int]:
     """正文 HTML 上的确定性填空 →（新 HTML, 命中数）。匹配不上留白、模板字符零改动，
-    与 XML 版同一套查表与规则；标签只当块边界，一个不动。"""
+    与 XML 版同一套查表与规则；标签只当块边界，一个不动。
+    顺序：先文本 token 遍（原文上扫，值不回扫），后标签格遍（td 内插值同样不再被扫）。"""
     lut = build_lut(fields, meta)
     if not lut or not html:
         return html or "", 0
     filled = 0
-
-    def _td_sub(m: "re.Match[str]") -> str:
-        nonlocal filled
-        val = lut.get(_lab_norm(m.group(2)))
-        if val:
-            filled += 1
-            return m.group(1) + m.group(2) + m.group(3) + val + m.group(5)
-        return m.group(0)
-
-    html = _TD_LABEL_EMPTY.sub(_td_sub, html)
     tokens = _HTML_TOKEN.findall(html)
     out: list[str] = []
     label_buf = ""
@@ -398,4 +396,16 @@ def fill_blanks_html(html: str, fields: list[tuple[str, str]], meta: dict) -> tu
         new, label_buf, n = _fill_text_token(tok, label_buf, nxt, lut)
         filled += n
         out.append(new)
-    return "".join(out), filled
+    html = "".join(out)
+
+    def _td_sub(m: "re.Match[str]") -> str:
+        nonlocal filled
+        label = _TAG_RE.sub("", m.group(2))
+        val = lut.get(_lab_norm(label))
+        if val and _INVISIBLE.fullmatch(m.group(4) or " "):
+            filled += 1
+            return m.group(1) + m.group(2) + m.group(3) + html_mod.escape(val) + m.group(5)
+        return m.group(0)
+
+    html = _TD_PAIR.sub(_td_sub, html)
+    return html, filled

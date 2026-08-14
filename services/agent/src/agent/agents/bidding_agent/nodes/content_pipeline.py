@@ -470,31 +470,48 @@ async def _fidelity_gate(ctx, chat, system_prompt: str, user: str, ch: dict, tpl
     return fallback if len(fallback) >= min_chars else ""
 
 
-async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, shared: dict,
-                     sem: asyncio.Semaphore, progress: _Progress, generation: int) -> tuple[str, str]:
-    """写一章：断点命中直接用；否则限流下调模型，产出清洗后（必要时追一轮扩写）落缓存。
-    残章/截断稿重试一次（截断稿绝不入库——半章缓存 24h 等于把残稿钉死,评审 2026-08-08）；
-    两次失败 → 记缺章。简报构造/清洗抛错只废本章,绝不连累其他 19 章（gather 无隔离,评审）。"""
+def _is_fill_chapter(ch: dict, shared: dict) -> bool:
+    """要不要跑同值填空：有招标模板的章，或标题就是表单形态的章（评审 F4：导出复印机按
+    形态学独立选章，正文侧不同口径就会留下「导出有值、审查没值」的缝）。"""
+    from agent.agents.bidding_agent.nodes.form_locate import _looks_like_form_title
+    tpl = (shared.get("templates") or {}).get(ch.get("id") or "") or {}
+    return bool(tpl.get("raw")) or _looks_like_form_title(ch.get("title") or "")
+
+
+def _brief_for_key(system_prompt: str, stable: str, ch: dict, shared: dict) -> str:
+    """缓存键指纹素材。表单章额外掺入填空字段指纹（评审 F3）：库里改了企业信息/被授权人后，
+    同代自由重试吃旧缓存会让审查看到旧值而导出填新值——正是同值原则要消灭的缝。"""
+    base = f"{system_prompt}\n--\n{stable}"
+    if _is_fill_chapter(ch, shared):
+        base += f"\n--fill:{shared.get('fill_sig') or ''}"
+    return base
+
+
+async def _fill_form_html(ctx, cid: str, html: str, shared: dict) -> str:
+    """同值填空（评审 F7：与简报构造/产出清洗同级的**章内隔离**）：任何意外只让本章
+    按未填交付，绝不把一次后处理小失误升级成整步失败退款。"""
+    try:
+        from agent.agents.bidding_agent.render.form_copier import fill_blanks_html
+        filled_html, n = fill_blanks_html(html, shared.get("fill_fields") or [],
+                                          shared.get("fill_meta") or {})
+        if n:
+            await _log_pg(ctx, "form_fill_html", {"chapter": cid, "filled": n})
+        return filled_html
+    except Exception:  # noqa: BLE001
+        logger.warning("章 %s 同值填空失败，按未填交付", cid, exc_info=True)
+        return html
+
+
+async def _draft_chapter(ctx, chat, system_prompt: str, user: str, cid: str,
+                         min_chars: int, sem: asyncio.Semaphore,
+                         progress: _Progress) -> tuple[str, bool]:
+    """两次尝试拿到一章可用 HTML →（html, 是否撞过长度上限）。
+    截断稿绝不入库（重试要求压缩收尾）；瞬时失败重试、永久性错误上抛；清洗抛错按残章。"""
     from agent.agents.bidding_agent.render.sanitize import (
         clean_internal_ids, strip_chat_wrapper, strip_document_shell, strip_template_disclaimers)
 
-    cid = ch.get("id") or ""
-    try:
-        stable, ref = _chapter_brief(state, ch, shared)
-    except Exception:  # noqa: BLE001 脏提纲数据只废本章
-        logger.exception("章 %s 简报构造失败，记缺章", cid)
-        return cid, ""
-    key = _cache_key(ctx, generation, f"{system_prompt}\n--\n{stable}")
-    cached = await _cache_get(ctx, key)
-    if cached:
-        logger.info("章 %s 断点命中，跳过模型调用", cid)
-        await progress.chapter_done(cid)
-        return cid, cached
-    user = stable + (f"\n\n{ref}" if ref else "")
     msgs = [SystemMessage(content=system_prompt), HumanMessage(content=user)]
-    min_chars = _NA_MIN_CHARS if "不适用" in (ch.get("title") or "") else _MIN_CHAPTER_CHARS
-    html = ""
-    truncated = False       # 撞过长度上限的章不再追扩写（见下方接线处注释）
+    html, truncated = "", False
     for attempt in (1, 2):
         try:
             out = await _attempt(ctx, chat, msgs, sem, progress)
@@ -521,6 +538,30 @@ async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, share
         logger.warning("章 %s 第 %d 次产出过短（%d 字符），重试", cid, attempt, len(html))
         msgs = [SystemMessage(content=system_prompt),
                 HumanMessage(content=user + "\n\n上次产出过短或为空，请完整撰写本章正文 HTML。")]
+    return html, truncated
+
+
+async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, shared: dict,
+                     sem: asyncio.Semaphore, progress: _Progress, generation: int) -> tuple[str, str]:
+    """写一章：断点命中直接用；否则限流下调模型，产出清洗后（必要时追一轮扩写）落缓存。
+    残章/截断稿重试一次（截断稿绝不入库——半章缓存 24h 等于把残稿钉死,评审 2026-08-08）；
+    两次失败 → 记缺章。简报构造/清洗抛错只废本章,绝不连累其他 19 章（gather 无隔离,评审）。"""
+    cid = ch.get("id") or ""
+    try:
+        stable, ref = _chapter_brief(state, ch, shared)
+    except Exception:  # noqa: BLE001 脏提纲数据只废本章
+        logger.exception("章 %s 简报构造失败，记缺章", cid)
+        return cid, ""
+    key = _cache_key(ctx, generation, _brief_for_key(system_prompt, stable, ch, shared))
+    cached = await _cache_get(ctx, key)
+    if cached:
+        logger.info("章 %s 断点命中，跳过模型调用", cid)
+        await progress.chapter_done(cid)
+        return cid, cached
+    user = stable + (f"\n\n{ref}" if ref else "")
+    min_chars = _NA_MIN_CHARS if "不适用" in (ch.get("title") or "") else _MIN_CHAPTER_CHARS
+    html, truncated = await _draft_chapter(ctx, chat, system_prompt, user, cid,
+                                           min_chars, sem, progress)
     if len(html) < min_chars or "<" not in html:
         logger.error("章 %s 两次尝试仍无有效产出，记为缺章", cid)
         return cid, ""
@@ -545,14 +586,11 @@ async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, share
         if not html:
             logger.error("章 %s 的招标原文退路仍过短，记为缺章", cid)
             return cid, ""
-        # 同值填空（2026-08-14 用户口径：审查材料必须与最终交付同值）：同一套查表在这里
-        # 先填 HTML——审查/编辑器/导出复印机三处从此同源；模型已填对的位不受影响，
-        # 留白模板退路也能带值交付（资料库有货就不再交空表）。
-        from agent.agents.bidding_agent.render.form_copier import fill_blanks_html
-        html, n_filled = fill_blanks_html(html, shared.get("fill_fields") or [],
-                                          shared.get("fill_meta") or {})
-        if n_filled:
-            await _log_pg(ctx, "form_fill_html", {"chapter": cid, "filled": n_filled})
+    # 同值填空（2026-08-14 用户口径：审查材料必须与最终交付同值）：同一套查表在这里先填
+    # HTML——审查/编辑器/导出复印机三处从此同源；覆盖面与导出复印机同口径（含无模板的
+    # 表单形态章），异常章内隔离。
+    if _is_fill_chapter(ch, shared):
+        html = await _fill_form_html(ctx, cid, html, shared)
     await _cache_set(ctx, key, html)
     await progress.chapter_done(cid)
     return cid, html
@@ -583,9 +621,12 @@ def _shared_blocks(state: dict, read: dict, outline: dict, chapters: list[dict])
     return {
         "bidder": profile_block(refs.get("company") or []),
         # 同值填空的字段表（2026-08-14）：与导出复印机同一来源同一构造，审查材料=最终交付
-        "fill_fields": (bidder_fields(refs.get("company") or [])
+        "fill_fields": (fill_fields := bidder_fields(refs.get("company") or [])
                         + authorized_rep_fields(refs.get("personnel") or [])),
         "fill_meta": meta,
+        # 填空字段指纹进表单章缓存键（评审 F3，见 _brief_for_key）
+        "fill_sig": hashlib.sha256(json.dumps([fill_fields, meta], ensure_ascii=False,
+                                              sort_keys=True).encode()).hexdigest()[:12],
         "project": ("【项目信息】（响应函/表单/落款字段据此填写，未知处留（待补充：____））："
                     + json.dumps(strip_clause_ids(meta), ensure_ascii=False)[:2000]) if meta else "",
         "risk": ("【读标红线】（涉及本章内容时不得违背）："

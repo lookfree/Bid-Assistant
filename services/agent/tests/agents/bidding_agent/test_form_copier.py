@@ -470,3 +470,36 @@ class TestHtmlFill:
         html = '<p style="text-align:right">供应商签章：</p><p>我单位郑重承诺。</p>'
         out, n = fill_blanks_html(html, self._FIELDS, {})
         assert out == html and n == 0
+
+
+class TestHtmlFillHardening:
+    """评审 2026-08-14 二轮(7931d1b)硬化钉:转义/裸</值不回扫/宽容格。"""
+
+    def test_values_are_html_escaped(self):
+        from agent.agents.bidding_agent.render.form_copier import fill_blanks_html
+        out, n = fill_blanks_html("<p>单位名称：____</p>",
+                                  [("单位名称", 'AB<证券>公司 & "Co"')], {})
+        assert n == 1
+        assert "AB&lt;证券&gt;公司 &amp;" in out
+        assert "<证券>" not in out
+
+    def test_bare_less_than_survives(self):
+        from agent.agents.bidding_agent.render.form_copier import fill_blanks_html
+        out, n = fill_blanks_html("<p>a</p>x < y", [("单位名称", "上海安几")], {})
+        assert out == "<p>a</p>x < y" and n == 0
+
+    def test_inserted_value_is_not_rescanned(self):
+        """值里自带的【】/____ 不许被后续遍改写,填空数不虚增。"""
+        from agent.agents.bidding_agent.render.form_copier import fill_blanks_html
+        out, n = fill_blanks_html(
+            "<table><tr><td>开户银行</td><td></td></tr></table>",
+            [("开户银行", "招商银行：【网点[项目名称]】____")], {"name": "XX项目"})
+        assert n == 1
+        assert "招商银行：【网点[项目名称]】____" in out.replace("&#x27;", "'")
+
+    def test_strong_label_nbsp_cell_and_th_are_filled(self):
+        from agent.agents.bidding_agent.render.form_copier import fill_blanks_html
+        html = ("<table><tr><th><strong>开户银行</strong></th><td>&nbsp;</td></tr>"
+                "<tr><td>银行账号</td><td> </td></tr></table>")
+        out, n = fill_blanks_html(html, [("开户银行", "招行徐家汇"), ("银行账号", "121932027710506")], {})
+        assert n == 2 and "招行徐家汇" in out and "121932027710506" in out
