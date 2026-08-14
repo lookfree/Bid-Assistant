@@ -693,11 +693,11 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
     # 章节正文：按 outline 顺序（缺正文出占位，不报错）。每章另起一页——评标翻阅按章定位，
     # 章接章挤在同一页找不到边界（用户要求）；首章不加，否则目录后会多出一整页空白。
     for i, ch in enumerate(outline.get("chapters", [])):
-        group = "技术标" if ch.get("group") == "tech" else "商务标"
         if i:
             doc.add_page_break()
-        tag = f"（{group}）" if scope == "full" else ""
-        doc.add_heading(f"{ch.get('no', '')} {ch.get('title', '')}{tag}", level=1)
+        # 章标题不带（技术标）/（商务标）组尾巴（2026-08-15 用户拍板：正文里是噪音——
+        # 招标原文的章名就没有这种尾巴）；目录条目取自标题，自动跟随。
+        doc.add_heading(f"{ch.get('no', '')} {ch.get('title', '')}", level=1)
         # 复印机章（spec 2026-08-14）：招标 docx 原样 XML 节点直接嫁接——版式是复制不是重建，
         # 该章的 HTML 近似版只供编辑器预览，导出以原格式为准（fill_blanks 已在节点上填过空）。
         copied = (copier_nodes or {}).get(ch.get("id", ""))

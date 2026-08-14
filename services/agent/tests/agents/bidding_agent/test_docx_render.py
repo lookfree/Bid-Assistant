@@ -99,12 +99,12 @@ def test_render_docx_toc_cache_holds_static_entries():
     sep = xml.index('w:fldCharType="separate"')
     end = xml.index('w:fldCharType="end"', sep)
     cache = xml[sep:end]
-    assert "第一章 响应函（技术标）" in cache, "章级条目没进目录缓存——WPS/PDF 里目录仍是空白"
+    assert "第一章 响应函" in cache, "章级条目没进目录缓存——WPS/PDF 里目录仍是空白"
     assert "一、总体架构" in cache                    # 节级（Heading 2）也进
     assert "投标人承诺与签章" in cache                # 系统章同样进目录
     assert "（1）五级明细" not in cache               # 没有页码的深层明细堆一页纯属噪音
     # 目录一份 + 正文一份，恰好两处；缓存条目错插到域外时这里会数出错位
-    assert xml.count("第一章 响应函（技术标）") == 2
+    assert xml.count("第一章 响应函") == 2
     assert "updateFields" in zipfile.ZipFile(io.BytesIO(data)).read("word/settings.xml").decode("utf-8")
 
 
@@ -312,7 +312,7 @@ def test_render_docx_follows_edited_outline_numbering():
                       "<h3>1.1.1 项目名称</h3><p>正文</p>"}
     doc = Document(io.BytesIO(render_docx(outline, chapters)))
     texts = [p.text for p in doc.paragraphs]
-    assert "第七章 变更申请基本信息（商务标）" in texts   # 章标题唯一来源=提纲
+    assert "第七章 变更申请基本信息" in texts   # 章标题唯一来源=提纲（组尾巴 2026-08-15 起不再显示）
     assert "第一章 变更申请基本信息" not in texts          # 内嵌旧章标题被剥
     assert "7.1 项目名称与申请单号" in texts               # 层级编号跟随当前章号
     assert "7.1.1 项目名称" in texts
@@ -334,7 +334,7 @@ def test_render_docx_three_level_heading_hierarchy_and_toc():
     }
     doc = Document(io.BytesIO(render_docx(outline, chapters)))
     styles = {p.text: p.style.name for p in doc.paragraphs if p.style.name.startswith("Heading")}
-    assert styles["第一章 技术方案（技术标）"] == "Heading 1"
+    assert styles["第一章 技术方案"] == "Heading 1"
     assert styles["1.1 需求理解"] == "Heading 2"      # 节
     assert styles["1.1.1 现状分析"] == "Heading 3"    # 小节（此前与节平级）
     assert styles["1.2 总体设计"] == "Heading 2"
@@ -354,7 +354,7 @@ def test_render_docx_maps_five_heading_levels():
             "<h6>① 值班安排</h6><p>w</p>")
     doc = Document(io.BytesIO(render_docx(outline, {"t1": html})))
     levels = {p.text: p.style.name for p in doc.paragraphs if p.style.name.startswith("Heading")}
-    assert levels["第一章 整体服务方案（技术标）"] == "Heading 1"
+    assert levels["第一章 整体服务方案"] == "Heading 1"
     assert levels["一、项目理解"] == "Heading 2"
     assert levels["1. 项目背景分析"] == "Heading 3"
     assert levels["（1）人员配置"] == "Heading 4"
@@ -435,7 +435,7 @@ def test_scope_full_output_is_byte_identical_to_today():
     meta = {"name": "XX项目投标文件"}
     assert render_docx(outline, chapters, meta=meta) == render_docx(outline, chapters, meta=meta, scope="full")
     text = _doc_text(render_docx(outline, chapters, meta=meta, scope="full"))
-    assert "（技术标）" in text and "·技术标部分" not in text
+    assert "（技术标）" not in text and "·技术标部分" not in text   # 2026-08-15 起 full 也不带组尾巴
 
 
 def test_render_strips_legacy_disclaimers_from_stored_chapters():
@@ -452,3 +452,17 @@ def test_render_strips_legacy_disclaimers_from_stored_chapters():
     text = "\n".join(p.text for p in doc.paragraphs)
     assert "可能存在差异" not in text
     assert "正文实质内容留下" in text
+
+
+def test_chapter_headings_carry_no_group_tag():
+    """2026-08-15 用户拍板：正文章标题不带（技术标）/（商务标）尾巴——招标原文的章名
+    就没有这种尾巴，逐章带上是噪音；目录条目取自标题，自动跟随。"""
+    outline = {"chapters": [
+        {"id": "t1", "no": "第一章", "title": "技术方案", "group": "tech"},
+        {"id": "b1", "no": "第二章", "title": "响应函", "group": "business"},
+    ]}
+    data = render_docx(outline, {"t1": "<p>正文</p>", "b1": "<p>表单</p>"})
+    doc = Document(io.BytesIO(data))
+    texts = "\n".join(p.text for p in doc.paragraphs)
+    assert "（技术标）" not in texts and "（商务标）" not in texts
+    assert "第一章 技术方案" in texts and "第二章 响应函" in texts
