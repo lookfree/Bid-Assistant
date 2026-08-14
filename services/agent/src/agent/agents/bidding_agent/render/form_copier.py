@@ -299,11 +299,7 @@ def fill_blanks(nodes: list, fields: list[tuple[str, str]], meta: dict) -> int:
     """在深拷贝出的表单节点上填空 → 命中数。值来源=资料库企业信息（用户录什么标签
     匹配什么标签，见 bidder_profile）＋项目信息白名单；同名标签先到先得；
     匹配不上一律留白——代码不虚构，这正是它比模型填空可靠的地方。"""
-    lut: dict[str, str] = {}
-    for label, value in list(fields or []) + _meta_fields(meta or {}):
-        key = _lab_norm(label)
-        if key and value and key not in lut:
-            lut[key] = str(value)
+    lut = build_lut(fields, meta)
     if not lut:
         return 0
     n = 0
@@ -313,3 +309,93 @@ def fill_blanks(nodes: list, fields: list[tuple[str, str]], meta: dict) -> int:
         elif el.tag == _TBL_TAG:
             n += _fill_table(el, lut)
     return n
+
+
+# ---------- HTML 版填空（2026-08-14 用户口径：审查材料必须与最终交付同值）----------
+# 复印机只在导出时作用于 XML；正文步交付的 HTML（审查/编辑器都看它）若留白，
+# 审查结论描述的就不是用户最终拿到的文件。同一套查表在正文收尾先填 HTML，
+# 导出再填招标 XML——三处同值，版式各自最优。
+
+_HTML_TOKEN = re.compile(r"<[^>]+>|[^<]+")
+_BLOCK_OPEN = re.compile(r"^<(?:p|h[1-6]|tr|li|table|div)\b", re.I)
+# 标签格→右侧空格：<td>开户银行</td><td></td>（空格里许可夹空白/换行）
+_TD_LABEL_EMPTY = re.compile(
+    r"(<td[^>]*>)([^<]{1,24})(</td>\s*<td[^>]*>)(\s*)(</td>)", re.S)
+
+
+def build_lut(fields: list[tuple[str, str]], meta: dict) -> dict[str, str]:
+    """字段对+项目信息 → 归一化查表（XML 填空与 HTML 填空共用同一份）。"""
+    lut: dict[str, str] = {}
+    for label, value in list(fields or []) + _meta_fields(meta or {}):
+        key = _lab_norm(label)
+        if key and value and key not in lut:
+            lut[key] = str(value)
+    return lut
+
+
+def _fill_text_token(text: str, label_buf: str, nxt: str, lut: dict[str, str]) -> tuple[str, str, int]:
+    """一个文本 token 里的下划线空位/冒号槽 →（新文本, 新标签缓冲, 填空数）。
+    规则与 XML 版逐条同源：前文标签、空位后括注标签（nxt=下一文本 token 供跨 token 回看）、
+    冒号后的占位括注槽。"""
+    filled = 0
+    out, pos, buf = "", 0, label_buf
+    for m in _BLANK.finditer(text):
+        seg = text[pos:m.start()]
+        val = lut.get(_lab_norm(buf + seg))
+        if not val:
+            after = text[m.end():] or nxt
+            tm = _TRAILING_LABEL.match(after)
+            if tm:
+                val = _alias_value(tm.group(1), lut)
+        out += seg + (val if val else m.group(0))
+        if val:
+            filled += 1
+        buf = ""
+        pos = m.end()
+    tail = text[pos:]
+    out += tail
+    buf = buf + tail if pos == 0 else tail
+
+    def _slot_sub(m: "re.Match[str]") -> str:
+        nonlocal filled
+        v = _alias_value(m.group(1)[1:-1], lut)
+        if v:
+            filled += 1
+            return v
+        return m.group(0)
+
+    out = _SLOT.sub(_slot_sub, out)
+    return out, buf, filled
+
+
+def fill_blanks_html(html: str, fields: list[tuple[str, str]], meta: dict) -> tuple[str, int]:
+    """正文 HTML 上的确定性填空 →（新 HTML, 命中数）。匹配不上留白、模板字符零改动，
+    与 XML 版同一套查表与规则；标签只当块边界，一个不动。"""
+    lut = build_lut(fields, meta)
+    if not lut or not html:
+        return html or "", 0
+    filled = 0
+
+    def _td_sub(m: "re.Match[str]") -> str:
+        nonlocal filled
+        val = lut.get(_lab_norm(m.group(2)))
+        if val:
+            filled += 1
+            return m.group(1) + m.group(2) + m.group(3) + val + m.group(5)
+        return m.group(0)
+
+    html = _TD_LABEL_EMPTY.sub(_td_sub, html)
+    tokens = _HTML_TOKEN.findall(html)
+    out: list[str] = []
+    label_buf = ""
+    for i, tok in enumerate(tokens):
+        if tok.startswith("<"):
+            if _BLOCK_OPEN.match(tok):
+                label_buf = ""              # 块边界重开标签段
+            out.append(tok)
+            continue
+        nxt = next((t for t in tokens[i + 1:i + 4] if not t.startswith("<")), "")
+        new, label_buf, n = _fill_text_token(tok, label_buf, nxt, lut)
+        filled += n
+        out.append(new)
+    return "".join(out), filled

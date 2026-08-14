@@ -43,7 +43,8 @@ logger = logging.getLogger(__name__)
 # 只改渲染不升版，同一单重跑仍端回旧碎表版式（2026-08-13 评审 CONFIRMED，与 p4 同坑）。
 # p7：保真豁免二轮（ol 编号/合并格行头/邻节标题剥尾）——被冤杀的留白模板已钉进缓存，
 # 不升版重跑仍端回空表（与 p4/p5 同坑第三次）。
-_PROMPT_VER = "p7"
+# p8：正文收尾同值填空（审查材料=最终交付）——填空后的 HTML 进缓存，不升版吃旧缓存等于没填。
+_PROMPT_VER = "p8"
 _CACHE_TTL_S = 24 * 3600
 # 产出下限：短于此视为残章，重试一次；两次都残按缺章记，交给前端「补齐」按钮（免费）。
 _MIN_CHAPTER_CHARS = 120
@@ -544,6 +545,14 @@ async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, share
         if not html:
             logger.error("章 %s 的招标原文退路仍过短，记为缺章", cid)
             return cid, ""
+        # 同值填空（2026-08-14 用户口径：审查材料必须与最终交付同值）：同一套查表在这里
+        # 先填 HTML——审查/编辑器/导出复印机三处从此同源；模型已填对的位不受影响，
+        # 留白模板退路也能带值交付（资料库有货就不再交空表）。
+        from agent.agents.bidding_agent.render.form_copier import fill_blanks_html
+        html, n_filled = fill_blanks_html(html, shared.get("fill_fields") or [],
+                                          shared.get("fill_meta") or {})
+        if n_filled:
+            await _log_pg(ctx, "form_fill_html", {"chapter": cid, "filled": n_filled})
     await _cache_set(ctx, key, html)
     await progress.chapter_done(cid)
     return cid, html
@@ -568,10 +577,15 @@ def _shared_blocks(state: dict, read: dict, outline: dict, chapters: list[dict])
     risk_txt = json.dumps(risks, ensure_ascii=False) if risks else ""
     # library_refs（Task 3）：App content 步下发，两类都空则键缺省——`or {}` 兜底后 .get 拿到 []，
     # `_library_ref_block` 对空列表返回空串，无 library_refs 的老行为逐字节不变。
-    from agent.agents.bidding_agent.nodes.bidder_profile import profile_block
+    from agent.agents.bidding_agent.nodes.bidder_profile import (
+        authorized_rep_fields, bidder_fields, profile_block)
     refs = (state.get("run_input") or {}).get("library_refs") or {}
     return {
         "bidder": profile_block(refs.get("company") or []),
+        # 同值填空的字段表（2026-08-14）：与导出复印机同一来源同一构造，审查材料=最终交付
+        "fill_fields": (bidder_fields(refs.get("company") or [])
+                        + authorized_rep_fields(refs.get("personnel") or [])),
+        "fill_meta": meta,
         "project": ("【项目信息】（响应函/表单/落款字段据此填写，未知处留（待补充：____））："
                     + json.dumps(strip_clause_ids(meta), ensure_ascii=False)[:2000]) if meta else "",
         "risk": ("【读标红线】（涉及本章内容时不得违背）："

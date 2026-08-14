@@ -436,3 +436,37 @@ class TestReviewFixes0814:
         assert set(out) == {"b1"}
         assert 'data-file-id="x"' in out["b1"]["tail"]
         assert "【营业执照】见下图：" in out["b1"]["tail"]
+
+
+class TestHtmlFill:
+    """HTML 版同值填空（2026-08-14 用户口径：审查材料必须与最终交付同值）。
+    与 XML 版共用 build_lut 与规则；标签零改动、匹配不上留白。"""
+
+    _FIELDS = [("单位名称", "上海安几科技有限公司"), ("开户银行", "招商银行上海徐家汇支行"),
+               ("全权代表姓名", "胡月")]
+
+    def test_paragraph_blank_and_td_pair_and_slot(self):
+        from agent.agents.bidding_agent.render.form_copier import fill_blanks_html
+        html = ("<p>单位名称：________</p>"
+                "<table><tr><td>开户银行</td><td></td><td>银行账号</td><td></td></tr></table>"
+                "<p>致：【XX公司[采购人名称]】：</p>")
+        out, n = fill_blanks_html(html, self._FIELDS, {"buyer": "云上（江西）安全技术有限公司"})
+        assert "单位名称：上海安几科技有限公司" in out
+        assert "<td>开户银行</td><td>招商银行上海徐家汇支行</td>" in out
+        assert "<td>银行账号</td><td></td>" in out          # 没值的格留空
+        assert "致：云上（江西）安全技术有限公司：" in out
+        assert n == 3
+
+    def test_trailing_bracket_label_across_tokens(self):
+        """授权书形态：「____（全权代表姓名）」空位与后括注被行内标签分开也认。"""
+        from agent.agents.bidding_agent.render.form_copier import fill_blanks_html
+        html = "<p>授权 <strong>____</strong>（全权代表姓名）为全权代表。</p>"
+        out, n = fill_blanks_html(html, self._FIELDS, {})
+        assert n == 1 and "胡月" in out
+        assert "（全权代表姓名）" in out                     # 括注说明原样保留
+
+    def test_fixed_text_and_tags_untouched(self):
+        from agent.agents.bidding_agent.render.form_copier import fill_blanks_html
+        html = '<p style="text-align:right">供应商签章：</p><p>我单位郑重承诺。</p>'
+        out, n = fill_blanks_html(html, self._FIELDS, {})
+        assert out == html and n == 0
