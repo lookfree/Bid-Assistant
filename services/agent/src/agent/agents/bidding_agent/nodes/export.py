@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from agent.agents.bidding_agent.render.docx import render_docx
 from agent.agents.bidding_agent.render.pdf import docx_to_pdf, pdf_page_count
@@ -12,6 +13,106 @@ from agent.framework.content_safety import scan_text
 from agent.parsing import storage_read
 
 logger = logging.getLogger(__name__)
+
+
+# 正文章 id 形态（t1/b3…）：agent_request.result 里长这样的键即 content run 的章表
+_CID_RE = re.compile(r"^[tb]\d+$")
+
+
+def _copier_baseline(thread_id: str) -> tuple[dict, list[str]]:
+    """复印机的两块地基（同步 PG 查询，调用方丢线程池）：
+    · 原始正文＝该线程最新 content run 的 agent_request.result（App 的编辑只覆写
+      project_steps.result，这份是模型产出的未动副本——pristine 判定的基准）；
+    · 招标文件 key＝read run 的 file_refs。
+    查不到给空，复印机整体让路——旧数据/异常都不该让导出多一个失败面。"""
+    from agent.db import get_pool
+
+    chapters: dict = {}
+    refs: list[str] = []
+    with get_pool().connection() as conn:
+        rows = conn.execute(
+            "select result, file_refs from agent.agent_request "
+            "where thread_id=%s and status='succeeded' "
+            "order by finished_at desc nulls last limit 20", (thread_id,)).fetchall()
+    for result, file_refs in rows:
+        if not chapters and isinstance(result, dict) and any(_CID_RE.match(k) for k in result):
+            chapters = result
+        if not refs and file_refs:
+            refs = [str(x) for x in file_refs]
+    return chapters, refs
+
+
+async def _copier_event(ctx, event_type: str, data: dict, level: str = "info") -> None:
+    """复印机观测（form_copier_ok / form_copier_fallback）落 agent_event_log，best-effort。"""
+    recorder = getattr(ctx, "recorder", None)
+    if recorder is None or not getattr(ctx, "run_id", None):
+        return
+    try:
+        await asyncio.to_thread(
+            recorder.log_event, ctx.run_id, getattr(ctx, "agent_type", "bidding_agent"),
+            event_type, node="export", level=level, data=data,
+            thread_id=getattr(ctx, "thread_id", None))
+    except Exception:  # noqa: BLE001 埋点绝不影响导出
+        logger.warning("copier event log failed", exc_info=True)
+
+
+async def _copier_nodes(ctx, state: dict, outline: dict) -> dict[str, list]:
+    """表单章复印机（spec 2026-08-14 T5）：{章id: 招标原样 XML 节点}，交 render_docx 嫁接。
+
+    只接管**未手改**的表单章：当前章 html 与原始产物逐字节相同才算 pristine——
+    用户改过的章尊重手改走 HTML 路线，绝不静默覆盖。偏离表明确排除（要逐条生成响应，
+    本就不在模板保真范围）。任何一步失败该章让路、整体 best-effort。"""
+    from agent.agents.bidding_agent.nodes.bidder_profile import bidder_fields
+    from agent.agents.bidding_agent.nodes.form_locate import (
+        _looks_like_form_title, build_form_index, dedupe_spans, form_node_span)
+    from agent.agents.bidding_agent.render.form_copier import (
+        CopierUnsupported, extract_form_nodes, fill_blanks)
+    from agent.parsing.parsers import parse_bytes
+
+    try:
+        original, refs = await asyncio.to_thread(_copier_baseline, ctx.thread_id)
+    except Exception:  # noqa: BLE001 基线查不到=让路
+        logger.warning("复印机基线查询失败，整体让路", exc_info=True)
+        return {}
+    tender_key = next((k for k in refs if k.lower().endswith(".docx")), "")
+    chapters_now = state.get("chapters") or {}
+    pristine = {cid for cid, html in chapters_now.items() if original.get(cid) == html}
+    if not tender_key or not pristine:
+        return {}
+    try:
+        data = await asyncio.to_thread(storage_read.read_bytes, tender_key)
+        parsed = await asyncio.to_thread(parse_bytes, data, tender_key.rsplit("/", 1)[-1])
+        index = build_form_index({"doc_sections": parsed.clauses,
+                                  "doc_headings": parsed.headings})
+    except Exception as e:  # noqa: BLE001 招标文件取不回/解析不了=全体让路
+        await _copier_event(ctx, "form_copier_fallback",
+                            {"chapter": "*", "reason": f"招标解析失败:{e}"[:200]}, "warn")
+        return {}
+    spans = {}
+    for c in outline.get("chapters", []):
+        cid, title = c.get("id") or "", c.get("title") or ""
+        # 「偏离表」整词排除（裸「偏离」会误伤无偏离承诺函，2026-08-13 教训）
+        if cid in pristine and "偏离表" not in title and _looks_like_form_title(title):
+            sp = form_node_span(index, title)
+            if sp:
+                spans[cid] = sp
+    run_input = state.get("run_input") or {}
+    fields = bidder_fields((run_input.get("library_refs") or {}).get("company") or [])
+    meta = (state.get("read") or {}).get("project_meta") or {}
+    out: dict[str, list] = {}
+    for cid, sp in dedupe_spans(spans).items():
+        try:
+            nodes = extract_form_nodes(data, sp)
+            filled = fill_blanks(nodes, fields, meta)
+            out[cid] = nodes
+            await _copier_event(ctx, "form_copier_ok", {"chapter": cid, "filled": filled})
+        except CopierUnsupported as e:
+            await _copier_event(ctx, "form_copier_fallback",
+                                {"chapter": cid, "reason": str(e)[:200]}, "warn")
+        except Exception as e:  # noqa: BLE001 单章意外不牵连其余章
+            await _copier_event(ctx, "form_copier_fallback",
+                                {"chapter": cid, "reason": f"意外:{e}"[:200]}, "warn")
+    return out
 
 
 def _fetch_object(key: str) -> bytes | None:
@@ -99,9 +200,13 @@ def make_export_node(ctx):
                 raise RuntimeError("该册没有章节，无法导出")
             outline = {**outline, "chapters": wanted}
         sfx = {"tech": "_tech", "business": "_biz"}.get(scope, "")
+        # 表单章复印机（spec 2026-08-14）：整体 best-effort——它自己兜掉一切异常，
+        # 返回空 dict 时 render_docx 行为与从前逐字节一致
+        copier = await _copier_nodes(ctx, state, outline)
         data = await asyncio.to_thread(render_docx, outline, state.get("chapters") or {},  # 同步 MinIO I/O（fetch_object）+ CPU 渲染一并丢线程池，不裸跑事件循环卡住同进程所有在途 run（与下面 docx_to_pdf 同理）
                                         meta=meta, package=package, fetch_object=_fetch_object,
-                                        fmt=run_input.get("format"), scope=scope)  # spec330 输出格式（缺省 None=现行样式）
+                                        fmt=run_input.get("format"), scope=scope,  # spec330 输出格式（缺省 None=现行样式）
+                                        copier_nodes=copier or None)
         key = await upload_artifact(
             ctx, f"bid{sfx}.docx", data,
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document")

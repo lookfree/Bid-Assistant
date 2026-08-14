@@ -884,9 +884,10 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         ...(step === "content" && gen.targetChars ? { target_chars: gen.targetChars } : {}),
         ...(step === "content" ? await generationRunInput() : {}),
         ...(step === "content" ? await contentCredentials(userId) : {}),
-        // library_refs（2026-08-09 定向注入 Task 2）：仅 content 步下发，export 步无需再感知
-        // 它——人员/业绩条目直发给 agent 按章关键词拼简报，两类都空则不带该键（今天行为不变）。
-        ...(step === "content" ? await libraryRefsRunInput(userId) : {}),
+        // library_refs（2026-08-09 定向注入 Task 2；2026-08-14 复印机 T5 起 export 也带）：
+        // content 步用于按章拼简报；export 步的表单复印机拿 company 条目做代码填空
+        // （spec 2026-08-14-form-xml-copier）。两类都空则不带该键（不影响缓存键口径）。
+        ...(step === "content" || step === "export" ? await libraryRefsRunInput(userId) : {}),
         // 正文断点续跑：下发**已成功完成过几次正文**。agent 据此选检查点线路——
         // 重试时这个数不变（接上刚写了一半的那条），重新生成时 +1（换一条干净的线）。
         // 不用布尔"是不是重新生成"：那个推断在"重新生成失败后重试"时会翻转，

@@ -177,3 +177,101 @@ class TestFillBlanks:
             extract_form_nodes, fill_blanks)
         nodes = extract_form_nodes(_fill_docx(), FormSpan(0, 5, -1))
         assert fill_blanks(nodes, [], {}) == 0
+
+
+def _copier_tender() -> bytes:
+    """带边界的招标 docx：承诺函（裸抬头边界）→ 内容 → 下一份表单抬头收段。"""
+    from docx import Document
+
+    d = Document()
+    d.add_paragraph("供应商资格信用承诺函")
+    d.add_paragraph("致（采购人）：云上（江西）安全技术有限公司")
+    d.add_paragraph("单位名称：________")
+    d.add_paragraph("我单位自愿参加本次采购询价活动并郑重承诺守信。")
+    d.add_paragraph("供应商情况一览表")
+    d.add_paragraph("供应商名称：________")
+    buf = io.BytesIO()
+    d.save(buf)
+    return buf.getvalue()
+
+
+class TestExportWiring:
+    """T5 导出接线：pristine 表单章走复印机，手改章/偏离表/方案章让路，基线查不到整体让路。"""
+
+    _CHAPTERS = {"b1": "<p>承诺函生成稿</p>", "b2": "<p>偏离表稿</p>", "t5": "<p>方案稿</p>"}
+    _OUTLINE = {"chapters": [
+        {"id": "b1", "title": "供应商资格信用承诺函", "group": "business"},
+        {"id": "b2", "title": "技术偏离表", "group": "tech"},
+        {"id": "t5", "title": "技术方案", "group": "tech"},
+    ]}
+
+    class _Ctx:
+        thread_id = "proj-x"
+        run_id = None          # 事件助手对 None 直接跳过，测试无需 recorder
+        recorder = None
+        agent_type = "bidding_agent"
+
+    def _state(self):
+        return {"chapters": dict(self._CHAPTERS),
+                "read": {"project_meta": {"name": "云上零信任项目"}},
+                "run_input": {"library_refs": {"company": [
+                    {"body": "单位名称：上海安几科技有限公司"}]}}}
+
+    def _run(self, monkeypatch, *, original=None, refs=None, state=None):
+        import asyncio
+        import agent.agents.bidding_agent.nodes.export as export_mod
+        tender = _copier_tender()
+        monkeypatch.setattr(export_mod, "_copier_baseline",
+                            lambda tid: (original if original is not None else dict(self._CHAPTERS),
+                                         refs if refs is not None else ["uploads/u/招标.docx"]))
+        monkeypatch.setattr(export_mod.storage_read, "read_bytes", lambda k: tender)
+        return asyncio.run(export_mod._copier_nodes(
+            self._Ctx(), state or self._state(), self._OUTLINE))
+
+    def test_pristine_form_chapter_is_copied_and_filled(self, monkeypatch):
+        out = self._run(monkeypatch)
+        assert set(out) == {"b1"}, "只有未手改的表单章走复印机（偏离表/方案章让路）"
+        xml = "".join(__import__("lxml").etree.tostring(n, encoding="unicode") for n in out["b1"])
+        assert "我单位自愿参加本次采购询价活动并郑重承诺守信。" in xml
+        assert "上海安几科技有限公司" in xml            # 企业信息已由代码填进空位
+        assert "供应商情况一览表" not in xml            # 下一份表单没被裹进来
+
+    def test_edited_chapter_lets_the_html_route_win(self, monkeypatch):
+        """用户手改过（当前 html ≠ 原始产物）→ 复印机让路，绝不静默覆盖手改。"""
+        out = self._run(monkeypatch, original={**self._CHAPTERS, "b1": "<p>模型原稿</p>"})
+        assert out == {}
+
+    def test_non_docx_tender_disables_the_copier(self, monkeypatch):
+        out = self._run(monkeypatch, refs=["uploads/u/招标.pdf"])
+        assert out == {}
+
+    def test_baseline_failure_falls_back_globally(self, monkeypatch):
+        import asyncio
+        import agent.agents.bidding_agent.nodes.export as export_mod
+
+        def boom(tid):
+            raise RuntimeError("pg down")
+        monkeypatch.setattr(export_mod, "_copier_baseline", boom)
+        out = asyncio.run(export_mod._copier_nodes(self._Ctx(), self._state(), self._OUTLINE))
+        assert out == {}
+
+
+class TestRenderIntegration:
+    def test_render_docx_grafts_copier_chapter_instead_of_html(self):
+        """copier_nodes 命中的章：招标原样 XML 进文档、该章 HTML 一个字不渲染；
+        章标题照常；未命中章行为与从前逐字节一致（None 传参兼容由既有测试覆盖）。"""
+        from docx import Document
+        from agent.agents.bidding_agent.render.docx import render_docx
+        from agent.agents.bidding_agent.render.form_copier import extract_form_nodes
+
+        nodes = extract_form_nodes(_copier_tender(), FormSpan(0, 3, -1))
+        outline = {"chapters": [{"id": "b1", "no": "第一章",
+                                 "title": "供应商资格信用承诺函", "group": "business"}]}
+        data = render_docx(outline, {"b1": "<p>HTML旧稿不该出现</p>"},
+                           copier_nodes={"b1": nodes})
+        doc = Document(io.BytesIO(data))
+        texts = "\n".join(p.text for p in doc.paragraphs)
+        assert "我单位自愿参加本次采购询价活动并郑重承诺守信。" in texts
+        assert "单位名称：" in texts
+        assert "HTML旧稿不该出现" not in texts
+        assert "供应商资格信用承诺函" in texts

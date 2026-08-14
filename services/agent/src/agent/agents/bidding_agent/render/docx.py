@@ -411,7 +411,8 @@ def _apply_custom_format(doc: Document, fmt: dict) -> None:
 def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
                  package: dict | None = None,
                  fetch_object: Callable[[str], bytes | None] | None = None,
-                 fmt: dict | None = None, scope: str = "full") -> bytes:
+                 fmt: dict | None = None, scope: str = "full",
+                 copier_nodes: dict[str, list] | None = None) -> bytes:
     """完整标书 .docx：封面 + 真目录域页 + 按 outline 顺序各章正文（含「资格证明文件」附录，
     2026-08-09 起前置为生成期系统章节，随 outline/chapters 与其余章节一并渲染，不再是独立
     追加步骤）+ 签章页 + AI 生成提示（spec326 算法备案，恒定追加，见 _add_ai_notice）。
@@ -442,6 +443,13 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
             doc.add_page_break()
         tag = f"（{group}）" if scope == "full" else ""
         doc.add_heading(f"{ch.get('no', '')} {ch.get('title', '')}{tag}", level=1)
+        # 复印机章（spec 2026-08-14）：招标 docx 原样 XML 节点直接嫁接——版式是复制不是重建，
+        # 该章的 HTML 近似版只供编辑器预览，导出以原格式为准（fill_blanks 已在节点上填过空）。
+        copied = (copier_nodes or {}).get(ch.get("id", ""))
+        if copied is not None:
+            from agent.agents.bidding_agent.render.form_copier import graft_nodes
+            graft_nodes(doc, copied)
+            continue
         # 防御清洗：库存章节可能带完整文档壳（<head><style>...），不剥会把样式文本吐进正文；
         # 再与提纲对齐（剥内嵌旧章标题 + 小节编号跟随当前章号）——标书必须按用户设置后的提纲出
         body = strip_document_shell(chapters.get(ch.get("id", ""), ""))
