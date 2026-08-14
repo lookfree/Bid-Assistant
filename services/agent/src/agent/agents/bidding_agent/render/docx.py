@@ -414,16 +414,27 @@ def _apply_custom_format(doc: Document, fmt: dict) -> None:
 # 非身份证类（营业执照等）没有粘贴框,不锚。
 
 
+# 图 alt 的条目标题前缀（cert_placement._image_alt 写成「标题|ocr 摘要」）
+_ALT_TITLE_RE = re.compile(r'alt="([^"|]{1,30})[|"]')
+
+
 def _parse_cert_groups(tail: str) -> list[tuple[str, str, list[str]]]:
     """证照尾巴 → [(组名, 引导行 HTML, [图块…])]。一条引导行统辖其后所有无引导图块——
-    证照条目正反面=1 行引导+N 张图(评审四轮 F1:按块劈开会把反面孤儿在章末)。"""
+    证照条目正反面=1 行引导+N 张图(评审四轮 F1:按块劈开会把反面孤儿在章末)。
+    **引导行缺失时从图 alt 前缀(条目标题)反查组名**(评审六轮 F1,致命回归):线上框位
+    替换后的稿子没有引导行(用户口径:更干净),导出锚定全靠这一步找回标签——丢了标签,
+    图退回章尾,入框特性整体倒退。alt 同标题的连续无引导块并成一组(正反面同组)。"""
+    from agent.agents.bidding_agent.nodes.cert_placement import _group_of
     from agent.agents.bidding_agent.render.form_copier import CERT_BLOCK_RE
 
     groups: list[tuple[str, str, list[str]]] = []
     for m in CERT_BLOCK_RE.finditer(tail):
         lead, label = m.group(1) or "", m.group(2) or ""
         body = m.group(0)[len(lead):].lstrip() if lead else m.group(0)
-        if lead or not groups:
+        if not lead:
+            am = _ALT_TITLE_RE.search(body)
+            label = (_group_of(am.group(1)) or "") if am else ""
+        if lead or not groups or (label and label != groups[-1][0]):
             groups.append((label, lead, [body]))
         else:
             groups[-1][2].append(body)
@@ -460,22 +471,24 @@ def _find_cert_anchor(nodes: list, label: str):
 from agent.agents.bidding_agent.render.form_copier import MC_NS as _MC_NS
 
 _A_EXT = "{http://schemas.openxmlformats.org/drawingml/2006/main}ext"
-_WP_EXTENT = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}extent"
-
-
+# wordprocessingDrawing 命名空间单份（评审六轮 F7：extent/positionH 各自手抄必漂移）
 _WP_NS = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}"
+_WP_EXTENT = _WP_NS + "extent"
 
 
-def _box_x(choice) -> int | None:
-    """框的水平位置（wp:positionH/wp:posOffset，EMU）；拿不到返回 None。"""
+def _box_x(choice) -> tuple[str, int] | None:
+    """框的水平位置 →（基准 relativeFrom, 偏移 EMU）；拿不到返回 None。
+    基准必须一并带出（评审六轮 F3）：page 基准的 914400 与 column 基准的 0 没有可比性，
+    裸数值排序会把版面右框排到左边。"""
     pos = next(iter(choice.iter(_WP_NS + "positionH")), None)
     if pos is None:
         return None
     po = next(iter(pos.iter(_WP_NS + "posOffset")), None)
     try:
-        return int((po.text or "").strip()) if po is not None else None
+        off = int((po.text or "").strip()) if po is not None else None
     except ValueError:
         return None
+    return (pos.get("relativeFrom") or "", off) if off is not None else None
 
 
 def _anchor_boxes(anchor) -> list[dict]:
@@ -499,8 +512,10 @@ def _anchor_boxes(anchor) -> list[dict]:
                     "cx": int(ext.get("cx") or 0) if ext is not None else 0,
                     "cy": int(ext.get("cy") or 0) if ext is not None else 0,
                     "text": "".join(t.text or "" for t in choice.iter(qn("w:t")))})
-    if out and all(b["x"] is not None for b in out):
-        out.sort(key=lambda b: b["x"])
+    xs = [b["x"] for b in out]
+    # 排序前提：全体框都有位置**且同一基准**（评审六轮 F3）——基准不同坐标不可比，保持文档序
+    if xs and all(x is not None for x in xs) and len({x[0] for x in xs}) == 1:
+        out.sort(key=lambda b: b["x"][1])
     return out
 
 

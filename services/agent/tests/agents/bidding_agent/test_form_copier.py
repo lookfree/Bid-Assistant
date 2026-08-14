@@ -1249,3 +1249,53 @@ class TestInBoxRound5:
                 '<img alt="b" data-file-id="hu" data-object-key="k/hu.jpg">')
         boxes = self._boxes_with_imgs(self._render([tbl], tail))
         assert boxes and boxes[0][1] == 1, f"格内框没拿到图: {boxes}"
+
+
+class TestInBoxRound6:
+    """评审六轮(8dae642):无引导行的框替换块必须靠 alt 反查组名锚定(F1,致命回归);
+    排序 base 不同不排(F3);命名空间单份(F7 由实现保证)。"""
+
+    def test_leadless_blocks_recover_labels_from_alt(self):
+        """F1:线上框位替换后的块没有【组名】引导行——导出解析从 alt 前缀(条目标题)
+        反查组名,两组各自成组、照常锚进各自的框。"""
+        from agent.agents.bidding_agent.render.docx import _parse_cert_groups
+        tail = ('<p><img data-file-id="fa" data-object-key="k/yu.jpg" '
+                'alt="法定代表人身份证|姓名于新宇" /></p>\n'
+                '<p><img data-file-id="hu" data-object-key="k/hu.jpg" '
+                'alt="被授权人身份证|姓名胡月" /></p>')
+        groups = _parse_cert_groups(tail)
+        assert [g[0] for g in groups] == ["法定代表人身份证明", "被授权人身份证明"], groups
+        assert all(len(g[2]) == 1 for g in groups)
+
+    def test_leadless_same_person_images_stay_one_group(self):
+        """同人正反面(alt 同标题)合成一组,别拆成两组各抢一框。"""
+        from agent.agents.bidding_agent.render.docx import _parse_cert_groups
+        tail = ('<p><img data-file-id="f1" data-object-key="k/a.jpg" alt="被授权人身份证|正" /></p>\n'
+                '<p><img data-file-id="f2" data-object-key="k/b.jpg" alt="被授权人身份证|反" /></p>')
+        groups = _parse_cert_groups(tail)
+        assert len(groups) == 1 and len(groups[0][2]) == 2, groups
+
+    def test_boxes_with_mixed_position_bases_keep_document_order(self):
+        """F3:两框 positionH 的 relativeFrom 基准不同(page vs column)时坐标不可比,
+        保持文档序,不许硬按裸数值排。"""
+        from docx.oxml import parse_xml
+        from agent.agents.bidding_agent.render.docx import _anchor_boxes
+        NS = ('xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+              'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+              'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
+              'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+              'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"')
+
+        def box(base, off, label):
+            return (f'<mc:AlternateContent><mc:Choice Requires="wps"><w:drawing><wp:anchor>'
+                    f'<wp:positionH relativeFrom="{base}"><wp:posOffset>{off}</wp:posOffset>'
+                    f"</wp:positionH><a:graphic><wps:wsp>"
+                    f'<wps:spPr><a:xfrm><a:ext cx="100" cy="100"/></a:xfrm></wps:spPr>'
+                    f"<wps:txbx><w:txbxContent><w:p><w:r><w:t>{label}</w:t></w:r></w:p>"
+                    f"</w:txbxContent></wps:txbx></wps:wsp></a:graphic></wp:anchor></w:drawing>"
+                    f"</mc:Choice></mc:AlternateContent>")
+
+        p = parse_xml(f"<w:p {NS}><w:r>{box('page', 914400, '甲')}</w:r>"
+                      f"<w:r>{box('column', 0, '乙')}</w:r></w:p>")
+        boxes = _anchor_boxes(p)
+        assert [b["text"] for b in boxes] == ["甲", "乙"], "基准不同还按裸数值排了"

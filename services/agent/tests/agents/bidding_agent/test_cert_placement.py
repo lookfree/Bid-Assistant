@@ -206,6 +206,51 @@ class TestPlaceCertificates:
         assert html.count("<p>粘贴处</p>") == 1
         assert html.count("委托代理人的合法有效身份证明复印件或扫描件粘贴处") == 1
 
+    def test_intervening_table_between_split_lines_is_never_deleted(self):
+        """F2:标签行与粘贴行之间夹着表格(不在锚块表里)——替换区间只许覆盖纯空白间隔,
+        并块会把夹层表格整块删掉。此时不算框,图走兜底,表格一字不丢。"""
+        out = {"b2": ("<p>法定代表人的合法有效身份证明复印件或扫描件</p>"
+                      "<table><tr><td>签字栏</td><td>日期栏</td></tr></table>"
+                      "<p>粘贴处</p>"
+                      "<p>附：全权代表人和法定代表人身份证原件扫描件（正、反面）</p>")}
+        state = {"outline": {"chapters": [_chapter("b2", "法定代表人授权书", [])]},
+                 "read": {},
+                 "run_input": {"credentials": [
+                     {"title": "法定代表人身份证", "images": [{"fileId": "fa", "key": "k", "name": "n"}]}]}}
+        html = place_certificates(out, state)["b2"]
+        assert "签字栏" in html and "日期栏" in html, "夹层表格被替换区间吞了"
+        assert 'data-file-id="fa"' in html          # 图仍有去处(兜底锚)
+
+    def test_duplicate_same_group_entry_never_eats_the_back_line(self):
+        """F4:库里同组两条(「法定代表人身份证」/「法定代表人身份证明(新)」)——第二条
+        不许抢反面说明行;每章每组只做一次框位替换。"""
+        out = {"b2": ("<p>法定代表人的合法有效身份证明复印件或扫描件粘贴处</p>"
+                      "<p>法定代表人的合法有效身份证明复印件或扫描件粘贴处</p>")}
+        state = {"outline": {"chapters": [_chapter("b2", "法定代表人授权书", [])]},
+                 "read": {},
+                 "run_input": {"credentials": [
+                     {"title": "法定代表人身份证", "images": [{"fileId": "a1", "key": "k1", "name": "n"}]},
+                     {"title": "法定代表人身份证明(新)", "images": [{"fileId": "a2", "key": "k2", "name": "n"}]}]}}
+        html = place_certificates(out, state)["b2"]
+        assert html.count("法定代表人的合法有效身份证明复印件或扫描件粘贴处") == 1, \
+            "反面说明行被同组第二条抢了"
+
+    def test_front_and_back_images_take_both_box_lines(self):
+        """F6:一条目正反两图 → 正面顶替第一行、反面顶替第二行,不许叠在第一行下
+        留下孤儿说明行。"""
+        out = {"b2": ("<p>委托代理人的合法有效身份证明复印件或扫描件粘贴处</p>"
+                      "<p>委托代理人的合法有效身份证明复印件或扫描件粘贴处</p>"
+                      "<p>说明：完</p>")}
+        state = {"outline": {"chapters": [_chapter("b2", "法定代表人授权书", [])]},
+                 "read": {},
+                 "run_input": {"credentials": [
+                     {"title": "被授权人身份证", "images": [
+                         {"fileId": "zf", "key": "k1", "name": "正"},
+                         {"fileId": "fm", "key": "k2", "name": "反"}]}]}}
+        html = place_certificates(out, state)["b2"]
+        assert "粘贴处" not in html, "还有孤儿说明行"
+        assert html.index('data-file-id="zf"') < html.index('data-file-id="fm"') < html.index("说明：完")
+
     def test_box_gets_its_copy_even_when_another_chapter_has_a_heading(self):
         """2026-08-14 dc4cdc34 轮实测：标题锚全局优先曾把法代证整组抢进资格文件章，
         授权书框空着。需求分级后：框和材料小节是两处**真需求**，各得一份——

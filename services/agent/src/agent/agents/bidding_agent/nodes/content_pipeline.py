@@ -673,8 +673,11 @@ async def run_content_pipeline(ctx, state: dict) -> dict[str, str]:
         missing = [cid for cid in missing if cid not in out]
     # 证照定向插章 post-pass（Task 4,计划③）：在缓存读写之外单独跑——fresh 章刚写完、
     # 缓存命中章刚取出/补写章刚补完，此刻统一现算一遍插图，绝不写回上面的章节缓存
-    # （只能跑一次：place_certificates 是纯追加、不去重，对同一 out 跑两遍会把证照块插两份）。
-    # protected = 表单模板章（招标原文逐字保真过闸）：材料小节清空通路绝不动它们的文字
+    # （只能跑一次：对同一 out 跑两遍会把证照块插两份/框行重复替换）。
+    # 改动面口径（2026-08-14 终验后更新，评审六轮 F5）：不再是纯追加——**身份证粘贴框的
+    # 说明行会被图顶替**（用户口径:收图的框说明文字不要,更干净;导出复印机从招标 XML
+    # 恢复框与文字,不受影响）；除框行替换外仍只追加。protected = 表单模板章：
+    # 材料小节清空通路绝不动它们的文字（框行替换是唯一被授权的例外）。
     out = place_certificates(out, state, protected=frozenset(
         cid for cid, tpl in (shared.get("templates") or {}).items() if (tpl or {}).get("raw")))
     if missing:

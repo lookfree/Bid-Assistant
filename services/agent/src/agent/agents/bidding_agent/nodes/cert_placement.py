@@ -77,17 +77,19 @@ _WRITABLE_GROUPS = ("授权书",)
 # 与本文件的章内插图 alt 是同一套格式（终审 I-4），不再各自持有一份实现。
 
 
+def _image_html(title: str, img: dict) -> str:
+    """单图占位段（三属性同 credentials_chapter.py 的 build_credentials_chapter，
+    无 src 无字节）。alt 以条目标题开头——导出侧无引导行时靠它反查组名锚定。"""
+    file_id = _esc(img.get("fileId"))
+    key = _esc(img.get("key"))
+    alt = _image_alt(title, img.get("ocrText"))
+    return f'<p><img data-file-id="{file_id}" data-object-key="{key}" alt="{alt}" /></p>'
+
+
 def _entry_images_html(entry: dict) -> str:
-    """条目逐图占位段（三属性同 credentials_chapter.py 的 build_credentials_chapter，
-    无 src 无字节）。框位替换时单独用——图顶替框行，不带引导行。"""
+    """条目逐图占位段。"""
     title = str(entry.get("title") or "").strip()
-    parts = []
-    for img in entry.get("images") or []:
-        file_id = _esc(img.get("fileId"))
-        key = _esc(img.get("key"))
-        alt = _image_alt(title, img.get("ocrText"))
-        parts.append(f'<p><img data-file-id="{file_id}" data-object-key="{key}" alt="{alt}" /></p>')
-    return "\n".join(parts)
+    return "\n".join(_image_html(title, img) for img in entry.get("images") or [])
 
 
 def _cert_block(keyword: str, entry: dict | None) -> str:
@@ -186,7 +188,10 @@ def _box_anchor_span(html: str, group: str) -> tuple[int, int] | None:
             continue
         if "粘贴" in text:
             return (start, end)
-        if i + 1 < len(blocks) and "粘贴" in blocks[i + 1][2] and len(blocks[i + 1][2]) <= 12:
+        # 拆行并块只许覆盖**纯空白间隔**（评审六轮 F2）：blocks 只收表外锚块,中间夹着
+        # 表格/别的元素时 blocks[i+1] 并不相邻,硬并会把夹层内容整块删掉。
+        if (i + 1 < len(blocks) and "粘贴" in blocks[i + 1][2] and len(blocks[i + 1][2]) <= 12
+                and not html[end:blocks[i + 1][0]].strip()):
             return (start, blocks[i + 1][1])
     return None
 
@@ -211,7 +216,8 @@ def _place_by_anchor(result: dict[str, str], ordered_cids: list[str],
     一次会让另一处空着；段落锚只是兜底，前两类锚任一放过就不再插。同一章内不重复
     （按 fileId 查重），同类锚全局仍只取第一处。"""
     done: dict[str, set[int]] = {"box": set(), "heading": set(), "para": set()}
-    for cid in ordered_cids:                       # ①框轮：图**替换**本人第一个空框的说明行
+    box_groups: set[tuple[str, str]] = set()       # (章, 组)——每章每组只做一轮框位替换
+    for cid in ordered_cids:                       # ①框轮：图**逐张**顶替本人的空框说明行
         html = result.get(cid)
         if not html:
             continue
@@ -219,14 +225,32 @@ def _place_by_anchor(result: dict[str, str], ordered_cids: list[str],
             if id(entry) in done["box"] or not entry.get("images"):
                 continue
             group = _group_of(str(entry.get("title") or ""))
-            if group is None:
+            # 同组第二条不许抢反面说明行（评审六轮 F4：库里「法定代表人身份证」与
+            # 「…身份证明(新)」并存时,第二条会把留给反面的行也吃掉）；同章已有同图同防
+            if group is None or (cid, group) in box_groups:
                 continue
-            span = _box_anchor_span(html, group)
-            if span is None:
+            if any(f'data-file-id="{_esc(str((im or {}).get("fileId") or ""))}"' in html
+                   for im in entry["images"] if (im or {}).get("fileId")):
                 continue
-            html = html[:span[0]] + _entry_images_html(entry) + html[span[1]:]
-            done["box"].add(id(entry))
-            placed.add(id(entry))
+            title = str(entry.get("title") or "").strip()
+            hit = False
+            last_end = 0
+            for j, img in enumerate(entry["images"]):
+                span = _box_anchor_span(html, group)
+                if span is None:
+                    # 框用完:剩余图跟在最后一张后面,绝不丢（评审六轮 F6 配套）
+                    if hit:
+                        rest = "\n".join(_image_html(title, im) for im in entry["images"][j:])
+                        html = html[:last_end] + "\n" + rest + html[last_end:]
+                    break
+                piece = _image_html(title, img)
+                html = html[:span[0]] + piece + html[span[1]:]
+                last_end = span[0] + len(piece)
+                hit = True
+            if hit:
+                done["box"].add(id(entry))
+                placed.add(id(entry))
+                box_groups.add((cid, group))
         result[cid] = html
     rounds = (
         ("heading", lambda h, g: _anchor_end(h, _aliases_of(g), True)),   # ②标题锚（材料小节）
