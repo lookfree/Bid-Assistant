@@ -400,3 +400,27 @@ class TestReviewFixes0814:
         n = fill_blanks(nodes, [("电话", "021-52808586"), ("传真", "021-99999999")], {})
         xml = "".join(__import__("lxml").etree.tostring(x, encoding="unicode") for x in nodes)
         assert n == 2 and "021-52808586" in xml and "021-99999999" in xml
+
+    def test_chapter_with_placed_cert_image_is_not_copied(self, monkeypatch):
+        """2026-08-14 生产回放实证：证照全局只放第一处；含 data-file-id 图的表单章被复印
+        替换的话，全书唯一一份执照/身份证图凭空消失——保图优先，该章走 HTML 路。"""
+        import asyncio
+        import agent.agents.bidding_agent.nodes.export as export_mod
+
+        chapters = {"b1": '<p>承诺函</p><img data-file-id="x" data-object-key="k">'}
+        outline = {"chapters": [{"id": "b1", "title": "供应商资格信用承诺函", "group": "business"}]}
+
+        class _Ctx:
+            thread_id = "proj-x"
+            run_id = None
+            recorder = None
+            agent_type = "bidding_agent"
+
+        state = {"chapters": chapters,
+                 "files": [{"key": "uploads/u/招标.docx", "name": "招标.docx"}],
+                 "read": {}, "run_input": {}}
+        monkeypatch.setattr(export_mod, "_copier_baseline", lambda tid: dict(chapters))
+        monkeypatch.setattr(export_mod.storage_read, "read_bytes",
+                            lambda k: (_ for _ in ()).throw(AssertionError("零候选不许下载")))
+        out = asyncio.run(export_mod._copier_nodes(_Ctx(), state, outline))
+        assert out == {}

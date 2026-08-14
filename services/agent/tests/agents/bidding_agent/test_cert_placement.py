@@ -572,3 +572,34 @@ def test_library_stock_change_is_reflected_without_touching_cache(monkeypatch):
     assert chat2.calls == 0, "简报没变，仍应缓存命中"
     assert "（待补充：营业执照）" in out2["t1"]
     assert "见下图" not in out2["t1"]
+
+
+def test_heading_anchor_beats_earlier_paragraph_mention():
+    """2026-08-14 生产实测:响应函正文「所附营业执照…均为原件扫描件」的承诺套话在章序上
+    先命中,抢走资格文件章「一、营业执照」的标题级小节。标题锚全局优先:第一轮只认标题,
+    全书没有标题锚的条目才轮到段落锚。"""
+    from agent.agents.bidding_agent.nodes.cert_placement import place_certificates
+
+    out = {
+        "b1": "<p>3.我方确认所附营业执照等资格文件均为原件扫描件，真实有效。</p>",
+        "b6": "<h3>一、营业执照（企业法人证明）</h3><p>如下。</p>",
+    }
+    state = {"outline": {"chapters": [{"id": "b1", "title": "响应函"},
+                                      {"id": "b6", "title": "资格文件"}]},
+             "run_input": {"credentials": [
+                 {"title": "营业执照", "images": [{"file_id": "f1", "object_key": "k1"}]}]}}
+    res = place_certificates(out, state)
+    assert "data-file-id" in res["b6"], "标题锚没赢——执照该进资格文件章"
+    assert "data-file-id" not in res["b1"], "执照插进了响应函的承诺套话底下"
+
+
+def test_paragraph_anchor_still_works_when_no_heading_exists():
+    """全书都没有标题锚(授权书的「附：…身份证原件扫描件」正是段落锚)→ 第二轮照常放。"""
+    from agent.agents.bidding_agent.nodes.cert_placement import place_certificates
+
+    out = {"t3": "<p>附：全权代表人和法定代表人身份证原件扫描件（正、反面）</p>"}
+    state = {"outline": {"chapters": [{"id": "t3", "title": "法定代表人授权书"}]},
+             "run_input": {"credentials": [
+                 {"title": "法人身份证", "images": [{"file_id": "f2", "object_key": "k2"}]}]}}
+    res = place_certificates(out, state)
+    assert "data-file-id" in res["t3"]

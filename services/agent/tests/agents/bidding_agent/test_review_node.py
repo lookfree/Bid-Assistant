@@ -293,7 +293,9 @@ def test_review_system_prompt_notes_render_time_constants(submit_gateway):
     }))
     system_msg = _review_chat(gw).last_messages[0].content
     assert "【渲染恒定项】" in system_msg
-    assert "封面、目录、投标人承诺与签章页、AI 生成说明页" in system_msg
+    assert "目录、投标人承诺与签章页、AI 生成说明页" in system_msg
+    # 2026-08-14 实测:「缺响应文件封面」被报成高风险——封面别名必须点名进恒定项
+    assert "响应文件封面" in system_msg
     assert "已具备(导出恒定附加)" in system_msg
 
 

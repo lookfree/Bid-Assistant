@@ -72,10 +72,14 @@ async def _copier_nodes(ctx, state: dict, outline: dict) -> dict[str, list]:
     main_key = str((files[0] or {}).get("key") or "") if files else ""
     if not main_key.lower().endswith(".docx"):
         return {}
+    chapters_now = state.get("chapters") or {}
+    # 含已就位证照图（data-file-id）的章不复印（2026-08-14 生产回放实证）：证照全局只放
+    # 第一处，复印替换会让全书唯一一份执照/身份证图凭空消失——保图优先，该章走 HTML 路。
     candidates = {c.get("id") or "": c.get("title") or ""
                   for c in outline.get("chapters", [])
                   if "偏离表" not in (c.get("title") or "")           # 整词，裸「偏离」误伤承诺函
-                  and _looks_like_form_title(c.get("title") or "")}
+                  and _looks_like_form_title(c.get("title") or "")
+                  and "data-file-id" not in (chapters_now.get(c.get("id") or "") or "")}
     if not candidates:
         return {}
     try:
@@ -83,7 +87,6 @@ async def _copier_nodes(ctx, state: dict, outline: dict) -> dict[str, list]:
     except Exception:  # noqa: BLE001 基线查不到=让路
         logger.warning("复印机基线查询失败，整体让路", exc_info=True)
         return {}
-    chapters_now = state.get("chapters") or {}
     pristine = {cid for cid in candidates
                 if original.get(cid) and original.get(cid) == chapters_now.get(cid)}
     if not pristine:

@@ -119,7 +119,7 @@ def _table_spans(html: str) -> list[tuple[int, int]]:
     return spans
 
 
-def _anchor_end(html: str, aliases: tuple[str, ...]) -> int:
+def _anchor_end(html: str, aliases: tuple[str, ...], headings_only: bool = False) -> int:
     """章 HTML 里第一处能挂靠该证照的位置（锚元素闭合处的偏移）：
     小节标题（h3-h6）内文含组内任一写法即算（「一、营业执照副本扫描件」）；
     普通段落还须同时含证据词（授权书表单的「附：…身份证原件扫描件」）。找不到 -1。
@@ -135,8 +135,10 @@ def _anchor_end(html: str, aliases: tuple[str, ...]) -> int:
             continue
         text = _TAG.sub("", m.group(2))
         if any(a in text for a in aliases):
-            if m.group(1) != "p" or _EVIDENCE.search(text):
-                return m.end()
+            if m.group(1) != "p":
+                return m.end()                    # 标题锚（材料小节）
+            if not headings_only and _EVIDENCE.search(text):
+                return m.end()                    # 段落锚（仅在允许段落的那一轮）
     return -1
 
 
@@ -146,23 +148,29 @@ def _place_by_anchor(result: dict[str, str], ordered_cids: list[str],
     小节底下、法人身份证要在授权书「附：…身份证原件扫描件」那行底下——不是全堆附录。
     按章序扫锚点，每个条目全局只放**第一处**：五个章都提营业执照时只进最先对口的那章，
     重复插图既撑大文件也让评委翻到哪都是同一张执照。placed 由调用方共享，
-    章尾追加与附录构建据此去重。原地更新 result。"""
-    for cid in ordered_cids:
-        html = result.get(cid)
-        if not html:
-            continue
-        for entry in credentials:
-            if id(entry) in placed or not entry.get("images"):
+    章尾追加与附录构建据此去重。原地更新 result。
+
+    **标题锚全局优先**（2026-08-14 生产实测）：响应函正文一句「所附营业执照…均为原件
+    扫描件」的承诺套话在章序上先命中，抢走了资格文件章「一、营业执照」的标题级小节——
+    执照插进响应函、材料小节只剩指路条。第一轮只认标题锚（真正的材料小节），
+    全书都没有标题锚的条目第二轮才允许段落锚。"""
+    for headings_only in (True, False):
+        for cid in ordered_cids:
+            html = result.get(cid)
+            if not html:
                 continue
-            group = _group_of(str(entry.get("title") or ""))
-            if group is None:
-                continue
-            pos = _anchor_end(html, _aliases_of(group))
-            if pos < 0:
-                continue
-            html = html[:pos] + "\n" + _cert_block(group, entry) + html[pos:]
-            placed.add(id(entry))
-        result[cid] = html
+            for entry in credentials:
+                if id(entry) in placed or not entry.get("images"):
+                    continue
+                group = _group_of(str(entry.get("title") or ""))
+                if group is None:
+                    continue
+                pos = _anchor_end(html, _aliases_of(group), headings_only)
+                if pos < 0:
+                    continue
+                html = html[:pos] + "\n" + _cert_block(group, entry) + html[pos:]
+                placed.add(id(entry))
+            result[cid] = html
 
 
 # 材料小节 = 标题点名了词表里某个证照组的小节，内容**只能是材料本身**（图），不存在
