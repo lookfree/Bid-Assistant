@@ -5,7 +5,8 @@ import { FolderOpen, Loader2, UploadCloud, X } from "lucide-react"
 import { listProjects, setCurrentProjectId, createReviewProject, type ProjectListItem } from "@/lib/project"
 import { fileSummary, fileTitle } from "@/lib/project-files"
 import { clearUploading, markUploading } from "@/lib/upload-progress"
-import { uploadFile, uploadErrorMessage, uploadHint, legacyDocAdvice, ACCEPT_BID, ACCEPT_TENDER } from "@/lib/files"
+import { uploadFile, uploadErrorMessage, uploadHint, ACCEPT_BID, ACCEPT_TENDER } from "@/lib/files"
+import { LegacyDocAdvice } from "@/components/tool/legacy-doc-advice"
 
 export type StandaloneBidEntryProps = {
   onBack?: () => void
@@ -241,10 +242,7 @@ function UploadBidCard({
         <input ref={tenderRef} type="file" accept={ACCEPT_TENDER} className="hidden" onChange={(e) => { setTenderFile(e.target.files?.[0] ?? null); e.target.value = "" }} />
       </div>
       <p className="mt-2 text-[11px] text-muted-foreground">{uploadHint(bidOnly ? ACCEPT_BID : ACCEPT_TENDER)}</p>
-      {(() => {
-        const advice = legacyDocAdvice([...bidFiles.map((f) => f.name), tenderFile?.name])
-        return advice && <p className="mt-1 text-[11px] font-medium text-amber-600 dark:text-amber-500">{advice}</p>
-      })()}
+      <LegacyDocAdvice names={[...bidFiles.map((f) => f.name), tenderFile?.name]} className="mt-1 text-[11px]" />
       {error && <p className="mt-2 text-xs font-medium text-destructive">{error}</p>}
       <button
         onClick={() => void submit()}

@@ -3,7 +3,8 @@
 import { useState, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { api } from "@/lib/api"
-import { uploadHint, uploadErrorMessage, legacyDocAdvice, UPLOAD_MAX_MB, ACCEPT_TENDER } from "@/lib/files"
+import { uploadHint, uploadErrorMessage, UPLOAD_MAX_MB, ACCEPT_TENDER } from "@/lib/files"
+import { LegacyDocAdvice } from "@/components/tool/legacy-doc-advice"
 import { ApiError } from "@/lib/api-client"
 import { createProject } from "@/lib/project"
 import { FlowNav } from "@/components/tool/flow-nav"
@@ -272,10 +273,6 @@ export default function UploadPage() {
             <p className="mt-1.5 text-sm text-muted-foreground">
               {uploadHint(ACCEPT_TENDER, { multiple: true })}
             </p>
-            {(() => {
-              const advice = legacyDocAdvice(files.map((f) => f.name))
-              return advice && <p className="mt-1.5 text-xs font-medium text-amber-600 dark:text-amber-500">{advice}</p>
-            })()}
 
             <div className="mt-6 flex flex-col items-center gap-3 sm:flex-row">
               <button
@@ -350,6 +347,7 @@ export default function UploadPage() {
                 继续添加
               </button>
             </div>
+            <LegacyDocAdvice names={files.map((f) => f.name)} className="mt-2 text-xs" />
 
             <ul className="mt-4 flex flex-col gap-2.5">
               {files.map((f) => (

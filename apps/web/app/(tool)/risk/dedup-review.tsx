@@ -1,6 +1,7 @@
 "use client"
 
 import { useRef, useState } from "react"
+import { LegacyDocAdvice } from "@/components/tool/legacy-doc-advice"
 import {
   CheckCircle2,
   Copy,
@@ -348,6 +349,7 @@ function BidUploader({
               </button>
             </div>
           ))}
+          <LegacyDocAdvice names={bids.map((f) => f.name)} className="text-xs" />
         </div>
       )}
     </>
