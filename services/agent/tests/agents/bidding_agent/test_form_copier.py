@@ -234,7 +234,8 @@ class TestExportWiring:
     def test_pristine_form_chapter_is_copied_and_filled(self, monkeypatch):
         out = self._run(monkeypatch)
         assert set(out) == {"b1"}, "只有未手改的表单章走复印机（偏离表/方案章让路）"
-        xml = "".join(__import__("lxml").etree.tostring(n, encoding="unicode") for n in out["b1"])
+        xml = "".join(__import__("lxml").etree.tostring(n, encoding="unicode")
+                      for n in out["b1"]["nodes"])
         assert "我单位自愿参加本次采购询价活动并郑重承诺守信。" in xml
         assert "上海安几科技有限公司" in xml            # 企业信息已由代码填进空位
         assert "供应商情况一览表" not in xml            # 下一份表单没被裹进来
@@ -260,7 +261,7 @@ class TestExportWiring:
         out = self._run(monkeypatch, state=self._state(fmt={"font": "仿宋"}))
         assert set(out) == {"b1"}
         doc = Document()
-        graft_nodes(doc, out["b1"])            # 免疫发生在嫁接时（进入可能被改样式的文档）
+        graft_nodes(doc, out["b1"]["nodes"])   # 免疫发生在嫁接时（进入可能被改样式的文档）
         xml = doc.element.body.xml
         assert 'w:firstLine="0"' in xml
 
@@ -341,7 +342,8 @@ class TestReviewFixes0814:
                             lambda k: _parent_child_tender())
         out = asyncio.run(export_mod._copier_nodes(_Ctx(), state, outline))
         assert set(out) == {"b1"}
-        xml = "".join(__import__("lxml").etree.tostring(n, encoding="unicode") for n in out["b1"])
+        xml = "".join(__import__("lxml").etree.tostring(n, encoding="unicode")
+                      for n in out["b1"]["nodes"])
         assert "报价一览合计栏" in xml
         assert "明细专属列" not in xml, "手改的子表单仍留在被复印的父表里（去重晚于 pristine 过滤）"
         assert "报价明细表" not in xml
@@ -409,13 +411,14 @@ class TestReviewFixes0814:
         xml = "".join(__import__("lxml").etree.tostring(x, encoding="unicode") for x in nodes)
         assert n == 2 and "021-52808586" in xml and "021-99999999" in xml
 
-    def test_chapter_with_placed_cert_image_is_not_copied(self, monkeypatch):
-        """2026-08-14 生产回放实证：证照全局只放第一处；含 data-file-id 图的表单章被复印
-        替换的话，全书唯一一份执照/身份证图凭空消失——保图优先，该章走 HTML 路。"""
+    def test_placed_cert_images_survive_as_the_copied_chapter_tail(self, monkeypatch):
+        """2026-08-14 授权书实测：含 data-file-id 图的表单章照常复印招标版式（粘贴框/签章行
+        原样），已就位的证照块抽出来挂章尾——版式与证照两头都保住，一头都不丢。"""
         import asyncio
         import agent.agents.bidding_agent.nodes.export as export_mod
 
-        chapters = {"b1": '<p>承诺函</p><img data-file-id="x" data-object-key="k">'}
+        chapters = {"b1": ('<p>承诺函稿</p><p>【营业执照】见下图：</p>'
+                           '<p><img data-file-id="x" data-object-key="k"></p>')}
         outline = {"chapters": [{"id": "b1", "title": "供应商资格信用承诺函", "group": "business"}]}
 
         class _Ctx:
@@ -428,7 +431,8 @@ class TestReviewFixes0814:
                  "files": [{"key": "uploads/u/招标.docx", "name": "招标.docx"}],
                  "read": {}, "run_input": {}}
         monkeypatch.setattr(export_mod, "_copier_baseline", lambda tid: dict(chapters))
-        monkeypatch.setattr(export_mod.storage_read, "read_bytes",
-                            lambda k: (_ for _ in ()).throw(AssertionError("零候选不许下载")))
+        monkeypatch.setattr(export_mod.storage_read, "read_bytes", lambda k: _copier_tender())
         out = asyncio.run(export_mod._copier_nodes(_Ctx(), state, outline))
-        assert out == {}
+        assert set(out) == {"b1"}
+        assert 'data-file-id="x"' in out["b1"]["tail"]
+        assert "【营业执照】见下图：" in out["b1"]["tail"]

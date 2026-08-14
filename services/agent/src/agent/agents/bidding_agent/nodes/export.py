@@ -61,7 +61,8 @@ async def _copier_nodes(ctx, state: dict, outline: dict) -> dict[str, list]:
     每次导出都带格式配置，让路等于复印机永久关闭）：嫁接段落由 graft_nodes 打缩进免疫
     （无显式缩进的补 firstLine=0），字体/行距随全书格式统一本就是用户配置的意图。
     任何失败逐章让路。"""
-    from agent.agents.bidding_agent.nodes.bidder_profile import bidder_fields
+    from agent.agents.bidding_agent.nodes.bidder_profile import (
+        authorized_rep_fields, bidder_fields)
     from agent.agents.bidding_agent.nodes.form_locate import (
         _looks_like_form_title, build_form_index, dedupe_spans, form_node_span)
     from agent.agents.bidding_agent.render.form_copier import copy_forms
@@ -73,13 +74,10 @@ async def _copier_nodes(ctx, state: dict, outline: dict) -> dict[str, list]:
     if not main_key.lower().endswith(".docx"):
         return {}
     chapters_now = state.get("chapters") or {}
-    # 含已就位证照图（data-file-id）的章不复印（2026-08-14 生产回放实证）：证照全局只放
-    # 第一处，复印替换会让全书唯一一份执照/身份证图凭空消失——保图优先，该章走 HTML 路。
     candidates = {c.get("id") or "": c.get("title") or ""
                   for c in outline.get("chapters", [])
                   if "偏离表" not in (c.get("title") or "")           # 整词，裸「偏离」误伤承诺函
-                  and _looks_like_form_title(c.get("title") or "")
-                  and "data-file-id" not in (chapters_now.get(c.get("id") or "") or "")}
+                  and _looks_like_form_title(c.get("title") or "")}
     if not candidates:
         return {}
     try:
@@ -105,7 +103,9 @@ async def _copier_nodes(ctx, state: dict, outline: dict) -> dict[str, list]:
     spans = {cid: sp for cid, sp in dedupe_spans(spans).items() if cid in pristine}
     if not spans:
         return {}
-    fields = bidder_fields((run_input.get("library_refs") or {}).get("company") or [])
+    refs = run_input.get("library_refs") or {}
+    fields = (bidder_fields(refs.get("company") or [])
+              + authorized_rep_fields(refs.get("personnel") or []))
     meta = (state.get("read") or {}).get("project_meta") or {}
     try:
         ok, fail = await asyncio.to_thread(copy_forms, data, spans, fields, meta)
@@ -118,7 +118,21 @@ async def _copier_nodes(ctx, state: dict, outline: dict) -> dict[str, list]:
     for cid, reason in fail.items():
         await _copier_event(ctx, "form_copier_fallback",
                             {"chapter": cid, "reason": reason[:200]}, "warn")
-    return {cid: nodes for cid, (nodes, _f) in ok.items()}
+    # 已就位证照图不丢（2026-08-14 授权书实测）：复印替换会让全书唯一一份执照/身份证
+    # 凭空消失。从当前章 HTML 抽出证照块（「见下图」引导行+带 data-file-id 的图）作章尾，
+    # 复印模板 XML 之后由渲染层追加——招标版式与证照两头都保住。
+    return {cid: {"nodes": nodes, "tail": _cert_tail(chapters_now.get(cid) or "")}
+            for cid, (nodes, _f) in ok.items()}
+
+
+_CERT_TAIL_RE = re.compile(
+    r"(?:<p[^>]*>【[^】]{1,24}】见下图：?</p>\s*)?<p[^>]*>\s*<img[^>]*data-file-id[^>]*>\s*</p>"
+    r"|<img[^>]*data-file-id[^>]*>", re.S)
+
+
+def _cert_tail(html: str) -> str:
+    """当前章 HTML 里的证照块（引导行+占位图）→ 复印章的章尾 HTML；没有给空串。"""
+    return "\n".join(m.group(0) for m in _CERT_TAIL_RE.finditer(html or ""))
 
 
 def _fetch_object(key: str) -> bytes | None:

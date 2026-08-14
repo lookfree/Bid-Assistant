@@ -64,3 +64,22 @@ def profile_block(company_items: list) -> str:
     return ("【投标人信息】（取自资料库·常用文本的企业信息，填写表单空位时**照此填写**，"
             "不得改写模板的固定文字；这里没有的字段，把模板原有的空位留着不要编）：\n"
             + "\n".join(f"- {label}：{value}" for label, value in fields))
+
+
+# 被授权人识别关键词：人员条目的标题/meta/tags 命中即认（2026-08-14 用户实测：胡月在库,
+# 标注「被授权人」,授权书的「全权代表姓名」空位却没得填——企业信息里没有人名字段）。
+_REP_HINTS = ("被授权人", "全权代表", "委托代理", "授权代表")
+
+
+def authorized_rep_fields(personnel_items: list) -> list[tuple[str, str]]:
+    """人员条目 → 授权书空位可填的字段对。只取第一个命中被授权人关键词的条目,
+    人名即条目标题;查不到给空——绝不拿随便一个人名凑数。"""
+    for item in personnel_items or []:
+        if not isinstance(item, dict):
+            continue
+        hint = f'{item.get("title") or ""} {item.get("meta") or ""} {item.get("tags") or ""}'
+        name = str(item.get("title") or "").strip()
+        if name and any(k in hint for k in _REP_HINTS):
+            return [("全权代表姓名", name), ("全权代表", name),
+                    ("委托代理人", name), ("被授权人", name), ("授权代表姓名", name)]
+    return []

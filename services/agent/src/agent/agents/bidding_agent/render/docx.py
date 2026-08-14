@@ -448,7 +448,12 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
         copied = (copier_nodes or {}).get(ch.get("id", ""))
         if copied is not None:
             from agent.agents.bidding_agent.render.form_copier import graft_nodes
-            graft_nodes(doc, copied)
+            graft_nodes(doc, copied["nodes"] if isinstance(copied, dict) else copied)
+            # 已就位证照图追加在复印模板之后（2026-08-14 授权书实测：不追加,全书唯一一份
+            # 执照/身份证随被替换的 HTML 一起消失）
+            tail = copied.get("tail") if isinstance(copied, dict) else ""
+            if tail:
+                _emit_html(doc, tail, fetch_object)
             continue
         # 防御清洗：库存章节可能带完整文档壳（<head><style>...），不剥会把样式文本吐进正文；
         # 再与提纲对齐（剥内嵌旧章标题 + 小节编号跟随当前章号）——标书必须按用户设置后的提纲出
