@@ -5,7 +5,7 @@ import re
 from typing import Callable
 from bs4 import BeautifulSoup
 from docx import Document
-from agent.agents.bidding_agent.render.sanitize import normalize_chapter_html, strip_document_shell
+from agent.agents.bidding_agent.render.sanitize import normalize_chapter_html, strip_document_shell, strip_template_disclaimers
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -453,6 +453,9 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
         # 防御清洗：库存章节可能带完整文档壳（<head><style>...），不剥会把样式文本吐进正文；
         # 再与提纲对齐（剥内嵌旧章标题 + 小节编号跟随当前章号）——标书必须按用户设置后的提纲出
         body = strip_document_shell(chapters.get(ch.get("id", ""), ""))
+        # 免责语渲染时也清（T6 回放实证）：旧提示词年代生成的存量章节里还带着
+        # 「本表格式与招标文件模板可能存在差异」，只在生成/改写时清,存量项目一导出就原样漏出
+        body = strip_template_disclaimers(body)
         body = normalize_chapter_html(body, ch.get("no", ""), ch.get("title", ""), ch.get("id", ""))
         if body:
             _emit_html(doc, body, fetch_object)

@@ -436,3 +436,19 @@ def test_scope_full_output_is_byte_identical_to_today():
     assert render_docx(outline, chapters, meta=meta) == render_docx(outline, chapters, meta=meta, scope="full")
     text = _doc_text(render_docx(outline, chapters, meta=meta, scope="full"))
     assert "（技术标）" in text and "·技术标部分" not in text
+
+
+def test_render_strips_legacy_disclaimers_from_stored_chapters():
+    """T6 回放实证（联通 08-12 存量项目）：旧提示词年代生成的章节里带着「本表格式与招标
+    文件模板可能存在差异」，只在生成/改写时清，存量项目一导出就原样漏出——渲染层必须兜底。"""
+    import io
+    from docx import Document
+    from agent.agents.bidding_agent.render.docx import render_docx
+
+    outline = {"chapters": [{"id": "b1", "no": "第一章", "title": "报价函", "group": "business"}]}
+    chapters = {"b1": ("<p><strong>提示：本表格式与招标文件模板可能存在差异，"
+                       "请对照招标原文核对后使用。</strong></p><p>正文实质内容留下。</p>")}
+    doc = Document(io.BytesIO(render_docx(outline, chapters)))
+    text = "\n".join(p.text for p in doc.paragraphs)
+    assert "可能存在差异" not in text
+    assert "正文实质内容留下" in text
