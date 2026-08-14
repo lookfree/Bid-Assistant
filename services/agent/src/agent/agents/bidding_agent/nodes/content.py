@@ -650,6 +650,10 @@ async def rewrite_chapter(ctx, chapter_id: str, instruction: str, state: dict,
     if (getattr(last, "response_metadata", None) or {}).get("finish_reason") == "length":
         raise RuntimeError(
             "rewrite_truncated: 模型没能完整改写本章（输出被长度上限截断）。已放弃本次改写以免丢失后半章。")
-    # 先剥对话包装（开场白/```围栏）再剥文档壳：提示词禁不住模型客套，确定性清洗兜底
-    new = clean_internal_ids(strip_document_shell(strip_chat_wrapper(last.content)))
+    # 先剥对话包装（开场白/```围栏）再剥文档壳：提示词禁不住模型客套，确定性清洗兜底。
+    # 免责语同样要剥（评审 2026-08-14 F10）：改写路是纵深防御注释里点名的"模型路径依赖"通道，
+    # 只在流水线剥、这里不剥，免责语会从补齐/改写溜进交付稿。
+    from agent.agents.bidding_agent.render.sanitize import strip_template_disclaimers
+    new = strip_template_disclaimers(
+        clean_internal_ids(strip_document_shell(strip_chat_wrapper(last.content))))
     return restore_images(new, kept_images)

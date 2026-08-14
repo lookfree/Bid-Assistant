@@ -147,10 +147,17 @@ def _chains(recent: tuple[int, ...] | None, num: tuple[int, ...]) -> bool:
     return num[:-1] == recent and num[-1] == 1
 
 
+def _src_of(item: dict) -> int:
+    """条款/标题的来源节点号。**不许写 `or -1`**：0 是合法的首节点号，falsy 短路会把
+    文档第一个节点上的表单行丢出区间（评审 2026-08-14 F9）。"""
+    src = item.get("src")
+    return src if isinstance(src, int) else -1
+
+
 def _doc_stream(read: dict) -> list[tuple[str, str]]:
     """doc_sections + doc_headings 按文档序展平成 (kind, text) 流；节标题插在本节条款之前。
     kind 只有 "heading"/"clause" 两种——标题必是边界候选，条款要过 _boundary_of。"""
-    heading_by_sec = {h.get("sec"): (str(h.get("title") or ""), int(h.get("src", -1) or -1))
+    heading_by_sec = {h.get("sec"): (str(h.get("title") or ""), _src_of(h))
                       for h in (read.get("doc_headings") or [])}
     stream: list[tuple[str, str, int]] = []
     seen: set[str] = set()
@@ -165,7 +172,7 @@ def _doc_stream(read: dict) -> list[tuple[str, str]]:
         # 条款文本按行展平：一条条款里可能嵌着多行（表格单元格/紧凑段落），
         # 「报价函」抬头行嵌在多行条款里时整条当一行会漏掉这个边界。
         # src 多行共号（复印机 T2）：旧读标结果没有 src → -1，节点区间自然给 None。
-        src = int(c.get("src", -1) or -1)
+        src = _src_of(c)
         for line in str(c.get("text") or "").splitlines():
             stream.append(("clause", line, src))
     return stream

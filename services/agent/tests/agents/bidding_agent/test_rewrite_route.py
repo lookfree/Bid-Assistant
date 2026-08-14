@@ -286,3 +286,28 @@ def test_outline_chapter_added_after_the_run_can_be_drafted(monkeypatch, submit_
     res = asyncio.run(go())
     assert not isinstance(res, JSONResponse), f"新增章被拒: {getattr(res, 'body', res)}"
     assert res["chapter_id"] == "t99"
+
+
+def test_rewrite_strips_template_disclaimers(monkeypatch, submit_gateway):
+    """评审 2026-08-14 F10：免责语的纵深防御必须盖住改写路——旧提示词教出来的
+    「本表格式与招标文件模板可能存在差异」若从补齐/改写溜进交付稿，流水线那道清洗白做。"""
+    cp = _use_memory_cp(monkeypatch)
+    dirty = ("<p><strong>提示：本表格式与招标文件模板可能存在差异，"
+             "请对照招标原文核对后使用。</strong></p><p>改写后的正文实质内容。</p>")
+    monkeypatch.setattr(chapters_mod, "_make_gateway", lambda m: submit_gateway({}, reply=dirty))
+    agent = get_agent("bidding_agent")
+    ctx = RunContext(run_id="r1", agent_type="bidding_agent", thread_id="th-d",
+                     gateway=submit_gateway({"submit_read_result": _READ_ARGS}), checkpointer=cp)
+
+    async def go():
+        async for _ in agent.astream({"file_key": "k"}, ctx):
+            pass
+        g = build_bidding_workflow(ctx)
+        await g.aupdate_state({"configurable": {"thread_id": "th-d"}},
+                              {"chapters": {"t3": "<p>旧稿</p>"}})
+        return await rewrite("bidding_agent", "th-d",
+                             RewriteBody(chapter_id="t3", instruction="改写"))
+
+    res = asyncio.run(go())
+    assert "可能存在差异" not in res["html"]
+    assert "改写后的正文实质内容" in res["html"]

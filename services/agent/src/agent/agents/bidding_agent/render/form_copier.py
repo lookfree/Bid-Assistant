@@ -19,6 +19,7 @@ import copy
 import io
 import re
 
+from agent.agents.bidding_agent.nodes.form_fidelity import _WIDTH as _LAB_WIDTH
 from agent.agents.bidding_agent.nodes.form_locate import FormSpan
 
 # 悬空引用的探测标签（命名空间写死：python-docx 的 nsmap 没有 a/v 前缀，qn 会抛）
@@ -35,32 +36,56 @@ class CopierUnsupported(Exception):
     """区间搬不动（悬空引用/区间越界/抽不出内容）——回退 HTML 渲染路线的信号。"""
 
 
+# 悬空引用黑名单（评审 2026-08-14 F4 扩容）：这些节点引用目标文档没有的关系/部件/编号定义，
+# 深拷贝过去 Word 轻则弹修复、重则版面结构断裂。段内 sectPr（横版报价表切回竖版的常见写法）
+# 同拒——分节属性嫁接进别人的分节序列会改写整本的页面设置。
+_UNPORTABLE = {
+    _NUMPR: "编号列表引用（numPr）",
+    _A_BLIP: "图片引用（blip）",
+    _V_IMAGEDATA: "图片引用（imagedata）",
+    _W_NS + "hyperlink": "超链接引用（hyperlink）",
+    _W_NS + "footnoteReference": "脚注引用",
+    _W_NS + "endnoteReference": "尾注引用",
+    _W_NS + "commentReference": "批注引用",
+    _W_NS + "object": "OLE 对象",
+    _SECTPR: "段内分节符（sectPr）",
+}
+
+
 def _check_portable(el) -> None:
     """节点能不能安全搬运；不能则抛 CopierUnsupported（原因进异常文本，观测事件要用）。"""
     for node in el.iter():
-        if node.tag == _NUMPR:
-            raise CopierUnsupported("含编号列表引用（numPr）")
-        if node.tag in (_A_BLIP, _V_IMAGEDATA):
-            raise CopierUnsupported("含图片引用（blip/imagedata）")
+        reason = _UNPORTABLE.get(node.tag)
+        if reason:
+            raise CopierUnsupported(f"含{reason}")
 
 
-def extract_form_nodes(tender_docx: bytes, span: FormSpan) -> list:
-    """招标 docx 字节 + 节点区间 → 深拷贝出的 body 节点列表（只收 w:p / w:tbl）。"""
+def body_children(tender_docx: bytes) -> list:
+    """招标 docx 字节 → body 子节点列表。多章复印时**只开一次文档**（评审 2026-08-14 F8：
+    每章重开一次 ~MB 级 docx 的完整解析，纯浪费）。"""
     from docx import Document
 
-    d = Document(io.BytesIO(tender_docx))
-    kids = list(d.element.body.iterchildren())
+    return list(Document(io.BytesIO(tender_docx)).element.body.iterchildren())
+
+
+def extract_span(kids: list, span: FormSpan) -> list:
+    """body 子节点列表 + 区间 → 深拷贝出的内容节点（只收 w:p / w:tbl）。"""
     if not (0 <= span.start <= span.end < len(kids)):
         raise CopierUnsupported(f"区间越界（{span.start}-{span.end}/{len(kids)}）")
     nodes = []
     for el in kids[span.start:span.end + 1]:
         if el.tag not in (_P_TAG, _TBL_TAG):
-            continue                      # sectPr/书签等非内容节点不搬
+            continue                      # 书签等非内容节点不搬
         _check_portable(el)
         nodes.append(copy.deepcopy(el))
     if not nodes:
         raise CopierUnsupported("区间内没有可搬运的内容节点")
     return nodes
+
+
+def extract_form_nodes(tender_docx: bytes, span: FormSpan) -> list:
+    """单区间便捷入口（测试/单章用）；多章走 copy_forms。"""
+    return extract_span(body_children(tender_docx), span)
 
 
 def graft_nodes(doc, nodes: list) -> None:
@@ -86,11 +111,12 @@ _XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
 # 空位：连续下划线（半/全角）。与保真闸的 _BLANK 同族；V1 只认下划线形态，
 # 「下划线格式的空格 run」这类形态出现实证再扩。
 _BLANK = re.compile(r"[_＿]{2,}")
-_LAB_WIDTH = str.maketrans("：（）", ":()")
+# 宽度归一表**与保真闸同一份**（评审 2026-08-14 F15：两处各养一张表已经漂移——
+# 「联系电话（＋８６）：」这类全角数字标签过得了闸却查不到值，改一处忘另一处是必然结局）。
 
 
 def _lab_norm(text: str) -> str:
-    """标签比对归一：去空白、全角冒号/括号归半角、去括注、去尾冒号。
+    """标签比对归一：去空白、标点/数字全半角归一（同保真闸）、去括注、去尾冒号。
     「单位名称(自然人姓名)：」与资料库标签「单位名称」要能对上；
     比对宽、写入零改动——归一只用于查表，落在纸上的模板字符原样。"""
     t = re.sub(r"[\s　]+", "", text or "").translate(_LAB_WIDTH)
@@ -122,24 +148,46 @@ def _set_run_text(r, text: str) -> None:
     t.text = text
 
 
+# 空位**后面**的括注标签：「____（供应商全称）」——纸质表单常把"填什么"写在横线后的括注里
+# （授权书正是这形态）。前看无标签时按它查值；括注本身是模板文字，原样保留。
+_TRAILING_LABEL = re.compile(r"^[（(]([^（）()]{2,14})[）)]")
+
+
 def _fill_paragraph(p, lut: dict[str, str]) -> int:
-    """段落型空位：「标签：」＋下划线 run（分 run 或同 run）。
-    标签取**自段首或上一个空位以来**的文字——「电话：__ 传真：__」一行两位各认各的。"""
+    """段落型空位：「标签：」＋下划线 run（分 run 或同 run，一 run 多空位逐个处理——
+    「电话：__ 传真：__」打在同一个 run 里第二个空位也要各认各的，评审 2026-08-14 F14）。
+    标签先取**自段首或上一个空位以来**的前文；前文查不到再看空位后紧跟的括注。"""
     filled = 0
     label_buf = ""
-    for r in p.findall(_W_R):
+    runs = p.findall(_W_R)
+    for i, r in enumerate(runs):
         text = _run_text(r)
         if not text:
             continue
-        m = _BLANK.search(text)
-        if m is None:
+        if not _BLANK.search(text):
             label_buf += text
             continue
-        val = lut.get(_lab_norm(label_buf + text[:m.start()]))
-        if val:
-            _set_run_text(r, text[:m.start()] + val + text[m.end():])
-            filled += 1
-        label_buf = text[m.end():]     # 空位之后另起一段标签（无论填没填）
+        out, pos, changed = "", 0, False
+        for m in _BLANK.finditer(text):
+            seg = text[pos:m.start()]
+            val = lut.get(_lab_norm(label_buf + seg))
+            if not val:
+                # 后括注标签：先看同 run 空位之后，再看下一个 run 的开头
+                after = text[m.end():] or (_run_text(runs[i + 1]) if i + 1 < len(runs) else "")
+                tm = _TRAILING_LABEL.match(after)
+                if tm:
+                    val = _alias_value(tm.group(1), lut)
+            out += seg + (val if val else m.group(0))
+            if val:
+                filled += 1
+                changed = True
+            label_buf = ""             # 空位之后另起一段标签（无论填没填）
+            pos = m.end()
+        tail = text[pos:]
+        out += tail
+        label_buf = tail
+        if changed:
+            _set_run_text(r, out)
     return filled
 
 
@@ -174,6 +222,57 @@ def _fill_table(tbl, lut: dict[str, str]) -> int:
     return filled
 
 
+# 占位括注**只在「冒号之后」的槽位替换**（评审 2026-08-14 F5 收窄裁量）：
+# 「致：【XX公司[采购人名称]】：」冒号后的括注是明确的值槽，替掉是对的；
+# 「致（采购人）：」的括注是标签限定语、「____（供应商全称）」的括注是空位说明——
+# 替掉它们就是改模板固定文字。宁可少填不错填，非冒号槽一律不动。
+_SLOT_KEYS = {"单位名称": "单位名称", "供应商名称": "单位名称", "供应商全称": "单位名称",
+              "采购人名称": "采购人", "项目名称": "项目名称", "项目编号": "项目编号"}
+_SLOT = re.compile(r"(?<=[：:])\s*([（(][^（）()]{2,14}[）)]|【[^【】]{2,16}】)")
+
+
+def _alias_value(label: str, lut: dict[str, str]) -> str | None:
+    """占位标签 → 值：先按 _SLOT_KEYS 别名（「供应商全称」→单位名称），再按字面查表。"""
+    for key, field in _SLOT_KEYS.items():
+        if key in label and lut.get(_lab_norm(field)):
+            return lut[_lab_norm(field)]
+    return lut.get(_lab_norm(label))
+
+
+def _fill_slots(p, lut: dict[str, str]) -> int:
+    """冒号后的占位括注 → 值（整个括注含括号一起替换）。"""
+    filled = 0
+    for r in p.findall(_W_R):
+        text = _run_text(r)
+        if not text or "：" not in text and ":" not in text:
+            continue
+        def _sub(m, _lut=lut):
+            return _alias_value(m.group(1)[1:-1], _lut) or m.group(0)
+        new_text = _SLOT.sub(_sub, text)
+        if new_text != text:
+            _set_run_text(r, new_text)
+            filled += 1
+    return filled
+
+
+def copy_forms(tender_docx: bytes, spans: dict[str, FormSpan], fields: list[tuple[str, str]],
+               meta: dict) -> tuple[dict[str, tuple[list, int]], dict[str, str]]:
+    """批量抽取+填空（同步重活，调用方丢线程池）→ ({章: (节点, 填空数)}, {章: 失败原因})。
+    文档只开一次；单章失败不牵连其余章。"""
+    kids = body_children(tender_docx)
+    ok: dict[str, tuple[list, int]] = {}
+    fail: dict[str, str] = {}
+    for cid, span in spans.items():
+        try:
+            nodes = extract_span(kids, span)
+            ok[cid] = (nodes, fill_blanks(nodes, fields, meta))
+        except CopierUnsupported as e:
+            fail[cid] = str(e)
+        except Exception as e:  # noqa: BLE001 单章意外不牵连其余章
+            fail[cid] = f"意外:{e}"
+    return ok, fail
+
+
 def fill_blanks(nodes: list, fields: list[tuple[str, str]], meta: dict) -> int:
     """在深拷贝出的表单节点上填空 → 命中数。值来源=资料库企业信息（用户录什么标签
     匹配什么标签，见 bidder_profile）＋项目信息白名单；同名标签先到先得；
@@ -188,7 +287,7 @@ def fill_blanks(nodes: list, fields: list[tuple[str, str]], meta: dict) -> int:
     n = 0
     for el in nodes:
         if el.tag == _P_TAG:
-            n += _fill_paragraph(el, lut)
+            n += _fill_paragraph(el, lut) + _fill_slots(el, lut)
         elif el.tag == _TBL_TAG:
             n += _fill_table(el, lut)
     return n

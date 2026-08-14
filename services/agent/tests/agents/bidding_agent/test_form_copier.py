@@ -196,7 +196,8 @@ def _copier_tender() -> bytes:
 
 
 class TestExportWiring:
-    """T5 导出接线：pristine 表单章走复印机，手改章/偏离表/方案章让路，基线查不到整体让路。"""
+    """T5 导出接线（评审 2026-08-14 整改后）：pristine 表单章走复印机；手改章/偏离表/方案章/
+    非 docx 主文件/自定义导出格式/基线缺失全部让路；招标 key 取 state.files 主文件位。"""
 
     _CHAPTERS = {"b1": "<p>承诺函生成稿</p>", "b2": "<p>偏离表稿</p>", "t5": "<p>方案稿</p>"}
     _OUTLINE = {"chapters": [
@@ -211,19 +212,21 @@ class TestExportWiring:
         recorder = None
         agent_type = "bidding_agent"
 
-    def _state(self):
+    def _state(self, *, main="uploads/u/招标.docx", fmt=None):
         return {"chapters": dict(self._CHAPTERS),
+                "files": [{"key": main, "name": main.rsplit("/", 1)[-1]},
+                          {"key": "uploads/u/答疑.docx", "name": "答疑.docx"}],
                 "read": {"project_meta": {"name": "云上零信任项目"}},
                 "run_input": {"library_refs": {"company": [
-                    {"body": "单位名称：上海安几科技有限公司"}]}}}
+                    {"body": "单位名称：上海安几科技有限公司"}]},
+                    **({"format": fmt} if fmt else {})}}
 
-    def _run(self, monkeypatch, *, original=None, refs=None, state=None):
+    def _run(self, monkeypatch, *, original=None, state=None):
         import asyncio
         import agent.agents.bidding_agent.nodes.export as export_mod
         tender = _copier_tender()
         monkeypatch.setattr(export_mod, "_copier_baseline",
-                            lambda tid: (original if original is not None else dict(self._CHAPTERS),
-                                         refs if refs is not None else ["uploads/u/招标.docx"]))
+                            lambda tid: original if original is not None else dict(self._CHAPTERS))
         monkeypatch.setattr(export_mod.storage_read, "read_bytes", lambda k: tender)
         return asyncio.run(export_mod._copier_nodes(
             self._Ctx(), state or self._state(), self._OUTLINE))
@@ -241,8 +244,16 @@ class TestExportWiring:
         out = self._run(monkeypatch, original={**self._CHAPTERS, "b1": "<p>模型原稿</p>"})
         assert out == {}
 
-    def test_non_docx_tender_disables_the_copier(self, monkeypatch):
-        out = self._run(monkeypatch, refs=["uploads/u/招标.pdf"])
+    def test_non_docx_main_tender_disables_the_copier(self, monkeypatch):
+        """主文件位（files[0]）非 docx 即让路——**不许**退而取任意第一个 docx，
+        多文件项目里那可能是答疑册（评审 F13）。"""
+        out = self._run(monkeypatch, state=self._state(main="uploads/u/招标.pdf"))
+        assert out == {}
+
+    def test_custom_export_format_disables_the_copier(self, monkeypatch):
+        """配置了导出格式（spec330）→ 让路：嫁接节点会继承被改过的 Normal 样式，
+        "逐字节同源"变谎话（评审 F6），诚实回退 HTML 路线。"""
+        out = self._run(monkeypatch, state=self._state(fmt={"font": "仿宋"}))
         assert out == {}
 
     def test_baseline_failure_falls_back_globally(self, monkeypatch):
@@ -252,6 +263,8 @@ class TestExportWiring:
         def boom(tid):
             raise RuntimeError("pg down")
         monkeypatch.setattr(export_mod, "_copier_baseline", boom)
+        monkeypatch.setattr(export_mod.storage_read, "read_bytes",
+                            lambda k: (_ for _ in ()).throw(AssertionError("零候选前不许下载")))
         out = asyncio.run(export_mod._copier_nodes(self._Ctx(), self._state(), self._OUTLINE))
         assert out == {}
 
@@ -275,3 +288,115 @@ class TestRenderIntegration:
         assert "单位名称：" in texts
         assert "HTML旧稿不该出现" not in texts
         assert "供应商资格信用承诺函" in texts
+
+
+def _parent_child_tender() -> bytes:
+    """父子表单（云上式）：3.一览表 含 3-1.明细表，4. 收段。"""
+    from docx import Document
+
+    d = Document()
+    d.add_paragraph("3.报价一览表")
+    d.add_paragraph("序号\t项目名称\t数量\t单价\t总价")
+    d.add_paragraph("合计（大写）：报价一览合计栏")
+    d.add_paragraph("3-1.报价明细表")
+    d.add_paragraph("序号\t产品名称\t品牌\t明细专属列")
+    d.add_paragraph("4.资格文件")
+    d.add_paragraph("按要求提供。")
+    buf = io.BytesIO()
+    d.save(buf)
+    return buf.getvalue()
+
+
+class TestReviewFixes0814:
+    def test_edited_child_is_still_cut_out_of_the_copied_parent(self, monkeypatch):
+        """评审 F2：去重必须先于 pristine 过滤——明细表被手改（不复印）时，
+        被复印的一览表父章里**仍不得**裹着招标的空白明细表，否则成书里同一张表两份打架。"""
+        import asyncio
+        import agent.agents.bidding_agent.nodes.export as export_mod
+
+        chapters = {"b1": "<p>一览表原稿</p>", "b2": "<p>明细表被手改</p>"}
+        outline = {"chapters": [{"id": "b1", "title": "报价一览表", "group": "business"},
+                                {"id": "b2", "title": "报价明细表", "group": "business"}]}
+
+        class _Ctx:
+            thread_id = "proj-x"
+            run_id = None
+            recorder = None
+            agent_type = "bidding_agent"
+
+        state = {"chapters": chapters,
+                 "files": [{"key": "uploads/u/招标.docx", "name": "招标.docx"}],
+                 "read": {}, "run_input": {}}
+        monkeypatch.setattr(export_mod, "_copier_baseline",
+                            lambda tid: {"b1": "<p>一览表原稿</p>", "b2": "<p>明细表原稿</p>"})
+        monkeypatch.setattr(export_mod.storage_read, "read_bytes",
+                            lambda k: _parent_child_tender())
+        out = asyncio.run(export_mod._copier_nodes(_Ctx(), state, outline))
+        assert set(out) == {"b1"}
+        xml = "".join(__import__("lxml").etree.tostring(n, encoding="unicode") for n in out["b1"])
+        assert "报价一览合计栏" in xml
+        assert "明细专属列" not in xml, "手改的子表单仍留在被复印的父表里（去重晚于 pristine 过滤）"
+        assert "报价明细表" not in xml
+
+    def test_hyperlink_and_inline_sectpr_are_refused(self):
+        """评审 F4：超链接/段内分节符引用目标文档没有的关系与分节序列，搬过去轻则修复
+        弹窗重则版面断裂——诚实拒收走 HTML 退路。"""
+        from docx import Document
+        from docx.oxml import parse_xml
+        from agent.agents.bidding_agent.render.form_copier import (
+            CopierUnsupported, extract_form_nodes)
+
+        W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+        d = Document()
+        p = d.add_paragraph("表单头")
+        p._p.append(parse_xml(
+            f'<w:hyperlink {W} xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/'
+            f'relationships" r:id="rId9"><w:r><w:t>官网</w:t></w:r></w:hyperlink>'))
+        buf = io.BytesIO()
+        d.save(buf)
+        with pytest.raises(CopierUnsupported, match="超链接"):
+            extract_form_nodes(buf.getvalue(), FormSpan(0, 0, -1))
+
+        d2 = Document()
+        p2 = d2.add_paragraph("横版报价表尾")
+        p2._p.get_or_add_pPr().append(parse_xml(f"<w:sectPr {W}/>"))
+        buf2 = io.BytesIO()
+        d2.save(buf2)
+        with pytest.raises(CopierUnsupported, match="分节"):
+            extract_form_nodes(buf2.getvalue(), FormSpan(0, 0, -1))
+
+    def test_colon_slot_placeholder_is_filled_but_label_bracket_is_not(self):
+        """评审 F5 收窄：「致：【XX公司[采购人名称]】：」冒号后的括注是值槽 → 替换；
+        「致（采购人）：」的括注是标签限定语、「____（供应商全称）」是空位说明 → 一个字不动。"""
+        from docx import Document
+        from agent.agents.bidding_agent.render.form_copier import (
+            extract_form_nodes, fill_blanks)
+
+        d = Document()
+        d.add_paragraph("致：【XX公司[采购人名称]】：")
+        d.add_paragraph("致（采购人）：____")
+        d.add_paragraph("____（供应商全称）法定代表人授权如下")
+        buf = io.BytesIO()
+        d.save(buf)
+        nodes = extract_form_nodes(buf.getvalue(), FormSpan(0, 2, -1))
+        fill_blanks(nodes, [("单位名称", "上海安几科技有限公司")], {"buyer": "云上（江西）安全技术有限公司"})
+        xml = "".join(__import__("lxml").etree.tostring(n, encoding="unicode") for n in nodes)
+        assert "致：云上（江西）安全技术有限公司：" in xml       # 冒号槽已替换
+        assert "致（采购人）：" in xml                          # 标签限定语原样
+        assert "（供应商全称）" in xml                          # 空位说明原样
+        assert "上海安几科技有限公司（供应商全称）" in xml       # 空位本身由下划线填充
+
+    def test_two_blanks_in_one_run_fill_independently(self):
+        """评审 F14：「电话：____　传真：____」打在同一个 run 里，两个空位各认各的。"""
+        from docx import Document
+        from agent.agents.bidding_agent.render.form_copier import (
+            extract_form_nodes, fill_blanks)
+
+        d = Document()
+        d.add_paragraph("电话：____　传真：____")
+        buf = io.BytesIO()
+        d.save(buf)
+        nodes = extract_form_nodes(buf.getvalue(), FormSpan(0, 0, -1))
+        n = fill_blanks(nodes, [("电话", "021-52808586"), ("传真", "021-99999999")], {})
+        xml = "".join(__import__("lxml").etree.tostring(x, encoding="unicode") for x in nodes)
+        assert n == 2 and "021-52808586" in xml and "021-99999999" in xml

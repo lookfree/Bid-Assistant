@@ -637,3 +637,25 @@ class TestFidelityRetry:
         out = _run(self._state(), chat, monkeypatch=monkeypatch)
         assert "可能存在差异" not in out["t1"]
         assert "上海安几科技有限公司" in out["t1"], "免责语连着正稿一起被误删"
+
+    def test_a_truncated_retry_is_refused(self, monkeypatch):
+        """评审 2026-08-14 F11：纠偏重写稿被长度上限截断时**不得**采用——最后一个模板段
+        之后被截掉的填空稿能过保真检，交付即半张表钉进 24h 缓存。照走模板退路。"""
+        good_but_cut = self._GOOD
+
+        class _CutRetry(_FakeChat):
+            async def ainvoke(self, msgs, config=None):
+                self.calls += 1
+                self.seen.append((msgs[0].content, msgs[-1].content))
+                if "被系统退回" in msgs[-1].content:
+                    return AIMessage(content=good_but_cut,
+                                     response_metadata={"finish_reason": "length"})
+                if "报价函" in msgs[-1].content.split("请撰写本章")[-1]:
+                    return AIMessage(content="<h3>一、报价函件</h3><p>"
+                                             + "我方接受询比文件全部条款。" * 30 + "</p>")
+                return AIMessage(content=f"<h3>一、正文</h3><p>{'内容' * 60}</p>")
+
+        chat = _CutRetry()
+        out = _run(self._state(), chat, monkeypatch=monkeypatch)
+        assert "上海安几科技有限公司" not in out["t1"], "截断的重写稿被采用了"
+        assert "自开标之日起 90 天内有效" in out["t1"], "退路没拿招标原文渲染"

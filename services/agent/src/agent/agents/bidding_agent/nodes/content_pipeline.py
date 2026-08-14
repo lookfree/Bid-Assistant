@@ -443,13 +443,18 @@ async def _fidelity_gate(ctx, chat, system_prompt: str, user: str, ch: dict, tpl
     try:
         out = await _attempt(ctx, chat, [SystemMessage(content=system_prompt),
                                          HumanMessage(content=user + feedback)], sem, progress)
+        if _finish_reason(out) == "length":
+            # 截断稿绝不入库（评审 2026-08-14 F11，同主循环口径）：最后一个模板段之后
+            # 被截掉的填空稿能过保真检，交付出去就是半张表钉进 24h 缓存
+            raise RuntimeError("纠偏重写被长度上限截断")
         retry = strip_template_disclaimers(
             clean_internal_ids(strip_document_shell(strip_chat_wrapper(_text_of(out)))))
     except _PERMANENT_ERRORS:
         raise                       # 配置/鉴权类照旧整步失败，不吞进表单退路
     except Exception as e:  # noqa: BLE001 纠偏是加分项：失败就走模板退路
         logger.warning("章 %s 表单纠偏重写失败（%s），走模板退路", cid, str(e)[:120])
-    miss2 = first_missing_segment(retry, tpl_raw) if len(retry) >= min_chars else "（重写稿过短）"
+    miss2 = (first_missing_segment(retry, tpl_raw)
+             if len(retry) >= min_chars and "<" in retry else "（重写稿过短/非HTML/被截断）")
     if miss2 is None:
         logger.info("章 %s 纠偏重写过检，保住填空稿", cid)
         await _log_pg(ctx, "form_fidelity_retry_ok", {"chapter": cid})
