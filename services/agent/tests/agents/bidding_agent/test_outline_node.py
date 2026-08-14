@@ -20,7 +20,7 @@ def test_outline_node_reads_read_produces_outline(submit_gateway):
     node = make_outline_node(ctx)
     out = asyncio.run(node({"read": {"risk_summary": ["缺 ISO27001"]}}))
     ids = [c["id"] for c in out["outline"]["chapters"]]
-    assert ids == ["t1", "b1"]
+    assert ids == ["b1", "t1"]   # 代码定序（2026-08-15）：商务组在前，模型给的顺序不作数
 
 
 def test_outline_node_fails_loud_when_model_never_submits(submit_gateway):
@@ -158,3 +158,33 @@ def test_outline_call_pins_temperature_zero(submit_gateway):
     asyncio.run(make_outline_node(RunContext(run_id="r", agent_type="bidding_agent",
                                              thread_id="t", gateway=gw))({"read": {}}))
     assert gw.get_chat_kwargs and gw.get_chat_kwargs[-1].get("temperature") == 0.0
+
+
+def test_chapters_are_reordered_group_first_then_structure_order(submit_gateway):
+    """2026-08-15 用户实测（849b02b1 轮）：模型把技术偏离表夹进商务表单中间、
+    商务条款章掉到全书末尾。顺序是结构性事实，代码定序：商务组连续在前、技术组在后；
+    组内按构成清单文档序，无引用的保持模型相对序缀后；重排后重编「第N章」。"""
+    args = {"chapters": [
+        {"id": "b1", "no": "第一章", "title": "响应函", "group": "business", "sourced": True,
+         "structure_ref": "s1", "items": [{"id": "i1", "label": "1 响应函"}]},
+        {"id": "t1", "no": "第二章", "title": "技术偏离表", "group": "tech", "sourced": True,
+         "items": [{"id": "i2", "label": "1 偏离"}]},
+        {"id": "b7", "no": "第三章", "title": "供应商情况一览表", "group": "business", "sourced": True,
+         "structure_ref": "s3", "items": [{"id": "i3", "label": "1 一览"}]},
+        {"id": "b8", "no": "第四章", "title": "商务条款响应及付款说明", "group": "business", "sourced": False,
+         "items": [{"id": "i4", "label": "1 条款"}]},
+        {"id": "b2", "no": "第五章", "title": "法定代表人授权书", "group": "business", "sourced": True,
+         "structure_ref": "s2", "items": [{"id": "i5", "label": "1 授权"}]},
+    ]}
+    gw = submit_gateway({"submit_outline": args})
+    node = make_outline_node(RunContext(run_id="r", agent_type="bidding_agent",
+                                        thread_id="t", gateway=gw))
+    out = asyncio.run(node({"read": {"required_structure": [
+        {"id": "s1", "title": "响应函", "kind": "form", "required": True},
+        {"id": "s2", "title": "法定代表人授权书", "kind": "form", "required": True},
+        {"id": "s3", "title": "供应商情况一览表", "kind": "form", "required": True},
+    ]}}))
+    ids = [c["id"] for c in out["outline"]["chapters"]]
+    assert ids == ["b1", "b2", "b7", "b8", "t1"], f"章序没按 商务(构成序+附加)→技术 排: {ids}"
+    nos = [c["no"] for c in out["outline"]["chapters"]]
+    assert nos == ["第一章", "第二章", "第三章", "第四章", "第五章"], f"重排后没重编章号: {nos}"

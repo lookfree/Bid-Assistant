@@ -99,7 +99,7 @@ def test_run2_resumes_to_outline(submit_gateway):
     evs = asyncio.run(go())
     done = [e for e in evs if e["type"] == "step.done"][-1]
     assert done["node"] == "outline"              # 续跑推进到了下一节点
-    assert [c["id"] for c in done["data"]["result"]["chapters"]] == ["t1", "b1"]
+    assert [c["id"] for c in done["data"]["result"]["chapters"]] == ["b1", "t1"]   # 代码定序:商务在前
 
 def test_run1_seeds_files_into_state(submit_gateway, monkeypatch):
     """spec320 回归（评审 Critical）：agent.astream 播种 input['files'] 进 BiddingState——

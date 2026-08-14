@@ -58,6 +58,42 @@ def _cache_key(digest: str, state: dict) -> str:
     return f"{settings.redis_prefix}outline:{digest}:{pv}:{sc}"
 
 
+_CN_DIG = "零一二三四五六七八九"
+
+
+def _cn_num(n: int) -> str:
+    """1..99 → 中文序数（一/十/十一/二十…），章号重编用。"""
+    if n < 10:
+        return _CN_DIG[n]
+    tens, ones = divmod(n, 10)
+    head = "十" if tens == 1 else _CN_DIG[tens] + "十"
+    return head + (_CN_DIG[ones] if ones else "")
+
+
+def _reorder_chapters(outline: dict, structure: list[dict]) -> dict:
+    """提纲章序**代码定序**（2026-08-15 用户实测 849b02b1 轮：模型把技术偏离表夹进商务
+    表单中间、商务条款章掉到全书末尾——提示词写着「章序照抄构成顺序」，提示词只能请求，
+    代码才能保证）。规则：商务组连续在前、技术组在后（与分册导出/预算的分组口径一致）；
+    组内有构成项引用的按招标构成清单**文档序**，无引用的保持模型相对序缀在本组末；
+    重排后重编「第N章」。缓存命中的提纲同样过这里——旧缓存的乱序当场矫正。"""
+    chapters = outline.get("chapters") or []
+    if not chapters:
+        return outline
+    ref_order = {str(s.get("id")): i for i, s in enumerate(structure)}
+
+    def key(pair):
+        idx, ch = pair
+        grp = 1 if ch.get("group") == "tech" else 0
+        ref = ref_order.get(str(ch.get("structure_ref") or ""))
+        return (grp, 0 if ref is not None else 1, ref if ref is not None else idx, idx)
+
+    ordered = [ch for _, ch in sorted(enumerate(chapters), key=key)]
+    for i, ch in enumerate(ordered):
+        ch["no"] = f"第{_cn_num(i + 1)}章"
+    outline["chapters"] = ordered
+    return outline
+
+
 def _remap_structure_refs(outline: dict, ref_titles: dict, structure: list[dict]) -> dict:
     """跨项目复用提纲时，structure_ref 指向**旧一轮读标**的构成项 id——id 由读标模型自拟，
     跨轮不稳。按标题精确重映射到本轮构成项；映射不上的删引用（模板定位/偏离投递都有
@@ -95,8 +131,9 @@ def make_outline_node(ctx):
             if raw:
                 data = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
                 logger.info("提纲缓存命中（同文件同域），零模型复用")
-                return {"outline": _remap_structure_refs(
-                    data.get("outline") or {}, data.get("ref_titles") or {}, structure_now)}
+                cached_outline = _remap_structure_refs(
+                    data.get("outline") or {}, data.get("ref_titles") or {}, structure_now)
+                return {"outline": _reorder_chapters(cached_outline, structure_now)}
         read = json.dumps(slim_read(read_state), ensure_ascii=False)
         user = f"读标结论：\n{read}\n请据此产出提纲。"
         structure = read_state.get("required_structure") or []
@@ -111,7 +148,7 @@ def make_outline_node(ctx):
         result = await run_submit_agent(
             ctx, OUTLINE_SYSTEM_PROMPT, user,
             "submit_outline", Outline, "提交提纲", attempts=5, temperature=0.0)
-        outline = result.model_dump()
+        outline = _reorder_chapters(result.model_dump(), structure_now)
         if key and r:
             payload = json.dumps(
                 {"outline": outline,
