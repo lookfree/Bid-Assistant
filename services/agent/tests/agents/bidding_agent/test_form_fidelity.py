@@ -1,7 +1,7 @@
 """表单章保真判定：模型只许填空，改了原文必须被代码逮住。"""
 
 from agent.agents.bidding_agent.nodes.form_fidelity import (
-    fixed_segments, keeps_template, template_html)
+    first_missing_segment, fixed_segments, keeps_template, template_html)
 
 # 潍坊那单的报价函形状：固定条款 + 留给投标人的空位 + 占位括注
 TEMPLATE = """报价函
@@ -183,3 +183,38 @@ class TestTemplateHtml:
         assert '<h3 style="text-align:center">响   应   函</h3>' in out
         assert "<p>致：【XX公司[采购人名称]】：</p>" in out, "正文行不该被当抬头"
         assert keeps_template(out, tpl), "居中抬头不得破坏保真自洽"
+
+
+class TestFalseRejects20260814:
+    """2026-08-14 云上江西生产拒稿五案里的三类冤杀（agent_event_log 真实样本），
+    修法=比对豁免收准，交付内容一个字不动。"""
+
+    def test_fullwidth_punctuation_fill_is_not_a_rewrite(self):
+        """t3 案：模板句里是半角逗号「为全权代表,参加」，模型按中文习惯写全角「，」——
+        标点全半角不是改写，判死它等于要求模型逐字节复读 OCR 噪声。"""
+        tpl = "（供应商全称）法定代表人 授权 （全权代表姓名）为全权代表,参加贵处组织的项目询比活动。"
+        draft = "<p>上海安几科技有限公司法定代表人 授权 胡月为全权代表，参加贵处组织的项目询比活动。</p>"
+        assert keeps_template(draft, tpl)
+
+    def test_lenticular_bracket_placeholder_may_be_replaced(self):
+        """t2 案：模板占位「【XX公司[采购人名称]】」被模型正确替换成真实采购人名——
+        【】括注与（）括注同是占位，不豁免它，填对了反被判死。"""
+        tpl = "致：【XX公司[采购人名称]】：\n我方已仔细研究了询比文件的全部内容，将严格按要求提交响应文件。"
+        draft = ("<p>致：云上（江西）安全技术有限公司：</p>"
+                 "<p>我方已仔细研究了询比文件的全部内容，将严格按要求提交响应文件。</p>")
+        assert keeps_template(draft, tpl)
+
+    def test_filling_an_empty_cell_between_fixed_headers_is_allowed(self):
+        """b5 案：表头行「联系方式\\t联系人\\t\\t联系电话\\t」的空格子是填空位——
+        折叠固定段时把空格子也粘进去，模型一填值段就断，整章冤死。"""
+        tpl = "联系方式\t联系人\t\t联系电话\t\n企业性质与注册资金情况说明"
+        draft = ("<table><tr><td>联系方式</td><td>联系人</td><td>王敏</td>"
+                 "<td>联系电话</td><td>021-52808586</td></tr></table>"
+                 "<p>企业性质与注册资金情况说明</p>")
+        assert keeps_template(draft, tpl)
+
+    def test_rewritten_fixed_text_is_still_rejected(self):
+        """豁免收准不等于放水：固定文字被改写（「承诺函」→「承诺书」）照旧拒。"""
+        tpl = "供应商资格信用承诺函\n我单位自愿参加本次采购询价活动并郑重承诺守信。"
+        draft = "<h3>供应商资格信用承诺书</h3><p>我单位自愿参加本次采购询价活动并郑重承诺守信。</p>"
+        assert first_missing_segment(draft, tpl) == "供应商资格信用承诺函"

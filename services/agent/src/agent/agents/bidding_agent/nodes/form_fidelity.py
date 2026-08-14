@@ -21,16 +21,24 @@ from agent.agents.bidding_agent.nodes.form_locate import is_form_title_line
 
 # 空位：连续下划线（半/全角）、点线、长空白。三者都是纸质表单里「此处填写」的写法。
 _BLANK = re.compile(r"[_＿]{2,}|[.．·]{4,}|[ \t　]{4,}")
-# 占位括注：短括注才算占位，长括注多半是条款正文里的说明（如「（含税，大写与小写不一致时以大写为准）」）
-_PLACEHOLDER = re.compile(r"[（(][^（）()]{0,14}[）)]")
+# 占位括注：短括注才算占位，长括注多半是条款正文里的说明（如「（含税，大写与小写不一致时以大写为准）」）。
+# 【】括注同是占位（2026-08-14 云上实测：响应函模板「致：【XX公司[采购人名称]】：」被模型
+# 正确替换成真实采购人名，反被判「改写」退回留白）。
+_PLACEHOLDER = re.compile(r"[（(][^（）()]{0,14}[）)]|【[^【】]{0,16}】")
 _TAG = re.compile(r"<[^>]+>")
 # 少于 6 个字的片段不作数：标点、编号、「致：」这类碎片到处都是，拿它们比对只会误判
 _MIN_SEG = 6
 
+# 标点全半角归一（2026-08-14 云上实测：模板句里是半角「,」「(」——OCR/录入噪声——模型按中文
+# 习惯写全角，一字之差整章判死退回留白）。只归比对，交付内容一个字不动。数字一并归：
+# 「（元）」里混入全角数字同理。
+_WIDTH = str.maketrans("：（），；？！＿．％－０１２３４５６７８９", ":(),;?!_.%-0123456789")
+
 
 def _norm(text: str) -> str:
-    """比对用的归一化：去空白。HTML 重排（换行、缩进、标签内换行）不该被当成改写。"""
-    return re.sub(r"\s+", "", text or "")
+    """比对用的归一化：去空白 + 标点/数字全半角归一。HTML 重排（换行、缩进）与
+    全半角书写习惯都不该被当成改写。"""
+    return re.sub(r"\s+", "", text or "").translate(_WIDTH)
 
 
 def _plain(html: str) -> str:
@@ -55,7 +63,11 @@ def fixed_segments(template: str) -> list[str]:
     for line in (template or "").splitlines():
         cells = line.split("\t")
         cells = [c for i, c in enumerate(cells) if i == 0 or _norm(c) != _norm(cells[i - 1]) or not _norm(c)]
-        marked = _PLACEHOLDER.sub("\x00", _BLANK.sub("\x00", "\t".join(cells)))
+        # 空格子＝填空位：固定段在空格子处断开。不断的话「联系人\t\t联系电话」折成一条
+        # 「联系人联系电话」，模型往空格子里填了值段就断——填空反被判改写
+        # （2026-08-14 云上实测：供应商情况一览表整章因此退回留白）。
+        joined = "\t".join(c if _norm(c) else "\x00" for c in cells)
+        marked = _PLACEHOLDER.sub("\x00", _BLANK.sub("\x00", joined))
         out += [seg for raw in marked.split("\x00") if len(seg := _norm(raw)) >= _MIN_SEG]
     return out
 

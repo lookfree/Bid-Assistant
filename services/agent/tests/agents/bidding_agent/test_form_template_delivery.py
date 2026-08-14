@@ -557,3 +557,83 @@ class TestReviewFindings0813Round3:
         ], "doc_headings": []}
         text = find_form(build_form_index(read), "报价明细表")
         assert "资格文件" not in text, "「4.xxx」没接上链，垃圾混进了明细表模板"
+
+
+class TestFidelityRetry:
+    """拒稿纠偏重写（2026-08-14 云上实测立案：五章拒稿全退留白，漏行/改抬头类
+    一次就能改对，直接退留白等于把模型填好的企业信息一起扔掉）。"""
+
+    _TPL = ("报价函\n致：潍坊环境工程职业学院\n"
+            "1、我方同意本报价函自开标之日起 90 天内有效，并承诺不作任何保留。\n"
+            "2、我方承诺在中标后按招标文件规定的期限完成全部供货与服务。")
+    _GOOD = ("<h3>报价函</h3><p>致：潍坊环境工程职业学院</p>"
+             "<p>1、我方同意本报价函自开标之日起 90 天内有效，并承诺不作任何保留。</p>"
+             "<p>2、我方承诺在中标后按招标文件规定的期限完成全部供货与服务。</p>"
+             "<p>投标人：上海安几科技有限公司（盖章）</p>" + "<p>补充。</p>" * 20)
+
+    def _state(self):
+        st = _state(2)
+        st["outline"]["chapters"][0]["title"] = "报价函"
+        st["outline"]["chapters"][0]["items"] = [{"id": "i1", "label": "报价函", "clause_ids": ["sec-8-c1"]}]
+        st["read"] = {"doc_sections": [{"id": "sec-8-c1", "text": self._TPL}]}
+        return st
+
+    def test_a_correctable_draft_is_rescued_by_one_retry(self, monkeypatch):
+        """首稿改了抬头被拒 → 纠偏重写给出忠实填空稿 → 交付重写稿（填好的信息保住）。
+        纠偏提示必须点名第一处对不上的固定段。"""
+        good = self._GOOD
+
+        class _Corrigible(_FakeChat):
+            async def ainvoke(self, msgs, config=None):
+                self.calls += 1
+                self.seen.append((msgs[0].content, msgs[-1].content))
+                if "被系统退回" in msgs[-1].content:
+                    return AIMessage(content=good)
+                if "报价函" in msgs[-1].content.split("请撰写本章")[-1]:
+                    return AIMessage(content="<h3>一、报价函件</h3><p>"
+                                             + "我方接受询比文件全部条款。" * 30 + "</p>")
+                return AIMessage(content=f"<h3>一、正文</h3><p>{'内容' * 60}</p>")
+
+        chat = _Corrigible()
+        out = _run(self._state(), chat, monkeypatch=monkeypatch)
+        assert "上海安几科技有限公司" in out["t1"], "纠偏重写的填空稿没被采用"
+        assert "自开标之日起 90 天内有效" in out["t1"]
+        retry_prompts = [u for _s, u in chat.seen if "被系统退回" in u]
+        assert retry_prompts and "报价函" in retry_prompts[0], "纠偏提示没点名对不上的固定段"
+
+    def test_a_stubborn_draft_still_falls_back_to_the_template(self, monkeypatch):
+        """重写仍跑偏 → 照走招标原文退路，安全性不降。"""
+        class _Stubborn(_FakeChat):
+            async def ainvoke(self, msgs, config=None):
+                self.calls += 1
+                self.seen.append((msgs[0].content, msgs[-1].content))
+                tail = msgs[-1].content.split("请撰写本章")[-1]
+                if "被系统退回" in msgs[-1].content or "报价函" in tail:
+                    return AIMessage(content="<h3>报价说明</h3><p>"
+                                             + "我方自创格式坚决不改。" * 30 + "</p>")
+                return AIMessage(content=f"<h3>一、正文</h3><p>{'内容' * 60}</p>")
+
+        chat = _Stubborn()
+        out = _run(self._state(), chat, monkeypatch=monkeypatch)
+        assert "自创格式坚决不改" not in out["t1"]
+        assert "自开标之日起 90 天内有效" in out["t1"], "退路没拿招标原文渲染"
+
+    def test_model_disclaimer_lines_are_stripped(self, monkeypatch):
+        """「本表格式与招标文件模板可能存在差异」是旧提示词教出来的免责语——
+        规则已删，代码再兜一层：交付稿里一个都不许出现。"""
+        good = self._GOOD
+
+        class _Discl(_FakeChat):
+            async def ainvoke(self, msgs, config=None):
+                self.calls += 1
+                self.seen.append((msgs[0].content, msgs[-1].content))
+                if "报价函" in msgs[-1].content.split("请撰写本章")[-1]:
+                    return AIMessage(content=(
+                        "<p><strong>提示：本表格式与招标文件模板可能存在差异，"
+                        "请对照招标原文核对后使用。</strong></p>" + good))
+                return AIMessage(content=f"<h3>一、正文</h3><p>{'内容' * 60}</p>")
+
+        chat = _Discl()
+        out = _run(self._state(), chat, monkeypatch=monkeypatch)
+        assert "可能存在差异" not in out["t1"]
+        assert "上海安几科技有限公司" in out["t1"], "免责语连着正稿一起被误删"

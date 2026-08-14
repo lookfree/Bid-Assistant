@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # 从缓存原样端回来，修复对已跑过的项目形同没修。
 # p5：表单版式重排（表格聚合/合并格/落款靠右）——保真兜底的渲染结果**也进缓存**，
 # 只改渲染不升版，同一单重跑仍端回旧碎表版式（2026-08-13 评审 CONFIRMED，与 p4 同坑）。
-_PROMPT_VER = "p5"
+_PROMPT_VER = "p6"
 _CACHE_TTL_S = 24 * 3600
 # 产出下限：短于此视为残章，重试一次；两次都残按缺章记，交给前端「补齐」按钮（免费）。
 _MIN_CHAPTER_CHARS = 120
@@ -410,14 +410,65 @@ async def _expand_short(ctx, chat, system_prompt: str, ch: dict, user: str, html
     return grown
 
 
+async def _fidelity_gate(ctx, chat, system_prompt: str, user: str, ch: dict, tpl_raw: str,
+                         html: str, min_chars: int, sem: asyncio.Semaphore,
+                         progress: _Progress) -> str:
+    """表单章保真闸：过检返回原稿；拒稿 → 留痕 + **一次纠偏重写**（把第一处对不上的固定段
+    指名道姓发回模型）→ 重写过检则用重写稿，否则零模型拿招标原文渲染；退路过短返回 ""。
+
+    纠偏重写（2026-08-14 云上实测立案）：五章拒稿全数退回留白，其中「抬头被加编号」「漏一行
+    固定文字」这类一次就能改对——直接退留白等于把模型填好的企业信息一起扔掉。真跑偏的
+    （自创表格）重写仍不过闸，照走模板退路，安全性不降。"""
+    from agent.agents.bidding_agent.nodes.common import strip_inline_images as _strip_imgs
+    from agent.agents.bidding_agent.nodes.form_fidelity import first_missing_segment, template_html
+    from agent.agents.bidding_agent.render.sanitize import (
+        clean_internal_ids, strip_chat_wrapper, strip_document_shell, strip_template_disclaimers)
+
+    cid = ch.get("id") or ""
+    miss = first_missing_segment(html, tpl_raw)
+    if miss is None:
+        return html
+    # 拒稿必须留痕（2026-08-13 云上实测教训）：被拒原稿此前直接丢弃，误杀无从诊断。
+    logger.warning("章 %s 改写了招标格式模板（首个对不上片段: %s），发回纠偏重写一次",
+                   cid, miss[:60])
+    await _log_pg(ctx, "form_fidelity_reject", {
+        "chapter": cid, "title": ch.get("title") or "",
+        "missing_segment": miss[:300],
+        "draft_head": _strip_imgs(html)[:1000], "draft_chars": len(html)}, level="warn")
+    feedback = (f"\n\n上一稿因改动招标模板的固定文字被系统退回。第一处对不上的固定片段："
+                f"『{miss[:120]}』。请重新输出本章完整 HTML：模板抬头与每一行固定文字"
+                "一字不差保留（不加编号、不删字、不改措辞），只在空位（____）与括注占位处"
+                "填写已知信息；模板没有的行、说明、提示一律不加。")
+    retry = ""
+    try:
+        out = await _attempt(ctx, chat, [SystemMessage(content=system_prompt),
+                                         HumanMessage(content=user + feedback)], sem, progress)
+        retry = strip_template_disclaimers(
+            clean_internal_ids(strip_document_shell(strip_chat_wrapper(_text_of(out)))))
+    except _PERMANENT_ERRORS:
+        raise                       # 配置/鉴权类照旧整步失败，不吞进表单退路
+    except Exception as e:  # noqa: BLE001 纠偏是加分项：失败就走模板退路
+        logger.warning("章 %s 表单纠偏重写失败（%s），走模板退路", cid, str(e)[:120])
+    miss2 = first_missing_segment(retry, tpl_raw) if len(retry) >= min_chars else "（重写稿过短）"
+    if miss2 is None:
+        logger.info("章 %s 纠偏重写过检，保住填空稿", cid)
+        await _log_pg(ctx, "form_fidelity_retry_ok", {"chapter": cid})
+        return retry
+    await _log_pg(ctx, "form_fidelity_reject", {
+        "chapter": cid, "title": ch.get("title") or "", "attempt": 2,
+        "missing_segment": (miss2 or "")[:300],
+        "draft_head": _strip_imgs(retry)[:1000], "draft_chars": len(retry)}, level="warn")
+    fallback = template_html(tpl_raw, ch.get("title") or "")
+    return fallback if len(fallback) >= min_chars else ""
+
+
 async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, shared: dict,
                      sem: asyncio.Semaphore, progress: _Progress, generation: int) -> tuple[str, str]:
     """写一章：断点命中直接用；否则限流下调模型，产出清洗后（必要时追一轮扩写）落缓存。
     残章/截断稿重试一次（截断稿绝不入库——半章缓存 24h 等于把残稿钉死,评审 2026-08-08）；
     两次失败 → 记缺章。简报构造/清洗抛错只废本章,绝不连累其他 19 章（gather 无隔离,评审）。"""
-    from agent.agents.bidding_agent.nodes.form_fidelity import first_missing_segment, template_html
     from agent.agents.bidding_agent.render.sanitize import (
-        clean_internal_ids, strip_chat_wrapper, strip_document_shell)
+        clean_internal_ids, strip_chat_wrapper, strip_document_shell, strip_template_disclaimers)
 
     cid = ch.get("id") or ""
     try:
@@ -453,6 +504,7 @@ async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, share
             continue
         try:
             html = clean_internal_ids(strip_document_shell(strip_chat_wrapper(_text_of(out))))
+            html = strip_template_disclaimers(html)
         except Exception:  # noqa: BLE001 清洗抛错按残章处理
             logger.exception("章 %s 产出清洗失败", cid)
             html = ""
@@ -474,26 +526,16 @@ async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, share
     # 一扩必然改写模板原文，等于自己把下面的保真校验逼到必然退回空表。
     if budget and not truncated and not tpl_raw:
         html = await _expand_short(ctx, chat, system_prompt, ch, user, html, budget, sem, progress)
-    # 保真校验：模型只许填空。改写/漏行/乱序 → 丢弃产出，零模型拿招标原文渲染。
+    # 保真校验：模型只许填空。改写/漏行/乱序 → 一次纠偏重写 → 仍不过则零模型拿招标原文渲染。
     # 交一份留着空位的招标原格式，比交一份措辞被改写、看着很完整的表单安全得多——
     # 后者要到评标现场才发现对不上（2026-08-11 潍坊那单实测：7 条固定条款被写成 6 条新措辞）。
-    miss = first_missing_segment(html, tpl_raw) if tpl_raw else None
-    if tpl_raw and miss is not None:
-        # 拒稿必须留痕（2026-08-13 云上实测教训）：企业信息齐全、模型填好了空，交付却
-        # 退回留白模板——被拒原稿此前直接丢弃，误杀无从诊断。记第一个对不上的固定片段
-        # 与稿件头部，拿真实样本才能校准豁免规则/提示词，让填空稿稳定存活。
-        from agent.agents.bidding_agent.nodes.common import strip_inline_images as _strip_imgs
-        logger.warning("章 %s 改写了招标格式模板（首个对不上片段: %s），弃用产出，改用招标原文渲染",
-                       cid, (miss or "")[:60])
-        await _log_pg(ctx, "form_fidelity_reject", {
-            "chapter": cid, "title": ch.get("title") or "",
-            "missing_segment": (miss or "")[:300],
-            "draft_head": _strip_imgs(html)[:1000], "draft_chars": len(html)}, level="warn")
-        html = template_html(tpl_raw, ch.get("title") or "")
+    if tpl_raw:
+        html = await _fidelity_gate(ctx, chat, system_prompt, user, ch, tpl_raw, html,
+                                    min_chars, sem, progress)
         # 退路也要过最短长度闸：模板抠歪了（只捞到一行）时渲染出来的是个残章，
         # 而它非空就会被当成写成了，既不进缺章名单、也不给用户免费补齐，还被钉进 24h 缓存。
-        if len(html) < min_chars:
-            logger.error("章 %s 的招标原文退路仍过短（%d 字符），记为缺章", cid, len(html))
+        if not html:
+            logger.error("章 %s 的招标原文退路仍过短，记为缺章", cid)
             return cid, ""
     await _cache_set(ctx, key, html)
     await progress.chapter_done(cid)

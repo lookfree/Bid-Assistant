@@ -264,3 +264,17 @@ def mentions_system_note(*texts: str) -> bool:
     **只该拿"这条发现在说什么"的字段来问**（title / advice），不要拿 tender_ref / chapter_title：
     那两个字段模型本来就被要求写出处与章节名，里面出现编号是它照做，不是它在抱怨。"""
     return any(_SYSTEM_NOTE_MENTION.search(t) for t in texts if t)
+
+
+# 模板免责语（2026-08-14 云上实测：交付标书里印着「提示：本表格式与招标文件模板可能存在
+# 差异，请对照招标原文核对后使用」——标书自己承认格式不对。这句话源自旧版提示词的
+# 「偏离须标注」规则，规则已删，这里是纵深防御：断点缓存里的旧稿、模型的路径依赖都可能
+# 再吐出来）。整段 <p>（含内嵌 <strong> 等）连根删。
+_DISCLAIMER_P = re.compile(
+    r"<p[^>]*>(?:(?!</p>).)*?(?:与招标文件模板可能存在差异|请对照招标原文核对|"
+    r"格式与招标文件模板)(?:(?!</p>).)*?</p>\s*", re.S)
+
+
+def strip_template_disclaimers(html: str) -> str:
+    """删掉模型自加的「本表格式与招标模板可能存在差异」类免责段落。"""
+    return _DISCLAIMER_P.sub("", html or "")
