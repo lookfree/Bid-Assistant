@@ -642,9 +642,15 @@ class TestInlineSectPrStripped:
             "<w:pgSz w:w=\"11906\" w:h=\"16838\"/></w:sectPr></w:pPr>"
             "<w:r><w:t>说明：法定代表人参加采购，不用提供授权书</w:t></w:r></w:p>")
 
+    def _doc_sect(self):
+        """文档级 sectPr（body 末尾）——剥离只在段内几何与它一致时发生（三轮 F6）。"""
+        from lxml import etree
+        return etree.fromstring(
+            f'<w:sectPr {self._NS}><w:pgSz w:w="11906" w:h="16838"/></w:sectPr>')
+
     def test_top_level_sectpr_is_stripped_not_rejected(self):
         from agent.agents.bidding_agent.render.form_copier import extract_span
-        nodes = extract_span([self._sect_p()], FormSpan(0, 0, -1))
+        nodes = extract_span([self._sect_p(), self._doc_sect()], FormSpan(0, 0, -1))
         xml = __import__("lxml").etree.tostring(nodes[0], encoding="unicode")
         assert "说明：法定代表人参加采购" in xml
         assert "sectPr" not in xml and "footerReference" not in xml
@@ -653,7 +659,7 @@ class TestInlineSectPrStripped:
         """剥离只发生在深拷贝上——招标文档的节点一个字不动。"""
         from agent.agents.bidding_agent.render.form_copier import extract_span
         src = self._sect_p()
-        extract_span([src], FormSpan(0, 0, -1))
+        extract_span([src, self._doc_sect()], FormSpan(0, 0, -1))
         xml = __import__("lxml").etree.tostring(src, encoding="unicode")
         assert "sectPr" in xml
 
@@ -725,3 +731,89 @@ class TestUnderlinedSpaceBlank:
         n = fill_blanks(nodes, [("单位名称", "上海安几科技有限公司")], {})
         xml = "".join(__import__("lxml").etree.tostring(x, encoding="unicode") for x in nodes)
         assert n == 0 and "上海安几科技有限公司" not in xml
+
+
+class TestReviewFixesRound3:
+    """评审 2026-08-14 三轮(bbc8be3)：行尾冒号/下划线空格/Fallback 豁免各自的越权面收回。"""
+
+    _F = [("单位名称", "上海安几科技有限公司"), ("法定代表人", "于新宇"),
+          ("全权代表姓名", "胡月")]
+    _NS = ('xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+           'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+           'xmlns:v="urn:schemas-microsoft-com:vml" '
+           'xmlns:o="urn:schemas-microsoft-com:office:office"')
+
+    def test_f1_table_cell_paragraph_not_double_filled(self):
+        """F1：<td><p>标签：</p></td> 的值走邻格（_TD_PAIR），段落遍不得再补一份。"""
+        from agent.agents.bidding_agent.render.form_copier import fill_blanks_html
+        out, n = fill_blanks_html(
+            '<table><tr><td><p>单位名称：</p></td><td><p></p></td></tr></table>', self._F, {})
+        assert n == 1 and out.count("上海安几科技有限公司") == 1
+
+    def test_f2_html_space_blank_with_bracket_label_fills(self):
+        """F2：HTML 侧同样认「长空格串＋括注标签」空位（模板退路的授权书形态），
+        审查/导出同值。"""
+        from agent.agents.bidding_agent.render.form_copier import fill_blanks_html
+        html = ("<p>                 （供应商全称）法定代表人           授权"
+                "         （全权代表姓名）为全权代表，参加询比活动。</p>")
+        out, n = fill_blanks_html(html, self._F, {})
+        assert n == 3
+        assert "上海安几科技有限公司" in out and "于新宇" in out and "胡月" in out
+
+    def test_f3_prefixed_label_is_not_filled(self):
+        """F3：「分供应商名称：」「外协供应商名称：」不是我方名称槽——行尾/尾括注一律
+        精确查表，绝不子串误配。"""
+        from agent.agents.bidding_agent.render.form_copier import (
+            extract_form_nodes, fill_blanks, fill_blanks_html)
+        from docx import Document
+        out, n = fill_blanks_html('<p>分供应商名称：</p>', self._F, {})
+        assert n == 0 and "上海安几" not in out
+        d = Document()
+        d.add_paragraph("分供应商名称：")
+        buf = io.BytesIO()
+        d.save(buf)
+        nodes = extract_form_nodes(buf.getvalue(), FormSpan(0, 0, -1))
+        assert fill_blanks(nodes, self._F, {}) == 0
+
+    def test_f4_id_reference_inside_fallback_still_rejected(self):
+        """F4：Fallback 豁免只豁**无引用的图片壳**；numPr 这类按 ID 引用 numbering.xml
+        的节点在降级层里照样悬空（WPS/LibreOffice 会读降级层）——照拒。"""
+        from lxml import etree
+        from agent.agents.bidding_agent.render.form_copier import CopierUnsupported, _check_portable
+        el = etree.fromstring(
+            f'<w:p {self._NS}><w:r><mc:AlternateContent><mc:Fallback>'
+            '<w:numPr><w:numId w:val="7"/></w:numPr>'
+            '</mc:Fallback></mc:AlternateContent></w:r></w:p>')
+        with pytest.raises(CopierUnsupported):
+            _check_portable(el)
+
+    def test_f5_vml_o_relid_counts_as_relationship_ref(self):
+        """F5：VML 的 o:relid 也是关系引用（老 Word 常只写它不写 r:id）——搬过去同样悬空。"""
+        from lxml import etree
+        from agent.agents.bidding_agent.render.form_copier import CopierUnsupported, _check_portable
+        el = etree.fromstring(
+            f'<w:p {self._NS}><w:r><mc:AlternateContent><mc:Fallback><w:pict>'
+            '<v:shape><v:imagedata o:relid="rId9"/></v:shape>'
+            '</w:pict></mc:Fallback></mc:AlternateContent></w:r></w:p>')
+        with pytest.raises(CopierUnsupported):
+            _check_portable(el)
+
+    def test_f6_landscape_sectpr_is_kept_and_rejected(self):
+        """F6：段内 sectPr 只有页面几何与文档级**相同**才剥；横版表单剥了会把宽表塞进
+        竖版页——留着走黑名单拒收，HTML 退路重排适配页面，不比从前差。"""
+        from lxml import etree
+        from agent.agents.bidding_agent.render.form_copier import CopierUnsupported, extract_span
+        W = self._NS
+        land = etree.fromstring(
+            f'<w:p {W}><w:pPr><w:sectPr><w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/>'
+            '</w:sectPr></w:pPr><w:r><w:t>横版报价表尾</w:t></w:r></w:p>')
+        ref = etree.fromstring(f'<w:sectPr {W}><w:pgSz w:w="11906" w:h="16838"/></w:sectPr>')
+        with pytest.raises(CopierUnsupported):
+            extract_span([land, ref], FormSpan(0, 0, -1))
+
+    def test_f8_nbsp_padded_colon_line_fills_and_keeps_whitespace(self):
+        """F8/F11：冒号与 </p> 之间的 &nbsp;/空白不挡填空，且模板字符（含空白）零丢失。"""
+        from agent.agents.bidding_agent.render.form_copier import fill_blanks_html
+        out, n = fill_blanks_html('<p>供应商名称：&nbsp; </p>', self._F, {})
+        assert n == 1
+        assert "供应商名称：上海安几科技有限公司&nbsp; </p>" in out

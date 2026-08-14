@@ -57,29 +57,32 @@ _UNPORTABLE = {
 
 _MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
 _R_ATTR_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+_O_RELID = "{urn:schemas-microsoft-com:office:office}relid"
 
 
 def _rel_free(el) -> bool:
-    """子树里一个关系引用属性（r:id / r:embed / r:link…）都没有。"""
-    return not any(k.startswith(_R_ATTR_NS) for node in el.iter() for k in node.attrib)
+    """子树里一个关系引用都没有（r:id / r:embed / r:link…；VML 的 o:relid 同算——
+    老 Word 常只写它不写 r:id，评审三轮 F5）。"""
+    return not any(k.startswith(_R_ATTR_NS) or k == _O_RELID
+                   for node in el.iter() for k in node.attrib)
 
 
 def _check_portable(el) -> None:
     """节点能不能安全搬运；不能则抛 CopierUnsupported（原因进异常文本，观测事件要用）。
 
     mc:Fallback 豁免（2026-08-14 云上 b2 授权书实测）：身份证粘贴框的 v:imagedata 全在
-    兼容降级层里——Word 只读 mc:Choice，降级层随行搬运无害——且不引用任何图片部件，
-    此前被当悬空图片引用白拒，整章退回 HTML 重建路线。降级层里但凡有关系引用，
-    搬过去仍是悬空 rId（Word 弹修复），照旧诚实拒收。"""
-    stack = [el]
+    兼容降级层里——Word 只读 mc:Choice——且不引用任何图片部件，此前被当悬空引用白拒。
+    豁免只豁**无引用的图片壳**（评审三轮 F4 收窄）：numPr/脚注这类按 ID 悬空引用的
+    照拒——WPS/LibreOffice 啃不动 Choice 时会读降级层，ID 悬空同样烂版。"""
+    stack = [(el, False)]
     while stack:
-        node = stack.pop()
-        if node.tag == _MC_FALLBACK and _rel_free(node):
-            continue
+        node, in_fb = stack.pop()
+        if not in_fb and node.tag == _MC_FALLBACK and _rel_free(node):
+            in_fb = True
         reason = _UNPORTABLE.get(node.tag)
-        if reason:
+        if reason and not (in_fb and node.tag in (_V_IMAGEDATA, _A_BLIP)):
             raise CopierUnsupported(f"含{reason}")
-        stack.extend(node)
+        stack.extend((c, in_fb) for c in node)
 
 
 def body_children(tender_docx: bytes) -> list:
@@ -90,17 +93,33 @@ def body_children(tender_docx: bytes) -> list:
     return list(Document(io.BytesIO(tender_docx)).element.body.iterchildren())
 
 
-def _strip_inline_sectpr(el) -> None:
+_PGSZ = _W_NS + "pgSz"
+
+
+def _same_page_geometry(sect, ref) -> bool:
+    """段内 sectPr 的页面尺寸与文档级是否一致。段内没写 pgSz＝继承，视为一致；
+    文档级拿不到而段内声明了尺寸，宁可当不一致。"""
+    pg = sect.find(_PGSZ)
+    if pg is None:
+        return True
+    rg = ref.find(_PGSZ) if ref is not None else None
+    if rg is None:
+        return False
+    return (pg.get(_W_NS + "w"), pg.get(_W_NS + "h")) == \
+           (rg.get(_W_NS + "w"), rg.get(_W_NS + "h"))
+
+
+def _strip_inline_sectpr(el, ref) -> None:
     """顶层段落的段内分节符剥离（2026-08-14 云上 b2 授权书实测）：表单末行常挂着
     「本节到此为止」标记，页面几何与文档级完全相同，只是带着指向招标页脚的引用。
-    原样搬＝悬空引用＋招标页面设置改写全书；整章拒＝版式退回 HTML 重建路线。
-    剥掉它，表单内容并入输出文档当前节，页面设置由导出格式统辖——即使原表单真是横版，
-    剥后与 HTML 退路同为竖版，不比拒收差。只剥顶层段落；藏在别处的照走黑名单拒收。"""
+    原样搬＝悬空引用＋招标页面设置改写全书；剥掉它，表单内容并入输出文档当前节。
+    只剥**页面几何与文档级相同**的（评审三轮 F6）：横版表单剥了会把按横版宽度写死的
+    表格塞进竖版页，留着走黑名单拒收，HTML 退路重排适配页面。藏在表格里的同样照拒。"""
     if el.tag != _P_TAG:
         return
     ppr = el.find(_W_PPR)
     sect = ppr.find(_SECTPR) if ppr is not None else None
-    if sect is not None:
+    if sect is not None and _same_page_geometry(sect, ref):
         ppr.remove(sect)
 
 
@@ -109,12 +128,13 @@ def extract_span(kids: list, span: FormSpan) -> list:
     可修复的不可搬因素先修（段内 sectPr 剥离，只动拷贝不动原文档），修不了的诚实拒收。"""
     if not (0 <= span.start <= span.end < len(kids)):
         raise CopierUnsupported(f"区间越界（{span.start}-{span.end}/{len(kids)}）")
+    ref = kids[-1] if kids and kids[-1].tag == _SECTPR else None   # 文档级页面设置
     nodes = []
     for el in kids[span.start:span.end + 1]:
         if el.tag not in (_P_TAG, _TBL_TAG):
             continue                      # 书签等非内容节点不搬
         c = copy.deepcopy(el)
-        _strip_inline_sectpr(c)
+        _strip_inline_sectpr(c, ref)
         _check_portable(c)
         nodes.append(c)
     if not nodes:
@@ -243,7 +263,7 @@ def _fill_paragraph(p, lut: dict[str, str]) -> int:
                 nxt = _run_text(runs[i + 1]) if i + 1 < len(runs) else ""
                 tm = _TRAILING_LABEL.match(nxt)
                 if tm:
-                    val = _alias_value(tm.group(1), lut)
+                    val = lut.get(_lab_norm(tm.group(1)))
             if val:
                 _set_run_text(r, val)   # 值写回原 run，rPr（含下划线）原样＝字在横线上
                 filled += 1
@@ -257,11 +277,12 @@ def _fill_paragraph(p, lut: dict[str, str]) -> int:
             seg = text[pos:m.start()]
             val = lut.get(_lab_norm(label_buf + seg))
             if not val:
-                # 后括注标签：先看同 run 空位之后，再看下一个 run 的开头
+                # 后括注标签：先看同 run 空位之后，再看下一个 run 的开头。
+                # 精确查表不走子串别名（评审三轮 F3：「分供应商名称」被子串配上自家名）
                 after = text[m.end():] or (_run_text(runs[i + 1]) if i + 1 < len(runs) else "")
                 tm = _TRAILING_LABEL.match(after)
                 if tm:
-                    val = _alias_value(tm.group(1), lut)
+                    val = lut.get(_lab_norm(tm.group(1)))
             out += seg + (val if val else m.group(0))
             if val:
                 filled += 1
@@ -317,7 +338,10 @@ _SLOT = re.compile(r"(?<=[：:])\s*([（(][^（）()]{2,14}[）)]|【[^【】]{2
 
 
 def _alias_value(label: str, lut: dict[str, str]) -> str | None:
-    """占位标签 → 值：先按 _SLOT_KEYS 别名（「供应商全称」→单位名称），再按字面查表。"""
+    """占位标签 → 值：先按 _SLOT_KEYS 别名（「供应商全称」→单位名称），再按字面查表。
+    子串匹配**只服务槽位**——「XX公司[采购人名称]」这类复合占位文本非子串配不上；
+    行尾冒号/尾括注是纯标签，一律精确查表（评审三轮 F3：子串会把「分供应商名称」
+    误配成自家名，比留白更糟）。"""
     for key, field in _SLOT_KEYS.items():
         if key in label and lut.get(_lab_norm(field)):
             return lut[_lab_norm(field)]
@@ -360,7 +384,9 @@ def _fill_line_end(p, lut: dict[str, str]) -> int:
     label = s[:-1]
     if not label or len(_lab_norm(label)) > _MAX_LINE_LABEL:
         return 0
-    val = _alias_value(label, lut)
+    # 精确查表（别名已折进 lut）不走 _alias_value 子串——「分供应商名称：」不是我方名称槽
+    # （评审三轮 F3）
+    val = lut.get(_lab_norm(label))
     if not val:
         return 0
     runs = p.findall(_W_R)
@@ -427,7 +453,13 @@ _INVISIBLE = re.compile(r"(?:<[^>]*>|&nbsp;|\s)+")
 _TAG_RE = re.compile(r"<[^>]+>")
 # 行尾冒号段落（与 XML 版 _fill_line_end 同形态同规则）：<p>供应商名称：</p> → 冒号后插值。
 # 只认**纯文本**段落——内容里有任何标签就不动，避免命中已插过值/结构复杂的块。
-_P_LINE = re.compile(r"(<p[^>]*>)([^<>]{1,24}[：:])(\s*)(</p>)")
+# 冒号后的 &nbsp;/空白不挡填（评审三轮 F8：XML 版 rstrip 后能填，HTML 不填就是同值缝）。
+_P_LINE = re.compile(r"(<p[^>]*>)([^<>]{1,24}[：:])((?:&nbsp;|\s)*)(</p>)")
+_TABLE_BLOCK = re.compile(r"<table\b.*?</table>", re.S | re.I)
+# HTML 侧空位在下划线之外加**长空格串**（评审三轮 F2）：模板退路的授权书空位是空格串，
+# 下划线格式不进文本层，HTML 引擎认不出＝审查留白导出有值的反向同值缝。
+# 查表命中才填，普通句子凑不出连续 4 个空格＋已知标签，误配面可控。
+_HTML_BLANK = re.compile(r"[_＿]{2,}|[ \t　]{4,}")
 
 
 # 标签别名（2026-08-14 云上导出实测 filled=0 的另一半原因）：招标落款写「供应商名称」，
@@ -462,7 +494,7 @@ def _fill_text_token(text: str, label_buf: str, nxt: str, lut: dict[str, str]) -
     值一律 html 转义（评审 F1 实证：值里的 <>& 会碎成伪标签，编辑器 innerHTML 直接吃进去）。"""
     filled = 0
     out, pos, buf = "", 0, label_buf
-    events = sorted([(m.start(), "blank", m) for m in _BLANK.finditer(text)]
+    events = sorted([(m.start(), "blank", m) for m in _HTML_BLANK.finditer(text)]
                     + [(m.start(), "slot", m) for m in _SLOT.finditer(text)])
     for _at, kind, m in events:
         if m.start() < pos:
@@ -474,7 +506,7 @@ def _fill_text_token(text: str, label_buf: str, nxt: str, lut: dict[str, str]) -
                 after = text[m.end():] or nxt
                 tm = _TRAILING_LABEL.match(after)
                 if tm:
-                    val = _alias_value(tm.group(1), lut)
+                    val = lut.get(_lab_norm(tm.group(1)))   # 精确查表，同 XML（三轮 F3）
             buf = ""
         else:
             val = _alias_value(m.group(1)[1:-1], lut)
@@ -525,16 +557,24 @@ def fill_blanks_html(html: str, fields: list[tuple[str, str]], meta: dict) -> tu
 
     def _p_line_sub(m: "re.Match[str]") -> str:
         # 本遍能看到前面遍插过值的段落，但闸在查表：整段文本（含插入值）归一后
-        # 必须恰好是已知短标签才动手——已填过值的行不可能再命中，模板字符零改动不破
+        # 必须恰好是已知短标签才动手——已填过值的行不可能再命中，模板字符零改动不破。
+        # 冒号后的空白（group 3）原样保留在值后（评审三轮 F11）。
         nonlocal filled
         label = m.group(2)[:-1]
         if not label or len(_lab_norm(label)) > _MAX_LINE_LABEL:
             return m.group(0)
-        val = _alias_value(label, lut)
+        val = lut.get(_lab_norm(label))     # 精确查表，不子串（三轮 F3）
         if not val:
             return m.group(0)
         filled += 1
-        return m.group(1) + m.group(2) + html_mod.escape(val) + m.group(4)
+        return m.group(1) + m.group(2) + html_mod.escape(val) + m.group(3) + m.group(4)
 
-    html = _P_LINE.sub(_p_line_sub, html)
-    return html, filled
+    # 行尾冒号段只在**表格之外**跑（评审三轮 F1）：格内 <p>标签：</p> 的值走 _TD_PAIR
+    # 邻格，这里再补一份就是双份——与 XML 版「只跑顶层段落」同一条界。
+    parts: list[str] = []
+    last = 0
+    for m in _TABLE_BLOCK.finditer(html):
+        parts += [_P_LINE.sub(_p_line_sub, html[last:m.start()]), m.group(0)]
+        last = m.end()
+    parts.append(_P_LINE.sub(_p_line_sub, html[last:]))
+    return "".join(parts), filled

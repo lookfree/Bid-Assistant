@@ -81,9 +81,12 @@ def fixed_segments(template: str, title: str = "") -> list[str]:
         joined = "\t".join(c if _norm(c) else "\x00" for c in cells)
         marked = _PLACEHOLDER.sub("\x00", _BLANK.sub("\x00", joined))
         out += [seg for raw in marked.split("\x00") if len(seg := _norm(raw)) >= _MIN_SEG]
-    ntitle = _norm(title)
+    # 标题变体一并豁免（评审三轮 F7）：提纲标题常带编号/尾括注（「7.供应商情况一览表」
+    # 「供应商情况一览表（格式一）」），只比精确同文的话换个标题写法冤案就复发。
+    # 片段侧的括注在上面已被 _PLACEHOLDER 断段，只需归一标题侧。
+    ntitle = re.sub(r"\([^()]{0,14}\)$", "", _SEG_NO.sub("", _norm(title)))
     if ntitle:
-        out = [s for s in out if s != ntitle and _SEG_NO.sub("", s) != ntitle]
+        out = [s for s in out if _SEG_NO.sub("", s) != ntitle]
     return out
 
 

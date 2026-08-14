@@ -288,3 +288,23 @@ class TestTitleSegmentExemption:
         from agent.agents.bidding_agent.nodes.form_fidelity import keeps_template
         assert keeps_template(self.HTML, self.TPL, title="供应商情况一览表")
         assert not keeps_template(self.HTML, self.TPL)
+
+
+class TestTitleVariantExemption:
+    """评审 2026-08-14 三轮 F7：提纲标题常带编号/括注（「7.供应商情况一览表」
+    「供应商情况一览表（格式一）」），只比精确同文的话 b7 冤案换个标题就复发。"""
+
+    TPL = "供应商情况一览表\n统一社会信用代码\t"
+    HTML = "<p>统一社会信用代码：91310104MA1FRF3K3N</p>"
+
+    def test_numbered_outline_title_exempts(self):
+        from agent.agents.bidding_agent.nodes.form_fidelity import first_missing_segment
+        assert first_missing_segment(self.HTML, self.TPL, title="7.供应商情况一览表") is None
+
+    def test_bracket_suffixed_title_exempts(self):
+        from agent.agents.bidding_agent.nodes.form_fidelity import first_missing_segment
+        assert first_missing_segment(self.HTML, self.TPL, title="供应商情况一览表（格式一）") is None
+
+    def test_unrelated_title_does_not_exempt(self):
+        from agent.agents.bidding_agent.nodes.form_fidelity import first_missing_segment
+        assert first_missing_segment(self.HTML, self.TPL, title="报价一览表") == "供应商情况一览表"
