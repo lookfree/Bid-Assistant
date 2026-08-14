@@ -67,8 +67,10 @@ class SubmitGateway:
         self.args_by_tool = args_by_tool
         self.reply = reply
         self.chats: list[SubmitChat] = []
+        self.get_chat_kwargs: list[dict] = []   # 供断言采样参数下发（如提纲步 temperature=0）
 
     def get_chat(self, **kw):
+        self.get_chat_kwargs.append(kw)
         chat = SubmitChat(self.args_by_tool, self.reply)
         self.chats.append(chat)
         return chat

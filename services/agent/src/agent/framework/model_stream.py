@@ -165,7 +165,8 @@ def _log_auth_failed(ctx, it: dict, e: BaseException) -> None:
         pass
 
 
-async def forced_stream_submit(ctx, messages, submit, tool_name: str, label: str | None):
+async def forced_stream_submit(ctx, messages, submit, tool_name: str, label: str | None,
+                               temperature: float | None = None):
     """强制 submit 工具的调用（每模型思考开关驱动，配置说了算，不靠捕错猜）：
     - 思考关（默认）：get_chat 下发关闭思考参 → 流式 + 空闲超时（连续无 token → 换降级模型再试，
       降级仍超时则推失败事件 + 记 error + 抛 ModelIdleTimeout，本节点失败可重试）；块内心跳。
@@ -175,9 +176,13 @@ async def forced_stream_submit(ctx, messages, submit, tool_name: str, label: str
     tries = chain() if callable(chain) else [{}]                   # 无 chain（异常/桩装配）：单模型无降级
     tries = [tries[0], tries[1] if len(tries) > 1 else tries[0]]   # [主, 降级]
     for i, it in enumerate(tries):
+        # temperature 显式传入时随 get_chat 下发（提纲步钉 0 收敛采样,2026-08-14 用户实测
+        # 同一份招标书提纲 12↔15 章漂移）；None=不带参,与既有行为逐字节一致。
+        extra = {"temperature": temperature} if temperature is not None else {}
         base = ctx.gateway.get_chat(
             provider=it.get("provider"), model=it.get("model"), thinking=it.get("thinking"),
             base_url=it.get("base_url"), api_key=it.get("api_key"), stream_usage=True,
+            **extra,
         )
         chat = base.bind_tools([submit], tool_choice=tool_name)   # bind 后是 RunnableBinding，无 model_name
         t0 = time.monotonic()

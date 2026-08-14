@@ -154,7 +154,7 @@ def build_create_agent(prompt: str, tools: list, ctx):
 
 async def run_submit_agent(ctx, prompt: str, user_msg: str,
                            tool_name: str, schema, desc: str, extra_tools: list | None = None,
-                           attempts: int = 3):
+                           attempts: int = 3, temperature: float | None = None):
     """跑一个「必须用 submit 工具提交 schema 结构化结果」的子 agent，返回校验后的实例。
     模型没提交（含提交但校验失败）就抛错 → run 落 failed 而非把空结果当成功；
     checkpoint 停在节点前，客户端重发 run 即重试本节点。工作流各 submit 节点共用。
@@ -171,7 +171,8 @@ async def run_submit_agent(ctx, prompt: str, user_msg: str,
         await sub.ainvoke({"messages": [{"role": "user", "content": user_msg}]},
                           config={"callbacks": [ToolCallRecorder(ctx, desc)]})
     else:
-        await _forced_submit(ctx, prompt, user_msg, submit, tool_name, label=desc, attempts=attempts)
+        await _forced_submit(ctx, prompt, user_msg, submit, tool_name, label=desc,
+                             attempts=attempts, temperature=temperature)
     result = get_result()
     if result is None:
         raise RuntimeError(f"模型未通过 {tool_name} 提交结构化结果")
@@ -193,7 +194,8 @@ def _reject_msg(msg, call_id: str, reason: str) -> list:
 
 
 async def _forced_submit(ctx, prompt: str, user_msg: str, submit, tool_name: str,
-                         attempts: int = 3, label: str | None = None) -> None:
+                         attempts: int = 3, label: str | None = None,
+                         temperature: float | None = None) -> None:
     """纯 submit 节点：tool_choice 锁定提交工具，模型无法只回文字（e2e 实测：自由发挥不调工具
     是真实高频失败模式）；Pydantic 校验失败、或大嵌套 JSON 写成非法语法（langchain 归入
     invalid_tool_calls，此前被当"没提交"直接放弃——是 bug）都把错误喂回，最多重试 attempts 轮。
@@ -207,7 +209,8 @@ async def _forced_submit(ctx, prompt: str, user_msg: str, submit, tool_name: str
     await _log_submit(ctx, tool_name, label, "input", role="human",
                       content=f"{prompt}\n\n=== user ===\n{user_msg}")
     for _ in range(attempts):
-        msg = await forced_stream_submit(ctx, messages, submit, tool_name, label)
+        msg = await forced_stream_submit(ctx, messages, submit, tool_name, label,
+                                         temperature=temperature)
         # 截断必须先于 tool_calls 判定：流式下 langchain 用 parse_partial_json 把被截断的 args
         # 补成"看似合法"的 dict → 截断输出也会落进 tool_calls。若先接受，要么校验失败空耗预算、
         # 要么静默把残缺结果当成功交付（大标书读标漏条款）。故 finish_reason=length 一律走压缩重试。
