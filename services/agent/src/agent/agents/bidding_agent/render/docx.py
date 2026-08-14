@@ -408,24 +408,9 @@ def _apply_custom_format(doc: Document, fmt: dict) -> None:
         _set_line_spacing(style.paragraph_format, f["line_spacing"])
 
 
-# 复印章证照锚定（2026-08-14 授权书截图立案）：引导行组名 → 锚定用人名词;
+# 复印章证照锚定（2026-08-14 授权书截图立案）：引导行组名 → 锚定人名词——
+# **与线上就位共用 cert_placement.id_person_words 一份**（两处各养必然漂移）;
 # 非身份证类（营业执照等）没有粘贴框,不锚。
-_ID_SUFFIX_RE = re.compile(r"(身份证明?|证明书)$")
-
-
-def _cert_person_words(label: str) -> tuple[str, ...]:
-    """证照组标准名 → 锚定人名词（「被授权人身份证明」→ 被授权人/全权代表/委托代理人…）。
-    组内别名剥「身份证(明)」后缀即人名词;含「和」的合称词有歧义、二字词（「法人」）
-    是子串误锚源（「合法人员」也含它,评审四轮 F4）——都不当锚。"""
-    if "身份证" not in label:
-        return ()
-    from agent.agents.bidding_agent.nodes.cert_placement import CERT_GROUPS
-
-    for group in CERT_GROUPS:
-        if label in group:
-            words = {_ID_SUFFIX_RE.sub("", k) for k in group}
-            return tuple(w for w in words if len(w) >= 3 and "和" not in w)
-    return ()
 
 
 def _parse_cert_groups(tail: str) -> list[tuple[str, str, list[str]]]:
@@ -453,7 +438,9 @@ def _find_cert_anchor(nodes: list, label: str):
     段落框=("after")图插段后;表格里的框格=("cell")图直接进格——整表后插会离框一页远
     (评审四轮 F3)。键用 (节点序, 格序)——lxml 代理 id 跨迭代不稳定,绝不当键。
     判据:人名词＋「身份证」＋「粘贴」同段/同格（.//w:t 连文本框内壁一起收）。"""
-    words = _cert_person_words(label)
+    from agent.agents.bidding_agent.nodes.cert_placement import id_person_words
+
+    words = id_person_words(label)
     if not words:
         return None
     for i, el in enumerate(nodes):

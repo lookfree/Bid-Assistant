@@ -96,6 +96,23 @@ def _cert_block(keyword: str, entry: dict | None) -> str:
 # 证据词：段落锚点必须带其一。「响应函里顺嘴提到营业执照」不是要材料的地方，
 # 「附：全权代表人和法定代表人身份证原件扫描件」才是——不带证据词的散文提及一律不挂图。
 _EVIDENCE = re.compile(r"扫描件|原件|复印件|证明材料|加盖公章")
+
+# 身份证组的锚定人名词（导出侧 render/docx 复印章锚定与这里的线上就位**共用同一份**——
+# 两处各养一份必然漂移）。组内别名剥「身份证(明)/证明书」后缀即人名词；
+# 含「和」的合称词有歧义、二字词（「法人」）会被「合法人员」子串误中——都不当锚。
+_ID_SUFFIX_RE = re.compile(r"(身份证明?|证明书)$")
+
+
+def id_person_words(label: str) -> tuple[str, ...]:
+    """证照组标准名 → 锚定人名词（「被授权人身份证明」→ 被授权人/全权代表/委托代理人…）；
+    非身份证类返回空。"""
+    if "身份证" not in label:
+        return ()
+    for group in CERT_GROUPS:
+        if label in group:
+            words = {_ID_SUFFIX_RE.sub("", k) for k in group}
+            return tuple(w for w in words if len(w) >= 3 and "和" not in w)
+    return ()
 _ANCHOR = re.compile(r"<(h[3-6]|p)[^>]*>(.*?)</\1>", re.S)
 _TAG = re.compile(r"<[^>]+>")
 _TABLE_TOKEN = re.compile(r"<table\b|</table\s*>", re.I)
@@ -144,6 +161,26 @@ def _anchor_end(html: str, aliases: tuple[str, ...], headings_only: bool = False
     return -1
 
 
+def _box_anchor_end(html: str, group: str) -> int:
+    """身份证组的**粘贴框锚**（2026-08-14 dc4cdc34 轮实测）：人名词＋「身份证」＋「粘贴」
+    同段（表外 p），取该组**最后一处**命中——正反面框成对出现，图落在成对框之后。
+    此前身份证只能靠别名子串锚：「附：全权代表人和法定代表人身份证原件扫描件」抢走
+    被授权人的证（错落点），法代证则被别章「法定代表人身份证明」小节标题全局抢注。
+    非身份证组返回 -1，照走原有标题/段落锚。"""
+    words = id_person_words(group)
+    if not words:
+        return -1
+    tables = _table_spans(html or "")
+    best = -1
+    for m in _ANCHOR.finditer(html or ""):
+        if any(s <= m.start() < e for s, e in tables):
+            continue
+        text = _TAG.sub("", m.group(2))
+        if "身份证" in text and "粘贴" in text and any(w in text for w in words):
+            best = m.end()
+    return best
+
+
 def _place_by_anchor(result: dict[str, str], ordered_cids: list[str],
                      credentials: list[dict], placed: set[int]) -> None:
     """定向就位（2026-08-12 云上江西用户反馈）：营业执照图要在「营业执照副本扫描件」
@@ -155,8 +192,16 @@ def _place_by_anchor(result: dict[str, str], ordered_cids: list[str],
     **标题锚全局优先**（2026-08-14 生产实测）：响应函正文一句「所附营业执照…均为原件
     扫描件」的承诺套话在章序上先命中，抢走了资格文件章「一、营业执照」的标题级小节——
     执照插进响应函、材料小节只剩指路条。第一轮只认标题锚（真正的材料小节），
-    全书都没有标题锚的条目第二轮才允许段落锚。"""
-    for headings_only in (True, False):
+    全书都没有标题锚的条目第二轮才允许段落锚。
+    **粘贴框锚在两轮之前**（2026-08-14 dc4cdc34 轮）：身份证的「XX的…身份证明…粘贴处」
+    框行是比任何小节标题都强的定位——不先跑框锚，法代证被资格文件章的小节标题全局
+    抢注、被授权人证错落在「附：…」行后。"""
+    rounds = (
+        _box_anchor_end,                                       # ①粘贴框锚（身份证组专属）
+        lambda h, g: _anchor_end(h, _aliases_of(g), True),     # ②标题锚（材料小节）
+        lambda h, g: _anchor_end(h, _aliases_of(g), False),    # ③段落锚（带证据词）
+    )
+    for locate in rounds:
         for cid in ordered_cids:
             html = result.get(cid)
             if not html:
@@ -167,7 +212,7 @@ def _place_by_anchor(result: dict[str, str], ordered_cids: list[str],
                 group = _group_of(str(entry.get("title") or ""))
                 if group is None:
                     continue
-                pos = _anchor_end(html, _aliases_of(group), headings_only)
+                pos = locate(html, group)
                 if pos < 0:
                     continue
                 html = html[:pos] + "\n" + _cert_block(group, entry) + html[pos:]

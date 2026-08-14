@@ -157,6 +157,43 @@ class TestPlaceCertificates:
         # 无证据词的散文提及不是锚：图不该出现在那一段之后、「附」行之前
         assert not (html.index("凭身份证办理") < pos_img < html.index("附：全权代表人"))
 
+    def test_id_card_prefers_its_paste_box_over_the_attachment_line(self):
+        """粘贴框锚（2026-08-14 深夜实测）：身份证图要贴在**本人**的粘贴框行后，
+        不是「附：…」行后。框行＝人名词＋身份证＋粘贴同段；正反面框成对，图落成对框之后。"""
+        out = {"b2": ("<h3>法定代表人授权书</h3>"
+                      "<p>法定代表人的合法有效身份证明复印件或扫描件粘贴处</p>"
+                      "<p>法定代表人的合法有效身份证明复印件或扫描件粘贴处</p>"
+                      "<p>委托代理人的合法有效身份证明复印件或扫描件粘贴处</p>"
+                      "<p>委托代理人的合法有效身份证明复印件或扫描件粘贴处</p>"
+                      "<p>附：全权代表人和法定代表人身份证原件扫描件（正、反面）</p>"
+                      "<p>说明：法定代表人参加采购，不用提供授权书</p>")}
+        state = {"outline": {"chapters": [_chapter("b2", "法定代表人授权书", [])]},
+                 "read": {},
+                 "run_input": {"credentials": [
+                     {"title": "法定代表人身份证", "images": [{"fileId": "fa", "key": "k1", "name": "n"}]},
+                     {"title": "被授权人身份证", "images": [{"fileId": "hu", "key": "k2", "name": "n"}]}]}}
+        html = place_certificates(out, state)["b2"]
+        i_fa = html.index('data-file-id="fa"')
+        i_hu = html.index('data-file-id="hu"')
+        i_wt = html.index("委托代理人的")
+        i_fu = html.index("附：全权代表人")
+        assert i_fa < i_wt, "法代证没贴在法代框后（跑到委托框之后/附行去了）"
+        assert i_wt < i_hu < i_fu, "被授权人证没贴在委托框后、附行前"
+
+    def test_box_anchor_beats_heading_theft_in_another_chapter(self):
+        """标题锚全局优先曾把法代证抢进资格文件章的「法定代表人身份证明」小节
+        （2026-08-14 dc4cdc34 轮实测）——框锚轮先跑：有粘贴框的授权书章赢，哪怕章序靠后。"""
+        out = {"b6": "<h3>一、法定代表人身份证明</h3><p>x</p>",
+               "b9": "<p>法定代表人的合法有效身份证明复印件或扫描件粘贴处</p>"}
+        state = {"outline": {"chapters": [_chapter("b6", "资格文件", []),
+                                          _chapter("b9", "法定代表人授权书", [])]},
+                 "read": {},
+                 "run_input": {"credentials": [
+                     {"title": "法定代表人身份证", "images": [{"fileId": "fa", "key": "k", "name": "n"}]}]}}
+        result = place_certificates(out, state)
+        assert 'data-file-id="fa"' in result["b9"], "框锚没赢过别章标题锚"
+        assert 'data-file-id="fa"' not in result["b6"]
+
     def test_anchor_places_each_entry_only_once_globally(self):
         """⑨两个章都有营业执照小节 → 只进提纲序靠前的那章一次。到处重复插图
         既撑大文件（单张执照几 MB），评委翻到哪都是同一张执照也很难看。"""
