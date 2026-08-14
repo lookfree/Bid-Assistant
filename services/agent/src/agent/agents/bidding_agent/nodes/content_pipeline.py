@@ -489,6 +489,18 @@ async def _draft_chapter(ctx, chat, system_prompt: str, user: str, cid: str,
     return html, truncated
 
 
+def _dev_table_like(ch: dict, state: dict) -> bool:
+    """偏离**数据表**判定（评审 p11 轮 F2）：裸「偏离」＋表类词尾（表/清单收尾）。
+    「技术偏离一览表」这类章既能定位到招标模板、又吃偏离条目——零模型交付的是招标
+    **空表**，响应列必须模型写。「无偏离承诺函」词尾是函，不中——真表单，零模型保护
+    不动。整词「偏离表」章在 _template_entries 源头已排除，这里补的是两套口径之间的缝。"""
+    struct = (state.get("read") or {}).get("required_structure") or []
+    ref = ch.get("structure_ref")
+    titles = [ch.get("title") or ""] + [s.get("title") or ""
+                                        for s in struct if s.get("id") == ref]
+    return any("偏离" in t and t.rstrip().endswith(("表", "清单")) for t in titles)
+
+
 async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, shared: dict,
                      sem: asyncio.Semaphore, progress: _Progress, generation: int) -> tuple[str, str]:
     """写一章：断点命中直接用；否则限流下调模型，产出清洗后（必要时追一轮扩写）落缓存。
@@ -506,29 +518,33 @@ async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, share
         logger.info("章 %s 断点命中，跳过模型调用", cid)
         await progress.chapter_done(cid)
         return cid, cached
-    user = stable + (f"\n\n{ref}" if ref else "")
-    min_chars = _NA_MIN_CHARS if "不适用" in (ch.get("title") or "") else _MIN_CHAPTER_CHARS
     tpl_raw = ((shared.get("templates") or {}).get(cid) or {}).get("raw") or ""
     # 表单章模型彻底退场（2026-08-14 用户终验口径：线上稿必须就是招标的样子）。此前线上稿
     # 由模型写：自加「一、」小节编号、编造「双方身份证扫描件粘贴区域」整节、版式扁平——
     # 保真闸只查固定文字与顺序，"插入"是放行的，拦不住画蛇添足。有招标模板的章直接
     # 零模型渲染模板＋同值填空，与导出复印机同构同值；模型稿→保真闸→纠偏→冤案
-    # 整条链随之退役。偏离表章在 _template_entries 有排除闸永远无 raw，仍走模型
-    # （响应列必须模型写）；渲染过短说明模板抠歪，诚实记缺章。
-    if tpl_raw:
+    # 整条链随之退役。偏离**数据表**留在模型路（_dev_table_like，响应列必须模型写）；
+    # 分支放在 user/min_chars 之前——零模型路一个提示词字符都不该拼（评审 p11 轮 F8）。
+    if tpl_raw and not _dev_table_like(ch, state):
+        from agent.agents.bidding_agent.nodes.content import _visible_len
         from agent.agents.bidding_agent.nodes.form_fidelity import template_html
 
-        html = template_html(tpl_raw, ch.get("title") or "")
-        # 模板口径的下限按**可见文字**量：120 字散文下限会把袖珍真表单（一句话声明函）
-        # 错判缺章；真正要挡的是模板抠歪只捞到一行表单名的空壳。
-        if len(re.sub(r"<[^>]+>", "", html)) < 12:
-            logger.error("章 %s 招标模板渲染过短，记为缺章", cid)
+        # 空壳闸量**去掉章标题后的**渲染可见字（评审 p11 轮 F1/F5：章标题 h3 会把只有
+        # 表单名一行的空壳顶过门槛；_visible_len 折叠实体/剥空白，不再手写第二份口径）。
+        # 挡住的是模板抠歪；袖珍真表单（一句话声明函）照常放行。
+        if _visible_len(template_html(tpl_raw, "")) < 12:
+            logger.error("章 %s 招标模板渲染过短（空壳），记为缺章", cid)
+            await _log_pg(ctx, "form_template_short",
+                          {"chapter": cid, "raw_head": tpl_raw[:120]}, level="warn")
             return cid, ""
-        html = await _fill_form_html(ctx, cid, html, shared)
+        html = await _fill_form_html(ctx, cid,
+                                     template_html(tpl_raw, ch.get("title") or ""), shared)
         await _log_pg(ctx, "form_template_rendered", {"chapter": cid, "chars": len(html)})
         await _cache_set(ctx, key, html)
         await progress.chapter_done(cid)
         return cid, html
+    user = stable + (f"\n\n{ref}" if ref else "")
+    min_chars = _NA_MIN_CHARS if "不适用" in (ch.get("title") or "") else _MIN_CHAPTER_CHARS
     html, truncated = await _draft_chapter(ctx, chat, system_prompt, user, cid,
                                            min_chars, sem, progress)
     if len(html) < min_chars or "<" not in html:
@@ -647,9 +663,13 @@ async def run_content_pipeline(ctx, state: dict) -> dict[str, str]:
     if not out:
         raise RuntimeError("未产出任何章节草稿（全部章节生成失败）")
     missing = [cid for cid, html in pairs if not html]
-    if missing:
+    # 模板章的缺章是**确定性**空壳（模板抠歪，评审 p11 轮 F4）：90 秒后重跑同一段渲染
+    # 必然同结果，不进重试等待；模型章缺章多为端点抖动，照旧等一轮再补。
+    retryable = [cid for cid in missing
+                 if not ((shared.get("templates") or {}).get(cid) or {}).get("raw")]
+    if retryable:
         out = await _retry_missing(ctx, chat, system_prompt, state, chapters, shared, sem,
-                                   progress, generation, out, missing)
+                                   progress, generation, out, retryable)
         missing = [cid for cid in missing if cid not in out]
     # 证照定向插章 post-pass（Task 4,计划③）：在缓存读写之外单独跑——fresh 章刚写完、
     # 缓存命中章刚取出/补写章刚补完，此刻统一现算一遍插图，绝不写回上面的章节缓存

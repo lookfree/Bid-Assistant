@@ -299,8 +299,8 @@ class TestBriefTargeting:
 
 
 class TestFormFidelity:
-    """表单章保真接线：模型改写模板 → 弃用产出、拿招标原文渲染（判定逻辑本身见
-    test_form_fidelity.py，这里只管**有没有真接上流水线**）。"""
+    """表单章零模型接线（2026-08-14 模型退场后）：有模板的章＝模板渲染＋同值填空，
+    模型稿一个字进不来；散文章照旧模型路。"""
 
     _TPL = ("报价函\n致：潍坊环境工程职业学院\n"
             "1、我方同意本报价函自开标之日起 90 天内有效，并承诺不作任何保留。\n"
@@ -584,3 +584,44 @@ class TestZeroModelFormChapter:
         out = _run(self._state(), _Chat(), monkeypatch=monkeypatch)
         assert "一、报价函" not in out["t1"]
         assert "致：潍坊环境工程职业学院" in out["t1"]
+
+
+class TestZeroModelGuards:
+    """评审 p11 轮：零模型分支的三道闸——空壳不出货、偏离数据表不零模型、确定性缺章不空转。"""
+
+    def test_title_only_template_is_missing_and_not_retried(self, monkeypatch):
+        """F1/F4：模板抠歪只捞到表单名一行 → 记缺章（章标题 h3 不许把空壳顶过门槛），
+        且不进 90 秒重试等待——同一段确定性渲染重跑必然同结果。"""
+        import agent.agents.bidding_agent.nodes.content as content_mod
+        import agent.agents.bidding_agent.nodes.content_pipeline as cp
+        state = _state(2)
+        state["outline"]["chapters"][0]["title"] = "第一章 报价函（商务标）"
+        monkeypatch.setattr(content_mod, "_template_entries",
+                            lambda r, o: {"t1": {"brief": "b", "raw": "报价函"}})
+        retried: list = []
+        orig = cp._retry_missing
+
+        async def _spy(*a, **k):
+            retried.append(a[-1])
+            return await orig(*a, **k)
+
+        monkeypatch.setattr(cp, "_retry_missing", _spy)
+        out = _run(state, _FakeChat(), monkeypatch=monkeypatch)
+        assert "t1" not in out, "空壳模板被当成章出货了"
+        assert not any("t1" in group for group in retried), "确定性缺章被拉去 90 秒空转重试"
+
+    def test_deviation_data_table_keeps_the_model_path(self, monkeypatch):
+        """F2：「技术偏离一览表」既有模板又吃偏离条目——零模型交付的是招标**空表**。
+        裸「偏离」＋表类词尾的章留在模型路；「无偏离承诺函」不受影响（另有钉子）。"""
+        import agent.agents.bidding_agent.nodes.content as content_mod
+        state = _state(2)
+        state["outline"]["chapters"][0]["title"] = "技术偏离一览表"
+        state["read"] = {"categories": [{"key": "technical", "title": "技术", "items": [
+            {"title": "吞吐量", "value": "10G", "star": True, "clause_ids": ["sec-7-c1"]}]}]}
+        monkeypatch.setattr(content_mod, "_template_entries",
+                            lambda r, o: {"t1": {"brief": "b",
+                                                 "raw": "技术偏离一览表\n序号\t需求\t响应\t偏离"}})
+        chat = _FakeChat()
+        out = _run(state, chat, monkeypatch=monkeypatch)
+        assert "偏离表指引" in _brief_of(chat, "技术偏离一览表"), "偏离数据没到模型手里"
+        assert "内容" in out["t1"], "偏离数据表被零模型交了招标空表"

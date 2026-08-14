@@ -176,8 +176,9 @@ def _template_entries(read: dict, outline: dict) -> dict[str, dict]:
     旧的整块下发靠标题子串匹配投递，散文章标题恰好出现在别章模板原文里就会错收几万字无关
     模板并当成表单来写（评审 2026-08-08）。投标书必须沿用招标模板，不得自创格式。
     无格式章节/无原文 → 空 dict。
-    每章返回 {"brief": 发给模型的简报段, "raw": 招标模板原文}——原文供 form_fidelity
-    校验模型有没有改写、以及改写时零模型渲染出退路（提示词只能请求，代码才能保证）。"""
+    每章返回 {"brief": 简报段, "raw": 招标模板原文}——raw 是零模型时代（2026-08-14）
+    表单章线上稿的**直接来源**（template_html 渲染＋同值填空，模型不再参与），
+    也与导出复印机同构；brief 只剩无 raw 的表单形态章（走模型路）在用。"""
     sections = read.get("doc_sections") or []
     if not sections or not outline:
         return {}

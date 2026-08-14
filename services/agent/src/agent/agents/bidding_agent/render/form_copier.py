@@ -204,6 +204,10 @@ _XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
 # 空位：连续下划线（半/全角）。与保真闸的 _BLANK 同族；V1 只认下划线形态，
 # 「下划线格式的空格 run」这类形态出现实证再扩。
 _BLANK = re.compile(r"[_＿]{2,}")
+# 段落内空位的全宽形态：下划线串 + **纯空格串**（≥4）。与 HTML 侧 _HTML_BLANK 同宽——
+# 评审 p11 轮 F3：非下划线的空格空位 HTML 引擎已认（线上填出值），XML 不认＝导出留白，
+# 正向同值缝。名单查表当闸：缩进/「日期： 年 月 日」的间隔查不到值，一个字不动。
+_XML_BLANK = re.compile(r"[_＿]{2,}|[ \t　]{4,}")
 # 宽度归一表**与保真闸同一份**（评审 2026-08-14 F15：两处各养一张表已经漂移——
 # 「联系电话（＋８６）：」这类全角数字标签过得了闸却查不到值，改一处忘另一处是必然结局）。
 
@@ -281,11 +285,11 @@ def _fill_paragraph(p, lut: dict[str, str]) -> int:
                 filled += 1
             label_buf = ""
             continue
-        if not _BLANK.search(text):
+        if not _XML_BLANK.search(text):
             label_buf += text
             continue
         out, pos, changed = "", 0, False
-        for m in _BLANK.finditer(text):
+        for m in _XML_BLANK.finditer(text):
             seg = text[pos:m.start()]
             val = lut.get(_lab_norm(label_buf + seg))
             if not val:
@@ -398,7 +402,7 @@ def _fill_line_end(p, lut: dict[str, str]) -> int:
 
     text = "".join(t.text or "" for t in p.iter(_W_T))
     s = text.rstrip(" \t　")
-    if not s.endswith(("：", ":")) or _BLANK.search(text):
+    if not s.endswith(("：", ":")) or _XML_BLANK.search(text):
         return 0
     label = s[:-1]
     if not label or len(_lab_norm(label)) > _MAX_LINE_LABEL:

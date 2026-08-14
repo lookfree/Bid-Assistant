@@ -1064,3 +1064,36 @@ class TestEditorSplitCertBlock:
         i_note = next(i for i, t in enumerate(kinds) if "说明：法定代表人参加" in str(t))
         assert "IMG" in kinds[i_box + 1:i_note], kinds
         assert all("见下图" not in str(t) for t in kinds)
+
+
+class TestPlainSpaceRunBlank:
+    """评审 p11 轮 F3：非下划线的长空格空位——HTML 引擎已认（线上有值），XML 不认＝
+    导出留白，正向同值缝。同一张查表当闸，与 HTML 侧 _HTML_BLANK 同宽。"""
+
+    def test_plain_space_blanks_fill_with_labels(self):
+        import io as io2
+        from docx import Document
+        from agent.agents.bidding_agent.render.form_copier import extract_form_nodes, fill_blanks
+        d = Document()
+        d.add_paragraph("                 （供应商全称）法定代表人           授权"
+                        "         （全权代表姓名）为全权代表，参加询比活动。")
+        buf = io2.BytesIO()
+        d.save(buf)
+        nodes = extract_form_nodes(buf.getvalue(), FormSpan(0, 0, -1))
+        n = fill_blanks(nodes, [("单位名称", "上海安几科技有限公司"),
+                                ("法定代表人", "于新宇"), ("全权代表姓名", "胡月")], {})
+        xml = "".join(__import__("lxml").etree.tostring(x, encoding="unicode") for x in nodes)
+        assert n == 3, f"平文空格空位没认全,只填了 {n}"
+        assert "上海安几科技有限公司" in xml and "于新宇" in xml and "胡月" in xml
+
+    def test_indent_and_date_gaps_stay_untouched(self):
+        """缩进空格/「日期： 年 月 日」的间隔——名单查不到，一个字不动。"""
+        import io as io2
+        from docx import Document
+        from agent.agents.bidding_agent.render.form_copier import extract_form_nodes, fill_blanks
+        d = Document()
+        d.add_paragraph("    日期：     年    月    日")
+        buf = io2.BytesIO()
+        d.save(buf)
+        nodes = extract_form_nodes(buf.getvalue(), FormSpan(0, 0, -1))
+        assert fill_blanks(nodes, [("单位名称", "上海安几科技有限公司")], {}) == 0
