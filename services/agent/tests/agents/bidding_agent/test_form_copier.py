@@ -108,3 +108,72 @@ class TestGraft:
         assert len(out.tables) == 1 and out.tables[0].cell(0, 0).text == "合计（大写）"
         body_tags = [el.tag.rsplit("}", 1)[-1] for el in out.element.body.iterchildren()]
         assert body_tags[-1] == "sectPr"
+
+
+def _fill_docx() -> bytes:
+    """填空形态大全（云上承诺函/情况一览表实测形状）：
+    分离 run 空位、同 run 标签+空位、带括注标签、一行双空位、表格标签格。"""
+    from docx import Document
+
+    d = Document()
+    p1 = d.add_paragraph()                                   # body#0 标签与空位分 run
+    p1.add_run("单位名称：")
+    blank = p1.add_run("________")
+    blank.underline = True
+    d.add_paragraph("统一社会信用代码（身份证号码）：______")     # body#1 同 run + 括注标签
+    p3 = d.add_paragraph()                                   # body#2 一行双空位（后者无值）
+    p3.add_run("联系电话：")
+    p3.add_run("____")
+    p3.add_run("　传真：")
+    p3.add_run("____")
+    t = d.add_table(rows=2, cols=2)                          # body#3 表格标签格
+    t.cell(0, 0).text = "开户银行"
+    t.cell(1, 0).text = "神秘字段"
+    d.add_paragraph("项目名称：____")                          # body#4 项目信息白名单
+    d.add_paragraph("我单位郑重承诺以上内容真实有效。")           # body#5 固定文字
+    buf = io.BytesIO()
+    d.save(buf)
+    return buf.getvalue()
+
+
+_FIELDS = [("单位名称", "上海安几科技有限公司"),
+           ("统一社会信用代码", "91310104MA1FRF3K3N"),
+           ("联系电话", "021-52808586"),
+           ("开户银行", "招商银行股份有限公司上海徐家汇支行")]
+
+
+class TestFillBlanks:
+    def _filled(self):
+        from agent.agents.bidding_agent.render.form_copier import (
+            extract_form_nodes, fill_blanks)
+        nodes = extract_form_nodes(_fill_docx(), FormSpan(0, 5, -1))
+        n = fill_blanks(nodes, _FIELDS, {"name": "云上零信任项目"})
+        xml = "".join(__import__("lxml").etree.tostring(x, encoding="unicode") for x in nodes)
+        return n, xml
+
+    def test_known_labels_are_filled_and_formats_kept(self):
+        """资料库有值的空位填上；分 run 空位保留原 run 格式（下划线还在=字写在横线上）。"""
+        n, xml = self._filled()
+        assert "上海安几科技有限公司" in xml
+        assert "91310104MA1FRF3K3N" in xml                  # 同 run、带括注标签也认
+        assert "021-52808586" in xml
+        assert "招商银行股份有限公司上海徐家汇支行" in xml     # 表格标签格右侧
+        assert "云上零信任项目" in xml                       # 项目信息白名单（meta.name）
+        assert 'w:val="single"' in xml or "<w:u " in xml     # 下划线格式没被抹掉
+        assert n == 5
+
+    def test_unknown_blanks_stay_blank_and_fixed_text_untouched(self):
+        """没值的空位原样留白（传真）；未知标签的表格格不填；固定文字一个字不动——绝不虚构。"""
+        n, xml = self._filled()
+        assert "传真：" in xml and xml.count("____") >= 1     # 传真的空位还在
+        assert "神秘字段" in xml
+        assert "我单位郑重承诺以上内容真实有效。" in xml
+        import re as _re
+        row = _re.search(r"神秘字段.*?</w:tr>", xml, _re.S).group(0)
+        assert _re.sub(r"<[^>]+>", "", row).replace("神秘字段", "").strip() == ""
+
+    def test_empty_fields_fill_nothing(self):
+        from agent.agents.bidding_agent.render.form_copier import (
+            extract_form_nodes, fill_blanks)
+        nodes = extract_form_nodes(_fill_docx(), FormSpan(0, 5, -1))
+        assert fill_blanks(nodes, [], {}) == 0
