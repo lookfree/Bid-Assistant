@@ -218,16 +218,19 @@ def _mark_material_breaks(html: str) -> str:
     heads = soup.find_all(re.compile(r"^h[1-6]$"))
     if len(heads) < 2:
         return html
+    # 材料判定按**紧邻段**（本标题到下一标题，任意层级）——2026-08-16 用户实测：资格文件章
+    # 只有一个顶级 h3、待补充小节在 h4 层，只认顶级的话整章分页失效，材料仍挤在一页。
+    imm = [_section_is_material(h, heads[i + 1] if i + 1 < len(heads) else None)
+           for i, h in enumerate(heads)]
+    if sum(imm) < 2:
+        return html            # 章级门槛：散文章里孤零零一个资质说明段不整章分页
     top = min(_HEAD_LEVEL[h.name] for h in heads)
-    tops = [h for h in heads if _HEAD_LEVEL[h.name] == top]
-    if len(tops) < 2:
-        return html
-    hits = sum(1 for i, h in enumerate(tops)
-               if _section_is_material(h, tops[i + 1] if i + 1 < len(tops) else None))
-    if hits < 2:
-        return html
-    for head in tops[1:]:
-        head["data-page-break"] = "1"
+    for i, h in enumerate(heads):
+        if i == 0:
+            continue           # 首标题紧跟章标题，不加
+        # 顶级小节全分页（材料章每节一页）；嵌套标题只有材料段（证照图/具名待补充）才单开页
+        if _HEAD_LEVEL[h.name] == top or imm[i]:
+            h["data-page-break"] = "1"
     return str(soup)
 
 

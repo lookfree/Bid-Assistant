@@ -601,3 +601,23 @@ def test_copier_chapter_trailing_blank_paras_are_trimmed():
     assert len(empties) == 0, f"章尾空段没裁干净: {paras[i + 1:j]}"
     k = next(idx for idx, (t, _) in enumerate(paras) if t == "合计（大写）：")
     assert paras[k + 1][0] == "" and paras[k + 2][0] == "表内空行后还有内容", "表单内部空行被误裁"
+
+
+def test_nested_pending_material_sections_get_their_own_page():
+    """2026-08-16 用户实测：资格文件章只有一个顶级 h3、材料小节在 h4 层（3.财务状况/
+    5.信用中国 待补充）——顶级规则整章失效，待补充小节挤在一页。材料章判定改为
+    **任意层级**材料段 ≥2；达标后嵌套材料段也各占一页，声明类嵌套段不动。"""
+    outline = {"chapters": [{"id": "b6", "no": "第六章", "title": "资格文件", "group": "business"}]}
+    chapters = {"b6": (
+        '<h3>一、资格审查材料</h3><p>按招标要求提供以下材料。</p>'
+        '<h4>1. 营业执照</h4><p><img data-file-id="f1" data-object-key="k1" alt="营业执照|证" /></p>'
+        '<h4>3. 财务状况证明材料</h4><p>（待补充：财务状况证明材料）</p>'
+        '<h4>4. 无重大违法记录声明</h4><p>我方郑重声明无重大违法记录。</p>'
+        '<h4>5. 信用中国截图</h4><p>（待补充：信用中国截图）</p>'
+    )}
+    doc = Document(io.BytesIO(render_docx(outline, chapters)))
+    assert not _page_break_precedes(doc, "一、资格审查材料")   # 首标题紧跟章标题
+    assert _page_break_precedes(doc, "1. 营业执照")
+    assert _page_break_precedes(doc, "3. 财务状况证明材料")
+    assert _page_break_precedes(doc, "5. 信用中国截图")
+    assert not _page_break_precedes(doc, "4. 无重大违法记录声明"), "声明类嵌套段不该单开页"
