@@ -573,3 +573,31 @@ def test_stray_h2_does_not_disable_material_breaks():
     doc = Document(io.BytesIO(render_docx(outline, chapters)))
     assert _page_break_precedes(doc, "二、财务状况证明材料")
     assert _page_break_precedes(doc, "三、信用中国截图")
+
+
+def test_copier_chapter_trailing_blank_paras_are_trimmed():
+    """2026-08-15 (10).docx 实测第 11 页整页空白：报价一览表模板尾部带 14 个空段——
+    招标原文用这串空行把下一份表单顶到新页，我们的章与章之间另有分页符，空行被顶成
+    一整页空白。章间分页符落下前裁掉**章尾**连续空段；表单内部空行不在章尾，不动。"""
+    from docx.oxml import parse_xml
+    ns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+
+    def p(text=""):
+        run = f"<w:r><w:t>{text}</w:t></w:r>" if text else ""
+        return parse_xml(f"<w:p {ns}>{run}</w:p>")
+
+    nodes = [p("合计（大写）："), p(), p("表内空行后还有内容")] + [p() for _ in range(14)]
+    outline = {"chapters": [
+        {"id": "b1", "no": "第一章", "title": "报价一览表", "group": "business"},
+        {"id": "b2", "no": "第二章", "title": "服务承诺", "group": "business"}]}
+    doc = Document(io.BytesIO(render_docx(outline, {"b2": "<p>正文</p>"},
+                                          copier_nodes={"b1": nodes})))
+    paras = [(pp.text, 'type="page"' in pp._p.xml) for pp in doc.paragraphs]
+    i = next(idx for idx, (t, _) in enumerate(paras) if t == "表内空行后还有内容")
+    # 「第二章」先出现在目录缓存里——必须从 i 之后找正文里的那份,否则切片倒置空转
+    j = next(idx for idx, (t, _) in enumerate(paras) if idx > i and t == "第二章 服务承诺")
+    assert j > i
+    empties = [t for t, br in paras[i + 1:j] if not t.strip() and not br]
+    assert len(empties) == 0, f"章尾空段没裁干净: {paras[i + 1:j]}"
+    k = next(idx for idx, (t, _) in enumerate(paras) if t == "合计（大写）：")
+    assert paras[k + 1][0] == "" and paras[k + 2][0] == "表内空行后还有内容", "表单内部空行被误裁"

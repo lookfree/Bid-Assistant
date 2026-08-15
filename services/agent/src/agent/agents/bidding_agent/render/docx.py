@@ -645,6 +645,31 @@ def _graft_cert_tail(doc: Document, nodes: list, tail: str, fetch_object) -> Non
         cursors[key] = ins
 
 
+def _trim_trailing_blanks(doc: Document) -> None:
+    """裁掉文档当前**末尾**的连续空段（2026-08-15 (10).docx 实测第 11 页整页空白：
+    报价一览表模板尾部带 14 个空段——招标原文用这串空行把下一份表单顶到新页，
+    我们的章与章之间另有分页符，空行被顶成一整页空白）。只在章间分页符落下前调用，
+    所以只削章尾；表单内部的空行（签章间距等）不在章尾，分毫不动。
+    空段判定从严：有文字/图/分页符/文本框/旧式图形任一者即停。"""
+    body = doc.element.body
+    kids = list(body)
+    idx = len(kids) - 1
+    while idx >= 0 and kids[idx].tag == qn("w:sectPr"):
+        idx -= 1
+    while idx >= 0:
+        el = kids[idx]
+        if el.tag != qn("w:p"):
+            break
+        if ("".join(t.text or "" for t in el.iter(qn("w:t"))).strip()
+                or el.find(f".//{qn('w:drawing')}") is not None
+                or el.find(f".//{qn('w:pict')}") is not None
+                or el.find(f".//{qn('w:txbxContent')}") is not None
+                or any(br.get(qn("w:type")) == "page" for br in el.iter(qn("w:br")))):
+            break
+        body.remove(el)
+        idx -= 1
+
+
 def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
                  package: dict | None = None,
                  fetch_object: Callable[[str], bytes | None] | None = None,
@@ -676,6 +701,7 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
     # 章接章挤在同一页找不到边界（用户要求）；首章不加，否则目录后会多出一整页空白。
     for i, ch in enumerate(outline.get("chapters", [])):
         if i:
+            _trim_trailing_blanks(doc)   # 上一章的章尾空段串,分页符前裁掉(整页空白之源)
             doc.add_page_break()
         # 章标题不带（技术标）/（商务标）组尾巴（2026-08-15 用户拍板：正文里是噪音——
         # 招标原文的章名就没有这种尾巴）；目录条目取自标题，自动跟随。
@@ -705,6 +731,7 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
         else:
             doc.add_paragraph("（本章正文待生成）")
     # 签章页
+    _trim_trailing_blanks(doc)           # 末章章尾同样裁,签章页前不留空白页
     doc.add_page_break()
     doc.add_heading("投标人承诺与签章", level=1)
     doc.add_paragraph("法定代表人/授权代表（签字）：____________   日期：__________")
