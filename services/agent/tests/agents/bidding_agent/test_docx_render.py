@@ -510,3 +510,36 @@ def test_chapter_headings_carry_no_group_tag():
     texts = "\n".join(p.text for p in doc.paragraphs)
     assert "（技术标）" not in texts and "（商务标）" not in texts
     assert "第一章 技术方案" in texts and "第二章 响应函" in texts
+
+
+def _styles_xml(data: bytes) -> str:
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        return z.read("word/styles.xml").decode("utf-8")
+
+
+def test_heading_styles_carry_no_theme_font_attrs():
+    """2026-08-15 用户实测（(9).docx）：导出章节标题字体显示 ＭＳ ゴシック。python-docx
+    默认 Heading 样式的 rFonts 带主题属性（asciiTheme/eastAsiaTheme），OOXML 规则主题
+    属性**优先于**显式 ascii/eastAsia——查看器顺着 majorEastAsia 的日文脚本映射把标题
+    解析成 MS Gothic，显式设的黑体形同虚设。设字体必须同时摘掉主题属性。"""
+    import re as _re
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "方案", "group": "tech"}]}
+    body = {"t1": "<h3>1.1 节</h3><p>正文</p><h4>1.1.1 小节</h4><h5>a</h5><h6>b</h6>"}
+    styles = _styles_xml(render_docx(outline, body))
+    for sid in ("Heading1", "Heading2", "Heading3", "Heading4", "Heading5"):
+        frag = _re.search(rf'<w:style [^>]*w:styleId="{sid}".*?</w:style>', styles, _re.S).group(0)
+        fonts = _re.search(r"<w:rFonts[^/]*/>", frag).group(0)
+        assert "Theme" not in fonts and "theme" not in fonts, f"{sid} 仍带主题字体属性: {fonts}"
+        assert 'w:eastAsia="黑体"' in fonts, f"{sid} 中文字体未显式落地: {fonts}"
+
+
+def test_custom_format_heading_font_wins_over_theme():
+    """spec330 自定义格式路径同病同治：用户配了标题宋体，主题属性不摘照样被 MS Gothic 顶掉。"""
+    import re as _re
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "方案", "group": "tech"}]}
+    styles = _styles_xml(render_docx(outline, {"t1": "<h3>1.1 节</h3><p>正文</p>"},
+                                     fmt={"heading_font": "宋体"}))
+    frag = _re.search(r'<w:style [^>]*w:styleId="Heading1".*?</w:style>', styles, _re.S).group(0)
+    fonts = _re.search(r"<w:rFonts[^/]*/>", frag).group(0)
+    assert "Theme" not in fonts and "theme" not in fonts, fonts
+    assert 'w:eastAsia="宋体"' in fonts, fonts

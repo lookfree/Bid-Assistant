@@ -22,6 +22,17 @@ _HEADING_SIZES = {
 }
 
 
+def _strip_theme_fonts(style) -> None:
+    """摘掉样式 rFonts 上的主题字体属性（asciiTheme/hAnsiTheme/eastAsiaTheme/cstheme）。
+    OOXML 规则：主题属性**优先于**同元素上的显式 ascii/eastAsia——python-docx 默认模板的
+    Heading 样式带 majorEastAsia，查看器顺着主题的日文脚本映射把章节标题解析成
+    ＭＳ ゴシック（2026-08-15 用户实测：标题字体与正文不一致），显式设的黑体/宋体
+    形同虚设。设字体必须同时拔掉主题引线，显式字体才真正生效。"""
+    rfonts = style.element.rPr.rFonts
+    for attr in ("asciiTheme", "hAnsiTheme", "eastAsiaTheme", "cstheme"):
+        rfonts.attrib.pop(qn(f"w:{attr}"), None)
+
+
 def _apply_bid_styles(doc: Document) -> None:
     """标书排版惯例（一次性设在 Document 的样式上，覆盖 python-docx 默认模板）：
     正文宋体小四(12pt)；一/二/三级标题黑体加粗黑色——Word 默认标题走主题色蓝，
@@ -33,6 +44,7 @@ def _apply_bid_styles(doc: Document) -> None:
     normal.font.name = "宋体"
     normal.font.size = Pt(12)
     normal.element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+    _strip_theme_fonts(normal)
     for style_name, size in _HEADING_SIZES.items():
         style = doc.styles[style_name]
         style.font.name = "黑体"
@@ -40,6 +52,7 @@ def _apply_bid_styles(doc: Document) -> None:
         style.font.bold = True
         style.font.color.rgb = RGBColor(0, 0, 0)
         style.element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
+        _strip_theme_fonts(style)
 
 
 def _emit_placeholder_image(doc: Document, el, fetch_object: Callable[[str], bytes | None] | None) -> None:
@@ -431,6 +444,7 @@ def _apply_custom_format(doc: Document, fmt: dict) -> None:
     normal.font.name = f["body_font"]
     normal.font.size = Pt(body_pt)
     normal.element.rPr.rFonts.set(qn("w:eastAsia"), f["body_font"])
+    _strip_theme_fonts(normal)
     # 首行缩进 N 字符 = N × 字号;行距设在 Normal 段落格式上,全文（含标题继承前的基准）统一。
     # 缩进溢入表格/封面/页脚的问题由各发射点显式置零解决（_emit_table 单元格、_cover_line、页脚）。
     normal.paragraph_format.first_line_indent = Pt(body_pt * int(f["body_indent_chars"]))
@@ -443,6 +457,7 @@ def _apply_custom_format(doc: Document, fmt: dict) -> None:
         style.font.bold = bool(f["heading_bold"])
         style.font.color.rgb = RGBColor(0, 0, 0)
         style.element.rPr.rFonts.set(qn("w:eastAsia"), f["heading_font"])
+        _strip_theme_fonts(style)
         style.paragraph_format.first_line_indent = Pt(0)  # 标题首行缩进 0 字符、左对齐
         _set_line_spacing(style.paragraph_format, f["line_spacing"])
 
