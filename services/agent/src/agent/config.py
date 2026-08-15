@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -106,6 +107,14 @@ class Settings(BaseSettings):
     # 输出敏感词库路径（spec326 算法备案）：None 则用包内默认词库 framework/sensitive_words.txt；
     # 运营需按监管要求扩充维护时可指向外部文件，无需改代码。
     sensitive_words_path: str | None = None
+
+    # 轮次输出侧的敏感词校验（export 节点上那份始终在跑，与本开关无关）。
+    # off（默认）  = 不挂这个钩子，运行时与加它之前逐字节一致
+    # flag        = 命中只落一条 content_flag 事件，照常放行
+    # block       = 命中即掐掉这一轮输出
+    # 从 off 往上调之前先看 flag 模式下的事件量：子串匹配会有误伤，
+    # 误杀一条正常回复的代价比漏记一条高得多。
+    content_safety_mode: Literal["off", "flag", "block"] = "off"
 
 
 settings = Settings()  # 实例化即校验

@@ -4,7 +4,9 @@ from typing import Any, AsyncIterator
 from dataclasses import dataclass, field
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import StateGraph, START
+from agent.config import settings
 from agent.framework.hooks import AgentHook, BuildMessagesHook, DropMalformedToolCallsHook
+from agent.framework.content_safety import ContentSafetyHook
 from agent.framework.create_agent import GraphState, add_tools_loop, make_agent_node
 from agent.runtime.registry import register, RunContext
 
@@ -43,6 +45,10 @@ class BaseAgent:
     def _compile_single_loop(self, ctx: RunContext):
         b = self.build(ctx)
         hooks = [BuildMessagesHook(b.prompt), DropMalformedToolCallsHook(), *b.extra_hooks]
+        # 校验钩子，run_turn 保证它在所有变形钩子（含 extra_hooks）之后跑，看到的一定是最终输出，
+        # 所以排在列表哪儿都一样。默认 off——这一行在现网等于不存在。
+        if settings.content_safety_mode != "off":
+            hooks.append(ContentSafetyHook(ctx, block=settings.content_safety_mode == "block"))
         g = StateGraph(GraphState)
         if b.compressor:
             g.add_node("compressor", b.compressor)
