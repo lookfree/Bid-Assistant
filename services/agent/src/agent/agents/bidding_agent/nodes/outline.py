@@ -90,15 +90,21 @@ def _reorder_chapters(outline: dict, structure: list[dict]) -> dict:
     # after_id 锚（拆章产物）根本不进排序——引用不参与、也不能参与拆出章的座次
     # （2026-08-15 生产实测 9016677d：缓存旧提纲的章全无引用，拆出章带引用被
     # 「有引用排前面」抬到组首，授权书成了第一章）。先摘后排，排完插回父章之后。
-    anchored = [ch for ch in chapters if ch.get("after_id")]
-    rest = [ch for ch in chapters if not ch.get("after_id")]
+    anchored = [ch for ch in chapters
+                if ch.get("after_id") and ch.get("form_order") is None]  # 有槽位序的听槽位的
+    rest = [ch for ch in chapters if ch not in anchored]
     ref_order = {str(s.get("id")): i for i, s in enumerate(structure)}
 
     def key(pair):
         idx, ch = pair
         grp = 1 if ch.get("group") == "tech" else 0
+        # 商务表单章按招标**表单文档序**最优先（form_order，_canonical_form_chapters 挂的）
+        # ——章序从此不看模型给的顺序；其后才轮到构成引用序/模型相对序。
+        fo = ch.get("form_order")
         ref = ref_order.get(str(ch.get("structure_ref") or ""))
-        return (grp, 0 if ref is not None else 1, ref if ref is not None else idx, idx)
+        return (grp,
+                0 if fo is not None else 1, fo if fo is not None else 0,
+                0 if ref is not None else 1, ref if ref is not None else idx, idx)
 
     ordered = [ch for _, ch in sorted(enumerate(rest), key=key)]
     for ch in anchored:
@@ -186,6 +192,83 @@ def _renumber_cn_items(items: list) -> None:
         it["label"] = _ORD_LABEL.sub(f"{num}、", label, count=1)
 
 
+# 商务/技术边界（2026-08-15 用户拍板：商务标模板章是复刻招标书的，不需要模型发挥；
+# 边界必须定义清楚）——版式类不成章；技术侧(偏离/方案类)不补章不改组，那是模型的地盘。
+_FORM_SKIP_WORDS = ("封面", "封套", "目录", "装订", "密封", "文件格式")
+_FORM_TECH_WORDS = ("偏离", "技术", "方案", "实施")
+
+
+def _form_slots(read_state: dict) -> list[dict]:
+    """招标全文的**商务表单槽位**（文档序）。权威=全文表单索引——它来自解析器切分的
+    doc_sections，不经模型，同一份文件必得同一份槽位表。这是「商务标章清单代码直出」
+    的确定性根基。"""
+    from agent.agents.bidding_agent.nodes.form_locate import (
+        _looks_like_form_title, build_form_index, segment_text)
+    slots = []
+    for seg in build_form_index(read_state):
+        name = str(seg.get("name") or "")
+        if not _looks_like_form_title(name) or not segment_text(seg):
+            continue
+        if any(w in name for w in _FORM_SKIP_WORDS + _FORM_TECH_WORDS):
+            continue
+        slots.append({"name": name})
+    return slots
+
+
+def _canonical_form_chapters(outline: dict, read_state: dict) -> dict:
+    """商务表单章代码定版（2026-08-15 用户拍板：招标书里写死的表单，一个字不让模型碰。
+    此前拆章/锚定只是纠正模型，模型每次重新生成仍是一副新面孔——章有章无、简称全称、
+    顺序都在漂）。三刀：
+    ①认领：章名与槽位强匹配（全同/互含）→ 挂上槽位文档序 form_order；简称归一为
+      招标原文名（复合名「资格文件及…」不动——把资格文件章改成复合名比不改更乱）；
+      认领商务表单段的章一律归商务组（模型偶尔把响应函标成技术标）。
+    ②补章：没人认领的槽位 → 代码补章（招标原文名+占位小节），绝不让招标要求的表单
+      在提纲里消失。
+    ③定序交给 _reorder_chapters：form_order 在商务组内最优先。
+    生成后+缓存命中后都过，幂等（补出的章下轮按名认领回自己的槽位）。"""
+    from agent.agents.bidding_agent.nodes.form_locate import _core_form_name, _match_tier
+    chapters = outline.get("chapters") or []
+    slots = _form_slots(read_state) if chapters else []
+    if not slots:
+        return outline
+    claimed: dict[int, dict] = {}
+    for ch in chapters:
+        if ch.get("system") or str(ch.get("id") or "") == "sys-creds":
+            continue
+        core = _core_form_name(str(ch.get("title") or ""))
+        for si, slot in enumerate(slots):
+            if si in claimed:
+                continue
+            t = _match_tier(core, slot["name"])
+            if t is not None and t <= 1:
+                claimed[si] = ch
+                break
+    seen = {str(c.get("id") or "") for c in chapters}
+    created: list[dict] = []
+    for si, slot in enumerate(slots):
+        if si in claimed:
+            continue
+        nid = f"bf{si + 1}"
+        while nid in seen:
+            nid += "x"
+        seen.add(nid)
+        ch = {"id": nid, "no": "", "desc": "", "title": slot["name"], "group": "business",
+              "sourced": True, "items": [{"id": f"{nid}-1", "is_new": False, "desc": "",
+                                          "label": f"一、{slot['name']}（按招标格式填写）",
+                                          "children": [], "clause_ids": []}]}
+        claimed[si] = ch
+        created.append(ch)
+        logger.info("提纲表单补章：「%s」（招标要求的表单，模型漏排）", slot["name"])
+    for si, ch in claimed.items():
+        ch["form_order"] = si
+        ch["group"] = "business"
+        name = slots[si]["name"]
+        if ch.get("title") != name and not re.search("[及和]", name):
+            ch["title"] = name
+    outline["chapters"] = chapters + created
+    return outline
+
+
 def _remap_structure_refs(outline: dict, ref_titles: dict, structure: list[dict]) -> dict:
     """跨项目复用提纲时，structure_ref 指向**旧一轮读标**的构成项 id——id 由读标模型自拟，
     跨轮不稳。按标题精确重映射到本轮构成项；映射不上的删引用（模板定位/偏离投递都有
@@ -225,8 +308,9 @@ def make_outline_node(ctx):
                 logger.info("提纲缓存命中（同文件同域），零模型复用")
                 cached_outline = _remap_structure_refs(
                     data.get("outline") or {}, data.get("ref_titles") or {}, structure_now)
-                return {"outline": _reorder_chapters(
-                    _split_form_chapters(cached_outline, read_state), structure_now)}
+                return {"outline": _reorder_chapters(_canonical_form_chapters(
+                    _split_form_chapters(cached_outline, read_state), read_state),
+                    structure_now)}
         read = json.dumps(slim_read(read_state), ensure_ascii=False)
         user = f"读标结论：\n{read}\n请据此产出提纲。"
         structure = read_state.get("required_structure") or []
@@ -241,8 +325,8 @@ def make_outline_node(ctx):
         result = await run_submit_agent(
             ctx, OUTLINE_SYSTEM_PROMPT, user,
             "submit_outline", Outline, "提交提纲", attempts=5, temperature=0.0)
-        outline = _reorder_chapters(
-            _split_form_chapters(result.model_dump(), read_state), structure_now)
+        outline = _reorder_chapters(_canonical_form_chapters(
+            _split_form_chapters(result.model_dump(), read_state), read_state), structure_now)
         if key and r:
             payload = json.dumps(
                 {"outline": outline,

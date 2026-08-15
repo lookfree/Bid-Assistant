@@ -164,6 +164,8 @@ export type OutlineChapterInput = {
   /** 拆章锚（2026-08-15 提纲拆章）：拆出的表单章重排时锁在父章之后。保存回写必须透传——
    *  白名单剥掉它=用户存一次提纲，拆出章丢父绑定（system/sourceFileId 同类教训第四次）。 */
   afterId?: string
+  /** 商务表单章的招标文档序（提纲代码定版）：保存回写透传，理由同 afterId。 */
+  formOrder?: number
   items: Parameters<typeof serializeItems>[0]
 }
 
@@ -188,6 +190,7 @@ export function buildOutlinePayload(
       // 普通章不受影响。丢了它 = 附录被当普通章送模型改写（终审 C1）。
       system: ch.system,
       afterId: ch.afterId,
+      formOrder: ch.formOrder,
       items: serializeItems(ch.items),
     }))
   return bizFirst

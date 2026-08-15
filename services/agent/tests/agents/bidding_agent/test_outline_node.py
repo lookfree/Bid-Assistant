@@ -349,3 +349,87 @@ def test_renumber_tolerates_digit_and_spaced_ordinals():
     items = [{"label": "1、响应函"}, {"label": " 三、格式说明"}, {"label": "补充说明"}]
     _renumber_cn_items(items)
     assert [it["label"] for it in items] == ["1、响应函", "二、格式说明", "补充说明"]
+
+
+def _forms_read() -> dict:
+    """五份表单+封面格式干扰项的最小读标结果(表单索引来自解析产物,确定性)。"""
+    lines = ["响应文件格式", "封面格式", "（封面按此格式装订）",
+             "1.响应函", "致：采购人：", "我方承诺响应文件内容完整真实。",
+             "2.法定代表人授权书", "法定代表人授权书",
+             "（供应商全称）法定代表人 授权 （全权代表姓名）为全权代表。",
+             "3.报价一览表", "序号\t项目名称\t数量\t单价（元）",
+             "3-1.报价明细表", "报价明细表", "序号\t产品名称\t品牌\t型号",
+             "4.供应商资格信用承诺函", "供应商资格信用承诺函", "我单位郑重承诺守信经营。"]
+    return {"doc_sections": [{"id": f"sec-2-c{i+1}", "text": t} for i, t in enumerate(lines)],
+            "doc_headings": []}
+
+
+def test_business_form_chapters_are_code_canonical(submit_gateway):
+    """2026-08-15 用户拍板：商务标模板章是**复刻**招标书的，不需要模型发挥——章清单/
+    章序由代码从全文表单索引直出。模型漏了承诺函、打乱了顺序、授权书用了简称：
+    ①漏的补章（用招标原文名）②序按招标文档序③简称归一为招标原文名。技术组不动。"""
+    args = {"chapters": [
+        {"id": "b1", "no": "第一章", "title": "报价一览表", "group": "business", "sourced": True,
+         "items": [{"id": "b1-1", "label": "一、报价一览表"}]},
+        {"id": "b2", "no": "第二章", "title": "授权书", "group": "business", "sourced": True,
+         "items": [{"id": "b2-1", "label": "一、授权书正文"}]},
+        {"id": "b3", "no": "第三章", "title": "响应函", "group": "business", "sourced": True,
+         "items": [{"id": "b3-1", "label": "一、响应函"}]},
+        {"id": "b4", "no": "第四章", "title": "商务条款偏离表", "group": "business", "sourced": True,
+         "items": [{"id": "b4-1", "label": "一、逐条响应"}]},
+        {"id": "t1", "no": "第五章", "title": "整体服务方案", "group": "tech", "sourced": True,
+         "items": [{"id": "t1-1", "label": "一、项目理解"}]},
+    ]}
+    gw = submit_gateway({"submit_outline": args})
+    node = make_outline_node(RunContext(run_id="r", agent_type="bidding_agent",
+                                        thread_id="t", gateway=gw))
+    out = asyncio.run(node({"read": _forms_read()}))
+    titles = [c["title"] for c in out["outline"]["chapters"]]
+    assert titles == ["响应函", "法定代表人授权书", "报价一览表", "报价明细表",
+                      "供应商资格信用承诺函", "商务条款偏离表", "整体服务方案"], titles
+    assert "封面格式" not in titles                       # 封面/封套类不成章
+    nos = [c["no"] for c in out["outline"]["chapters"]]
+    assert nos == [f"第{n}章" for n in "一二三四五六七"]
+    filled = next(c for c in out["outline"]["chapters"] if c["title"] == "报价明细表")
+    assert filled["items"], "补出的章要有占位小节"
+
+
+def test_canonical_pass_is_idempotent_on_cache_hit(submit_gateway, monkeypatch):
+    """已定版的提纲缓存命中再过一遍：不重复补章、不重排、逐字一致。"""
+    import hashlib
+    import agent.agents.bidding_agent.nodes.outline as om
+    monkeypatch.setattr(om, "_read_file_bytes", lambda key: b"T")
+    r = _FakeRedis()
+    state = {"files": [{"key": "k"}], "read": _forms_read()}
+    gw1 = submit_gateway({"submit_outline": {"chapters": [
+        {"id": "b3", "no": "第一章", "title": "响应函", "group": "business", "sourced": True,
+         "items": [{"id": "b3-1", "label": "一、响应函"}]},
+        {"id": "t1", "no": "第二章", "title": "整体服务方案", "group": "tech", "sourced": True,
+         "items": [{"id": "t1-1", "label": "一、项目理解"}]}]}})
+    out1 = asyncio.run(make_outline_node(RunContext(
+        run_id="r1", agent_type="bidding_agent", thread_id="t1", gateway=gw1, redis=r))(state))
+    gw2 = submit_gateway({})
+    out2 = asyncio.run(make_outline_node(RunContext(
+        run_id="r2", agent_type="bidding_agent", thread_id="t2", gateway=gw2, redis=r))(state))
+    assert not gw2.chats
+    assert [c["title"] for c in out2["outline"]["chapters"]] == \
+           [c["title"] for c in out1["outline"]["chapters"]]
+    assert len(out2["outline"]["chapters"]) == len(out1["outline"]["chapters"])
+
+
+def test_deviation_form_segments_are_never_auto_created(submit_gateway):
+    """偏离类表单段(技术偏离表)不补章——偏离表是数据表,章来自模型/构成清单,
+    补一个商务组的空壳会和技术组的偏离章打架。"""
+    read = _forms_read()
+    read["doc_sections"].append({"id": "sec-2-c99", "text": "5.技术偏离表"})
+    read["doc_sections"].append({"id": "sec-2-c100", "text": "序号\t需求\t响应\t偏离"})
+    gw = submit_gateway({"submit_outline": {"chapters": [
+        {"id": "b3", "no": "第一章", "title": "响应函", "group": "business", "sourced": True,
+         "items": [{"id": "b3-1", "label": "一、响应函"}]},
+        {"id": "t1", "no": "第二章", "title": "技术需求/服务偏离表", "group": "tech", "sourced": True,
+         "items": [{"id": "t1-1", "label": "一、逐条响应"}]}]}})
+    node = make_outline_node(RunContext(run_id="r", agent_type="bidding_agent",
+                                        thread_id="t", gateway=gw))
+    out = asyncio.run(node({"read": read}))
+    biz = [c["title"] for c in out["outline"]["chapters"] if c["group"] == "business"]
+    assert "技术偏离表" not in biz

@@ -132,3 +132,12 @@ describe("拆章锚透传", () => {
     expect(JSON.parse(JSON.stringify(c))).not.toHaveProperty("afterId")
   })
 })
+
+describe("表单章槽位序透传", () => {
+  it("formOrder 保存回写透传（白名单剥键暗雷同 afterId）", () => {
+    const [c] = buildOutlinePayload([chapter({ id: "b1", formOrder: 2 })], [], false) as Array<
+      Record<string, unknown>
+    >
+    expect(c).toHaveProperty("formOrder", 2)
+  })
+})
