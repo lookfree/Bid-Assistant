@@ -398,8 +398,11 @@ def dedupe_spans(spans: dict[str, FormSpan]) -> dict[str, FormSpan]:
     return out
 
 
-# 提纲 item 标签打头的序号（「二、」「1.」「（一）」），拆章判定前先剥
-_ORD_PREFIX = re.compile(r"^\s*(?:[0-9]{1,3}|[一二三四五六七八九十]{1,3}|[（(](?:[0-9]{1,3}|[一二三四五六七八九十]{1,3})[）)])\s*[.、．)）]?\s*")
+# 提纲 item 标签打头的序号（「二、」「1.」「（一）」），拆章判定前先剥。
+# 裸数字后的分隔符**必须有**（评审 2026-08-15 F2 CONFIRMED：可选分隔符会把
+# 「一次性告知承诺书」剥成「次性告知承诺书」，拆出的章标题缺首字印进标书）；
+# 括注形（（一））自带边界，后随分隔符可无。
+_ORD_PREFIX = re.compile(r"^\s*(?:(?:[0-9]{1,3}|[一二三四五六七八九十]{1,3})\s*[.、．)）]|[（(](?:[0-9]{1,3}|[一二三四五六七八九十]{1,3})[）)])\s*")
 
 
 def folded_form_items(chapters: list[dict], index: list[dict]) -> dict[str, list[tuple[dict, str]]]:

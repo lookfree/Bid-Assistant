@@ -10,49 +10,11 @@ from agent.agents.bidding_agent.render.sanitize import normalize_chapter_html, s
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.enum.text import WD_LINE_SPACING
 from docx.shared import Cm, Inches, Pt, RGBColor
 
+from agent.agents.bidding_agent.render.docx_styles import _apply_bid_styles, _apply_custom_format
+
 _CONTAINERS = ("div", "section", "article", "body")
-
-# H1-H5 → 磅值（章/节/小节/细分/明细五级，见 _apply_bid_styles）。五级都必须入表：
-# 未配置的 Word 内建标题样式会继承主题蓝/西文字体（三级提纲落地时 h4 首次可达，五级后 h5 同理）。
-_HEADING_SIZES = {
-    "Heading 1": Pt(16), "Heading 2": Pt(14), "Heading 3": Pt(12), "Heading 4": Pt(12), "Heading 5": Pt(12),
-}
-
-
-def _strip_theme_fonts(style) -> None:
-    """摘掉样式 rFonts 上的主题字体属性（asciiTheme/hAnsiTheme/eastAsiaTheme/cstheme）。
-    OOXML 规则：主题属性**优先于**同元素上的显式 ascii/eastAsia——python-docx 默认模板的
-    Heading 样式带 majorEastAsia，查看器顺着主题的日文脚本映射把章节标题解析成
-    ＭＳ ゴシック（2026-08-15 用户实测：标题字体与正文不一致），显式设的黑体/宋体
-    形同虚设。设字体必须同时拔掉主题引线，显式字体才真正生效。"""
-    rfonts = style.element.rPr.rFonts
-    for attr in ("asciiTheme", "hAnsiTheme", "eastAsiaTheme", "cstheme"):
-        rfonts.attrib.pop(qn(f"w:{attr}"), None)
-
-
-def _apply_bid_styles(doc: Document) -> None:
-    """标书排版惯例（一次性设在 Document 的样式上，覆盖 python-docx 默认模板）：
-    正文宋体小四(12pt)；一/二/三级标题黑体加粗黑色——Word 默认标题走主题色蓝，
-    投标文件要求严肃的黑白配色，不能保留默认蓝。
-    注：服务端镜像目前只装了 fonts-noto-cjk（没有宋体/黑体字体文件），LibreOffice
-    转 PDF 时找不到这两个字体名会退回 Noto CJK 渲染；用户在 Word 里打开 .docx 本身
-    是原生渲染，不受影响。"""
-    normal = doc.styles["Normal"]
-    normal.font.name = "宋体"
-    normal.font.size = Pt(12)
-    normal.element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
-    _strip_theme_fonts(normal)
-    for style_name, size in _HEADING_SIZES.items():
-        style = doc.styles[style_name]
-        style.font.name = "黑体"
-        style.font.size = size
-        style.font.bold = True
-        style.font.color.rgb = RGBColor(0, 0, 0)
-        style.element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
-        _strip_theme_fonts(style)
 
 
 def _emit_placeholder_image(doc: Document, el, fetch_object: Callable[[str], bytes | None] | None) -> None:
@@ -92,6 +54,11 @@ def _apply_align(paragraph, el) -> None:
         paragraph.paragraph_format.first_line_indent = Pt(0)
 
 
+# 章内标题的 HTML → Word 落级绝对映射（写手契约五级 h3-h6 下移一位；h1/h2 是跑偏防御位，
+# 按节待遇）。_emit_el 落级与 _mark_material_breaks 的「顶级」判定共用一份，两处各养必然漂移。
+_HEAD_LEVEL = {"h1": 2, "h2": 2, "h3": 2, "h4": 3, "h5": 4, "h6": 5}
+
+
 def _emit_el(doc: Document, el, fetch_object: Callable[[str], bytes | None] | None = None) -> None:
     """单个 HTML 元素 → docx：h1/h2→Heading2、h3/h4→Heading3、p→段落、ul/li→项目符号、
     table→表格；容器标签（div 等）递归展开，防止整块被 get_text 压扁成一段。
@@ -107,7 +74,7 @@ def _emit_el(doc: Document, el, fetch_object: Callable[[str], bytes | None] | No
         # h1/h2 是跑偏时的防御位（按节待遇），绝不落成正文段落。
         _apply_align(doc.add_heading(
             el.get_text(strip=True),
-            level={"h1": 2, "h2": 2, "h3": 2, "h4": 3, "h5": 4, "h6": 5}.get(name, 5),
+            level=_HEAD_LEVEL.get(name, 5),
         ), el)
     elif name == "p":
         _apply_align(doc.add_paragraph(el.get_text(strip=True)), el)
@@ -218,16 +185,22 @@ def _emit_html(doc: Document, html: str, fetch_object: Callable[[str], bytes | N
         _emit_el(doc, el, fetch_object)
 
 
+# 证照「待补充」提示行（cert_placement 库无货时留的，冒号后是证照名）。负向前瞻排除
+# 填空占位「（待补充：____）」——那是写手/填空引擎给普通正文留的空，不是材料痕迹
+# （评审 2026-08-15 F1 CONFIRMED：两个带填空的散文小节会把整章误判成材料章强制分页）。
+_PENDING_CERT_RE = re.compile(r"（待补充：(?![_＿])")
+
+
 def _section_is_material(head, stop) -> bool:
     """小节（head 起、按文档序到 stop 止）内是否有证照材料痕迹：库图占位
     （data-object-key 是证照占位图专有属性,编辑器手贴的 data: 图没有,不算）
-    或「（待补充：」提示行（cert_placement 库无货时留的）。"""
+    或证照「待补充」提示行（填空占位不算，见 _PENDING_CERT_RE）。"""
     for el in head.next_elements:
         if el is stop:
             return False
         if getattr(el, "name", None) == "img" and el.get("data-object-key"):
             return True
-        if isinstance(el, str) and "（待补充：" in el:
+        if isinstance(el, str) and _PENDING_CERT_RE.search(el):
             return True
     return False
 
@@ -236,13 +209,17 @@ def _mark_material_breaks(html: str) -> str:
     """材料章分页（2026-08-15 用户实测：资格文件章的财务状况/信用中国/声明小节全挤在
     营业执照图后同一页，贴扫描件没版面）：证照材料小节 ≥2 个 ⇒ 判为材料章，每个
     **顶级**小节标题（首个除外，它紧跟章标题）标 data-page-break，渲染时先落分页符
-    ——每份材料各占一页，好翻好替换。普通正文章（含手贴配图的技术章）不受影响。"""
+    ——每份材料各占一页，好翻好替换。普通正文章（含手贴配图的技术章）不受影响。
+    顶级按 **Word 落级**算（_HEAD_LEVEL：h1/h2/h3 同落 2 级）——模型跑偏吐出的防御位
+    h2 若按 HTML 数字算会独占顶级，材料小节全部降级，分页整个失效（评审 F4）。"""
+    if "data-object-key" not in (html or "") and "（待补充：" not in (html or ""):
+        return html            # 快路径：两种材料痕迹都无（评审 F6，免掉一次全量解析）
     soup = BeautifulSoup(html or "", "html.parser")
     heads = soup.find_all(re.compile(r"^h[1-6]$"))
     if len(heads) < 2:
         return html
-    top = min(int(h.name[1]) for h in heads)
-    tops = [h for h in heads if int(h.name[1]) == top]
+    top = min(_HEAD_LEVEL[h.name] for h in heads)
+    tops = [h for h in heads if _HEAD_LEVEL[h.name] == top]
     if len(tops) < 2:
         return html
     hits = sum(1 for i, h in enumerate(tops)
@@ -411,55 +388,7 @@ def _add_ai_notice(doc: Document) -> None:
         run.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
 
 
-# spec330 输出格式：GB 字号 → 磅值;默认参数=用户 2026-07-23 提供的口径。
-# fmt=None（不传）→ 维持现行样式,与既有导出一致;传 fmt（含空 dict）→ 以默认值起底逐项覆盖。
-_GB_PT = {"三号": 16, "四号": 14, "小四": 12, "五号": 10.5}
-_FMT_DEFAULT = {
-    "margin_cm": {"top": 2.2, "bottom": 2.2, "left": 2.3, "right": 2.3},
-    "heading_font": "宋体", "heading_size": "四号", "heading_bold": True,
-    "body_font": "宋体", "body_size": "小四", "body_indent_chars": 2,
-    "line_spacing": 1.5,  # 1 / 1.5 / "fixed22"（固定 22 磅）
-}
-
-
-def _set_line_spacing(pf, spacing) -> None:
-    if spacing == "fixed22":
-        pf.line_spacing_rule = WD_LINE_SPACING.EXACTLY
-        pf.line_spacing = Pt(22)
-    else:
-        pf.line_spacing = float(spacing)
-
-
-def _apply_custom_format(doc: Document, fmt: dict) -> None:
-    """按用户输出格式覆盖样式（spec330）：A4 纵向 + 页边距 + 正文/标题字体字号缩进行距。
-    只在显式传 fmt 时调用;逐项以 _FMT_DEFAULT 起底,用户改哪项覆盖哪项。"""
-    f = {**_FMT_DEFAULT, **{k: v for k, v in fmt.items() if v is not None}}
-    m = {**_FMT_DEFAULT["margin_cm"], **(f.get("margin_cm") or {})}
-    for sec in doc.sections:
-        sec.page_width, sec.page_height = Cm(21), Cm(29.7)  # A4 纵向
-        sec.top_margin, sec.bottom_margin = Cm(float(m["top"])), Cm(float(m["bottom"]))
-        sec.left_margin, sec.right_margin = Cm(float(m["left"])), Cm(float(m["right"]))
-    body_pt = _GB_PT.get(f["body_size"], 12)
-    normal = doc.styles["Normal"]
-    normal.font.name = f["body_font"]
-    normal.font.size = Pt(body_pt)
-    normal.element.rPr.rFonts.set(qn("w:eastAsia"), f["body_font"])
-    _strip_theme_fonts(normal)
-    # 首行缩进 N 字符 = N × 字号;行距设在 Normal 段落格式上,全文（含标题继承前的基准）统一。
-    # 缩进溢入表格/封面/页脚的问题由各发射点显式置零解决（_emit_table 单元格、_cover_line、页脚）。
-    normal.paragraph_format.first_line_indent = Pt(body_pt * int(f["body_indent_chars"]))
-    _set_line_spacing(normal.paragraph_format, f["line_spacing"])
-    head_pt = _GB_PT.get(f["heading_size"], 14)
-    for style_name in _HEADING_SIZES:
-        style = doc.styles[style_name]
-        style.font.name = f["heading_font"]
-        style.font.size = Pt(head_pt)
-        style.font.bold = bool(f["heading_bold"])
-        style.font.color.rgb = RGBColor(0, 0, 0)
-        style.element.rPr.rFonts.set(qn("w:eastAsia"), f["heading_font"])
-        _strip_theme_fonts(style)
-        style.paragraph_format.first_line_indent = Pt(0)  # 标题首行缩进 0 字符、左对齐
-        _set_line_spacing(style.paragraph_format, f["line_spacing"])
+# 样式设定（_apply_bid_styles / _apply_custom_format）已拆至 docx_styles.py（800 行上限）。
 
 
 # 复印章证照锚定（2026-08-14 授权书截图立案）：引导行组名 → 锚定人名词——

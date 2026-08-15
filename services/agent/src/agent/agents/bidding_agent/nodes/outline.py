@@ -88,6 +88,21 @@ def _reorder_chapters(outline: dict, structure: list[dict]) -> dict:
         return (grp, 0 if ref is not None else 1, ref if ref is not None else idx, idx)
 
     ordered = [ch for _, ch in sorted(enumerate(chapters), key=key)]
+    # after_id 锚（拆章产物，评审 F3）：无构成引用的拆出章按上面的键会漂到组尾——
+    # 授权书从响应函拆出后跑到商务组最后，招标要求的文件顺序被打散。带锚的章从排序
+    # 结果里摘出，插回锚章（父章）之后；锚章不在（提纲被编辑删了）则留在组尾原位。
+    anchored = [ch for ch in ordered if ch.get("after_id") and not ch.get("structure_ref")]
+    for ch in anchored:
+        ordered.remove(ch)
+    for ch in anchored:
+        pos = next((i for i, c in enumerate(ordered) if str(c.get("id")) == ch["after_id"]), None)
+        if pos is None:
+            ordered.append(ch)
+            continue
+        j = pos + 1                       # 同父多子保持拆出相对序：跳过已插的兄弟
+        while j < len(ordered) and ordered[j].get("after_id") == ch["after_id"]:
+            j += 1
+        ordered.insert(j, ch)
     for i, ch in enumerate(ordered):
         ch["no"] = f"第{_cn_num(i + 1)}章"
     outline["chapters"] = ordered
@@ -102,15 +117,15 @@ def _split_form_chapters(outline: dict, read_state: dict) -> dict:
     无独立章认领）；拆出的新章插在原章之后（无构成引用时 _reorder_chapters 按相对序
     保持相邻），构成引用按标题精确对回清单，重排重编号交给 _reorder_chapters。
     生成后+缓存命中后都过：旧缓存里的折叠提纲命中即矫正，不用清缓存。幂等。"""
-    from agent.agents.bidding_agent.nodes.form_locate import build_form_index, folded_form_items
+    from agent.agents.bidding_agent.nodes.form_locate import (
+        _match_tier, build_form_index, folded_form_items)
     chapters = outline.get("chapters") or []
     if not chapters:
         return outline
     folded = folded_form_items(chapters, build_form_index(read_state))
     if not any(folded.values()):
         return outline
-    by_title = {str(s.get("title") or "").strip(): str(s.get("id"))
-                for s in read_state.get("required_structure") or []}
+    structure = read_state.get("required_structure") or []
     seen = {str(c.get("id") or "") for c in chapters}
     out: list[dict] = []
     for ch in chapters:
@@ -124,8 +139,17 @@ def _split_form_chapters(outline: dict, read_state: dict) -> dict:
             new_ch = {"id": nid, "no": "", "desc": "", "title": core,
                       "group": ch.get("group") or "business", "sourced": True,
                       "items": item.get("children") or [dict(item, label=core, children=[])]}
-            if core in by_title:
-                new_ch["structure_ref"] = by_title[core]
+            # 构成引用按标题**强匹配**（全同/互含）对回清单——清单写「附件：法定代表人授权书」
+            # 时精确比对必落空（评审 F3）；仍对不上则带 after_id 锚，重排时锁在父章之后，
+            # 不许漂到组尾（无引用章的默认归宿）。绝不借用父章的 structure_ref——
+            # 模板投递的 struct 路会顺着它把父章的模板发给本章。
+            ref = next((str(s.get("id")) for s in structure
+                        if (t := _match_tier(core, str(s.get("title") or ""))) is not None
+                        and t <= 1), None)
+            if ref:
+                new_ch["structure_ref"] = ref
+            else:
+                new_ch["after_id"] = str(ch.get("id") or "")
             logger.info("提纲拆章：「%s」自「%s」拆出为独立表单章", core, ch.get("title"))
             out.append(new_ch)
     outline["chapters"] = out

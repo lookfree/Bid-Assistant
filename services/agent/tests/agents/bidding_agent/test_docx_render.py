@@ -543,3 +543,33 @@ def test_custom_format_heading_font_wins_over_theme():
     fonts = _re.search(r"<w:rFonts[^/]*/>", frag).group(0)
     assert "Theme" not in fonts and "theme" not in fonts, fonts
     assert 'w:eastAsia="宋体"' in fonts, fonts
+
+
+def test_fill_placeholders_do_not_fake_a_material_chapter():
+    """评审 F1 CONFIRMED：填空占位「（待补充：____）」是写手/填空引擎给普通正文留的空，
+    两个带填空的散文小节不得把整章误判成材料章强制一节一页；证照「待补充」（冒号后
+    是证照名）照常算数。"""
+    outline = {"chapters": [{"id": "b8", "no": "第八章", "title": "商务响应", "group": "business"}]}
+    chapters = {"b8": (
+        '<h3>一、报价说明</h3><p>付款方式：（待补充：____）</p>'
+        '<h3>二、售后服务</h3><p>响应时限 2 小时。</p>'
+        '<h3>三、联系方式</h3><p>联系人：（待补充：____）</p>'
+    )}
+    doc = Document(io.BytesIO(render_docx(outline, chapters)))
+    assert not _page_break_precedes(doc, "二、售后服务")
+    assert not _page_break_precedes(doc, "三、联系方式")
+
+
+def test_stray_h2_does_not_disable_material_breaks():
+    """评审 F4：模型跑偏吐出的防御位 h2 与 h3 同落 Word 2 级——顶级按落级算，
+    材料小节的分页不得因一个杂散 h2 整章失效。"""
+    outline = {"chapters": [{"id": "b6", "no": "第六章", "title": "资格文件", "group": "business"}]}
+    chapters = {"b6": (
+        '<h2>资格文件总述</h2>'
+        '<h3>一、营业执照</h3><p><img data-file-id="f1" data-object-key="k1" alt="营业执照|证" /></p>'
+        '<h3>二、财务状况证明材料</h3><p>（待补充：财务状况证明材料）</p>'
+        '<h3>三、信用中国截图</h3><p>（待补充：信用中国截图）</p>'
+    )}
+    doc = Document(io.BytesIO(render_docx(outline, chapters)))
+    assert _page_break_precedes(doc, "二、财务状况证明材料")
+    assert _page_break_precedes(doc, "三、信用中国截图")

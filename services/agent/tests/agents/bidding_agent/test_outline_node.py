@@ -248,3 +248,38 @@ def test_poisoned_cached_outline_is_split_on_hit(submit_gateway, monkeypatch):
     assert [c["title"] for c in out["outline"]["chapters"]] == \
            ["响应函", "法定代表人授权书", "技术方案"]
     assert not gw.chats
+
+
+def test_split_chapter_maps_ref_by_containment(submit_gateway):
+    """评审 F3：构成清单写「附件：法定代表人授权书」——精确比对必落空。标题强匹配
+    （互含）也要对上引用，拆出章按构成文档序落位。"""
+    gw = submit_gateway({"submit_outline": _FOLDED_ARGS})
+    node = make_outline_node(RunContext(run_id="r", agent_type="bidding_agent",
+                                        thread_id="t", gateway=gw))
+    read = _folded_read()
+    read["required_structure"] = [
+        {"id": "s1", "title": "响应函", "kind": "form", "required": True},
+        {"id": "s9", "title": "附件：法定代表人授权书", "kind": "form", "required": True}]
+    out = asyncio.run(node({"read": read}))
+    split = next(c for c in out["outline"]["chapters"] if c["title"] == "法定代表人授权书")
+    assert split.get("structure_ref") == "s9"
+
+
+def test_split_chapter_without_ref_stays_right_after_parent(submit_gateway):
+    """评审 F3 CONFIRMED：拆出章对不上任何构成标题、而父章带引用时，无引用章的默认
+    归宿是组尾——授权书漂到商务组最后。after_id 锚：重排后必须紧跟父章。"""
+    args = {"chapters": [dict(c) for c in _FOLDED_ARGS["chapters"]]}
+    args["chapters"][0] = {**args["chapters"][0], "structure_ref": "s1"}
+    args["chapters"].insert(1, {"id": "b2", "no": "第二章", "title": "报价一览表",
+                                "group": "business", "sourced": True, "structure_ref": "s2",
+                                "items": [{"id": "b2-1", "label": "一、报价一览表"}]})
+    gw = submit_gateway({"submit_outline": args})
+    node = make_outline_node(RunContext(run_id="r", agent_type="bidding_agent",
+                                        thread_id="t", gateway=gw))
+    read = _folded_read()
+    read["required_structure"] = [
+        {"id": "s1", "title": "响应函", "kind": "form", "required": True},
+        {"id": "s2", "title": "报价一览表", "kind": "form", "required": True}]
+    out = asyncio.run(node({"read": read}))
+    titles = [c["title"] for c in out["outline"]["chapters"]]
+    assert titles == ["响应函", "法定代表人授权书", "报价一览表", "技术方案"], titles

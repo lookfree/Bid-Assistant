@@ -318,3 +318,12 @@ class TestFoldedFormItems:
             {"id": "t2-1", "label": "一、项目理解", "children": []},
             {"id": "t2-2", "label": "二、报价含税说明及税率标注", "children": []}]}]
         assert not any(folded_form_items(chs, build_form_index(_read())).values())
+
+    def test_bare_leading_numeral_without_delimiter_is_not_an_ordinal(self):
+        """评审 F2 CONFIRMED：「一次性告知承诺书」的「一」是词首不是序号——可选分隔符
+        会把它剥成「次性告知承诺书」，拆出的章标题缺首字。裸数字后必须跟分隔符才剥。"""
+        from agent.agents.bidding_agent.nodes.form_locate import _ORD_PREFIX
+        assert _ORD_PREFIX.sub("", "一次性告知承诺书") == "一次性告知承诺书"
+        assert _ORD_PREFIX.sub("", "二、法定代表人授权书") == "法定代表人授权书"
+        assert _ORD_PREFIX.sub("", "1. 报价一览表") == "报价一览表"
+        assert _ORD_PREFIX.sub("", "（一）响应函") == "响应函"
