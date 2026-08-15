@@ -670,3 +670,44 @@ class TestZeroModelPromiseGate:
         state["outline"]["chapters"][1].update({"title": "法定代表人授权书", "items": []})
         _run(state, _FakeChat(), monkeypatch=monkeypatch)
         assert not [d for e, d in events if e == "form_items_uncovered"]
+
+
+class TestDeviationFormatReference:
+    """2026-08-16 用户实测：招标偏离表列名「询价文件条目号/服务响应/响应/偏离」，模型自创
+    「招标要求出处/投标响应/备注」六列+开场白——偏离章被排除在模板投递外（躲当年保真闸
+    的冤杀，闸已退役），格式盲写。参照块≠模板保真：列结构照抄，行内容模型填。"""
+
+    def _state(self):
+        state = _state(2)
+        state["outline"]["chapters"][0].update({
+            "title": "技术需求/服务偏离表",
+            "items": [{"id": "i1", "label": "一、逐条响应"}]})
+        state["read"] = {
+            "categories": [{"key": "technical", "title": "技术", "items": [
+                {"title": "吞吐量", "value": "10G", "star": True, "clause_ids": ["sec-7-c1"]}]}],
+            "doc_sections": [
+                # 前一份表单先立住编号链——孤立的「5.」会被语义门当正文拒掉（宁可不切）
+                {"id": "sec-7-c0", "text": "4.供应商情况一览表"},
+                {"id": "sec-7-c0b", "text": "注册地址\t邮政编码"},
+                {"id": "sec-7-c1", "text": "5.技术需求/服务偏离表"},
+                {"id": "sec-7-c2", "text": "序号\t询价文件条目号\t询价服务需求\t服务响应\t响应/偏离\t说明"},
+                {"id": "sec-7-c3", "text": "供应商签章："}]}
+        return state
+
+    def test_deviation_brief_carries_the_tender_table_format(self, monkeypatch):
+        chat = _FakeChat()
+        _run(self._state(), chat, monkeypatch=monkeypatch)
+        brief = _brief_of(chat, "技术需求/服务偏离表")
+        assert "偏离表指引" in brief, "条目通路不能丢"
+        assert "【招标偏离表格式】" in brief
+        assert "询价文件条目号" in brief and "响应/偏离" in brief, "招标列名没送到模型手里"
+        assert "供应商签章" in brief, "表尾行也要照抄"
+        assert "招标格式模板" not in brief, "偏离章仍不得进模板保真通路（旧钉子口径）"
+
+    def test_no_matching_segment_no_format_block(self, monkeypatch):
+        """招标书里定位不到偏离表模板 → 不加块，行为与今天一致（给零不给错）。"""
+        state = self._state()
+        state["read"]["doc_sections"] = []
+        chat = _FakeChat()
+        _run(state, chat, monkeypatch=monkeypatch)
+        assert "【招标偏离表格式】" not in _brief_of(chat, "技术需求/服务偏离表")

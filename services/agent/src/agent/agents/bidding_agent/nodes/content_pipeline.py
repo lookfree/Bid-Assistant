@@ -324,6 +324,8 @@ def _chapter_brief(state: dict, ch: dict, shared: dict) -> tuple[str, str]:
         parts.append(shared["risk"])
     if shared.get("deviation") and cid in (shared.get("deviation_ids") or set()):
         parts.append(shared["deviation"])          # 偏离表条目只发给偏离表章（按 id,含 structure_ref 识别的）
+        if cid in (shared.get("dev_formats") or {}):
+            parts.append(shared["dev_formats"][cid])   # 招标偏离表格式参照（2026-08-16,列结构照抄）
     tpl = (shared.get("templates") or {}).get(cid)
     if tpl and tpl.get("brief"):
         parts.append(tpl["brief"])                  # 招标格式模板只发给它自己的那一章
@@ -595,11 +597,12 @@ def _shared_blocks(state: dict, read: dict, outline: dict, chapters: list[dict])
     """整轮共享的简报素材（构建一次,按章精确投递）。全部先剥内部条款 id 再出门。"""
     from agent.agents.bidding_agent.nodes.common import strip_clause_ids
     from agent.agents.bidding_agent.nodes.content import (
-        _DEVIATION_KEYWORD, _chapter_budget_map, _deviation_items_block,
-        _deviation_structure_ids, _template_entries)
+        _DEVIATION_KEYWORD, _chapter_budget_map, _deviation_format_block,
+        _deviation_items_block, _deviation_structure_ids, _template_entries)
     from agent.agents.bidding_agent.nodes.form_locate import build_form_index, folded_form_items
 
     structure = read.get("required_structure") or []
+    form_index = build_form_index(read)
     dev_secs = _deviation_structure_ids(structure)
     # 偏离表章识别与数据投递用**同一个**判定（标题 或 structure_ref）——旧版造数据认两条、
     # 发数据只认标题,靠 structure_ref 标记的偏离章拿到零条目（评审 2026-08-08）。
@@ -634,10 +637,14 @@ def _shared_blocks(state: dict, read: dict, outline: dict, chapters: list[dict])
                  + (risk_txt[:3000] + "…（截断）" if len(risk_txt) > 3000 else risk_txt)) if risk_txt else "",
         "deviation": _deviation_items_block(read) if dev_ids else "",
         "deviation_ids": dev_ids,
+        # 偏离表章的招标表格式参照（2026-08-16）：与条目块同投递面,定位不到不加块
+        "dev_formats": {str(c.get("id")): blk for c in chapters
+                        if c.get("id") in dev_ids
+                        and (blk := _deviation_format_block(form_index, str(c.get("title") or "")))},
         "templates": templates,
         # 零模型守约闸判定（2026-08-15）：与提纲拆章共用同一份全文表单索引；两个输入
         # 整轮不变，这里算一次，各章只查表（评审 F5：原先每个表单章各自重算一遍）
-        "folded_forms": folded_form_items(chapters, build_form_index(read)),
+        "folded_forms": folded_form_items(chapters, form_index),
         "personnel": _library_ref_block(refs.get("personnel") or [], "人员"),
         "performance": _library_ref_block(refs.get("performance") or [], "业绩"),
         "budgets": budgets, "work_total": work,

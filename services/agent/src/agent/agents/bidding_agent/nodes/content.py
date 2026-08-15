@@ -459,6 +459,25 @@ def _clause_source(read: dict, clause_ids: list | None) -> str:
 _DEVIATION_BLOCK_CHARS = 30000
 
 
+# 偏离表格式参照块的体量上限：表头+表尾就几行，2000 字足够；切出来超长说明定位歪了，宁缺毋滥
+_DEV_FORMAT_CHARS = 2000
+
+
+def _deviation_format_block(index: list[dict], title: str) -> str:
+    """偏离表章的**格式参照块**（2026-08-16 用户实测：招标偏离表列名「询价文件条目号/
+    服务响应/响应/偏离」，模型自创「招标要求出处/投标响应/备注」六列+开场白——偏离章
+    当年为躲保真闸冤杀被整个排除在模板投递外，闸已退役，格式盲写留了下来）。
+    参照块≠模板保真：列结构/表尾照抄、行内容模型填，偏离章不进模板通路的旧口径不变。
+    定位不到招标偏离表 → 空串不加块（给零不给错）。"""
+    from agent.agents.bidding_agent.nodes.form_locate import find_form_segment, segment_text
+    text = segment_text(find_form_segment(index, title))
+    if not text:
+        return ""
+    return ("【招标偏离表格式】本章表格**必须照抄**下方招标原表的表头列名、列序与表尾行，"
+            "不得自创/增删/改名任何列，不得添加招标原表没有的小节或开场白；"
+            "每个需求条目占一行，「响应」类列由我方填写：\n" + text[:_DEV_FORMAT_CHARS])
+
+
 def _deviation_items_block(read: dict) -> str:
     """技术/商务/资格分类条目（title/value/star/出处），供偏离表章逐条落表（spec322）。
     条目 ★ 优先排序后按字符预算截断：偏离表最不能丢的是不可偏离项——预算不够时砍普通条目
