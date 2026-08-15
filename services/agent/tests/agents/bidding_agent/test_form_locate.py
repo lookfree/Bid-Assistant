@@ -327,3 +327,53 @@ class TestFoldedFormItems:
         assert _ORD_PREFIX.sub("", "二、法定代表人授权书") == "法定代表人授权书"
         assert _ORD_PREFIX.sub("", "1. 报价一览表") == "报价一览表"
         assert _ORD_PREFIX.sub("", "（一）响应函") == "响应函"
+
+
+class TestForeignSectionCut:
+    """2026-08-16 用户实测（(0033)截图）：承诺函模板尾巴整段带着「4-2要求的资格文件」
+    条款清单——「4-2」无点号+局部链断，切分器没认出边界，文本与复印机区间都含它。
+    段内出现**多级编号+短名+非表单构词**的外来节 → 从那行剁到段尾；
+    表单构词的兄弟（3-1.报价明细表）与段内重新起数的材料清单（1.营业执照）不受影响。"""
+
+    _SEG_LINES = ["供应商资格信用承诺函", "我单位郑重承诺守信经营。",
+                  "供应商名称(单位公章)", "年    月    日",
+                  "4-2要求的资格文件", "1.按资格要求及资格评审表提供资格文件。",
+                  "2.如供应商是企业的（包括合伙企业）应提供有效的营业执照。"]
+
+    def test_foreign_clause_section_is_cut_from_text(self):
+        from agent.agents.bidding_agent.nodes.form_locate import segment_text
+        seg = {"name": "供应商资格信用承诺函", "lines": list(self._SEG_LINES),
+               "srcs": list(range(10, 17)), "head_src": 9}
+        text = segment_text(seg)
+        assert "郑重承诺" in text and "单位公章" in text
+        assert "要求的资格文件" not in text and "营业执照" not in text
+
+    def test_form_shaped_sibling_stays(self):
+        """「3-1.报价明细表」是表单构词——没人认领时留在父段是钉过的行为，不剁。"""
+        from agent.agents.bidding_agent.nodes.form_locate import segment_text
+        seg = {"name": "报价一览表", "lines": ["报价一览表", "序号\t名称", "3-1.报价明细表", "序号\t品牌"],
+               "srcs": [1, 2, 3, 4], "head_src": 0}
+        assert "报价明细表" in segment_text(seg)
+
+    def test_restarted_material_list_stays(self):
+        """表单内从 1 重新起数的材料清单（单级编号）不剁——那是表单自己的内容。"""
+        from agent.agents.bidding_agent.nodes.form_locate import segment_text
+        seg = {"name": "资格审查表", "lines": ["资格审查表", "1.营业执照", "2.资质证书"],
+               "srcs": [1, 2, 3], "head_src": 0}
+        text = segment_text(seg)
+        assert "营业执照" in text and "资质证书" in text
+
+    def test_span_is_cut_at_the_same_line(self):
+        """复印机区间与文本同刀口——只剁文本不剁区间，线上没有、导出还有。
+        夹具复刻生产断链形态：「3.我方承诺守信」接不上 (4,1) 链被拒且打断链，
+        随后的「4-2要求的资格文件」同样被拒 → 整节粘在承诺函段内。"""
+        from agent.agents.bidding_agent.nodes.form_locate import build_form_index, form_node_span
+        read = {"doc_sections": [
+            {"id": "s-c1", "text": "4-1.供应商资格信用承诺函", "src": 10},
+            {"id": "s-c2", "text": "供应商资格信用承诺函", "src": 11},
+            {"id": "s-c3", "text": "我单位郑重承诺守信经营。", "src": 12},
+            {"id": "s-c3b", "text": "3.我方承诺守信", "src": 13},
+            {"id": "s-c4", "text": "4-2要求的资格文件\n1.按资格要求及资格评审表提供资格文件。", "src": 14},
+        ], "doc_headings": []}
+        span = form_node_span(build_form_index(read), "供应商资格信用承诺函")
+        assert span is not None and span.end <= 13, f"复印区间没剁掉外来节: {span}"

@@ -282,21 +282,31 @@ def find_form_segment(index: list[dict], chapter_title: str) -> dict | None:
     return max(cands, key=lambda s: (s["depth"], len(_norm(s["name"]))))
 
 
+def _foreign_cut_idx(lines: list[str]) -> int | None:
+    """段内**外来条款节**的起点行号（2026-08-16 用户实测：承诺函模板尾巴整段带着
+    「4-2要求的资格文件」条款清单——「4-2」无点号+局部链断,切分器没认出边界,
+    文本与复印机区间都含它;资格材料已实体化为附录,要求清单不该复刻进商务标）。
+    判定=**多级编号**（4-2 形态,原始事故与 2026-08-14 尾巴事故都是它）+ 短名 +
+    非表单构词。单级编号（1.营业执照）是表单自身重新起数的材料清单,绝不动;
+    表单构词的兄弟（3-1.报价明细表）留在父段是钉过的行为,也不动。"""
+    for i, line in enumerate(lines):
+        b = _boundary_of(_norm(line.strip()))
+        if b is not None and b[3] is not None and len(b[3]) >= 2 \
+                and not _looks_like_form_title(b[1]):
+            return i
+    return None
+
+
 def segment_text(seg: dict | None) -> str:
     """段 → 模板原文；空段/超体量（切出来的根本不是一份表单）都给空串。
-
-    尾部剥掉**编号边界行**（2026-08-14 云上实测：承诺函模板尾巴挂着「4-2要求的资格文件」
-    ——局部切片里编号链没建立、邻节标题被当成正文并进段，模型如实不抄它反被判改写）。
-    只剥尾部、只剥带编号且非表单构词的行，表单自己的裸抬头一个不动。"""
+    外来条款节从起点整段剁掉（_foreign_cut_idx,含 2026-08-14「尾部剥边界行」的原事故形态,
+    且不再误吃表单自带的尾部材料清单——旧的尾部剥会把「1.营业执照 2.资质证书」整串吃掉）。"""
     if seg is None:
         return ""
     lines = [line for line in seg["lines"] if line.strip()]
-    while lines:
-        b = _boundary_of(lines[-1].strip())
-        if b is not None and b[3] is not None and not _looks_like_form_title(b[1]):
-            lines.pop()
-            continue
-        break
+    cut = _foreign_cut_idx(lines)
+    if cut is not None:
+        lines = lines[:cut]
     text = "\n".join(lines)
     return text if 0 < len(text) <= _MAX_FORM_CHARS else ""
 
@@ -370,11 +380,16 @@ class FormSpan(NamedTuple):
 
 def form_node_span(index: list[dict], chapter_title: str) -> FormSpan | None:
     """章名 → FormSpan。旧读标结果没有 src（发版前入库）或段超体量 → None，
-    复印机自然回退 HTML 渲染路线。"""
+    复印机自然回退 HTML 渲染路线。外来条款节与文本路径**同刀口**剁掉
+    （只剁文本不剁区间 = 线上没有、导出还有,两侧不一致）。"""
     seg = find_form_segment(index, chapter_title)
     if seg is None or not segment_text(seg):
         return None
-    srcs = [s for s in seg.get("srcs") or [] if isinstance(s, int) and s >= 0]
+    lines, all_srcs = seg.get("lines") or [], seg.get("srcs") or []
+    cut = _foreign_cut_idx(list(lines))
+    if cut is not None:
+        all_srcs = all_srcs[:cut]
+    srcs = [s for s in all_srcs if isinstance(s, int) and s >= 0]
     if not srcs:
         return None
     head = seg.get("head_src", -1)
