@@ -249,7 +249,14 @@ def _template_entries(read: dict, outline: dict) -> dict[str, dict]:
 # 「投标报价」类评分排除：报价是数字/表格非正文，按分值给它大预算会填不满——报价章只拿基线。
 # 无可用评分信号时回退组级加权（技术标 _TECH_SHARE / 商务标其余）。
 _TECH_SHARE = 0.8
-_PRICE_CATEGORY = "投标报价"
+# 价格类评分按**关键词**排除（2026-08-15 a862662f 实测：最低价评价法唯一评分行的
+# category 是「报价」，精确匹配「投标报价」漏掉它——100 分经条款回退挂到商务偏离表章，
+# 一章独吞 77% 预算（31700/41200），其余 12 章饿死，4.1 万目标只出 1.7 万）。
+_PRICE_WORDS = ("报价", "价格")
+
+
+def _is_price_scoring(category: object) -> bool:
+    return any(w in str(category or "") for w in _PRICE_WORDS)
 
 
 def _scores_per_chapter(chapters: list[dict], scoring: list[dict]) -> dict[str, float]:
@@ -262,7 +269,7 @@ def _scores_per_chapter(chapters: list[dict], scoring: list[dict]) -> dict[str, 
                 clause_to_ch.setdefault(cid, c.get("id"))
     out: dict[str, float] = {}
     for r in scoring:
-        if r.get("category") == _PRICE_CATEGORY:
+        if _is_price_scoring(r.get("category")):
             continue
         ch = r.get("chapter_id")
         if ch not in ids:  # chapter_id 缺失/不匹配 → 按条款重叠回退定位
@@ -320,10 +327,42 @@ def _group_weighted_budgets(chapters: list[dict], target: int) -> dict[str, int]
     return budgets
 
 
-def _chapter_budget_map(run_input: dict, outline: dict,
-                        scoring: list[dict] | None = None) -> tuple[dict[str, int], int]:
+# 单章预算封顶（只作用于**评分加权**路径——评分是模型产物，一行错分不许打歪全书，
+# 31700/41200 事故的护栏；组权重路径的份额来自子项结构，天然有界，不封）。
+_CHAPTER_BUDGET_CAP = 0.4
+
+
+def _cap_budgets(budgets: dict[str, int], total: int) -> dict[str, int]:
+    """任何一章不超过预算池的 max(40%, 2×均摊)——大提纲里一章 77% 是病，三章提纲里
+    一章 60 分独大是常态，上限随章数自适应。超额按水位法迭代回灌（一轮回灌会让
+    别的章反超上限甚至倒挂排序）；少于 3 章不封（两章必有一章 ≥50%）。"""
+    if len(budgets) < 3:
+        return budgets
+    cap = round(total * max(_CHAPTER_BUDGET_CAP, 2.0 / len(budgets)))
+    out = dict(budgets)
+    for _ in range(len(out)):
+        over = [cid for cid, b in out.items() if b > cap]
+        if not over:
+            break
+        excess = sum(out[cid] - cap for cid in over)
+        for cid in over:
+            out[cid] = cap
+        rest = [cid for cid, b in out.items() if b < cap]
+        rest_sum = sum(out[cid] for cid in rest) or 1
+        if not rest:
+            break
+        for cid in rest:
+            out[cid] += round(excess * out[cid] / rest_sum / 100) * 100
+    return out
+
+
+def _chapter_budget_map(run_input: dict, outline: dict, scoring: list[dict] | None = None,
+                        fixed: dict[str, int] | None = None) -> tuple[dict[str, int], int]:
     """各章字数预算表（spec330 方案3,流水线口径）：用户目标 ÷ 超写校准 = 全书工作目标,
-    再按评分分值加权拆到章（「投标报价」类评分排除,无评分信号回退组级+子项权重）。
+    再按评分分值加权拆到章（价格类评分按关键词排除,无评分信号回退组级+子项权重）,
+    最后单章封顶。fixed={章id: 定长可见字数}（零模型表单章——模板多长就是多长,
+    占预算不产字）：这些章不进预算池,其字数从工作目标先行扣除,余量分给模型章,
+    成书总量才对得上用户目标（2026-08-15 a862662f）。
     返回 ({chapter_id: 目标字数}, 全书工作目标)；未配置目标返回 ({}, 0)。
     逐章简报只取**本章那一行**下发——整表下发会把内部章 id（t3/b2）漏给写手（评审 2026-08-08 提出）。"""
     target = run_input.get("target_chars")
@@ -331,9 +370,15 @@ def _chapter_budget_map(run_input: dict, outline: dict,
     if not isinstance(target, int) or target <= 0 or not chapters:
         return {}, 0
     work = max(1000, round(target / _calibration(run_input) / 100) * 100)
-    score_by_ch = _scores_per_chapter(chapters, scoring or [])
-    budgets = (_scoring_weighted_budgets(chapters, work, score_by_ch)
-               if sum(score_by_ch.values()) > 0 else _group_weighted_budgets(chapters, work))
+    fixed = {cid: v for cid, v in (fixed or {}).items()
+             if any(c.get("id") == cid for c in chapters)}
+    pool_chapters = [c for c in chapters if c.get("id") not in fixed]
+    if not pool_chapters:
+        return {}, work
+    pool = max(1000, work - sum(fixed.values()))
+    score_by_ch = _scores_per_chapter(pool_chapters, scoring or [])
+    budgets = (_cap_budgets(_scoring_weighted_budgets(pool_chapters, pool, score_by_ch), pool)
+               if sum(score_by_ch.values()) > 0 else _group_weighted_budgets(pool_chapters, pool))
     return budgets, work
 
 

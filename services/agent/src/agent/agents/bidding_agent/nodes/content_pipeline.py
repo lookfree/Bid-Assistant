@@ -576,6 +576,21 @@ async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, share
     return cid, html
 
 
+def _fixed_template_chars(chapters: list[dict], templates: dict, state: dict) -> dict[str, int]:
+    """零模型表单章 → 定长可见字数（与 _write_one 的零模型分支同一判定口径：有模板原文
+    且非偏离数据表）。预算表据此把它们移出预算池——表单章占预算不产字,是「选 4.1 万
+    只出 1.7 万」的结构性缺口之一（2026-08-15 a862662f）。"""
+    from agent.agents.bidding_agent.nodes.content import _visible_len
+    from agent.agents.bidding_agent.nodes.form_fidelity import template_html
+    out: dict[str, int] = {}
+    for ch in chapters:
+        cid = str(ch.get("id") or "")
+        raw = (templates.get(cid) or {}).get("raw") or ""
+        if raw and not _dev_table_like(ch, state):
+            out[cid] = _visible_len(template_html(raw, ch.get("title") or ""))
+    return out
+
+
 def _shared_blocks(state: dict, read: dict, outline: dict, chapters: list[dict]) -> dict:
     """整轮共享的简报素材（构建一次,按章精确投递）。全部先剥内部条款 id 再出门。"""
     from agent.agents.bidding_agent.nodes.common import strip_clause_ids
@@ -590,7 +605,12 @@ def _shared_blocks(state: dict, read: dict, outline: dict, chapters: list[dict])
     # 发数据只认标题,靠 structure_ref 标记的偏离章拿到零条目（评审 2026-08-08）。
     dev_ids = {c.get("id") for c in chapters
                if _DEVIATION_KEYWORD in (c.get("title") or "") or c.get("structure_ref") in dev_secs}
-    budgets, work = _chapter_budget_map(state.get("run_input") or {}, outline, read.get("scoring") or [])
+    # 零模型表单章定长（2026-08-15 a862662f：4.1万目标只出1.7万的缺口之一）：这些章
+    # 模板多长就是多长，占预算不产字——算出定长交给预算表先扣、退出预算池。
+    templates = _template_entries(read, outline)
+    fixed = _fixed_template_chars(chapters, templates, state)
+    budgets, work = _chapter_budget_map(state.get("run_input") or {}, outline,
+                                        read.get("scoring") or [], fixed=fixed)
     meta = read.get("project_meta") or {}
     risks = strip_clause_ids({"items": read.get("risk_summary") or []})["items"]
     risk_txt = json.dumps(risks, ensure_ascii=False) if risks else ""
@@ -614,7 +634,7 @@ def _shared_blocks(state: dict, read: dict, outline: dict, chapters: list[dict])
                  + (risk_txt[:3000] + "…（截断）" if len(risk_txt) > 3000 else risk_txt)) if risk_txt else "",
         "deviation": _deviation_items_block(read) if dev_ids else "",
         "deviation_ids": dev_ids,
-        "templates": _template_entries(read, outline),
+        "templates": templates,
         # 零模型守约闸判定（2026-08-15）：与提纲拆章共用同一份全文表单索引；两个输入
         # 整轮不变，这里算一次，各章只查表（评审 F5：原先每个表单章各自重算一遍）
         "folded_forms": folded_form_items(chapters, build_form_index(read)),

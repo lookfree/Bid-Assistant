@@ -237,3 +237,54 @@ def test_deviation_block_caps_size_but_never_drops_stars():
     assert len(block) < _DEVIATION_BLOCK_CHARS * 1.2, "条目段没有预算,超大标书必顶穿上下文"
     assert all(f"★关键要求{i}" in block for i in range(40)), "★ 条目被预算截掉了"
     assert "已省略" in block, "截断必须如实注明,不能静默"
+
+
+def test_price_scoring_excluded_by_keyword_lowest_price_method():
+    """2026-08-15 a862662f 实测：最低价评价法唯一评分行「报价 100 分」——排除判定精确
+    匹配「投标报价」漏掉它，条款回退挂到商务偏离表章，一章独吞 77%（31700 字），其余
+    12 章饿死，4.1 万目标只出 1.7 万。价格类按**关键词**排除（category 含报价/价格）；
+    全表皆价格 → 无评分信号，回退组权重。"""
+    from agent.agents.bidding_agent.nodes.content import _TECH_SHARE, _chapter_budget_map
+    outline = {"chapters": [
+        {"id": "b9", "title": "商务条款偏离表", "group": "business",
+         "items": [{"clause_ids": ["sec-1-c10"]}]},
+        {"id": "t1", "title": "整体服务方案", "group": "tech", "items": [{}]},
+    ]}
+    scoring = [{"id": "s1", "category": "报价", "name": "价格", "score": 100,
+                "chapter_id": "一、项目概况", "clause_ids": ["sec-1-c10"]}]
+    budgets, work = _chapter_budget_map({"target_chars": 41200}, outline, scoring)
+    assert budgets["t1"] > budgets["b9"], "价格评分行漏排,偏离表又独吞了预算"
+    assert abs(budgets["t1"] - work * _TECH_SHARE) < work * 0.03
+
+
+def test_single_chapter_budget_is_capped():
+    """纵深：评分是模型产物，一行错分不许再打歪全书——单章封顶预算池 40%，
+    超额按权重回灌其余章，总量不缩水（31700/41200 事故形态的护栏）。"""
+    from agent.agents.bidding_agent.nodes.content import _chapter_budget_map
+    outline = {"chapters": [
+        {"id": "t1", "title": "方案A", "group": "tech", "items": [{}]},
+        {"id": "t2", "title": "方案B", "group": "tech", "items": [{}]},
+        {"id": "t3", "title": "方案C", "group": "tech", "items": [{}]},
+        {"id": "t4", "title": "方案D", "group": "tech", "items": [{}]},
+        {"id": "b1", "title": "服务承诺", "group": "business", "items": [{}]},
+    ]}
+    scoring = [{"id": "s1", "category": "技术", "name": "重头", "score": 100, "chapter_id": "t1"}]
+    budgets, work = _chapter_budget_map({"target_chars": 40000}, outline, scoring)
+    assert budgets["t1"] <= work * 0.4 + 200, f"单章未封顶: {budgets}"
+    assert abs(sum(budgets.values()) - work) < work * 0.06, "封顶后总量缩水"
+
+
+def test_zero_model_form_chapters_leave_the_budget_pool():
+    """表单章零模型定长：占预算不产字。fixed 传入后表单章无预算行，其定长字数从
+    目标先扣，余量全分给模型章——用户目标才对得上成书总量。"""
+    from agent.agents.bidding_agent.nodes.content import _chapter_budget_map
+    outline = {"chapters": [
+        {"id": "b1", "title": "响应函", "group": "business", "items": [{}]},
+        {"id": "b2", "title": "服务承诺", "group": "business", "items": [{}]},
+        {"id": "t1", "title": "技术方案", "group": "tech", "items": [{}]},
+    ]}
+    budgets, work = _chapter_budget_map({"target_chars": 20000}, outline, [],
+                                        fixed={"b1": 1000})
+    assert "b1" not in budgets, "定长表单章不该有预算行"
+    assert abs(sum(budgets.values()) - (20000 - 1000)) < 1500
+    assert work == 20000
