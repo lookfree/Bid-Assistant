@@ -85,6 +85,8 @@ def _emit_el(doc: Document, el, fetch_object: Callable[[str], bytes | None] | No
     fetch_object：附录占位图取字节回调，随递归原样透传给子节点。"""
     name = getattr(el, "name", None)
     if name in ("h1", "h2", "h3", "h4", "h5", "h6"):
+        if el.get("data-page-break"):  # 材料章小节各起一页（_mark_material_breaks 标记）
+            doc.add_page_break()
         # 章内层级绝对映射（评审二轮:相对归一会让同一 <h4> 在不同章落不同 Word 级）。
         # 写手契约与提纲五级一一对应：二级节 h3 / 三级小节 h4 / 四级细分 h5 / 五级明细 h6，
         # 章标题占 Heading 1，故正文各级整体下移一位 → Word 2/3/4/5。
@@ -201,6 +203,42 @@ def _emit_html(doc: Document, html: str, fetch_object: Callable[[str], bytes | N
     soup = BeautifulSoup(html or "", "html.parser")
     for el in soup.children:
         _emit_el(doc, el, fetch_object)
+
+
+def _section_is_material(head, stop) -> bool:
+    """小节（head 起、按文档序到 stop 止）内是否有证照材料痕迹：库图占位
+    （data-object-key 是证照占位图专有属性,编辑器手贴的 data: 图没有,不算）
+    或「（待补充：」提示行（cert_placement 库无货时留的）。"""
+    for el in head.next_elements:
+        if el is stop:
+            return False
+        if getattr(el, "name", None) == "img" and el.get("data-object-key"):
+            return True
+        if isinstance(el, str) and "（待补充：" in el:
+            return True
+    return False
+
+
+def _mark_material_breaks(html: str) -> str:
+    """材料章分页（2026-08-15 用户实测：资格文件章的财务状况/信用中国/声明小节全挤在
+    营业执照图后同一页，贴扫描件没版面）：证照材料小节 ≥2 个 ⇒ 判为材料章，每个
+    **顶级**小节标题（首个除外，它紧跟章标题）标 data-page-break，渲染时先落分页符
+    ——每份材料各占一页，好翻好替换。普通正文章（含手贴配图的技术章）不受影响。"""
+    soup = BeautifulSoup(html or "", "html.parser")
+    heads = soup.find_all(re.compile(r"^h[1-6]$"))
+    if len(heads) < 2:
+        return html
+    top = min(int(h.name[1]) for h in heads)
+    tops = [h for h in heads if int(h.name[1]) == top]
+    if len(tops) < 2:
+        return html
+    hits = sum(1 for i, h in enumerate(tops)
+               if _section_is_material(h, tops[i + 1] if i + 1 < len(tops) else None))
+    if hits < 2:
+        return html
+    for head in tops[1:]:
+        head["data-page-break"] = "1"
+    return str(soup)
 
 
 def _cover_line(doc: Document, text: str, size: int) -> None:
@@ -717,6 +755,7 @@ def render_docx(outline: dict, chapters: dict, *, meta: dict | None = None,
         # 「本表格式与招标文件模板可能存在差异」，只在生成/改写时清,存量项目一导出就原样漏出
         body = strip_template_disclaimers(body)
         body = normalize_chapter_html(body, ch.get("no", ""), ch.get("title", ""), ch.get("id", ""))
+        body = _mark_material_breaks(body)  # 材料章：每份材料小节各起一页
         if body:
             _emit_html(doc, body, fetch_object)
         else:

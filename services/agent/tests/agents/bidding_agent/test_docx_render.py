@@ -454,6 +454,50 @@ def test_render_strips_legacy_disclaimers_from_stored_chapters():
     assert "正文实质内容留下" in text
 
 
+def _page_break_precedes(doc, heading_text: str) -> bool:
+    """标题段的前一段里是否有分页符（材料章分页断言专用）。"""
+    paras = doc.paragraphs
+    for i, p in enumerate(paras):
+        if p.text == heading_text and p.style.name.startswith("Heading"):
+            return i > 0 and 'type="page"' in paras[i - 1]._p.xml
+    raise AssertionError(f"标题未找到: {heading_text}")
+
+
+def test_material_chapter_sections_each_start_new_page():
+    """2026-08-15 用户实测：资格文件章里财务状况/信用中国/声明小节全挤在营业执照图后
+    同一页，贴扫描件没版面。材料章（含证照占位图或「待补充」行的顶级小节 ≥2 个）
+    每个顶级小节各起一页；首节紧跟章标题不加。"""
+    outline = {"chapters": [{"id": "b6", "no": "第六章", "title": "要求的资格文件", "group": "business"}]}
+    chapters = {"b6": (
+        '<h3>一、营业执照及资质证书</h3>'
+        '<p><img data-file-id="f1" data-object-key="k1" alt="营业执照|营业执照" /></p>'
+        '<h3>二、财务状况证明材料</h3><p>（待补充：财务状况证明材料）</p>'
+        '<h3>三、信用中国截图及无重大违法记录声明</h3><p>（待补充：信用中国截图及无重大违法记录声明）</p>'
+        '<h3>四、独立承担民事责任能力及商业信誉声明</h3><p>供应商须出具声明，承诺：</p>'
+    )}
+    doc = Document(io.BytesIO(render_docx(outline, chapters)))
+    assert not _page_break_precedes(doc, "一、营业执照及资质证书")
+    assert _page_break_precedes(doc, "二、财务状况证明材料")
+    assert _page_break_precedes(doc, "三、信用中国截图及无重大违法记录声明")
+    assert _page_break_precedes(doc, "四、独立承担民事责任能力及商业信誉声明")
+
+
+def test_plain_chapter_sections_keep_flowing():
+    """普通正文章不受材料分页影响：编辑器手贴的 data: 图不算证照材料（无 data-object-key）；
+    只有一个材料小节的章也不整章分页。"""
+    outline = {"chapters": [{"id": "t1", "no": "第一章", "title": "技术方案", "group": "tech"}]}
+    data_img = f'<p><img src="data:image/png;base64,{__import__("base64").b64encode(_TINY_PNG).decode()}" /></p>'
+    chapters = {"t1": (
+        f'<h3>1.1 架构图</h3>{data_img}'
+        f'<h3>1.2 部署图</h3>{data_img}'
+        '<h3>1.3 资质说明</h3><p>（待补充：安全服务资质）</p>'
+    )}
+    doc = Document(io.BytesIO(render_docx(outline, chapters)))
+    # 封面/目录/签章页自带分页，只断言小节标题前不许有
+    assert not _page_break_precedes(doc, "1.2 部署图")
+    assert not _page_break_precedes(doc, "1.3 资质说明")
+
+
 def test_chapter_headings_carry_no_group_tag():
     """2026-08-15 用户拍板：正文章标题不带（技术标）/（商务标）尾巴——招标原文的章名
     就没有这种尾巴，逐章带上是噪音；目录条目取自标题，自动跟随。"""
