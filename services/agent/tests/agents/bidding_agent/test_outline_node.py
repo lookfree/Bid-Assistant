@@ -317,3 +317,35 @@ def test_parent_items_are_renumbered_after_split(submit_gateway):
     parent = next(c for c in out["outline"]["chapters"] if c["title"] == "响应函")
     assert [it["label"] for it in parent["items"]] == [
         "一、响应函", "二、响应函格式符合性说明"]
+
+
+def test_cache_key_carries_correction_revision():
+    """评审 F1 CONFIRMED：8d28e64 曾把「已拆但无 after_id 锚」的提纲写入缓存——矫正
+    逻辑对它无从下手（父子关系信息已丢），错序钉满 30 天 TTL。矫正无法逆推旧形状时
+    必须升缓存版本换键，让这类条目自然失效重生成。"""
+    import agent.agents.bidding_agent.nodes.outline as om
+    key = om._cache_key("d" * 24, {})
+    assert key.endswith(f":{om._OUTLINE_REV}") and om._OUTLINE_REV >= "r2"
+
+
+def test_orphan_anchored_chapter_lands_at_its_group_tail():
+    """评审 F2：锚章被编辑删除时，商务组的拆出章必须落**本组**末尾——
+    落全书末尾等于跟在技术方案后面，文件顺序错乱。"""
+    from agent.agents.bidding_agent.nodes.outline import _reorder_chapters
+    outline = {"chapters": [
+        {"id": "b1", "no": "", "title": "响应函", "group": "business", "items": []},
+        {"id": "bx", "no": "", "title": "法定代表人授权书", "group": "business",
+         "structure_ref": "s9", "after_id": "gone", "items": []},
+        {"id": "t1", "no": "", "title": "技术方案", "group": "tech", "items": []},
+    ]}
+    out = _reorder_chapters(outline, [])
+    assert [c["id"] for c in out["chapters"]] == ["b1", "bx", "t1"]
+
+
+def test_renumber_tolerates_digit_and_spaced_ordinals():
+    """评审 F4：折叠判定容忍「1、」「 二、」等形态，重编号也必须容忍——
+    只认裸「N、」会留下断号/重号。各标签保持自己的数字/中文风格。"""
+    from agent.agents.bidding_agent.nodes.outline import _renumber_cn_items
+    items = [{"label": "1、响应函"}, {"label": " 三、格式说明"}, {"label": "补充说明"}]
+    _renumber_cn_items(items)
+    assert [it["label"] for it in items] == ["1、响应函", "二、格式说明", "补充说明"]

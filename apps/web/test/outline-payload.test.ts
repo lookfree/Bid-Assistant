@@ -118,3 +118,17 @@ describe("落盘形状", () => {
     expect(c).toHaveProperty("system", true)
   })
 })
+
+describe("拆章锚透传", () => {
+  it("afterId 保存回写透传（丢了它=用户存一次提纲，拆出章丢父绑定——白名单同类教训第四次）", () => {
+    const [c] = buildOutlinePayload([chapter({ id: "b1f", afterId: "b1" })], [], false) as Array<
+      Record<string, unknown>
+    >
+    expect(c).toHaveProperty("afterId", "b1")
+  })
+
+  it("普通章不带 afterId 键（undefined 序列化自然不落）", () => {
+    const [c] = buildOutlinePayload([chapter({ id: "t1" })], [], false) as Array<Record<string, unknown>>
+    expect(JSON.parse(JSON.stringify(c))).not.toHaveProperty("afterId")
+  })
+})

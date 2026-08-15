@@ -161,6 +161,9 @@ export type OutlineChapterInput = {
   /** 系统生成章标记（如资格证明文件附录 sys-creds）：保存回写必须透传——剥掉这个键=附录被模型
    *  重写（sourceFileId 同类教训第三次，终审 C1）。 */
   system?: boolean
+  /** 拆章锚（2026-08-15 提纲拆章）：拆出的表单章重排时锁在父章之后。保存回写必须透传——
+   *  白名单剥掉它=用户存一次提纲，拆出章丢父绑定（system/sourceFileId 同类教训第四次）。 */
+  afterId?: string
   items: Parameters<typeof serializeItems>[0]
 }
 
@@ -184,6 +187,7 @@ export function buildOutlinePayload(
       // system 键只在系统章（如 sys-creds）上出现——原样透传，undefined 时序列化自然不落这个键，
       // 普通章不受影响。丢了它 = 附录被当普通章送模型改写（终审 C1）。
       system: ch.system,
+      afterId: ch.afterId,
       items: serializeItems(ch.items),
     }))
   return bizFirst

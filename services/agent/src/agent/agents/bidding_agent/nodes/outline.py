@@ -50,13 +50,20 @@ async def _tender_digest(state: dict) -> str | None:
         return None
 
 
+# 提纲矫正逻辑版本（评审 2026-08-15 F1）：矫正在缓存命中后跑，通常升级**无需**动它；
+# 但某个历史版本写入过「矫正无法逆推」的形状时必须升版换键——r2：8d28e64 曾把
+# 「已拆但无 after_id 锚」的提纲入缓存，拆章对它无从下手（父子关系信息已丢），
+# 错序会钉满 30 天 TTL。升版让旧条目自然失效重生成。
+_OUTLINE_REV = "r2"
+
+
 def _cache_key(digest: str, state: dict) -> str:
     scope = json.dumps({"package": (state.get("run_input") or {}).get("package"),
                         "category": (state.get("run_input") or {}).get("bid_category")},
                        ensure_ascii=False, sort_keys=True)
     pv = hashlib.sha256(OUTLINE_SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:8]
     sc = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:8]
-    return f"{settings.redis_prefix}outline:{digest}:{pv}:{sc}"
+    return f"{settings.redis_prefix}outline:{digest}:{pv}:{sc}:{_OUTLINE_REV}"
 
 
 _CN_DIG = "零一二三四五六七八九"
@@ -80,6 +87,11 @@ def _reorder_chapters(outline: dict, structure: list[dict]) -> dict:
     chapters = outline.get("chapters") or []
     if not chapters:
         return outline
+    # after_id 锚（拆章产物）根本不进排序——引用不参与、也不能参与拆出章的座次
+    # （2026-08-15 生产实测 9016677d：缓存旧提纲的章全无引用，拆出章带引用被
+    # 「有引用排前面」抬到组首，授权书成了第一章）。先摘后排，排完插回父章之后。
+    anchored = [ch for ch in chapters if ch.get("after_id")]
+    rest = [ch for ch in chapters if not ch.get("after_id")]
     ref_order = {str(s.get("id")): i for i, s in enumerate(structure)}
 
     def key(pair):
@@ -88,20 +100,15 @@ def _reorder_chapters(outline: dict, structure: list[dict]) -> dict:
         ref = ref_order.get(str(ch.get("structure_ref") or ""))
         return (grp, 0 if ref is not None else 1, ref if ref is not None else idx, idx)
 
-    ordered = [ch for _, ch in sorted(enumerate(chapters), key=key)]
-    # after_id 锚（拆章产物）：**无条件**优先于引用座次——拆出章永远紧跟父章。
-    # 2026-08-15 生产实测（9016677d）：只对无引用章锚定时，缓存旧提纲的章全无引用，
-    # 拆出章带引用被「有引用排前面」抬到组首，授权书成了第一章、响应函掉到第三。
-    # 带锚的章从排序结果里摘出，插回锚章（父章）之后；锚章不在（提纲被编辑删了）
-    # 则留在组尾原位。
-    anchored = [ch for ch in ordered if ch.get("after_id")]
-    for ch in anchored:
-        ordered.remove(ch)
+    ordered = [ch for _, ch in sorted(enumerate(rest), key=key)]
     for ch in anchored:
         pos = next((i for i, c in enumerate(ordered) if str(c.get("id")) == ch["after_id"]), None)
         if pos is None:
-            ordered.append(ch)
-            continue
+            # 锚章不在（提纲被编辑删了）：落**本组**末尾——落全书末尾等于商务拆出章
+            # 跟在技术方案后面，文件顺序错乱（评审 F2）。
+            grp = ch.get("group")
+            pos = max((i for i, c in enumerate(ordered) if c.get("group") == grp),
+                      default=len(ordered) - 1)
         j = pos + 1                       # 同父多子保持拆出相对序：跳过已插的兄弟
         while j < len(ordered) and ordered[j].get("after_id") == ch["after_id"]:
             j += 1
@@ -140,11 +147,9 @@ def _split_form_chapters(outline: dict, read_state: dict) -> dict:
             while nid in seen:
                 nid += "x"
             seen.add(nid)
-            # after_id 锚**无条件**带上：座次只由锚定（紧跟父章）。构成引用另按标题
-            # 强匹配（全同/互含，「附件：法定代表人授权书」也对得上）留给模板投递的
-            # struct 路——2026-08-15 生产实测（9016677d）：引用参与排序时，缓存旧提纲
-            # 的章全无引用，拆出章带引用被「有引用排前面」抬到组首，响应函掉到第三章。
-            # 绝不借父章的 structure_ref——struct 路会顺着它错发父章模板。
+            # after_id 锚无条件带上——座次只由锚定（紧跟父章，见 _reorder_chapters）。
+            # 构成引用另按标题强匹配（全同/互含，「附件：法定代表人授权书」也对得上）
+            # 留给模板投递的 struct 路；绝不借父章的 structure_ref——会错发父章模板。
             new_ch = {"id": nid, "no": "", "desc": "", "title": core,
                       "group": ch.get("group") or "business", "sourced": True,
                       "after_id": str(ch.get("id") or ""),
@@ -162,18 +167,23 @@ def _split_form_chapters(outline: dict, read_state: dict) -> dict:
     return outline
 
 
-_CN_ORD = re.compile(r"^[一二三四五六七八九十]{1,3}、")
+# 容忍与折叠判定同幅度的形态（评审 F4：数字序/前导空格）——只认裸中文序会留断号/重号
+_ORD_LABEL = re.compile(r"^\s*([0-9]{1,3}|[一二三四五六七八九十]{1,3})、")
 
 
 def _renumber_cn_items(items: list) -> None:
-    """拆章摘走小节后，父章剩余顶级小节的中文序号重编（2026-08-15 用户实测
-    「中间的第二节呢」：授权书（二）拆走后剩「一、」「三、」）。只动「N、」形态的
-    标签，其他编号风格不碰。"""
+    """拆章摘走小节后，父章剩余顶级小节的「N、」序号重编（2026-08-15 用户实测
+    「中间的第二节呢」：授权书（二）拆走后剩「一、」「三、」）。各标签保持自己的
+    数字/中文风格；其他编号风格（「（一）」等）不碰。"""
     n = 0
     for it in items:
-        if isinstance(it, dict) and _CN_ORD.match(str(it.get("label") or "")):
-            n += 1
-            it["label"] = _CN_ORD.sub(f"{_cn_num(n)}、", str(it["label"]))
+        label = str(it.get("label") or "") if isinstance(it, dict) else ""
+        m = _ORD_LABEL.match(label)
+        if not m:
+            continue
+        n += 1
+        num = str(n) if m.group(1).isdigit() else _cn_num(n)
+        it["label"] = _ORD_LABEL.sub(f"{num}、", label, count=1)
 
 
 def _remap_structure_refs(outline: dict, ref_titles: dict, structure: list[dict]) -> dict:
