@@ -625,3 +625,48 @@ class TestZeroModelGuards:
         out = _run(state, chat, monkeypatch=monkeypatch)
         assert "偏离表指引" in _brief_of(chat, "技术偏离一览表"), "偏离数据没到模型手里"
         assert "内容" in out["t1"], "偏离数据表被零模型交了招标空表"
+
+
+class TestZeroModelPromiseGate:
+    """2026-08-15 fd5a6ced：模型把授权书折进响应函章，零模型路径只渲染本章模板，
+    折叠小节静默蒸发。结构修复在提纲层拆章；这里是绊线——凡快路径丢了提纲点名的
+    表单，必须落 PG 事件可查，绝不静默出货。"""
+
+    def _folded_state(self):
+        state = _state(2)
+        state["outline"]["chapters"][0].update({"title": "报价函", "items": [
+            {"id": "i1", "label": "一、报价函"},
+            {"id": "i2", "label": "二、法定代表人授权书"}]})
+        lines = ["1.报价函", "致：采购人：", "我方同意本报价自开标之日起90天内有效。",
+                 "2.法定代表人授权书", "法定代表人授权书",
+                 "（供应商全称）法定代表人 授权 （全权代表姓名）为全权代表。"]
+        state["read"] = {"doc_sections": [
+            {"id": f"sec-2-c{i+1}", "text": t} for i, t in enumerate(lines)]}
+        return state
+
+    def _spy(self, monkeypatch):
+        import agent.agents.bidding_agent.nodes.content_pipeline as cp
+        events: list = []
+        orig = cp._log_pg
+
+        async def _log(ctx, event, detail, **k):
+            events.append((event, detail))
+            return await orig(ctx, event, detail, **k)
+
+        monkeypatch.setattr(cp, "_log_pg", _log)
+        return events
+
+    def test_folded_form_item_fires_uncovered_event(self, monkeypatch):
+        events = self._spy(monkeypatch)
+        out = _run(self._folded_state(), _FakeChat(), monkeypatch=monkeypatch)
+        assert "90天内有效" in out["t1"], "本章模板照常交付"
+        hits = [d for e, d in events if e == "form_items_uncovered"]
+        assert hits and hits[0]["chapter"] == "t1" and hits[0]["forms"] == ["法定代表人授权书"]
+
+    def test_own_form_items_do_not_fire(self, monkeypatch):
+        """本章自己那份表单的组成 item（一、报价函）不算失约；有独立章认领的也不算。"""
+        events = self._spy(monkeypatch)
+        state = self._folded_state()
+        state["outline"]["chapters"][1].update({"title": "法定代表人授权书", "items": []})
+        _run(state, _FakeChat(), monkeypatch=monkeypatch)
+        assert not [d for e, d in events if e == "form_items_uncovered"]

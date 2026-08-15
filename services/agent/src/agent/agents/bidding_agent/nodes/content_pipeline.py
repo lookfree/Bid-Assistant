@@ -540,6 +540,17 @@ async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, share
         html = await _fill_form_html(ctx, cid,
                                      template_html(tpl_raw, ch.get("title") or ""), shared)
         await _log_pg(ctx, "form_template_rendered", {"chapter": cid, "chars": len(html)})
+        # 守约对账（2026-08-15 fd5a6ced：授权书被折进响应函章当小节——零模型只渲染本章
+        # 那份模板，折叠小节菜单有、正文无）。结构修复在提纲层拆章（_split_form_chapters）；
+        # 这里是绊线：快路径丢了提纲点名的表单必须落 PG 事件可查，绝不静默出货。
+        from agent.agents.bidding_agent.nodes.form_locate import folded_form_items
+        folded = folded_form_items((state.get("outline") or {}).get("chapters") or [],
+                                   shared.get("form_index") or [])
+        if folded.get(cid):
+            names = [core for _, core in folded[cid]]
+            logger.warning("章 %s 零模型交付未覆盖提纲点名的表单：%s（提纲拆章漏网）", cid, names)
+            await _log_pg(ctx, "form_items_uncovered",
+                          {"chapter": cid, "forms": names}, level="warn")
         await _cache_set(ctx, key, html)
         await progress.chapter_done(cid)
         return cid, html
@@ -573,6 +584,7 @@ def _shared_blocks(state: dict, read: dict, outline: dict, chapters: list[dict])
     from agent.agents.bidding_agent.nodes.content import (
         _DEVIATION_KEYWORD, _chapter_budget_map, _deviation_items_block,
         _deviation_structure_ids, _template_entries)
+    from agent.agents.bidding_agent.nodes.form_locate import build_form_index
 
     structure = read.get("required_structure") or []
     dev_secs = _deviation_structure_ids(structure)
@@ -605,6 +617,8 @@ def _shared_blocks(state: dict, read: dict, outline: dict, chapters: list[dict])
         "deviation": _deviation_items_block(read) if dev_ids else "",
         "deviation_ids": dev_ids,
         "templates": _template_entries(read, outline),
+        # 零模型守约闸的判定源（2026-08-15）：与提纲拆章共用同一份全文表单索引
+        "form_index": build_form_index(read),
         "personnel": _library_ref_block(refs.get("personnel") or [], "人员"),
         "performance": _library_ref_block(refs.get("performance") or [], "业绩"),
         "budgets": budgets, "work_total": work,
