@@ -470,8 +470,16 @@ def _deviation_format_block(index: list[dict], title: str) -> str:
     参照块≠模板保真：列结构/表尾照抄、行内容模型填，偏离章不进模板通路的旧口径不变。
     定位不到招标偏离表 → 空串不加块（给零不给错）。"""
     from agent.agents.bidding_agent.nodes.form_locate import find_form_segment, segment_text
-    text = segment_text(find_form_segment(index, title))
-    if not text:
+    seg = find_form_segment(index, title)
+    if seg is None:
+        return ""
+    # 参照源必须是**真表格且确是偏离/响应表**（评审实跑复现：招标没有偏离表模板时，
+    # 「技术需求/服务偏离表」按互含匹配到散文段「技术需求」，指令还写着「照抄表头列名」
+    # ——让模型照着一段话抄表格，比不给参照更糟）。名字对不上/没有制表符行 → 不加块。
+    if not any(w in str(seg.get("name") or "") for w in ("偏离", "响应")):
+        return ""
+    text = segment_text(seg)
+    if not text or "\t" not in text:
         return ""
     return ("【招标偏离表格式】本章表格**必须照抄**下方招标原表的表头列名、列序与表尾行，"
             "不得自创/增删/改名任何列，不得添加招标原表没有的小节或开场白；"

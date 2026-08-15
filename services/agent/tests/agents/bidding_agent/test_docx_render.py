@@ -621,3 +621,22 @@ def test_nested_pending_material_sections_get_their_own_page():
     assert _page_break_precedes(doc, "3. 财务状况证明材料")
     assert _page_break_precedes(doc, "5. 信用中国截图")
     assert not _page_break_precedes(doc, "4. 无重大违法记录声明"), "声明类嵌套段不该单开页"
+
+
+def test_prose_chapter_with_two_cert_mentions_is_not_fully_paged():
+    """评审：材料章判定放宽到任意层级后，散文章里两处证照「待补充」会把**整章顶级小节**
+    全部分页，技术方案被拆散。顶级全分页只在**顶级材料段 ≥2** 时才开（原上线行为）；
+    其余情况只给材料段本身单开页。"""
+    outline = {"chapters": [{"id": "t2", "no": "第二章", "title": "整体服务方案", "group": "tech"}]}
+    chapters = {"t2": (
+        '<h3>一、项目理解</h3><p>需求分析……</p>'
+        '<h4>1. 资质说明</h4><p>（待补充：安全服务资质）</p>'
+        '<h3>二、技术方案</h3><p>架构设计……</p>'
+        '<h4>2. 认证资质</h4><p>（待补充：信息安全认证）</p>'
+        '<h3>三、实施计划</h3><p>分三阶段推进……</p>'
+    )}
+    doc = Document(io.BytesIO(render_docx(outline, chapters)))
+    assert not _page_break_precedes(doc, "二、技术方案"), "散文章顶级小节被误分页"
+    assert not _page_break_precedes(doc, "三、实施计划")
+    assert _page_break_precedes(doc, "1. 资质说明"), "材料段本身仍单开页"
+    assert _page_break_precedes(doc, "2. 认证资质")

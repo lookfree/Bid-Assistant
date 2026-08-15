@@ -223,7 +223,8 @@ def _segments_of(stream: list[tuple[str, str]]) -> list[dict]:
         for seg in open_segs:            # 子边界行（「3-1.报价明细表」）是父段（3.）的原文：
             seg["lines"].append(text)    # 丢掉它，一览表与明细表两张表在父段里就连成一张
             seg["srcs"].append(src)
-        seg = {"name": name, "depth": depth, "lines": ([text] if own_line else []),
+        seg = {"name": name, "depth": depth, "num": num,   # num：本段自己的编号，外来节判定要用
+               "lines": ([text] if own_line else []),
                "srcs": ([src] if own_line else []), "head_src": src}
         segments.append(seg)
         open_segs.append(seg)
@@ -282,18 +283,28 @@ def find_form_segment(index: list[dict], chapter_title: str) -> dict | None:
     return max(cands, key=lambda s: (s["depth"], len(_norm(s["name"]))))
 
 
-def _foreign_cut_idx(lines: list[str]) -> int | None:
-    """段内**外来条款节**的起点行号（2026-08-16 用户实测：承诺函模板尾巴整段带着
-    「4-2要求的资格文件」条款清单——「4-2」无点号+局部链断,切分器没认出边界,
-    文本与复印机区间都含它;资格材料已实体化为附录,要求清单不该复刻进商务标）。
-    判定=**多级编号**（4-2 形态,原始事故与 2026-08-14 尾巴事故都是它）+ 短名 +
-    非表单构词。单级编号（1.营业执照）是表单自身重新起数的材料清单,绝不动;
-    表单构词的兄弟（3-1.报价明细表）留在父段是钉过的行为,也不动。"""
+def _foreign_cut_idx(lines: list[str], own_num: tuple[int, ...] | None = None) -> int | None:
+    """段内**外来条款节**的起点行号（返回的是 lines 的**原始下标**，调用方对 lines 与
+    srcs 必须用同一个下标切，见评审 2026-08-16 A：拿过滤空行后的下标去切 srcs，
+    段里几个空行就少留几个节点，导出把签章行剁没了）。
+
+    2026-08-16 用户实测：承诺函模板尾巴整段带着「4-2要求的资格文件」条款清单
+    ——「4-2」无点号+局部链断，切分器没认出边界，文本与复印机区间都含它；
+    资格材料已实体化为附录，要求清单不该复刻进商务标。
+
+    判定 = 多级编号（4-2 形态）+ 短名 + 非表单构词 + **不是本段自己的子节**：
+    · 本段自己的子节（3. 段里的 3-1.填报须知）属于表单，剁了会连它后面没人认领的
+      兄弟表单一起吃掉（评审 2026-08-16 B 实跑复现，废标级）；
+    · 单级编号（1.营业执照）是表单自身重新起数的材料清单，绝不动；
+    · 表单构词的兄弟（3-1.报价明细表）留在父段是钉过的行为，也不动。
+    own_num 缺省（裸抬头段/测试手造段）→ 不做父子判断，按外来处理。"""
     for i, line in enumerate(lines):
         b = _boundary_of(_norm(line.strip()))
-        if b is not None and b[3] is not None and len(b[3]) >= 2 \
-                and not _looks_like_form_title(b[1]):
-            return i
+        if b is None or b[3] is None or len(b[3]) < 2 or _looks_like_form_title(b[1]):
+            continue
+        if own_num and tuple(b[3][:len(own_num)]) == tuple(own_num):
+            continue                      # 本段自己的子节
+        return i
     return None
 
 
@@ -303,10 +314,10 @@ def segment_text(seg: dict | None) -> str:
     且不再误吃表单自带的尾部材料清单——旧的尾部剥会把「1.营业执照 2.资质证书」整串吃掉）。"""
     if seg is None:
         return ""
-    lines = [line for line in seg["lines"] if line.strip()]
-    cut = _foreign_cut_idx(lines)
-    if cut is not None:
-        lines = lines[:cut]
+    raw = seg["lines"]
+    cut = _foreign_cut_idx(raw, seg.get("num"))
+    kept = raw[:cut] if cut is not None else raw
+    lines = [line for line in kept if line.strip()]
     text = "\n".join(lines)
     return text if 0 < len(text) <= _MAX_FORM_CHARS else ""
 
@@ -385,10 +396,10 @@ def form_node_span(index: list[dict], chapter_title: str) -> FormSpan | None:
     seg = find_form_segment(index, chapter_title)
     if seg is None or not segment_text(seg):
         return None
-    lines, all_srcs = seg.get("lines") or [], seg.get("srcs") or []
-    cut = _foreign_cut_idx(list(lines))
+    all_srcs = seg.get("srcs") or []
+    cut = _foreign_cut_idx(seg.get("lines") or [], seg.get("num"))
     if cut is not None:
-        all_srcs = all_srcs[:cut]
+        all_srcs = all_srcs[:cut]   # 与 lines 同源下标（评审 A）
     srcs = [s for s in all_srcs if isinstance(s, int) and s >= 0]
     if not srcs:
         return None

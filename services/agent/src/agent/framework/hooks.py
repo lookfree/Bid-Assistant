@@ -53,7 +53,8 @@ class AgentTurnContext:
 class TurnView:
     """校验钩子拿到的只读视图。
 
-    K8s 靠两种 CRD 把「能改」和「只能验」拆成两类资源，Python 这边靠这个视图拿到同一个约束。
+    K8s 靠 Mutating/ValidatingWebhookConfiguration 两种内置资源把「能改」和「只能验」拆开，
+    Python 这边靠这个视图拿到同一个约束。
     挡得住重新赋值和容器级改动，挡不住 result.content = x 这种对象内部的改——
     那是 Python 的边界，不是设计的边界。真要防得靠 deepcopy，不值这个开销。
     """

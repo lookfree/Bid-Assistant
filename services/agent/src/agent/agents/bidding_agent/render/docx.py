@@ -225,11 +225,15 @@ def _mark_material_breaks(html: str) -> str:
     if sum(imm) < 2:
         return html            # 章级门槛：散文章里孤零零一个资质说明段不整章分页
     top = min(_HEAD_LEVEL[h.name] for h in heads)
+    # 顶级小节**全部**分页只在顶级材料段 ≥2 时才开（原上线口径：资格文件章里夹着的
+    # 声明类小节也各占一页，用户已认可）；否则只给材料段本身单开页——散文章里两处
+    # 证照待补充不该把整章顶级小节拆散（评审 2026-08-16）。
+    page_all_tops = sum(1 for i, h in enumerate(heads)
+                        if _HEAD_LEVEL[h.name] == top and imm[i]) >= 2
     for i, h in enumerate(heads):
         if i == 0:
             continue           # 首标题紧跟章标题，不加
-        # 顶级小节全分页（材料章每节一页）；嵌套标题只有材料段（证照图/具名待补充）才单开页
-        if _HEAD_LEVEL[h.name] == top or imm[i]:
+        if imm[i] or (page_all_tops and _HEAD_LEVEL[h.name] == top):
             h["data-page-break"] = "1"
     return str(soup)
 

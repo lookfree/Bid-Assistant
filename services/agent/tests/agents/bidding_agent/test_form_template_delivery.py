@@ -711,3 +711,20 @@ class TestDeviationFormatReference:
         chat = _FakeChat()
         _run(state, chat, monkeypatch=monkeypatch)
         assert "【招标偏离表格式】" not in _brief_of(chat, "技术需求/服务偏离表")
+
+    def test_prose_section_is_never_passed_off_as_a_table_format(self, monkeypatch):
+        """评审实跑复现：招标没有偏离表模板时，拆部件弱匹配把散文段「技术需求」当成
+        「招标原表」下发，指令还写着「照抄表头列名」——模型照着一段话抄表格，
+        比不给参照更糟。参照源必须是**真表格**（含制表符行）且名字带偏离/响应。"""
+        state = self._state()
+        state["read"]["doc_sections"] = [
+            {"id": "s-c1", "text": "1.响应函"},
+            {"id": "s-c2", "text": "致：采购人"},
+            {"id": "s-c3", "text": "2.技术需求"},
+            {"id": "s-c4", "text": "本项目采购零信任接入授权软件1000点，要求支持多因素认证。"},
+        ]
+        chat = _FakeChat()
+        _run(state, chat, monkeypatch=monkeypatch)
+        brief = _brief_of(chat, "技术需求/服务偏离表")
+        assert "【招标偏离表格式】" not in brief
+        assert "偏离表指引" in brief, "条目通路照旧"

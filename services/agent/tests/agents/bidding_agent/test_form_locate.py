@@ -377,3 +377,35 @@ class TestForeignSectionCut:
         ], "doc_headings": []}
         span = form_node_span(build_form_index(read), "供应商资格信用承诺函")
         assert span is not None and span.end <= 13, f"复印区间没剁掉外来节: {span}"
+
+    def test_own_child_subsection_is_never_cut(self):
+        """评审实跑复现：「3-1.填报须知」是本段(3.)自己的子节——多级编号+非表单构词
+        触发剁除后，连它后面**没人认领的兄弟表单「3-2.配件报价表」一起消失**
+        （废标级，正是 test_unclaimed_sibling_form_stays_in_the_parent 钉过的不变量）。
+        本段自己的子节绝不剁；外来节（4-1 段里的 4-2）照剁。"""
+        from agent.agents.bidding_agent.nodes.form_locate import build_form_index, find_form
+        read = {"doc_sections": [
+            {"id": "s-c1", "text": "3.报价一览表"},
+            {"id": "s-c2", "text": "序号\t项目名称\t数量"},
+            {"id": "s-c3", "text": "3-1.填报须知"},
+            {"id": "s-c4", "text": "请按实际填写"},
+            {"id": "s-c5", "text": "3-2.配件报价表"},
+            {"id": "s-c6", "text": "序号\t配件名称\t数量"},
+        ], "doc_headings": []}
+        text = find_form(build_form_index(read), "报价一览表")
+        assert "配件名称" in text, "没人认领的兄弟表单被误剁——招标要求的表单消失"
+        assert "填报须知" in text
+
+    def test_span_cut_index_aligns_with_blank_lines(self):
+        """评审实跑复现：cut 是**过滤空行后**的下标，却拿去切与未过滤 lines 一一对应的
+        srcs——段里有空行就少留同样多的节点，导出把签章行剁没了。两个下标必须同源。"""
+        from agent.agents.bidding_agent.nodes.form_locate import form_node_span
+        seg = {"name": "供应商资格信用承诺函", "num": (4, 1), "depth": 2, "head_src": 9,
+               "lines": ["承诺函", "", "我单位郑重承诺。", "", "供应商名称(单位公章)",
+                         "4-2要求的资格文件", "1.按资格要求提供。"],
+               "srcs": [10, 11, 12, 13, 14, 15, 16]}
+        index = [seg]
+        span = form_node_span(index, "供应商资格信用承诺函")
+        assert span is not None
+        assert span.end == 14, f"签章行(src=14)被错位剁掉: {span}"
+        assert span.start == 10
