@@ -283,3 +283,37 @@ def test_split_chapter_without_ref_stays_right_after_parent(submit_gateway):
     out = asyncio.run(node({"read": read}))
     titles = [c["title"] for c in out["outline"]["chapters"]]
     assert titles == ["响应函", "法定代表人授权书", "报价一览表", "技术方案"], titles
+
+
+def test_split_chapter_with_ref_still_follows_unref_parent(submit_gateway):
+    """2026-08-15 生产复现（9016677d）：缓存旧提纲的章全无构成引用，拆出章对上了引用
+    （s2/s4）——「有引用排前面」让授权书/报价明细表插队到组首，响应函掉到第三章。
+    拆出章的 after_id 锚必须**无条件**优先于引用座次：引用只留给模板投递。"""
+    gw = submit_gateway({"submit_outline": _FOLDED_ARGS})
+    node = make_outline_node(RunContext(run_id="r", agent_type="bidding_agent",
+                                        thread_id="t", gateway=gw))
+    read = _folded_read()
+    read["required_structure"] = [   # 授权书能对上引用；父章响应函没有引用
+        {"id": "s2", "title": "法定代表人授权书", "kind": "form", "required": True}]
+    out = asyncio.run(node({"read": read}))
+    titles = [c["title"] for c in out["outline"]["chapters"]]
+    assert titles == ["响应函", "法定代表人授权书", "技术方案"], titles
+    split = out["outline"]["chapters"][1]
+    assert split.get("structure_ref") == "s2"    # 引用照留，只是不决定座次
+
+
+def test_parent_items_are_renumbered_after_split(submit_gateway):
+    """2026-08-15 用户实测「中间的第二节呢」：授权书（二）拆走后，父章剩下
+    「一、响应函」「三、响应函格式符合性说明」——中文序号必须重编成一、二。"""
+    args = {"chapters": [dict(_FOLDED_ARGS["chapters"][0]), dict(_FOLDED_ARGS["chapters"][1])]}
+    args["chapters"][0] = {**args["chapters"][0], "items": [
+        {"id": "b1-1", "label": "一、响应函", "children": []},
+        {"id": "b1-2", "label": "二、法定代表人授权书", "children": []},
+        {"id": "b1-3", "label": "三、响应函格式符合性说明", "children": []}]}
+    gw = submit_gateway({"submit_outline": args})
+    node = make_outline_node(RunContext(run_id="r", agent_type="bidding_agent",
+                                        thread_id="t", gateway=gw))
+    out = asyncio.run(node({"read": _folded_read()}))
+    parent = next(c for c in out["outline"]["chapters"] if c["title"] == "响应函")
+    assert [it["label"] for it in parent["items"]] == [
+        "一、响应函", "二、响应函格式符合性说明"]

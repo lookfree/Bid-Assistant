@@ -3,6 +3,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 
 from agent.config import settings
 from agent.framework.create_agent import run_submit_agent
@@ -88,10 +89,12 @@ def _reorder_chapters(outline: dict, structure: list[dict]) -> dict:
         return (grp, 0 if ref is not None else 1, ref if ref is not None else idx, idx)
 
     ordered = [ch for _, ch in sorted(enumerate(chapters), key=key)]
-    # after_id 锚（拆章产物，评审 F3）：无构成引用的拆出章按上面的键会漂到组尾——
-    # 授权书从响应函拆出后跑到商务组最后，招标要求的文件顺序被打散。带锚的章从排序
-    # 结果里摘出，插回锚章（父章）之后；锚章不在（提纲被编辑删了）则留在组尾原位。
-    anchored = [ch for ch in ordered if ch.get("after_id") and not ch.get("structure_ref")]
+    # after_id 锚（拆章产物）：**无条件**优先于引用座次——拆出章永远紧跟父章。
+    # 2026-08-15 生产实测（9016677d）：只对无引用章锚定时，缓存旧提纲的章全无引用，
+    # 拆出章带引用被「有引用排前面」抬到组首，授权书成了第一章、响应函掉到第三。
+    # 带锚的章从排序结果里摘出，插回锚章（父章）之后；锚章不在（提纲被编辑删了）
+    # 则留在组尾原位。
+    anchored = [ch for ch in ordered if ch.get("after_id")]
     for ch in anchored:
         ordered.remove(ch)
     for ch in anchored:
@@ -130,30 +133,47 @@ def _split_form_chapters(outline: dict, read_state: dict) -> dict:
     out: list[dict] = []
     for ch in chapters:
         out.append(ch)
-        for item, core in folded.get(str(ch.get("id") or ""), []):
+        hoisted = folded.get(str(ch.get("id") or ""), [])
+        for item, core in hoisted:
             ch["items"] = [it for it in ch.get("items") or [] if it is not item]
             nid = f"{ch.get('id')}f"
             while nid in seen:
                 nid += "x"
             seen.add(nid)
+            # after_id 锚**无条件**带上：座次只由锚定（紧跟父章）。构成引用另按标题
+            # 强匹配（全同/互含，「附件：法定代表人授权书」也对得上）留给模板投递的
+            # struct 路——2026-08-15 生产实测（9016677d）：引用参与排序时，缓存旧提纲
+            # 的章全无引用，拆出章带引用被「有引用排前面」抬到组首，响应函掉到第三章。
+            # 绝不借父章的 structure_ref——struct 路会顺着它错发父章模板。
             new_ch = {"id": nid, "no": "", "desc": "", "title": core,
                       "group": ch.get("group") or "business", "sourced": True,
+                      "after_id": str(ch.get("id") or ""),
                       "items": item.get("children") or [dict(item, label=core, children=[])]}
-            # 构成引用按标题**强匹配**（全同/互含）对回清单——清单写「附件：法定代表人授权书」
-            # 时精确比对必落空（评审 F3）；仍对不上则带 after_id 锚，重排时锁在父章之后，
-            # 不许漂到组尾（无引用章的默认归宿）。绝不借用父章的 structure_ref——
-            # 模板投递的 struct 路会顺着它把父章的模板发给本章。
             ref = next((str(s.get("id")) for s in structure
                         if (t := _match_tier(core, str(s.get("title") or ""))) is not None
                         and t <= 1), None)
             if ref:
                 new_ch["structure_ref"] = ref
-            else:
-                new_ch["after_id"] = str(ch.get("id") or "")
             logger.info("提纲拆章：「%s」自「%s」拆出为独立表单章", core, ch.get("title"))
             out.append(new_ch)
+        if hoisted:
+            _renumber_cn_items(ch.get("items") or [])
     outline["chapters"] = out
     return outline
+
+
+_CN_ORD = re.compile(r"^[一二三四五六七八九十]{1,3}、")
+
+
+def _renumber_cn_items(items: list) -> None:
+    """拆章摘走小节后，父章剩余顶级小节的中文序号重编（2026-08-15 用户实测
+    「中间的第二节呢」：授权书（二）拆走后剩「一、」「三、」）。只动「N、」形态的
+    标签，其他编号风格不碰。"""
+    n = 0
+    for it in items:
+        if isinstance(it, dict) and _CN_ORD.match(str(it.get("label") or "")):
+            n += 1
+            it["label"] = _CN_ORD.sub(f"{_cn_num(n)}、", str(it["label"]))
 
 
 def _remap_structure_refs(outline: dict, ref_titles: dict, structure: list[dict]) -> dict:
