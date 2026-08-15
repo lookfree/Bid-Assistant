@@ -92,7 +92,8 @@ def _reorder_chapters(outline: dict, structure: list[dict]) -> dict:
     # 「有引用排前面」抬到组首，授权书成了第一章）。先摘后排，排完插回父章之后。
     anchored = [ch for ch in chapters
                 if ch.get("after_id") and ch.get("form_order") is None]  # 有槽位序的听槽位的
-    rest = [ch for ch in chapters if ch not in anchored]
+    rest = [ch for ch in chapters
+            if not (ch.get("after_id") and ch.get("form_order") is None)]  # 同一条件直陈（评审 F）
     ref_order = {str(s.get("id")): i for i, s in enumerate(structure)}
 
     def key(pair):
@@ -125,7 +126,7 @@ def _reorder_chapters(outline: dict, structure: list[dict]) -> dict:
     return outline
 
 
-def _split_form_chapters(outline: dict, read_state: dict) -> dict:
+def _split_form_chapters(outline: dict, read_state: dict, index: list[dict]) -> dict:
     """被折进别章的独立表单模板，代码硬拆成独立章（2026-08-15 fd5a6ced 实测：模型把
     「法定代表人授权书」折进响应函章当小节——表单章零模型路径按章名只取一份模板，
     折叠小节整体蒸发，菜单有、正文无。「一表一章」提示词只能请求，代码才能保证）。
@@ -133,12 +134,11 @@ def _split_form_chapters(outline: dict, read_state: dict) -> dict:
     无独立章认领）；拆出的新章插在原章之后（无构成引用时 _reorder_chapters 按相对序
     保持相邻），构成引用按标题精确对回清单，重排重编号交给 _reorder_chapters。
     生成后+缓存命中后都过：旧缓存里的折叠提纲命中即矫正，不用清缓存。幂等。"""
-    from agent.agents.bidding_agent.nodes.form_locate import (
-        _match_tier, build_form_index, folded_form_items)
+    from agent.agents.bidding_agent.nodes.form_locate import _match_tier, folded_form_items
     chapters = outline.get("chapters") or []
     if not chapters:
         return outline
-    folded = folded_form_items(chapters, build_form_index(read_state))
+    folded = folded_form_items(chapters, index)
     if not any(folded.values()):
         return outline
     structure = read_state.get("required_structure") or []
@@ -198,19 +198,23 @@ _FORM_SKIP_WORDS = ("封面", "封套", "目录", "装订", "密封", "文件格
 _FORM_TECH_WORDS = ("偏离", "技术", "方案", "实施")
 
 
-def _form_slots(read_state: dict) -> list[dict]:
+def _form_slots(index: list[dict]) -> list[dict]:
     """招标全文的**商务表单槽位**（文档序）。权威=全文表单索引——它来自解析器切分的
     doc_sections，不经模型，同一份文件必得同一份槽位表。这是「商务标章清单代码直出」
-    的确定性根基。"""
-    from agent.agents.bidding_agent.nodes.form_locate import (
-        _looks_like_form_title, build_form_index, segment_text)
-    slots = []
-    for seg in build_form_index(read_state):
+    的确定性根基。同名段按归一名去重取首现（评审 B：须知构成清单与格式章真表单同名，
+    不去重则第二个槽位没人认领、补章造出重复章并随缓存钉死）。"""
+    from agent.agents.bidding_agent.nodes.form_locate import _looks_like_form_title, _norm, segment_text
+    slots, seen = [], set()
+    for seg in index:
         name = str(seg.get("name") or "")
         if not _looks_like_form_title(name) or not segment_text(seg):
             continue
         if any(w in name for w in _FORM_SKIP_WORDS + _FORM_TECH_WORDS):
             continue
+        key = _norm(name)
+        if key in seen:
+            continue
+        seen.add(key)
         slots.append({"name": name})
     return slots
 
@@ -218,6 +222,10 @@ def _form_slots(read_state: dict) -> list[dict]:
 # 材料清单类表单（资格文件/证明材料/材料清单）：小节是证照就位与正文写作的骨架，
 # 规范占位不作用于它们——抹掉等于让模型/证照就位失去落点。
 _KEEP_ITEMS_WORDS = ("资格文件", "证明材料", "材料清单")
+
+# 复合名连接词：**必须与 form_locate._match_tier 的拆件集合同一份**（评审 D：只认[及和]时
+# 「资格声明与承诺函」这类与-连接的复合槽位照样把承诺函章改名抹节）。
+_COMPOSITE_RE = re.compile(r"[与及和、/]")
 
 
 def _canonical_items(ch: dict, label_name: str) -> list[dict]:
@@ -243,7 +251,7 @@ def _canonical_items(ch: dict, label_name: str) -> list[dict]:
              "label": f"一、{label_name}（按招标格式填写）", "clause_ids": cids}]
 
 
-def _canonical_form_chapters(outline: dict, read_state: dict) -> dict:
+def _canonical_form_chapters(outline: dict, index: list[dict]) -> dict:
     """商务表单章代码定版（2026-08-15 用户拍板：招标书里写死的表单，一个字不让模型碰。
     此前拆章/锚定只是纠正模型，模型每次重新生成仍是一副新面孔——章有章无、简称全称、
     顺序都在漂）。三刀：
@@ -256,21 +264,26 @@ def _canonical_form_chapters(outline: dict, read_state: dict) -> dict:
     生成后+缓存命中后都过，幂等（补出的章下轮按名认领回自己的槽位）。"""
     from agent.agents.bidding_agent.nodes.form_locate import _core_form_name, _match_tier
     chapters = outline.get("chapters") or []
-    slots = _form_slots(read_state) if chapters else []
+    slots = _form_slots(index) if chapters else []
     if not slots:
         return outline
     claimed: dict[int, dict] = {}
-    for ch in chapters:
-        if ch.get("system") or str(ch.get("id") or "") == "sys-creds":
-            continue
-        core = _core_form_name(str(ch.get("title") or ""))
-        for si, slot in enumerate(slots):
-            if si in claimed:
+    taken: set[int] = set()
+    # 两遍认领（评审 C）：先全同、后互含——贪心首中会让「响应函格式符合性说明」章
+    # 抢走「响应函」槽位并被改名，真响应函章反而没了着落。
+    for tier_limit in (0, 1):
+        for ch in chapters:
+            if ch.get("system") or str(ch.get("id") or "") == "sys-creds" or id(ch) in taken:
                 continue
-            t = _match_tier(core, slot["name"])
-            if t is not None and t <= 1:
-                claimed[si] = ch
-                break
+            core = _core_form_name(str(ch.get("title") or ""))
+            for si, slot in enumerate(slots):
+                if si in claimed:
+                    continue
+                t = _match_tier(core, slot["name"])
+                if t is not None and t <= tier_limit:
+                    claimed[si] = ch
+                    taken.add(id(ch))
+                    break
     seen = {str(c.get("id") or "") for c in chapters}
     created: list[dict] = []
     for si, slot in enumerate(slots):
@@ -291,11 +304,11 @@ def _canonical_form_chapters(outline: dict, read_state: dict) -> dict:
         ch["form_order"] = si
         ch["group"] = "business"
         name = slots[si]["name"]
-        if ch.get("title") != name and not re.search("[及和]", name):
+        if ch.get("title") != name and not _COMPOSITE_RE.search(name):
             ch["title"] = name
         # 小节统一规范占位（复合名槽位、材料清单类不动——见 _KEEP_ITEMS_WORDS）
         title = str(ch.get("title") or name)
-        if (ch not in created and not re.search("[及和]", name)
+        if (ch not in created and not _COMPOSITE_RE.search(name)
                 and not any(w in title for w in _KEEP_ITEMS_WORDS)):
             ch["items"] = _canonical_items(ch, title)
     outline["chapters"] = chapters + created
@@ -317,6 +330,17 @@ def _remap_structure_refs(outline: dict, ref_titles: dict, structure: list[dict]
         else:
             ch.pop("structure_ref", None)
     return outline
+
+
+def _normalize_outline(outline: dict, read_state: dict, structure: list[dict]) -> dict:
+    """生成后/缓存命中后共用的确定性矫正管线：拆章 → 商务表单章定版 → 定序重编号。
+    全文表单索引只建一次（评审 E：1MB 级标书两条路径各重建一遍是纯浪费，且该扫描
+    同步阻塞事件循环）。"""
+    from agent.agents.bidding_agent.nodes.form_locate import build_form_index
+    index = build_form_index(read_state)
+    outline = _split_form_chapters(outline, read_state, index)
+    outline = _canonical_form_chapters(outline, index)
+    return _reorder_chapters(outline, structure)
 
 
 def make_outline_node(ctx):
@@ -341,9 +365,7 @@ def make_outline_node(ctx):
                 logger.info("提纲缓存命中（同文件同域），零模型复用")
                 cached_outline = _remap_structure_refs(
                     data.get("outline") or {}, data.get("ref_titles") or {}, structure_now)
-                return {"outline": _reorder_chapters(_canonical_form_chapters(
-                    _split_form_chapters(cached_outline, read_state), read_state),
-                    structure_now)}
+                return {"outline": _normalize_outline(cached_outline, read_state, structure_now)}
         read = json.dumps(slim_read(read_state), ensure_ascii=False)
         user = f"读标结论：\n{read}\n请据此产出提纲。"
         structure = read_state.get("required_structure") or []
@@ -358,8 +380,7 @@ def make_outline_node(ctx):
         result = await run_submit_agent(
             ctx, OUTLINE_SYSTEM_PROMPT, user,
             "submit_outline", Outline, "提交提纲", attempts=5, temperature=0.0)
-        outline = _reorder_chapters(_canonical_form_chapters(
-            _split_form_chapters(result.model_dump(), read_state), read_state), structure_now)
+        outline = _normalize_outline(result.model_dump(), read_state, structure_now)
         if key and r:
             payload = json.dumps(
                 {"outline": outline,

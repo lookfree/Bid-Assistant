@@ -38,7 +38,7 @@ import { ChapterItems } from "./chapter-items"
 import { OutlineItemDialog } from "./item-dialog"
 
 // agent Outline（camelCase）：chapters[{id,no,title,group,sourced,structureRef?,items[{id,label,clauseIds,isNew}]}]
-type RealChapter = BidChapter & { group: "tech" | "business"; structureRef?: string | null; desc?: string }
+type RealChapter = BidChapter & { group: "tech" | "business"; structureRef?: string | null; desc?: string; afterId?: string; formOrder?: number }
 type RealOutline = { chapters: RealChapter[] }
 
 /* ---------------- 提纲数据（取自全流程共享数据源） ---------------- */
@@ -55,11 +55,15 @@ type Chapter = {
   /** 系统生成章标记（如资格证明文件附录 sys-creds）：保存回写必须透传——剥掉这个键=附录被模型
    *  重写（sourceFileId 同类教训第三次，终审 C1）。 */
   system?: boolean
+  /** 拆章锚与表单章槽位序（提纲代码定版）：装载与保存都必须透传——评审 2026-08-15 A：
+   *  只在 buildOutlinePayload 加透传是死代码，这里的装载白名单先把键剥了（同类教训第四次）。 */
+  afterId?: string
+  formOrder?: number
   items: OutlineItem[]
 }
 
 const toOutline = (list: RealChapter[]): Chapter[] =>
-  list.map(({ id, no, title, sourced, structureRef, desc, system, items }) => ({
+  list.map(({ id, no, title, sourced, structureRef, desc, system, afterId, formOrder, items }) => ({
     id,
     no,
     desc,
@@ -67,6 +71,8 @@ const toOutline = (list: RealChapter[]): Chapter[] =>
     sourced,
     structureRef,
     system,
+    afterId,
+    formOrder,
     items: items.map((it) => ({ ...it, children: (it.children ?? []).map((c) => ({ ...c })) })),
   }))
 

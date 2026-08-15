@@ -486,3 +486,61 @@ def test_material_list_form_chapters_keep_model_items(submit_gateway):
     out = asyncio.run(node({"read": read}))
     b1 = next(c for c in out["outline"]["chapters"] if "资格文件" in c["title"])
     assert [it["label"] for it in b1["items"]] == ["一、营业执照原件扫描件", "二、财务状况证明材料"]
+
+
+def test_duplicate_slot_names_do_not_create_duplicate_chapters(submit_gateway):
+    """评审 B：须知里的构成清单（（一）响应函…）与格式章的真表单同名——槽位不按名去重
+    的话，第二个同名槽位没人认领，补章造出两个「响应函」章，且随缓存钉死。"""
+    read = _forms_read()
+    read["doc_sections"] = ([{"id": "sec-0-c1", "text": "（一）响应函"},
+                             {"id": "sec-0-c2", "text": "以上为响应文件构成，均须加盖公章。"}]
+                            + read["doc_sections"])
+    gw = submit_gateway({"submit_outline": {"chapters": [
+        {"id": "b3", "no": "第一章", "title": "响应函", "group": "business", "sourced": True,
+         "items": [{"id": "b3-1", "label": "一、响应函"}]},
+        {"id": "t1", "no": "第二章", "title": "整体服务方案", "group": "tech", "sourced": True,
+         "items": [{"id": "t1-1", "label": "一、项目理解"}]}]}})
+    node = make_outline_node(RunContext(run_id="r", agent_type="bidding_agent",
+                                        thread_id="t", gateway=gw))
+    out = asyncio.run(node({"read": read}))
+    titles = [c["title"] for c in out["outline"]["chapters"]]
+    assert titles.count("响应函") == 1, titles
+
+
+def test_exact_claim_beats_containment_claim(submit_gateway):
+    """评审 C：贪心首中会让「响应函格式符合性说明」章先把「响应函」槽位抢走并被改名——
+    精确匹配必须先于互含匹配认领。"""
+    gw = submit_gateway({"submit_outline": {"chapters": [
+        {"id": "b9", "no": "第一章", "title": "响应函格式符合性说明", "group": "business",
+         "sourced": True, "items": [{"id": "b9-1", "label": "一、说明"}]},
+        {"id": "b3", "no": "第二章", "title": "响应函", "group": "business", "sourced": True,
+         "items": [{"id": "b3-1", "label": "一、响应函"}]},
+        {"id": "t1", "no": "第三章", "title": "整体服务方案", "group": "tech", "sourced": True,
+         "items": [{"id": "t1-1", "label": "一、项目理解"}]}]}})
+    node = make_outline_node(RunContext(run_id="r", agent_type="bidding_agent",
+                                        thread_id="t", gateway=gw))
+    out = asyncio.run(node({"read": _forms_read()}))
+    titles = [c["title"] for c in out["outline"]["chapters"]]
+    assert titles.count("响应函") == 1, titles
+    assert "响应函格式符合性说明" in titles, "说明章被抢改名"
+    exact = next(c for c in out["outline"]["chapters"] if c["title"] == "响应函")
+    assert exact["id"] == "b3", "槽位被互含章抢走"
+
+
+def test_composite_guard_covers_all_connectors(submit_gateway):
+    """评审 D：复合名守卫只认[及和]，「与」连接的复合槽位（法定代表人证明与授权书这类）
+    仍会把「承诺函」章改成复合名并抹小节——连接词集合必须与匹配器同一份[与及和、/]。"""
+    read = {"doc_sections": [
+        {"id": "sec-2-c1", "text": "1.资格声明与承诺函"},
+        {"id": "sec-2-c2", "text": "我单位郑重声明并承诺守信经营。"}], "doc_headings": []}
+    gw = submit_gateway({"submit_outline": {"chapters": [
+        {"id": "b5", "no": "第一章", "title": "承诺函", "group": "business", "sourced": True,
+         "items": [{"id": "b5-1", "label": "一、承诺正文"}, {"id": "b5-2", "label": "二、签章"}]},
+        {"id": "t1", "no": "第二章", "title": "整体服务方案", "group": "tech", "sourced": True,
+         "items": [{"id": "t1-1", "label": "一、项目理解"}]}]}})
+    node = make_outline_node(RunContext(run_id="r", agent_type="bidding_agent",
+                                        thread_id="t", gateway=gw))
+    out = asyncio.run(node({"read": read}))
+    b5 = next(c for c in out["outline"]["chapters"] if c["id"] == "b5")
+    assert b5["title"] == "承诺函", "复合名槽位不许改章名"
+    assert [it["label"] for it in b5["items"]] == ["一、承诺正文", "二、签章"], "复合名槽位不许抹小节"
