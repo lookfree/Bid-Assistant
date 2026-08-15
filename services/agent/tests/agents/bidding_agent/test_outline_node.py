@@ -225,8 +225,8 @@ def test_folded_form_item_is_split_into_its_own_chapter(submit_gateway):
     assert [c["no"] for c in chs] == ["第一章", "第二章", "第三章"]
     split = chs[1]
     assert split["group"] == "business" and split["id"] not in ("b1", "t1")
-    assert [it["label"] for it in split["items"]] == [
-        "1. 法定代表人授权书正文（按格式填写）", "2. 法定代表人及委托代理人身份证扫描件"]
+    # 规范占位（2026-08-15 拍板续）：表单章小节统一为一条占位，不保留模型写法
+    assert [it["label"] for it in split["items"]] == ["一、法定代表人授权书（按招标格式填写）"]
     assert all("授权书" not in (it.get("label") or "") for it in chs[0]["items"])
 
 
@@ -303,20 +303,29 @@ def test_split_chapter_with_ref_still_follows_unref_parent(submit_gateway):
 
 
 def test_parent_items_are_renumbered_after_split(submit_gateway):
-    """2026-08-15 用户实测「中间的第二节呢」：授权书（二）拆走后，父章剩下
-    「一、响应函」「三、响应函格式符合性说明」——中文序号必须重编成一、二。"""
-    args = {"chapters": [dict(_FOLDED_ARGS["chapters"][0]), dict(_FOLDED_ARGS["chapters"][1])]}
-    args["chapters"][0] = {**args["chapters"][0], "items": [
-        {"id": "b1-1", "label": "一、响应函", "children": []},
-        {"id": "b1-2", "label": "二、法定代表人授权书", "children": []},
-        {"id": "b1-3", "label": "三、响应函格式符合性说明", "children": []}]}
+    """2026-08-15 用户实测「中间的第二节呢」：折叠表单（二）拆走后，父章剩余小节的中文
+    序号必须重编成一、二。父章用材料清单类（资格文件）——纯表单章的小节已统一规范占位，
+    重编号只对保留模型小节的章可见。"""
+    args = {"chapters": [
+        {"id": "b1", "no": "第一章", "title": "资格文件", "group": "business", "sourced": True,
+         "items": [
+             {"id": "b1-1", "label": "一、营业执照原件扫描件", "children": []},
+             {"id": "b1-2", "label": "二、法定代表人授权书", "children": []},
+             {"id": "b1-3", "label": "三、财务状况证明材料", "children": []}]},
+        dict(_FOLDED_ARGS["chapters"][1]),
+    ]}
     gw = submit_gateway({"submit_outline": args})
     node = make_outline_node(RunContext(run_id="r", agent_type="bidding_agent",
                                         thread_id="t", gateway=gw))
-    out = asyncio.run(node({"read": _folded_read()}))
-    parent = next(c for c in out["outline"]["chapters"] if c["title"] == "响应函")
+    read = {"doc_sections": [
+        {"id": "sec-2-c1", "text": "1.法定代表人授权书"},
+        {"id": "sec-2-c2", "text": "法定代表人授权书"},
+        {"id": "sec-2-c3", "text": "（供应商全称）法定代表人 授权 （全权代表姓名）为全权代表。"}],
+        "doc_headings": []}
+    out = asyncio.run(node({"read": read}))
+    parent = next(c for c in out["outline"]["chapters"] if c["title"] == "资格文件")
     assert [it["label"] for it in parent["items"]] == [
-        "一、响应函", "二、响应函格式符合性说明"]
+        "一、营业执照原件扫描件", "二、财务状况证明材料"]
 
 
 def test_cache_key_carries_correction_revision():
@@ -433,3 +442,47 @@ def test_deviation_form_segments_are_never_auto_created(submit_gateway):
     out = asyncio.run(node({"read": read}))
     biz = [c["title"] for c in out["outline"]["chapters"] if c["group"] == "business"]
     assert "技术偏离表" not in biz
+
+
+def test_form_chapter_items_are_canonical_placeholders(submit_gateway):
+    """2026-08-15 用户拍板续：表单章小节也统一成规范占位——模型这次写「身份证明」下次
+    写「授权书正文」，菜单每轮一副面孔。规范占位一条；原小节的 clause_ids **汇总保留**
+    （定位原文跳转与模板定位 clause 捷径不能丢）。"""
+    args = {"chapters": [
+        {"id": "b1", "no": "第一章", "title": "响应函", "group": "business", "sourced": True,
+         "items": [
+             {"id": "b1-1", "label": "一、响应函正文", "clause_ids": ["sec-1-c20"]},
+             {"id": "b1-2", "label": "二、签章及日期", "clause_ids": ["sec-1-c22"],
+              "children": [{"id": "b1-2-1", "label": "1. 盖章", "clause_ids": ["sec-1-c56"]}]}]},
+        {"id": "t1", "no": "第二章", "title": "整体服务方案", "group": "tech", "sourced": True,
+         "items": [{"id": "t1-1", "label": "一、项目理解"}, {"id": "t1-2", "label": "二、技术方案"}]},
+    ]}
+    gw = submit_gateway({"submit_outline": args})
+    node = make_outline_node(RunContext(run_id="r", agent_type="bidding_agent",
+                                        thread_id="t", gateway=gw))
+    out = asyncio.run(node({"read": _forms_read()}))
+    b1 = next(c for c in out["outline"]["chapters"] if c["title"] == "响应函")
+    assert [it["label"] for it in b1["items"]] == ["一、响应函（按招标格式填写）"]
+    assert b1["items"][0]["clause_ids"] == ["sec-1-c20", "sec-1-c22", "sec-1-c56"]
+    t1 = next(c for c in out["outline"]["chapters"] if c["title"] == "整体服务方案")
+    assert [it["label"] for it in t1["items"]] == ["一、项目理解", "二、技术方案"], "技术章小节不动"
+
+
+def test_material_list_form_chapters_keep_model_items(submit_gateway):
+    """材料清单类章（资格文件/证明材料）的小节是证照就位与正文写作的骨架——不抹。"""
+    read = _forms_read()
+    read["doc_sections"] += [{"id": "sec-3-c1", "text": "5.资格文件"},
+                             {"id": "sec-3-c2", "text": "以下资格证明文件均为原件扫描件。"}]
+    args = {"chapters": [
+        {"id": "b1", "no": "第一章", "title": "资格文件", "group": "business", "sourced": True,
+         "items": [{"id": "b1-1", "label": "一、营业执照原件扫描件"},
+                   {"id": "b1-2", "label": "二、财务状况证明材料"}]},
+        {"id": "t1", "no": "第二章", "title": "整体服务方案", "group": "tech", "sourced": True,
+         "items": [{"id": "t1-1", "label": "一、项目理解"}]},
+    ]}
+    gw = submit_gateway({"submit_outline": args})
+    node = make_outline_node(RunContext(run_id="r", agent_type="bidding_agent",
+                                        thread_id="t", gateway=gw))
+    out = asyncio.run(node({"read": read}))
+    b1 = next(c for c in out["outline"]["chapters"] if "资格文件" in c["title"])
+    assert [it["label"] for it in b1["items"]] == ["一、营业执照原件扫描件", "二、财务状况证明材料"]

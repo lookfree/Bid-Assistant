@@ -215,6 +215,34 @@ def _form_slots(read_state: dict) -> list[dict]:
     return slots
 
 
+# 材料清单类表单（资格文件/证明材料/材料清单）：小节是证照就位与正文写作的骨架，
+# 规范占位不作用于它们——抹掉等于让模型/证照就位失去落点。
+_KEEP_ITEMS_WORDS = ("资格文件", "证明材料", "材料清单")
+
+
+def _canonical_items(ch: dict, label_name: str) -> list[dict]:
+    """表单章小节 → 规范占位一条（2026-08-15 用户拍板续：模型这次写「身份证明」下次写
+    「授权书正文」，菜单每轮一副面孔）。原小节树上的 clause_ids **全深度汇总保留**——
+    定位原文跳转与模板定位的 clause 捷径都靠它。"""
+    cids: list[str] = []
+
+    def collect(items, depth=0):
+        if depth > 8 or not isinstance(items, list):
+            return
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            for c in it.get("clause_ids") or []:
+                if c not in cids:
+                    cids.append(c)
+            collect(it.get("children"), depth + 1)
+
+    collect(ch.get("items") or [])
+    nid = str(ch.get("id") or "")
+    return [{"id": f"{nid}-1", "desc": "", "is_new": False, "children": [],
+             "label": f"一、{label_name}（按招标格式填写）", "clause_ids": cids}]
+
+
 def _canonical_form_chapters(outline: dict, read_state: dict) -> dict:
     """商务表单章代码定版（2026-08-15 用户拍板：招标书里写死的表单，一个字不让模型碰。
     此前拆章/锚定只是纠正模型，模型每次重新生成仍是一副新面孔——章有章无、简称全称、
@@ -265,6 +293,11 @@ def _canonical_form_chapters(outline: dict, read_state: dict) -> dict:
         name = slots[si]["name"]
         if ch.get("title") != name and not re.search("[及和]", name):
             ch["title"] = name
+        # 小节统一规范占位（复合名槽位、材料清单类不动——见 _KEEP_ITEMS_WORDS）
+        title = str(ch.get("title") or name)
+        if (ch not in created and not re.search("[及和]", name)
+                and not any(w in title for w in _KEEP_ITEMS_WORDS)):
+            ch["items"] = _canonical_items(ch, title)
     outline["chapters"] = chapters + created
     return outline
 
