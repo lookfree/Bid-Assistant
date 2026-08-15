@@ -396,3 +396,41 @@ def dedupe_spans(spans: dict[str, FormSpan]) -> dict[str, FormSpan]:
             if sp_a.start < cut <= sp_a.end:
                 out[a] = out[a]._replace(end=min(out[a].end, cut - 1))
     return out
+
+
+# 提纲 item 标签打头的序号（「二、」「1.」「（一）」），拆章判定前先剥
+_ORD_PREFIX = re.compile(r"^\s*(?:[0-9]{1,3}|[一二三四五六七八九十]{1,3}|[（(](?:[0-9]{1,3}|[一二三四五六七八九十]{1,3})[）)])\s*[.、．)）]?\s*")
+
+
+def folded_form_items(chapters: list[dict], index: list[dict]) -> dict[str, list[tuple[dict, str]]]:
+    """被折进别章的独立表单 item：{章id: [(item, 表单核心名)]}（2026-08-15 fd5a6ced 实测：
+    模型把「法定代表人授权书」折进响应函章当小节——零模型路径按章名只取一份模板，
+    折叠小节整体蒸发，菜单有、正文无）。①提纲拆章与②零模型守约闸共用本判定。
+
+    一个顶级 item 判为折叠表单须同时满足：
+    · 核心名（剥序号）与全文表单索引某段**强匹配**（全同/互含；拆部件的弱匹配不算，
+      「资格文件」章不能因带「资格」二字被拆）；
+    · 该段不是本章自己对应的段（「响应函正文」是本章正文的小节，不是折叠）；
+    · 该段没有任何一章以它为章名（有独立章时 item 只是交叉引用，拆了就是重复章）。"""
+    owns = [find_form_segment(index, str(ch.get("title") or "")) for ch in chapters]
+    claimed = {id(s) for s in owns if s is not None}
+    out: dict[str, list[tuple[dict, str]]] = {}
+    for ch, own in zip(chapters, owns):
+        ch_core = _core_form_name(str(ch.get("title") or ""))
+        for it in ch.get("items") or []:
+            if not isinstance(it, dict):
+                continue
+            core = _core_form_name(_ORD_PREFIX.sub("", str(it.get("label") or "")))
+            if len(_norm(core)) < _MIN_LOOKUP_NAME:
+                continue
+            if _match_tier(ch_core, core) is not None:
+                continue                     # 本章自己那份表单的组成部分
+            seg = find_form_segment(index, core)
+            if seg is None or seg is own or id(seg) in claimed:
+                continue
+            tier = _match_tier(core, seg["name"])
+            if tier is None or tier > 1:     # 0 是合法的「全同」，不能用 or 兜底（同 _src_of 教训）
+                continue                     # 只认全同/互含的强匹配
+            claimed.add(id(seg))             # 同一份表单最多拆一次
+            out.setdefault(str(ch.get("id") or ""), []).append((it, core))
+    return out

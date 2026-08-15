@@ -94,6 +94,44 @@ def _reorder_chapters(outline: dict, structure: list[dict]) -> dict:
     return outline
 
 
+def _split_form_chapters(outline: dict, read_state: dict) -> dict:
+    """被折进别章的独立表单模板，代码硬拆成独立章（2026-08-15 fd5a6ced 实测：模型把
+    「法定代表人授权书」折进响应函章当小节——表单章零模型路径按章名只取一份模板，
+    折叠小节整体蒸发，菜单有、正文无。「一表一章」提示词只能请求，代码才能保证）。
+    判定由 form_locate.folded_form_items 给出（强匹配全文表单索引、非本章自己那份、
+    无独立章认领）；拆出的新章插在原章之后（无构成引用时 _reorder_chapters 按相对序
+    保持相邻），构成引用按标题精确对回清单，重排重编号交给 _reorder_chapters。
+    生成后+缓存命中后都过：旧缓存里的折叠提纲命中即矫正，不用清缓存。幂等。"""
+    from agent.agents.bidding_agent.nodes.form_locate import build_form_index, folded_form_items
+    chapters = outline.get("chapters") or []
+    if not chapters:
+        return outline
+    folded = folded_form_items(chapters, build_form_index(read_state))
+    if not any(folded.values()):
+        return outline
+    by_title = {str(s.get("title") or "").strip(): str(s.get("id"))
+                for s in read_state.get("required_structure") or []}
+    seen = {str(c.get("id") or "") for c in chapters}
+    out: list[dict] = []
+    for ch in chapters:
+        out.append(ch)
+        for item, core in folded.get(str(ch.get("id") or ""), []):
+            ch["items"] = [it for it in ch.get("items") or [] if it is not item]
+            nid = f"{ch.get('id')}f"
+            while nid in seen:
+                nid += "x"
+            seen.add(nid)
+            new_ch = {"id": nid, "no": "", "desc": "", "title": core,
+                      "group": ch.get("group") or "business", "sourced": True,
+                      "items": item.get("children") or [dict(item, label=core, children=[])]}
+            if core in by_title:
+                new_ch["structure_ref"] = by_title[core]
+            logger.info("提纲拆章：「%s」自「%s」拆出为独立表单章", core, ch.get("title"))
+            out.append(new_ch)
+    outline["chapters"] = out
+    return outline
+
+
 def _remap_structure_refs(outline: dict, ref_titles: dict, structure: list[dict]) -> dict:
     """跨项目复用提纲时，structure_ref 指向**旧一轮读标**的构成项 id——id 由读标模型自拟，
     跨轮不稳。按标题精确重映射到本轮构成项；映射不上的删引用（模板定位/偏离投递都有
@@ -133,7 +171,8 @@ def make_outline_node(ctx):
                 logger.info("提纲缓存命中（同文件同域），零模型复用")
                 cached_outline = _remap_structure_refs(
                     data.get("outline") or {}, data.get("ref_titles") or {}, structure_now)
-                return {"outline": _reorder_chapters(cached_outline, structure_now)}
+                return {"outline": _reorder_chapters(
+                    _split_form_chapters(cached_outline, read_state), structure_now)}
         read = json.dumps(slim_read(read_state), ensure_ascii=False)
         user = f"读标结论：\n{read}\n请据此产出提纲。"
         structure = read_state.get("required_structure") or []
@@ -148,7 +187,8 @@ def make_outline_node(ctx):
         result = await run_submit_agent(
             ctx, OUTLINE_SYSTEM_PROMPT, user,
             "submit_outline", Outline, "提交提纲", attempts=5, temperature=0.0)
-        outline = _reorder_chapters(result.model_dump(), structure_now)
+        outline = _reorder_chapters(
+            _split_form_chapters(result.model_dump(), read_state), structure_now)
         if key and r:
             payload = json.dumps(
                 {"outline": outline,

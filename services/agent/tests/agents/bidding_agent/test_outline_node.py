@@ -188,3 +188,63 @@ def test_chapters_are_reordered_group_first_then_structure_order(submit_gateway)
     assert ids == ["b1", "b2", "b7", "b8", "t1"], f"章序没按 商务(构成序+附加)→技术 排: {ids}"
     nos = [c["no"] for c in out["outline"]["chapters"]]
     assert nos == ["第一章", "第二章", "第三章", "第四章", "第五章"], f"重排后没重编章号: {nos}"
+
+
+def _folded_read() -> dict:
+    """含两份表单边界的最小读标结果：1.响应函 / 2.法定代表人授权书。"""
+    lines = ["1.响应函", "致：采购人：", "我方承诺响应文件内容完整真实。",
+             "编制要求：除允许填写的内容外不得修改本文件。",
+             "2.法定代表人授权书", "法定代表人授权书",
+             "（供应商全称）法定代表人 授权 （全权代表姓名）为全权代表。"]
+    return {"doc_sections": [{"id": f"sec-2-c{i+1}", "text": t} for i, t in enumerate(lines)],
+            "doc_headings": []}
+
+
+_FOLDED_ARGS = {"chapters": [
+    {"id": "b1", "no": "第一章", "title": "响应函", "group": "business", "sourced": True,
+     "items": [
+         {"id": "b1-1", "label": "一、响应函"},
+         {"id": "b1-2", "label": "二、法定代表人授权书", "children": [
+             {"id": "b1-2-1", "label": "1. 法定代表人授权书正文（按格式填写）"},
+             {"id": "b1-2-2", "label": "2. 法定代表人及委托代理人身份证扫描件"}]}]},
+    {"id": "t1", "no": "第二章", "title": "技术方案", "group": "tech", "sourced": True,
+     "items": [{"id": "t1-1", "label": "1.1 总体"}]},
+]}
+
+
+def test_folded_form_item_is_split_into_its_own_chapter(submit_gateway):
+    """2026-08-15 fd5a6ced 实测：模型把「法定代表人授权书」折进响应函章当小节——
+    零模型路径按章名只取一份模板，折叠小节菜单有、正文无。招标书里独立存在的表单
+    模板必须独立成章：代码硬拆，插在原章之后，重编章号，原章 items 里摘掉该项。"""
+    gw = submit_gateway({"submit_outline": _FOLDED_ARGS})
+    node = make_outline_node(RunContext(run_id="r", agent_type="bidding_agent",
+                                        thread_id="t", gateway=gw))
+    out = asyncio.run(node({"read": _folded_read()}))
+    chs = out["outline"]["chapters"]
+    assert [c["title"] for c in chs] == ["响应函", "法定代表人授权书", "技术方案"]
+    assert [c["no"] for c in chs] == ["第一章", "第二章", "第三章"]
+    split = chs[1]
+    assert split["group"] == "business" and split["id"] not in ("b1", "t1")
+    assert [it["label"] for it in split["items"]] == [
+        "1. 法定代表人授权书正文（按格式填写）", "2. 法定代表人及委托代理人身份证扫描件"]
+    assert all("授权书" not in (it.get("label") or "") for it in chs[0]["items"])
+
+
+def test_poisoned_cached_outline_is_split_on_hit(submit_gateway, monkeypatch):
+    """生产事故形态：折叠提纲已被（旧代码）写进缓存——命中路径同样过拆章，
+    同文件再建项目拿到的是矫正后的提纲，不用清缓存。"""
+    import hashlib
+    import agent.agents.bidding_agent.nodes.outline as om
+    monkeypatch.setattr(om, "_read_file_bytes", lambda key: b"TENDER")
+    r = _FakeRedis()
+    state = {"files": [{"key": "k"}], "read": _folded_read()}
+    digest = hashlib.sha256(b"TENDER").hexdigest()[:24]
+    r.store[om._cache_key(digest, state)] = json.dumps(
+        {"outline": _FOLDED_ARGS, "ref_titles": {}}, ensure_ascii=False)
+    gw = submit_gateway({})             # 命中缓存绝不碰模型
+    node = make_outline_node(RunContext(run_id="r", agent_type="bidding_agent",
+                                        thread_id="t", gateway=gw, redis=r))
+    out = asyncio.run(node(state))
+    assert [c["title"] for c in out["outline"]["chapters"]] == \
+           ["响应函", "法定代表人授权书", "技术方案"]
+    assert not gw.chats

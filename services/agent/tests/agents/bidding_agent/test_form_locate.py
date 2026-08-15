@@ -269,3 +269,52 @@ class TestTrailingBoundaryTrim:
         text = segment_text(seg)
         assert "4-2要求的资格文件" not in text
         assert "供应商资格信用承诺函" in text and "郑重承诺" in text
+
+
+class TestFoldedFormItems:
+    """2026-08-15 fd5a6ced 实测：模型把「法定代表人授权书」折进响应函章当小节，
+    表单章零模型路径按章名只取一份模板，折叠小节整体蒸发——菜单有、正文无。
+    folded_form_items 是①提纲拆章与②零模型守约闸共用的判定源。"""
+
+    def _chapters(self):
+        return [
+            {"id": "b1", "title": "响应函", "group": "business", "items": [
+                {"id": "b1-1", "label": "一、响应函", "children": []},
+                {"id": "b1-2", "label": "二、法定代表人授权书", "children": [
+                    {"id": "b1-2-1", "label": "1. 法定代表人授权书正文（按格式填写）"},
+                    {"id": "b1-2-2", "label": "2. 法定代表人及委托代理人身份证扫描件"}]},
+                {"id": "b1-3", "label": "三、响应函格式符合性说明", "children": []}]},
+            {"id": "b2", "title": "报价一览表", "group": "business", "items": [
+                {"id": "b2-1", "label": "一、报价一览表", "children": []}]},
+        ]
+
+    def test_folded_authorization_letter_is_detected(self):
+        from agent.agents.bidding_agent.nodes.form_locate import folded_form_items
+        folded = folded_form_items(self._chapters(), build_form_index(_read()))
+        assert [core for _, core in folded.get("b1", [])] == ["法定代表人授权书"]
+        assert folded["b1"][0][0]["id"] == "b1-2"
+        assert not folded.get("b2")           # 一览表章自己的 item 不算折叠
+
+    def test_own_chapter_claims_the_segment_no_false_fold(self):
+        """授权书已有独立章时，别章 items 里再提它只是交叉引用，不得拆重复章。"""
+        from agent.agents.bidding_agent.nodes.form_locate import folded_form_items
+        chs = self._chapters() + [{"id": "b7", "title": "法定代表人授权书",
+                                   "group": "business", "items": []}]
+        folded = folded_form_items(chs, build_form_index(_read()))
+        assert not folded.get("b1")
+
+    def test_folded_detail_table_inside_price_chapter_is_detected(self):
+        """报价明细表（3-1 子表单）被折进一览表章 → 同样拆：招标构成里它是独立一份。"""
+        from agent.agents.bidding_agent.nodes.form_locate import folded_form_items
+        chs = self._chapters()
+        chs[1]["items"].append({"id": "b2-2", "label": "二、报价明细表", "children": []})
+        folded = folded_form_items(chs, build_form_index(_read()))
+        assert [core for _, core in folded.get("b2", [])] == ["报价明细表"]
+
+    def test_non_form_items_never_flag(self):
+        """签章/日期/含税说明这类普通 item 与任何表单段都对不上，绝不误拆。"""
+        from agent.agents.bidding_agent.nodes.form_locate import folded_form_items
+        chs = [{"id": "t2", "title": "整体服务方案", "group": "tech", "items": [
+            {"id": "t2-1", "label": "一、项目理解", "children": []},
+            {"id": "t2-2", "label": "二、报价含税说明及税率标注", "children": []}]}]
+        assert not any(folded_form_items(chs, build_form_index(_read())).values())
