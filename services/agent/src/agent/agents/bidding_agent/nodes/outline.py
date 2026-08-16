@@ -198,24 +198,75 @@ _FORM_SKIP_WORDS = ("封面", "封套", "目录", "装订", "密封", "文件格
 _FORM_TECH_WORDS = ("偏离", "技术", "方案", "实施")
 
 
+# 槽位名清洗：剥编号/附件前缀/★弹头/内部空白。「1★保密承诺书」「保 密承诺书」是同一份，
+# 不清洗既会拿脏名去建章，也会把同一份表单当成两个槽位补两次章（2026-08-16 41 份回放）。
+_SLOT_PREFIX = re.compile(
+    r"^(?:附件|附表|附录|表)?\s*[0-9０-９]+(?:[-－.．][0-9０-９]+)*\s*[.、．)）]?\s*"
+    r"|^[一二三四五六七八九十]{1,3}[、.．]\s*"
+    r"|^[★▲◆■□●○•·※]+\s*"
+    r"|^附件[一二三四五六七八九十]+\s*"
+    r"|^附[:：]?\s*")
+# 章/部分/节级标题不是**一份表单**：「第三章 报价文件内容及格式」「第六部分 格式附件」
+# 补成章 = 提纲里凭空多出一个装不下东西的壳（41 份回放实证）。
+_SLOT_CHAPTER = re.compile(r"第[一二三四五六七八九十百千\d]+[章节部篇]")
+# 以这些收尾的是**要求/说明条款**，不是要填的表单
+_SLOT_BAD_TAIL = ("要求", "说明", "规定", "摘录", "目录", "格式")
+_SLOT_MIN_BODY = 30      # 段内可见字下限：解析碎片切出来的段几乎没内容
+# 正文起手词开头的不是表单名：「特此证明」是落款行，不是一份要填的证明（41 份回放）
+_SLOT_BAD_HEAD = ("特此", "兹", "现将", "备注", "以上")
+
+
+def _slot_name(raw: str) -> str:
+    """段名 → 干净的表单名（剥前缀噪音+内部空白）。"""
+    name = str(raw or "").strip()
+    while True:                       # 反复剥：「1★保密承诺书」要连剥编号与弹头两层
+        stripped = _SLOT_PREFIX.sub("", name, count=1).strip()
+        if stripped == name:
+            break
+        name = stripped
+    return re.sub(r"[\s　]+", "", name)
+
+
+def _is_form_slot(raw_name: str, body: str) -> bool:
+    """这一段够不够格当**商务表单槽位**（代码要据它建章，宁缺毋滥——补错一个章
+    比漏补一个章糟得多：漏补时模型产出的章还在，补错是凭空多一个空壳）。"""
+    from agent.agents.bidding_agent.nodes.form_locate import _PROSE_PUNCT, _looks_like_form_title
+    name = _slot_name(raw_name)
+    if not (3 <= len(name) <= 12) or _PROSE_PUNCT.search(name):
+        return False
+    if len(name) == 3 and not name.endswith("函"):
+        return False              # 三字表单名只有「响应函/报价函/投标函」这一族；
+                                  # 「证证明」这类解析碎片同样三字、同样以证明收尾（41 份回放）
+    if _SLOT_CHAPTER.search(str(raw_name)) or name.endswith(_SLOT_BAD_TAIL):
+        return False
+    if name.startswith(_SLOT_BAD_HEAD):
+        return False
+    if any(w in name for w in _FORM_SKIP_WORDS + _FORM_TECH_WORDS):
+        return False
+    if not _looks_like_form_title(name):
+        return False
+    return len(re.sub(r"[\s　]+", "", body)) >= _SLOT_MIN_BODY
+
+
 def _form_slots(index: list[dict]) -> list[dict]:
     """招标全文的**商务表单槽位**（文档序）。权威=全文表单索引——它来自解析器切分的
     doc_sections，不经模型，同一份文件必得同一份槽位表。这是「商务标章清单代码直出」
     的确定性根基。同名段按归一名去重取首现（评审 B：须知构成清单与格式章真表单同名，
     不去重则第二个槽位没人认领、补章造出重复章并随缓存钉死）。"""
-    from agent.agents.bidding_agent.nodes.form_locate import _looks_like_form_title, _norm, segment_text
+    from agent.agents.bidding_agent.nodes.form_locate import segment_text
     slots, seen = [], set()
     for seg in index:
-        name = str(seg.get("name") or "")
-        if not _looks_like_form_title(name) or not segment_text(seg):
+        raw = str(seg.get("name") or "")
+        body = segment_text(seg)
+        if not body or not _is_form_slot(raw, body):
             continue
-        if any(w in name for w in _FORM_SKIP_WORDS + _FORM_TECH_WORDS):
+        name = _slot_name(raw)
+        if name in seen:
             continue
-        key = _norm(name)
-        if key in seen:
-            continue
-        seen.add(key)
-        slots.append({"name": name})
+        seen.add(name)
+        # 复合名（「资格文件及资格信用承诺函」）是**分组标题**不是一份表单：可以被章
+        # 认领来定序，但绝不据它补章——补出来是个装不下东西的壳（41 份回放）。
+        slots.append({"name": name, "composite": bool(_COMPOSITE_RE.search(name))})
     return slots
 
 
@@ -287,7 +338,7 @@ def _canonical_form_chapters(outline: dict, index: list[dict]) -> dict:
     seen = {str(c.get("id") or "") for c in chapters}
     created: list[dict] = []
     for si, slot in enumerate(slots):
-        if si in claimed:
+        if si in claimed or slot.get("composite"):
             continue
         nid = f"bf{si + 1}"
         while nid in seen:
