@@ -502,7 +502,8 @@ def test_duplicate_slot_names_do_not_create_duplicate_chapters(submit_gateway):
     的话，第二个同名槽位没人认领，补章造出两个「响应函」章，且随缓存钉死。"""
     read = _forms_read()
     read["doc_sections"] = ([{"id": "sec-0-c1", "text": "（一）响应函"},
-                             {"id": "sec-0-c2", "text": "以上为响应文件构成，均须加盖公章。"}]
+                             {"id": "sec-0-c2", "text": "以上为响应文件构成清单，供应商须按顺序装订"},
+                             {"id": "sec-0-c3", "text": "并逐页加盖单位公章，缺项按无效响应处理。"}]
                             + read["doc_sections"])
     gw = submit_gateway({"submit_outline": {"chapters": [
         {"id": "b3", "no": "第一章", "title": "响应函", "group": "business", "sourced": True,
@@ -541,7 +542,9 @@ def test_composite_guard_covers_all_connectors(submit_gateway):
     仍会把「承诺函」章改成复合名并抹小节——连接词集合必须与匹配器同一份[与及和、/]。"""
     read = {"doc_sections": [
         {"id": "sec-2-c1", "text": "1.资格声明与承诺函"},
-        {"id": "sec-2-c2", "text": "我单位郑重声明并承诺守信经营。"}], "doc_headings": []}
+        {"id": "sec-2-c2", "text": "我单位郑重声明并承诺守信经营，符合采购文件规定的全部资格条件，"},
+        {"id": "sec-2-c3", "text": "如有不实自愿接受取消成交资格等处理。"},
+        {"id": "sec-2-c4", "text": "供应商名称(单位公章)"}], "doc_headings": []}
     gw = submit_gateway({"submit_outline": {"chapters": [
         {"id": "b5", "no": "第一章", "title": "承诺函", "group": "business", "sourced": True,
          "items": [{"id": "b5-1", "label": "一、承诺正文"}, {"id": "b5-2", "label": "二、签章"}]},
@@ -579,3 +582,18 @@ def test_slot_gate_rejects_the_noise_41_tenders_exposed():
     assert _slot_name("1★保密承诺书") == _slot_name("保 密承诺书")
     # 段内几乎没内容的（解析碎片）一律拒
     assert not _is_form_slot("承诺书", "略")
+
+
+def test_slot_gate_does_not_maim_real_names_or_drop_real_forms():
+    """评审 2026-08-16 实跑复现两条误伤：
+    ①「附」被无差别当前缀剥 → 附加服务承诺书 变「加服务承诺书」，残名直接印进标书；
+    ②三字名只放行「XX函」→ 承诺书/授权书/声明书 这些**整词表单**被拒，招标要求的表单
+      既不补章、已有章也拿不到 form_order。"""
+    from agent.agents.bidding_agent.nodes.outline import _is_form_slot, _slot_name
+    body = "我单位郑重承诺遵守采购文件全部条款，所提交材料真实有效，如有不实自愿承担法律责任。"
+    assert _slot_name("附加服务承诺书") == "附加服务承诺书", "词首的「附加」被当成前缀剥了"
+    assert _is_form_slot("附加服务承诺书", body)
+    assert _slot_name("附资信证明") == "资信证明" and _slot_name("附：资信证明") == "资信证明"
+    for ok in ("承诺书", "授权书", "声明书", "一览表", "响应函", "澄清函"):
+        assert _is_form_slot(ok, body), f"三字真表单被拒: {ok}"
+    assert not _is_form_slot("证证明", body), "只靠证明后缀蒙混的碎片仍要拒"

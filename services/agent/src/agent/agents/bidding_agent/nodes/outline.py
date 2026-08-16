@@ -206,7 +206,7 @@ _SLOT_PREFIX = re.compile(
     r"|^[一二三四五六七八九十]{1,3}[、.．]\s*"
     r"|^[★▲◆■□●○•·※]+\s*"
     r"|^附件[一二三四五六七八九十]+\s*"
-    r"|^附[:：]?\s*")
+    r"|^附(?![加带属])[:：]?\s*")   # 附资信证明→资信证明；附加服务承诺书 一个字都不动
 # 章/部分/节级标题不是**一份表单**：「第三章 报价文件内容及格式」「第六部分 格式附件」
 # 补成章 = 提纲里凭空多出一个装不下东西的壳（41 份回放实证）。
 _SLOT_CHAPTER = re.compile(r"第[一二三四五六七八九十百千\d]+[章节部篇]")
@@ -231,13 +231,16 @@ def _slot_name(raw: str) -> str:
 def _is_form_slot(raw_name: str, body: str) -> bool:
     """这一段够不够格当**商务表单槽位**（代码要据它建章，宁缺毋滥——补错一个章
     比漏补一个章糟得多：漏补时模型产出的章还在，补错是凭空多一个空壳）。"""
-    from agent.agents.bidding_agent.nodes.form_locate import _PROSE_PUNCT, _looks_like_form_title
+    from agent.agents.bidding_agent.nodes.form_locate import (
+        _FORM_WORDS, _PROSE_PUNCT, _looks_like_form_title)
     name = _slot_name(raw_name)
     if not (3 <= len(name) <= 12) or _PROSE_PUNCT.search(name):
         return False
-    if len(name) == 3 and not name.endswith("函"):
-        return False              # 三字表单名只有「响应函/报价函/投标函」这一族；
-                                  # 「证证明」这类解析碎片同样三字、同样以证明收尾（41 份回放）
+    if (len(name) == 3 and not any(w in name for w in _FORM_WORDS)
+            and not name.endswith("函")):
+        return False              # 三字名必须靠**构词短语**命中（承诺书/授权书/声明书/一览表…）
+                                  # 或是「XX函」；「证证明」只靠 _FORM_SUFFIXES 的证明后缀
+                                  # 蒙混过关，三字里这种碎片占比最高（41 份回放）
     if _SLOT_CHAPTER.search(str(raw_name)) or name.endswith(_SLOT_BAD_TAIL):
         return False
     if name.startswith(_SLOT_BAD_HEAD):
