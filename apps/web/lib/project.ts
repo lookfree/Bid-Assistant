@@ -361,6 +361,17 @@ export async function deleteProject(projectId: string): Promise<void> {
   if (currentProjectId() === projectId) clearCurrentProjectId()
 }
 
+/** 可沿用的历史提纲（2026-08-16）：同一份招标文件、同一用户、提纲已完成的历史项目。
+ *  空数组＝没有可沿用的，调用方据此不显示入口。纯查询，不改状态、不计费。 */
+export type OutlineReuseCandidate = { projectId: string; name: string; chapterCount: number; createdAt: string }
+
+export async function outlineReuseCandidates(projectId: string): Promise<OutlineReuseCandidate[]> {
+  const { items } = await api.request<{ items: OutlineReuseCandidate[] }>(
+    `/api/projects/${projectId}/outline-reuse`,
+  )
+  return items ?? []
+}
+
 export async function cloneProject(projectId: string, pkg?: { id: string; name: string }): Promise<string> {
   const { id } = await api.request<{ id: string; threadId: string }>(`/api/projects/${projectId}/clone`, {
     method: "POST",

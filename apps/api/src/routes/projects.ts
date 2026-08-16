@@ -24,6 +24,7 @@ import { getConfig } from "../services/config"
 import { credentialsRunInput, libraryRefsRunInput, type CredentialInput } from "../services/credentials"
 import { SYS_CREDS_ID } from "../services/credentials-chapter"
 import * as credentialsChapter from "../services/credentials-chapter"
+import { outlineReuseCandidates, reusableOutline } from "../services/outline-reuse"
 import { toCamel, toSnake } from "../lib/case"
 import { parsePagination, pagedBody, pagedResult } from "../lib/pagination"
 import { presignGet, deleteObject, listObjectKeys } from "../storage/s3"
@@ -210,6 +211,9 @@ const generationConfigSchema = z
 
 // 克隆项目请求体（spec324）：同一招标文件投另一个包=另建项目。package = 新项目投的包——
 // 多包流程下建项即选包（不再建空项目后补选）；name 缺省时按包名/「（再投）」派生。
+// 提纲沿用请求体：只在 outline 步有意义，值必须是本人的历史项目 uuid（路由再校验归属+同文件）
+const reuseBodySchema = z.object({ reuseFromProjectId: z.string().uuid().optional() }).passthrough()
+
 const cloneBodySchema = z
   .object({ name: z.string().min(1), package: z.object({ id: z.string().min(1), name: z.string().min(1) }) })
   .partial()
@@ -628,6 +632,17 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     })
   })
 
+  // 可沿用的历史提纲（2026-08-16）：同一用户、同一份招标文件、提纲步已完成的历史项目。
+  // 空数组＝没有可沿用的，前端据此不显示入口。查询本身不改任何状态，也不计费。
+  r.get("/:id/outline-reuse", async (c) => {
+    const id = c.req.param("id")
+    if (!isUuid(id)) return c.json({ error: "not_found" }, 404)
+    const userId = c.get("user").id
+    const p = await ownedProject(id, userId)
+    if (!p) return c.json({ error: "not_found" }, 404)
+    return c.json({ items: await outlineReuseCandidates(p.id, userId, p.tenderFileKey ?? "") })
+  })
+
   // 克隆项目（spec324）：同一招标文件投另一个包=另建一个项目（不留在同项目内多包并行）。
   // 复制 tenderFileKey(s)/文件名；不复制 selectedPackage/步骤/任何 run 状态——新项目从 read 重新开始。
   r.post("/:id/clone", async (c) => {
@@ -780,6 +795,14 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         : { success: true as const, data: {} as z.infer<typeof generationConfigSchema> }
     if (!genParsed.success) return c.json({ error: "invalid_input" }, 400)
     const gen = genParsed.data
+    // 提纲沿用（2026-08-16）：显式指定一个自己的历史项目 → 用它那版提纲，零模型零积分。
+    // 只在 outline 步认这个参数；坏值 400（先于占位/预扣，不留残行）。
+    const reuseParsed =
+      step === "outline"
+        ? reuseBodySchema.safeParse(await c.req.json().catch(() => ({})))
+        : { success: true as const, data: {} as z.infer<typeof reuseBodySchema> }
+    if (!reuseParsed.success) return c.json({ error: "invalid_input" }, 400)
+    const reuseFrom = reuseParsed.data.reuseFromProjectId
 
     const p = await ownedProject(id, userId)
     if (!p) return c.json({ error: "not_found" }, 404)
@@ -828,6 +851,14 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
           (step === "present" && ["review", "export", "done"].includes(p.currentStep)) ||
           (step === "review" && p.currentStep === "done"))
     if (!allowed) return c.json({ error: "out_of_order", expected: p.currentStep }, 409)
+
+    // 沿用的提纲在**占位/预扣之前**取：取不到（不是自己的/不是同一份标书/那边没提纲）
+    // 直接 400，不留残行、不扣分——绝不静默降级成"照常花钱生成一版"，那是用户没点的东西。
+    let reuseOutline: Record<string, unknown> | null = null
+    if (reuseFrom) {
+      reuseOutline = await reusableOutline(reuseFrom, p.id, userId, p.tenderFileKey ?? "")
+      if (!reuseOutline) return c.json({ error: "outline_not_reusable" }, 400)
+    }
 
     // 一项目同一时刻只许一个在途 run（审查修正 2026-07-23）：述标/导出解耦后 present 与 export
     // 可同时过步序闸,但两个 run 会并发续跑同一 LangGraph 线程（checkpoint 互踩、产物可能丢、双计费）。
@@ -903,8 +934,12 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         ...(step !== "read" && (runCategory.length > 0 || p.bidCategory != null)
           ? { bid_category: runCategory }
           : {}),
+        ...(reuseOutline ? { reuse_outline: true } : {}),
       },
-      state_overrides: await guardedOverrides(p.id, step as Step, userId),
+      state_overrides: {
+        ...(await guardedOverrides(p.id, step as Step, userId)),
+        ...(reuseOutline ? { outline: reuseOutline } : {}),
+      },
     }
 
     // 模型唯一来自运营后台配置（主模型 + 降级链）：未配置则不建 run、不计费、不占步位，
@@ -918,7 +953,8 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     // 误导排障。两条路径都在占步位/预扣之前，「不占步位不预扣」的性质对二者同等成立。
     let holdAmount: number | undefined
     try {
-      holdAmount = await resolveStepHoldAmount(step, gen.targetChars)
+      // 沿用既有提纲＝零模型调用，不收费（收了就是为用户自己的历史成果二次收费）
+      holdAmount = reuseOutline ? 0 : await resolveStepHoldAmount(step, gen.targetChars)
     } catch (e) {
       if (!(e instanceof ContentTiersConfigError)) throw e
       return c.json({ error: "content_tiers_not_configured" }, 400)

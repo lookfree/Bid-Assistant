@@ -597,3 +597,39 @@ def test_slot_gate_does_not_maim_real_names_or_drop_real_forms():
     for ok in ("承诺书", "授权书", "声明书", "一览表", "响应函", "澄清函"):
         assert _is_form_slot(ok, body), f"三字真表单被拒: {ok}"
     assert not _is_form_slot("证证明", body), "只靠证明后缀蒙混的碎片仍要拒"
+
+
+def test_reuse_outline_skips_the_model_and_keeps_user_edits(submit_gateway, monkeypatch):
+    """2026-08-16 用户口径：提纲可编辑，改好的那版应能被同一份标书的下个项目沿用。
+    App 显式请求时把那版随 state_overrides 灌进来 → 零模型原样返回；**不再过代码定版**
+    （用户改过的提纲用户说了算），也**不写缓存**（缓存全局按文件字节，写进去等于把一个
+    用户的编辑漏给所有人）。"""
+    import agent.agents.bidding_agent.nodes.outline as om
+    monkeypatch.setattr(om, "_read_file_bytes", lambda key: b"TENDER")
+    r = _FakeRedis()
+    edited = {"chapters": [
+        {"id": "b1", "no": "第一章", "title": "我手改的响应函", "group": "business",
+         "sourced": True, "items": [{"id": "b1-1", "label": "一、我自己写的小节"}]},
+        {"id": "t1", "no": "第二章", "title": "技术方案", "group": "tech",
+         "sourced": True, "items": [{"id": "t1-1", "label": "一、总体"}]}]}
+    gw = submit_gateway({})            # 一旦调模型必然拿不到提交而炸
+    node = make_outline_node(RunContext(run_id="r", agent_type="bidding_agent",
+                                        thread_id="t", gateway=gw, redis=r))
+    out = asyncio.run(node({"files": [{"key": "k"}], "read": _forms_read(),
+                            "outline": edited,
+                            "run_input": {"reuse_outline": True}}))
+    assert not gw.chats, "沿用还调了模型"
+    assert [c["title"] for c in out["outline"]["chapters"]] == ["我手改的响应函", "技术方案"], \
+        "沿用的提纲被代码定版改写了——用户的编辑必须原样保留"
+    assert out["outline"]["chapters"][0]["items"][0]["label"] == "一、我自己写的小节"
+    assert not r.store, "沿用的（可能带用户编辑的）提纲被写进了全局缓存"
+
+
+def test_reuse_flag_without_an_outline_falls_back_to_generating(submit_gateway):
+    """只带标志、没带提纲（App 那边取空了）→ 照常生成，绝不产空提纲。"""
+    gw = submit_gateway({"submit_outline": _OUTLINE_ARGS})
+    node = make_outline_node(RunContext(run_id="r", agent_type="bidding_agent",
+                                        thread_id="t", gateway=gw))
+    out = asyncio.run(node({"read": {}, "run_input": {"reuse_outline": True}}))
+    assert gw.chats, "没提纲可沿用时该照常生成"
+    assert out["outline"]["chapters"]

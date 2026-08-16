@@ -403,6 +403,17 @@ def make_outline_node(ctx):
     read.required_structure 非空时追加骨架约束（spec321）；run_input.package 存在时追加包件范围约束
     （spec324）；均缺省时用户消息与此前行为字节级一致。"""
     async def outline_node(state):
+        # 沿用既有提纲（2026-08-16 用户口径：提纲可编辑，改好的那版应能被同一份标书的下个
+        # 项目沿用）。App 显式请求时把那一版随 state_overrides 灌进来：零模型原样返回，
+        # **不过代码定版**——用户改过的提纲用户说了算，定版只作用于模型刚吐出的那一瞬；
+        # 也**不写缓存**——缓存是全局按文件字节的，写进去等于把一个用户的编辑漏给所有人。
+        # 只认显式标志，不认「state 里碰巧有提纲」：同线程重试时状态里本来就有上一版。
+        reused = state.get("outline") or {}
+        if (state.get("run_input") or {}).get("reuse_outline") and reused.get("chapters"):
+            await publish_phase(ctx, "沿用既有提纲")
+            logger.info("提纲沿用：调用方下发既有提纲 %d 章，零模型、不写缓存",
+                        len(reused["chapters"]))
+            return {"outline": reused}
         await publish_phase(ctx, "依据读标结论编排投标文件提纲")
         # 选包时读标收窄到该包(spec324 优化):提纲只按该包的需求/评分/构成搭建,上下文大降。
         read_state = filter_read_by_package(state.get("read") or {}, state.get("run_input"))

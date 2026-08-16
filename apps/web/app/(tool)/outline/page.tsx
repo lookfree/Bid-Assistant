@@ -33,6 +33,7 @@ import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
 import { patchErrorMessage, patchStep } from "@/lib/project"
 import { clauseLocationIn, groupDocSections, type DocSentence } from "@/lib/doc-sections"
+import { outlineReuseCandidates, type OutlineReuseCandidate } from "@/lib/project"
 import { applyNumbering, buildOutlinePayload, chapterNo, deriveNumberMode, flattenItems, moveChapter, renumberItemsByPosition, type NumberMode } from "@/lib/outline-edit"
 import { ChapterItems } from "./chapter-items"
 import { OutlineItemDialog } from "./item-dialog"
@@ -95,6 +96,20 @@ export default function OutlinePage() {
   const router = useRouter()
   // 计费步绝不自动触发：该步未跑时停在显式生成入口，用户点击才跑
   const { projectId, info, data: real, dataLoading, running, phase, error, errorAction, start } = useStep<RealOutline>("outline")
+  // 可沿用的历史提纲（2026-08-16）：同一份招标文件、你自己的历史项目里改好的那版。
+  // 只在「还没生成且轮到提纲步」时拉——别的状态下这个入口没有意义，也不该多打一次请求。
+  const [reusable, setReusable] = useState<OutlineReuseCandidate[]>([])
+  const canReuse = !real && !running && info?.project.currentStep === "outline"
+  useEffect(() => {
+    if (!projectId || !canReuse) return
+    let alive = true
+    outlineReuseCandidates(projectId)
+      .then((items) => alive && setReusable(items))
+      .catch(() => alive && setReusable([]))   // 查不到就当没有，绝不因此挡住正常生成
+    return () => {
+      alive = false
+    }
+  }, [projectId, canReuse])
   const { overview } = useMembership()
   const outlineCost = creditCostValue(overview, "outline", 30)
 
@@ -527,13 +542,38 @@ export default function OutlinePage() {
                 /* 审查专用项目（spec328）没有提纲步:渲染引导而非计费 CTA（点了必 409） */
                 <StepPlaceholder text="本项目为「标书审查」专用,不含提纲/正文生成" action={{ href: "/risk", label: "前往标书审查" }} />
               ) : (
-                <StepRunCta
-                  title="生成投标文件大纲"
-                  desc="AI 基于读标结论搭建技术标/商务标提纲，生成后可自由增删改、逐条溯源"
-                  costText={`消耗 ${outlineCost} 积分`}
-                  actionLabel="生成投标文件大纲"
-                  onRun={() => void start()}
-                />
+                <div className="flex flex-col gap-3">
+                  {reusable.length > 0 && (
+                    <div className="rounded-xl border border-dashed border-brand/40 bg-brand/[0.03] p-4">
+                      <div className="text-sm font-semibold text-foreground">沿用已有提纲</div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        这份招标文件你之前做过。沿用历史项目的提纲（含你在那边的修改），不消耗积分；沿用后仍可继续增删改。
+                      </p>
+                      <div className="mt-3 flex flex-col gap-2">
+                        {reusable.map((c) => (
+                          <button
+                            key={c.projectId}
+                            type="button"
+                            className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2 text-left text-sm transition hover:border-brand"
+                            onClick={() => void start({ reuseFromProjectId: c.projectId })}
+                          >
+                            <span className="truncate">{c.name}</span>
+                            <span className="ml-3 shrink-0 text-xs text-muted-foreground">
+                              {c.chapterCount} 章 · {new Date(c.createdAt).toLocaleDateString()}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <StepRunCta
+                    title="生成投标文件大纲"
+                    desc="AI 基于读标结论搭建技术标/商务标提纲，生成后可自由增删改、逐条溯源"
+                    costText={`消耗 ${outlineCost} 积分`}
+                    actionLabel="生成投标文件大纲"
+                    onRun={() => void start()}
+                  />
+                </div>
               ))}
             <div className="flex flex-col gap-5">
               {(!real ? [] : groups).map((group) => (
