@@ -640,7 +640,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     const userId = c.get("user").id
     const p = await ownedProject(id, userId)
     if (!p) return c.json({ error: "not_found" }, 404)
-    return c.json({ items: await outlineReuseCandidates(p.id, userId, p.tenderFileKey ?? "") })
+    return c.json({ items: await outlineReuseCandidates(p.id, userId) })
   })
 
   // 克隆项目（spec324）：同一招标文件投另一个包=另建一个项目（不留在同项目内多包并行）。
@@ -856,7 +856,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     // 直接 400，不留残行、不扣分——绝不静默降级成"照常花钱生成一版"，那是用户没点的东西。
     let reuseOutline: Record<string, unknown> | null = null
     if (reuseFrom) {
-      reuseOutline = await reusableOutline(reuseFrom, p.id, userId, p.tenderFileKey ?? "")
+      reuseOutline = await reusableOutline(reuseFrom, p.id, userId)
       if (!reuseOutline) return c.json({ error: "outline_not_reusable" }, 400)
     }
 

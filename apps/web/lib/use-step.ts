@@ -325,7 +325,15 @@ export function useStep<T>(step: StepName) {
   // 失败文案与引导动作精确化：409 顺序错误 → 点名未完成的前序步并给入口；402 → 引导充值；
   // package_required → 引导回读标页选包
   const prereq = errorStatus === 409 ? stepPrereq(info, step) : null
-  const displayError = error && prereq ? `请先完成前序步骤：${prereq.label}` : error
+  // 沿用提纲失败（2026-08-16 评审 F6）：候选在这次点击前失效了（那个项目被删/换了包件/
+  // 换了招标文件）。通用「生成失败，请重试」是误导——重试同一个按钮必然再失败，
+  // 正确出路是改为正常生成。
+  const displayError =
+    errorCode === "outline_not_reusable"
+      ? "这份提纲已不能沿用（来源项目可能已删除或换了招标文件/包件），请直接生成新提纲"
+      : error && prereq
+        ? `请先完成前序步骤：${prereq.label}`
+        : error
   const errorAction: { href: string; label: string } | null =
     errorStatus === 402
       ? { href: "/membership", label: "去充值" }

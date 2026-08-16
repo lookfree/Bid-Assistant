@@ -411,6 +411,16 @@ def make_outline_node(ctx):
         reused = state.get("outline") or {}
         if (state.get("run_input") or {}).get("reuse_outline") and reused.get("chapters"):
             await publish_phase(ctx, "沿用既有提纲")
+            # 构成引用必须重映射到**本轮读标**（评审 2026-08-16 F2）：沿用的提纲来自另一次
+            # 读标，structure_ref 是那一轮读标模型自拟的 id、跨轮不稳——不映射就会让模板
+            # 投递按错 ref 把别的表单原文发给某章，再被复印机逐字钉死（2026-08-12 云上江西
+            # 模板错位同一条路径）。这是**跨轮 id 对齐**，不是内容改写：章名/小节/章序
+            # 一个字不动，用户的编辑仍然说了算。
+            structure_now = filter_read_by_package(
+                state.get("read") or {}, state.get("run_input")).get("required_structure") or []
+            ref_titles = {str(c.get("structure_ref")): str(c.get("title") or "")
+                          for c in reused["chapters"] if c.get("structure_ref")}
+            reused = _remap_structure_refs(reused, ref_titles, structure_now)
             logger.info("提纲沿用：调用方下发既有提纲 %d 章，零模型、不写缓存",
                         len(reused["chapters"]))
             return {"outline": reused}

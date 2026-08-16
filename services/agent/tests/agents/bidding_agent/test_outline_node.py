@@ -633,3 +633,30 @@ def test_reuse_flag_without_an_outline_falls_back_to_generating(submit_gateway):
     out = asyncio.run(node({"read": {}, "run_input": {"reuse_outline": True}}))
     assert gw.chats, "没提纲可沿用时该照常生成"
     assert out["outline"]["chapters"]
+
+
+def test_reused_outline_remaps_structure_refs_to_this_read(submit_gateway, monkeypatch):
+    """评审 2026-08-16 F2：沿用的提纲来自**另一次读标**，其 structure_ref 是那一轮读标模型
+    自拟的 id（跨轮不稳，_remap_structure_refs 的文档串写明它正是为跨项目复用而生）。
+    不重映射 → 模板投递按错 ref 把别的表单原文发给某章，再被复印机逐字钉死
+    （2026-08-12 云上江西模板错位同一条路径）；偏离表判定同样按错 ref 走。"""
+    import agent.agents.bidding_agent.nodes.outline as om
+    monkeypatch.setattr(om, "_read_file_bytes", lambda key: b"TENDER")
+    reused = {"chapters": [
+        {"id": "b1", "no": "第一章", "title": "报价一览表", "group": "business", "sourced": True,
+         "structure_ref": "s-old", "items": [{"id": "b1-1", "label": "一、报价一览表"}]},
+        {"id": "t1", "no": "第二章", "title": "技术方案", "group": "tech", "sourced": True,
+         "structure_ref": "s-gone", "items": [{"id": "t1-1", "label": "一、总体"}]}]}
+    gw = submit_gateway({})
+    node = make_outline_node(RunContext(run_id="r", agent_type="bidding_agent",
+                                        thread_id="t", gateway=gw, redis=_FakeRedis()))
+    out = asyncio.run(node({
+        "files": [{"key": "k"}], "outline": reused, "run_input": {"reuse_outline": True},
+        "read": {"required_structure": [
+            {"id": "s-new", "title": "报价一览表", "kind": "form", "required": True}]}}))
+    refs = {c["id"]: c.get("structure_ref") for c in out["outline"]["chapters"]}
+    assert refs["b1"] == "s-new", "沿用的构成引用没重映射到本轮读标——模板会按错 ref 投递"
+    assert refs.get("t1") is None, "映射不上的旧引用必须删掉（标题兜底），留着就是错引用"
+    assert not gw.chats
+    # 用户的编辑（章名/小节）仍一字不动
+    assert [c["title"] for c in out["outline"]["chapters"]] == ["报价一览表", "技术方案"]
