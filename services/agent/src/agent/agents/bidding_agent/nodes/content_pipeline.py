@@ -49,7 +49,9 @@ logger = logging.getLogger(__name__)
 # p10：填空引擎行头组合+营业执照号别名——填空结果进缓存，不升版同代重跑端回旧留白。
 # p11：表单章模型彻底退场（模板零模型渲染+同值填空）——缓存里的模型稿(自加编号/编造节)
 # 必须整体作废，线上稿从此与导出复印机同构。
-_PROMPT_VER = "p11"
+# p12：短章扩写改多轮+逐节配额——**扩写终稿就是进缓存的那份**，不升版的话 content 步
+# 重试（同一 generation）会把旧的短章原样端回来，修复等于没做（与 p4/p5/p7/p8/p9/p10 同坑）。
+_PROMPT_VER = "p12"
 _CACHE_TTL_S = 24 * 3600
 # 产出下限：短于此视为残章，重试一次；两次都残按缺章记，交给前端「补齐」按钮（免费）。
 _MIN_CHAPTER_CHARS = 120
@@ -380,6 +382,17 @@ async def _attempt(ctx, chat, msgs: list, sem: asyncio.Semaphore, progress: _Pro
             progress.in_flight -= 1
 
 
+def _top_section_count(html: str) -> int:
+    """顶级小节数。扩写是**整章替换**：一轮里少了一个小节就是丢内容，而只看总字数
+    看不出来（补别处、丢一节，总长还可能变大）——下一轮的配额表还会照着残稿说
+    「已达标的保持原样」，把丢掉的那节永久锁死（评审 2026-08-16 F5）。"""
+    from bs4 import BeautifulSoup
+
+    heads = BeautifulSoup(html or "", "html.parser").find_all(re.compile(r"^h[1-6]$"))
+    top = min((int(h.name[1]) for h in heads), default=0)
+    return sum(1 for h in heads if int(h.name[1]) == top)
+
+
 def _section_quota_hint(html: str, budget: int) -> str:
     """按顶层小节列出「现字数 → 应达字数」（2026-08-16 实测：整章级的「再多写 4000 字」
     模型会原样退回，逐节配额才动得起来）。无小节（整章一段）时返回空串，走整章口径。"""
@@ -389,19 +402,22 @@ def _section_quota_hint(html: str, budget: int) -> str:
 
     soup = BeautifulSoup(html or "", "html.parser")
     heads = soup.find_all(re.compile(r"^h[1-6]$"))
-    if len(heads) < 2:
-        return ""
-    top = min(int(h.name[1]) for h in heads)
+    top = min((int(h.name[1]) for h in heads), default=0)
     tops = [h for h in heads if int(h.name[1]) == top]
-    quota = max(300, budget // len(tops))
+    if len(tops) < 2:
+        return ""            # 只有一个顶级小节 → 配额表就是整章要求换个说法，白烧一轮
+    # 配额按预算均分，**不设下限**：12 个小节 × 300 字下限 = 3600 字，会超过 1800 字的
+    # 本章预算，等于同一条消息里前后自相矛盾（评审 2026-08-16）。
+    quota = max(1, budget // len(tops))
     rows = []
     for i, h in enumerate(tops):
         stop = tops[i + 1] if i + 1 < len(tops) else None
+        own = set(map(id, h.descendants))    # 标题自身的文字不算进小节正文（评审 F6）
         chunk = []
         for el in h.next_elements:
             if el is stop:
                 break
-            if isinstance(el, str):
+            if isinstance(el, str) and id(el) not in own:
                 chunk.append(el)
         cur = _visible_len("".join(chunk))
         rows.append(f"  · {h.get_text(strip=True)[:40]}：现约 {cur} 字 → 至少写到 {quota} 字")
@@ -411,14 +427,15 @@ def _section_quota_hint(html: str, budget: int) -> str:
 
 async def _expand_short(ctx, chat, system_prompt: str, ch: dict, user: str, html: str,
                         budget: int, sem: asyncio.Semaphore, progress: _Progress) -> str:
-    """短章补写兜底：首稿明显短于本章预算时，追**一轮**扩写并返回终稿。
+    """短章补写兜底：首稿明显短于本章预算时，**多轮**扩写（上限 _EXPAND_MAX_ROUNDS）到达标为止。
 
     把当前稿连同"现 X 字 / 目标 N 字"发回模型，要求保持既有结构与事实、只补实质内容，
     输出**完整替换稿**（而不是增量片段——增量还得代码去缝，缝错就是断章）。
 
     铁律是不丢内容：扩写失败、清洗炸、产出仍不长于首稿，一律回落首稿；扩写稿被长度上限
-    截断则**整份弃用**（截断的替换稿会把本章尾部整段吃掉，比短更糟）。每章至多一次
-    （调用点在 fresh 章收稿处，缓存命中章根本不到这里），失败只 warning 不抛——与
+    截断则**整份弃用**（截断的替换稿会把本章尾部整段吃掉，比短更糟）；丢小节的轮次同样弃用。
+    第二轮起改发逐节配额——整章级的「再多写 N 字」模型会原样退回（2026-08-16 实测 +16 字）。
+    调用点在 fresh 章收稿处（缓存命中章根本不到这里），失败只 warning 不抛——与
     `_retry_missing` 同风格，兜底绝不反过来打断已经写成的一章。"""
     from agent.agents.bidding_agent.nodes.content import _visible_len
     from agent.agents.bidding_agent.render.sanitize import (
@@ -455,9 +472,12 @@ async def _expand_short(ctx, chat, system_prompt: str, ch: dict, user: str, html
             logger.exception("章 %s 扩写稿清洗失败，保留现稿", cid)
             return html
         gained = _visible_len(grown) - cur
-        if "<" not in grown or gained <= 0:
-            logger.warning("章 %s 第 %d 轮扩写不长于现稿（%d → %d 字），取较长者",
-                           cid, rnd, cur, _visible_len(grown))
+        lost = _top_section_count(grown) < _top_section_count(html)
+        if "<" not in grown or gained <= 0 or lost:
+            logger.warning("章 %s 第 %d 轮扩写弃用（%d → %d 字%s）",
+                           cid, rnd, cur, _visible_len(grown), "，小节数减少" if lost else "")
+            if rnd == 1:
+                continue      # 原样退回/走样正是最该升级成逐节配额的形态（评审 F1）
             return html
         html, cur = grown, _visible_len(grown)
         logger.info("章 %s 第 %d 轮扩写完成：+%d → %d 字（目标 %d）", cid, rnd, gained, cur, budget)
@@ -558,7 +578,7 @@ def _dev_table_like(ch: dict, state: dict) -> bool:
 
 async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, shared: dict,
                      sem: asyncio.Semaphore, progress: _Progress, generation: int) -> tuple[str, str]:
-    """写一章：断点命中直接用；否则限流下调模型，产出清洗后（必要时追一轮扩写）落缓存。
+    """写一章：断点命中直接用；否则限流下调模型，产出清洗后（必要时多轮扩写补足）落缓存。
     残章/截断稿重试一次（截断稿绝不入库——半章缓存 24h 等于把残稿钉死,评审 2026-08-08）；
     两次失败 → 记缺章。简报构造/清洗抛错只废本章,绝不连累其他 19 章（gather 无隔离,评审）。"""
     cid = ch.get("id") or ""
@@ -614,7 +634,7 @@ async def _write_one(ctx, chat, system_prompt: str, state: dict, ch: dict, share
     if len(html) < min_chars or "<" not in html:
         logger.error("章 %s 两次尝试仍无有效产出，记为缺章", cid)
         return cid, ""
-    # 短章补写兜底：在**收稿处、落缓存之前**——缓存里必须是扩写后的终稿，否则下次续跑命中
+    # 短章补写兜底（多轮）：在**收稿处、落缓存之前**——缓存里必须是扩写后的终稿，否则下次续跑命中
     # 缓存就再也扩不动了。证照插图等下游 post-pass 在 run_content_pipeline 里跑，照常作用于终稿。
     # 撞过长度上限的章跳过：刚让它"压缩篇幅、确保完整收尾"，转头再让它扩写自相矛盾，而扩写是
     # 整章替换，再撞一次上限等于拿半章换成稿——不丢内容优先（评审裁量 2026-08-09）。

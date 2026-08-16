@@ -4,13 +4,15 @@
   · ÷1.4 的超写校准是**旧引擎旧提示词**的产物，新流水线提示词已写死「上限 +10%」，
     超写不复存在——校准回归 1.0（`test_content_helpers.py` 里的预算口径断言同步改）；
   · 【篇幅】行只有上限没有下限，配上「宁可略欠」，写手实测 produced/work=0.675。
-    改成双边带 + 短章写完追一轮扩写兜底。
+    改成双边带 + 短章写完多轮扩写兜底（2026-08-16 起：上限三轮，第二轮起发逐节配额）。
 
 扩写的铁律是**不丢内容**：失败/被截断/仍偏短，一律取两稿中较长者，绝不因为追了一轮
 反而交付得更少。
 
 助手（_FakeChat/_FakeRedis/_run/…）复用 test_content_pipeline 的那套，不抄第二份。
 """
+import re
+
 from langchain_core.messages import AIMessage
 
 from agent.agents.bidding_agent.nodes.content import _visible_len
@@ -83,11 +85,13 @@ class TestShortChapterExpansion:
         assert cached and _visible_len(cached[0]) == 19004, "缓存里存的是首稿——续跑还得再扩一次"
 
     def test_expansion_that_stays_short_never_shrinks_the_chapter(self, monkeypatch):
-        """扩写稿仍偏短 → 取两稿中较长者（这里是首稿）。追一轮绝不能让本章变得更少。"""
+        """扩写稿仍偏短 → 取两稿中较长者（这里是首稿）。扩写绝不能让本章变得更少。
+        调用数 3 = 首稿 + 被弃用的第一轮 + 升级后的配额轮（2026-08-16 起：第一轮
+        原样退回/走样正是最该换成逐节配额的形态，弃用后要再试一次而不是当场收手）。"""
         chat = _ExpandChat(first=10000, second=5000)
         out = _run(_state_with_target(), chat, monkeypatch=monkeypatch)
-        assert chat.calls == 2
-        assert _visible_len(out["t1"]) == 10004, "扩写稿更短却被采用了——追一轮反而丢内容"
+        assert chat.calls == 3
+        assert _visible_len(out["t1"]) == 10004, "扩写稿更短却被采用了——扩写反而丢内容"
 
     def test_expansion_failure_keeps_the_first_draft(self, monkeypatch):
         """扩写调用抛错只 warning，本章照常按首稿交付（与 _retry_missing 同风格，失败不抛）。"""
@@ -187,3 +191,55 @@ class TestMultiRoundExpansion:
         rounds = [u for u in chat.seen if _EXPAND_MARK in u]
         assert len(rounds) >= 2
         assert "每个小节" in rounds[1] or "逐节" in rounds[1], "第二轮没给逐节配额，还是整章级指令"
+
+
+class TestExpansionReviewFixes0816:
+    """评审 2026-08-16 对多轮扩写的七条。每条都对应一个会静默吃掉修复效果的形态。"""
+
+    def test_verbatim_echo_still_escalates_to_quota_round(self, monkeypatch):
+        """F1：模型**原样退回**（涨 0 字）正是这次要治的形态，却因 `gained<=0` 立刻收手，
+        永远到不了逐节配额轮——+16 字能继续、+0 反而停，自相矛盾。"""
+        chat = _GrowChat(first=4000, seq=[4000, 15000, 19000])   # 第一轮原样退回
+        out = _run(_state_with_target(target=20000), chat, monkeypatch=monkeypatch)
+        assert chat.expand_rounds >= 2, "原样退回后没有升级到配额轮"
+        rounds = [u for u in chat.seen if _EXPAND_MARK in u]
+        assert "每个小节" in rounds[1]
+        from agent.agents.bidding_agent.nodes.content import _visible_len
+        assert _visible_len(out["t1"]) >= 15000, "配额轮的成果没被采纳"
+
+    def test_prompt_ver_bumped_for_expanded_drafts(self):
+        """F2：扩写终稿就是进 24h 章缓存的那份；不升版 = content 步重试端回旧短章
+        （p4/p5/p7/p8/p9/p10 同坑第六次）。"""
+        from agent.agents.bidding_agent.nodes.content_pipeline import _PROMPT_VER
+        assert _PROMPT_VER >= "p12"
+
+    def test_quota_never_exceeds_the_chapter_budget(self):
+        """F3：12 个小节 × 300 字下限 = 3600 字 > 1800 字预算，同一条消息前后打架。"""
+        from agent.agents.bidding_agent.nodes.content_pipeline import _section_quota_hint
+        html = "".join(f"<h3>节{i}</h3><p>甲甲甲</p>" for i in range(12))
+        hint = _section_quota_hint(html, 1800)
+        quotas = [int(x) for x in re.findall(r"至少写到 (\d+) 字", hint)]
+        assert quotas and sum(quotas) <= 1800 * 1.1, f"配额合计 {sum(quotas)} 超预算"
+
+    def test_single_top_section_gets_no_quota_table(self):
+        """F4：一个 h3 带若干 h4 子节时 tops 只有一个——配额表就是整章要求换个说法，
+        白烧两轮重复一条已知无效的指令。"""
+        from agent.agents.bidding_agent.nodes.content_pipeline import _section_quota_hint
+        html = "<h3>一、总体方案</h3><p>甲甲</p><h4>1. 子节</h4><p>乙乙</p><h4>2. 子节</h4><p>丙丙</p>"
+        assert _section_quota_hint(html, 5000) == ""
+
+    def test_round_that_drops_a_section_is_rejected(self):
+        """F5：只看总字数 → 补别处、丢一节的稿照样被采纳，下一轮配额表还照着残稿说
+        「已达标的保持原样」，把丢掉的那节永久锁死。"""
+        from agent.agents.bidding_agent.nodes.content_pipeline import _top_section_count
+        full = "<h3>一</h3><p>甲</p><h3>二</h3><p>乙</p><h3>三</h3><p>丙</p>"
+        degraded = "<h3>一</h3><p>甲甲甲甲</p><h3>二</h3><p>乙乙乙乙</p>"
+        assert _top_section_count(degraded) < _top_section_count(full)
+
+    def test_section_word_count_excludes_the_heading_text(self):
+        """F6：标题自身文字被算进小节字数，与同一条消息里的整章字数对不上账。"""
+        from agent.agents.bidding_agent.nodes.content_pipeline import _section_quota_hint
+        html = "<h3>一、非常长的小节标题占位文字</h3><p>甲甲甲</p><h3>二、节</h3><p>乙乙乙</p>"
+        hint = _section_quota_hint(html, 6000)
+        cur = [int(x) for x in re.findall(r"现约 (\d+) 字", hint)]
+        assert cur == [3, 3], f"标题文字被算进了小节正文: {cur}"
