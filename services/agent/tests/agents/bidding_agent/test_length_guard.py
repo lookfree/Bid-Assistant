@@ -135,3 +135,55 @@ def test_no_target_chars_leaves_everything_exactly_as_before(monkeypatch):
     out = _run(_state(3), chat, monkeypatch=monkeypatch)
     assert chat.calls == 3 and len(out) == 3
     assert all("【篇幅】" not in u and _EXPAND_MARK not in u for _, u in chat.seen)
+
+
+class _GrowChat:
+    """按轮次给不同长度的稿：seq[i] 是第 i 轮扩写稿的可见字数（首稿用 first）。
+    稿子做成**三个小节**——真实章节都是多节，单节稿走不到逐节配额那条路。"""
+
+    def __init__(self, first: int, seq: list[int]):
+        self.first, self.seq = first, seq
+        self.expand_rounds = 0
+        self.seen: list[str] = []
+
+    @staticmethod
+    def _draft(total: int, fill: str) -> str:
+        per = total // 3
+        return "".join(f"<h3>{t}</h3><p>{fill * per}</p>"
+                       for t in ("一、项目理解", "二、技术方案", "三、实施计划"))
+
+    async def ainvoke(self, msgs, config=None):
+        user = msgs[-1].content
+        self.seen.append(user)
+        if _EXPAND_MARK in user:
+            n = self.seq[min(self.expand_rounds, len(self.seq) - 1)]
+            self.expand_rounds += 1
+            return AIMessage(content=self._draft(n, "乙"))
+        return AIMessage(content=self._draft(self.first, "甲"))
+
+
+class TestMultiRoundExpansion:
+    """2026-08-16 生产实测（4.1 万目标只出 2.4 万）：扩写**只跑一轮且不校验结果**——
+    t2/t4/t6 扩写后到 90%+，t3 只涨 16 字、t5 涨 287、b6 涨 201，三章停在 33%~62%
+    就没人再管了。扩写必须多轮直到达标；模型吐不动了才收手。"""
+
+    def test_expansion_keeps_going_until_the_floor_is_met(self, monkeypatch):
+        chat = _GrowChat(first=4000, seq=[8000, 12000, 19000])
+        out = _run(_state_with_target(target=20000), chat, monkeypatch=monkeypatch)
+        assert chat.expand_rounds >= 3, f"扩写只跑了 {chat.expand_rounds} 轮就收工"
+        from agent.agents.bidding_agent.nodes.content import _visible_len
+        assert _visible_len(out["t1"]) >= 20000 * 0.9, "多轮扩写后仍未达标"
+
+    def test_expansion_stops_when_the_model_stops_growing(self, monkeypatch):
+        """t3 形态：模型原样退回（+16 字）。再烧同样的轮次纯属浪费——涨不动就收手。"""
+        chat = _GrowChat(first=4000, seq=[4016, 4020, 4022, 4024])
+        _run(_state_with_target(target=20000), chat, monkeypatch=monkeypatch)
+        assert chat.expand_rounds <= 2, f"模型已经吐不动了还跑了 {chat.expand_rounds} 轮"
+
+    def test_second_round_gives_per_section_quotas(self, monkeypatch):
+        """「整章再多写 4000 字」模型会原样退回；「这几个小节各自至少写到 N 字」才动得起来。"""
+        chat = _GrowChat(first=4000, seq=[4100, 12000, 19000])
+        _run(_state_with_target(target=20000), chat, monkeypatch=monkeypatch)
+        rounds = [u for u in chat.seen if _EXPAND_MARK in u]
+        assert len(rounds) >= 2
+        assert "每个小节" in rounds[1] or "逐节" in rounds[1], "第二轮没给逐节配额，还是整章级指令"

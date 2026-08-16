@@ -88,6 +88,13 @@ _EXPAND_FLOOR = 0.8
 # 预算 <1500 字的小章不触发：几百字的章本来就该"写完即止"（表单/承诺函多在此列），
 # 相对偏差又大，来回抖一轮纯烧钱。
 _EXPAND_MIN_BUDGET = 1500
+# 扩写轮数上限（2026-08-16 生产实测：4.1 万目标只出 2.4 万——单轮扩写对一半的章有效
+# （t2/t4/t6 到 90%+），对另一半几乎无效（t3 只涨 16 字、t5 涨 287、b6 涨 201），
+# 而**没有第二轮**，三章停在 33%~62% 就交付了）。
+_EXPAND_MAX_ROUNDS = 3
+# 单轮涨幅低于此＝模型吐不动了。**只在逐节配额轮之后**据此收手——整章级指令涨不动的
+# 那一批正是最该换成逐节配额的（t3 +16 字），第一轮就刹住等于永远试不到配额轮。
+_EXPAND_MIN_GAIN = 300
 
 
 def _cache_key(ctx, generation: int, brief: str) -> str:
@@ -373,6 +380,35 @@ async def _attempt(ctx, chat, msgs: list, sem: asyncio.Semaphore, progress: _Pro
             progress.in_flight -= 1
 
 
+def _section_quota_hint(html: str, budget: int) -> str:
+    """按顶层小节列出「现字数 → 应达字数」（2026-08-16 实测：整章级的「再多写 4000 字」
+    模型会原样退回，逐节配额才动得起来）。无小节（整章一段）时返回空串，走整章口径。"""
+    from bs4 import BeautifulSoup
+
+    from agent.agents.bidding_agent.nodes.content import _visible_len
+
+    soup = BeautifulSoup(html or "", "html.parser")
+    heads = soup.find_all(re.compile(r"^h[1-6]$"))
+    if len(heads) < 2:
+        return ""
+    top = min(int(h.name[1]) for h in heads)
+    tops = [h for h in heads if int(h.name[1]) == top]
+    quota = max(300, budget // len(tops))
+    rows = []
+    for i, h in enumerate(tops):
+        stop = tops[i + 1] if i + 1 < len(tops) else None
+        chunk = []
+        for el in h.next_elements:
+            if el is stop:
+                break
+            if isinstance(el, str):
+                chunk.append(el)
+        cur = _visible_len("".join(chunk))
+        rows.append(f"  · {h.get_text(strip=True)[:40]}：现约 {cur} 字 → 至少写到 {quota} 字")
+    return ("\n**每个小节**的配额（整章级要求你已经照做过一轮但几乎没增长，改按小节逐个补足）：\n"
+            + "\n".join(rows) + "\n小节不足配额的必须补写；已达标的保持原样不要删改。")
+
+
 async def _expand_short(ctx, chat, system_prompt: str, ch: dict, user: str, html: str,
                         budget: int, sem: asyncio.Semaphore, progress: _Progress) -> str:
     """短章补写兜底：首稿明显短于本章预算时，追**一轮**扩写并返回终稿。
@@ -392,32 +428,49 @@ async def _expand_short(ctx, chat, system_prompt: str, ch: dict, user: str, html
     cur = _visible_len(html)
     if budget < _EXPAND_MIN_BUDGET or cur >= budget * _EXPAND_FLOOR:
         return html
-    logger.info("章 %s 首稿 %d 字 < 目标 %d 字的 %d%%，追一轮扩写", cid, cur, budget, _EXPAND_FLOOR * 100)
-    msgs = [SystemMessage(content=system_prompt), HumanMessage(content=(
-        f"{user}\n\n以下是本章已完成的初稿（现约 {cur} 字，本章目标约 {budget} 字，仍差 "
-        f"{budget - cur} 字）：\n{html}\n\n"
-        "请在**保持既有结构、标题层级与事实不变**的前提下扩写补足到目标字数（上限 +10%）："
-        "细化方案与技术路线、补充实施步骤与分工、质量与安全保障措施、具体参数/指标/数据与表格。"
-        "严禁堆套话、复读已写段落或注水凑字数。"
-        "输出**完整的本章正文 HTML 替换稿**（含初稿已有的全部内容），首字符必须是 '<'。"))]
-    try:
-        out = await _attempt(ctx, chat, msgs, sem, progress)
-    except Exception as e:  # noqa: BLE001 兜底失败保留首稿；永久性错误此刻已无意义（本章已成稿）
-        logger.warning("章 %s 扩写调用失败，保留首稿：%s", cid, str(e)[:200])
-        return html
-    if _finish_reason(out) == "length":
-        logger.warning("章 %s 扩写稿被长度上限截断，整份弃用（截断替换稿会吃掉本章尾部）", cid)
-        return html
-    try:
-        grown = clean_internal_ids(strip_document_shell(strip_chat_wrapper(_text_of(out))))
-    except Exception:  # noqa: BLE001 清洗炸 → 首稿照常交付
-        logger.exception("章 %s 扩写稿清洗失败，保留首稿", cid)
-        return html
-    if "<" not in grown or _visible_len(grown) <= cur:
-        logger.warning("章 %s 扩写稿不长于首稿（%d → %d 字），取较长者", cid, cur, _visible_len(grown))
-        return html
-    logger.info("章 %s 扩写完成：%d → %d 字（目标 %d）", cid, cur, _visible_len(grown), budget)
-    return grown
+    for rnd in range(1, _EXPAND_MAX_ROUNDS + 1):
+        logger.info("章 %s 第 %d 轮扩写：现 %d 字 < 目标 %d 字的 %d%%",
+                    cid, rnd, cur, budget, _EXPAND_FLOOR * 100)
+        # 第二轮起改发**逐节配额**：整章级指令模型已经照做过一轮却几乎没长
+        quota = _section_quota_hint(html, budget) if rnd > 1 else ""
+        msgs = [SystemMessage(content=system_prompt), HumanMessage(content=(
+            f"{user}\n\n以下是本章已完成的初稿（现约 {cur} 字，本章目标约 {budget} 字，仍差 "
+            f"{budget - cur} 字）：\n{html}\n\n"
+            "请在**保持既有结构、标题层级与事实不变**的前提下扩写补足到目标字数（上限 +10%）："
+            "细化方案与技术路线、补充实施步骤与分工、质量与安全保障措施、具体参数/指标/数据与表格。"
+            "严禁堆套话、复读已写段落或注水凑字数。"
+            f"{quota}"
+            "输出**完整的本章正文 HTML 替换稿**（含初稿已有的全部内容），首字符必须是 '<'。"))]
+        try:
+            out = await _attempt(ctx, chat, msgs, sem, progress)
+        except Exception as e:  # noqa: BLE001 兜底失败保留当前稿；本章已成稿，永久性错误此刻无意义
+            logger.warning("章 %s 扩写调用失败，保留现稿：%s", cid, str(e)[:200])
+            return html
+        if _finish_reason(out) == "length":
+            logger.warning("章 %s 扩写稿被长度上限截断，整份弃用（截断替换稿会吃掉本章尾部）", cid)
+            return html
+        try:
+            grown = clean_internal_ids(strip_document_shell(strip_chat_wrapper(_text_of(out))))
+        except Exception:  # noqa: BLE001 清洗炸 → 现稿照常交付
+            logger.exception("章 %s 扩写稿清洗失败，保留现稿", cid)
+            return html
+        gained = _visible_len(grown) - cur
+        if "<" not in grown or gained <= 0:
+            logger.warning("章 %s 第 %d 轮扩写不长于现稿（%d → %d 字），取较长者",
+                           cid, rnd, cur, _visible_len(grown))
+            return html
+        html, cur = grown, _visible_len(grown)
+        logger.info("章 %s 第 %d 轮扩写完成：+%d → %d 字（目标 %d）", cid, rnd, gained, cur, budget)
+        if cur >= budget * _EXPAND_FLOOR:
+            return html                       # 达标收工
+        if gained < _EXPAND_MIN_GAIN and rnd >= 2:
+            # 涨不动**先升级指令**（第二轮起带逐节配额）再收手：整章级涨不动的那一批
+            # （t3 +16 字）正是最需要换策略的，第一轮就刹住等于永远试不到配额轮。
+            logger.warning("章 %s 逐节配额轮涨幅仍仅 %d 字，模型已吐不动，停在 %d 字（目标 %d）",
+                           cid, gained, cur, budget)
+            return html
+    logger.warning("章 %s 扩写 %d 轮后仍 %d 字（目标 %d）", cid, _EXPAND_MAX_ROUNDS, cur, budget)
+    return html
 
 
 def _is_fill_chapter(ch: dict, shared: dict) -> bool:
