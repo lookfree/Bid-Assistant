@@ -334,7 +334,7 @@ def test_cache_key_carries_correction_revision():
     必须升缓存版本换键，让这类条目自然失效重生成。"""
     import agent.agents.bidding_agent.nodes.outline as om
     key = om._cache_key("d" * 24, {})
-    assert key.endswith(f":{om._OUTLINE_REV}") and om._OUTLINE_REV >= "r2"
+    assert key.endswith(f":{om._OUTLINE_REV}") and om._OUTLINE_REV >= "r3"
 
 
 def test_orphan_anchored_chapter_lands_at_its_group_tail():
