@@ -730,7 +730,10 @@ export default function OutlinePage() {
           保存成功/仍在防抖窗口这两种常态不弹窗——confirmAndGo 会先存好再跳。 */}
       {genConfigOpen && (
         <GenerationConfigDialog
-          chapterCount={groups.reduce((n, g) => n + g.chapters.length, 0) || 10}
+          // 章数取**全部**章（groupSeq），不是当前标签页那一半：它决定弹层推荐的目标字数，
+          // 而目标字数决定预扣档位与成书长度——按 12 章算会推荐 3.6 万字、实际 20 章要写
+          // 6 万字（评审 2026-08-17）。正文页那份用的就是全量。
+          chapterCount={groupSeq.reduce((n, g) => n + g.chapters.length, 0) || 10}
           projectId={projectId}
           info={info}
           costText={tiersCostText(tiers)}

@@ -31,3 +31,21 @@ export function costForChars(tiers: ContentTier[], chars: number): number | null
   const hit = sorted.find((t) => t.maxChars === null || chars <= t.maxChars)
   return hit ? hit.cost : null
 }
+
+/** 下一步按钮敢不敢**直接授权付费跑**（2026-08-17 用户口径「少让用户点一步」+ 评审 F2/F3）。
+ *  一个印着积分、点了就扣钱的按钮，只有在「确实能跑」且「价格确实算得出」时才该出现：
+ *  · 多包件未选包 → 服务端会 400 package_required，按钮承诺付费却把人丢进错误页；
+ *  · 计费口径没到手（overview 拉取失败且 useMembership 不重试）→ 写死的兜底价可能与
+ *    后台实配不符，那是展示价与实扣价不符（计费红线）。
+ *  两种情况都退回纯导航，让用户到下一页按常规流程走。 */
+export function canAutoStartOutline(o: {
+  kind?: string
+  outlineDone: boolean
+  packageCount: number
+  selectedPackageId: string | null
+  outlineCost: number | null
+}): boolean {
+  if (o.kind === "review" || o.outlineDone) return false
+  if (o.packageCount > 1 && !o.selectedPackageId) return false
+  return o.outlineCost != null
+}

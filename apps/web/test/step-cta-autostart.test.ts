@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 
-import { costForChars, tiersCostText, type ContentTier } from "../lib/content-tiers"
+import { canAutoStartOutline, costForChars, tiersCostText, type ContentTier } from "../lib/content-tiers"
 
 /* 「少让用户点一步」（2026-08-17 用户口径）：读标/提纲页的下一步按钮直接授权并自动开跑，
    费用写在按钮上。这里钉的是**按钮上那个数字**的正确性——展示价与实扣价不符是计费红线，
@@ -34,5 +34,27 @@ describe("按钮上的正文积分", () => {
 
   it("没有顶档且字数超出所有档 → null，同样不许编价", () => {
     expect(costForChars([{ maxChars: 10_000, cost: 30 }], 99_999)).toBeNull()
+  })
+})
+
+describe("下一步按钮何时才敢承诺付费", () => {
+  const base = { outlineDone: false, packageCount: 1, selectedPackageId: null, outlineCost: 30 }
+
+  it("常规单包件 + 口径已到手 → 直接授权", () => {
+    expect(canAutoStartOutline(base)).toBe(true)
+  })
+
+  it("多包件且未选包 → 不授权：否则按钮承诺付费，落地却是 400 package_required", () => {
+    expect(canAutoStartOutline({ ...base, packageCount: 3 })).toBe(false)
+    expect(canAutoStartOutline({ ...base, packageCount: 3, selectedPackageId: "p2" })).toBe(true)
+  })
+
+  it("计费口径没到手（overview 拉取失败且不重试）→ 不授权、不写数字", () => {
+    expect(canAutoStartOutline({ ...base, outlineCost: null })).toBe(false)
+  })
+
+  it("已生成过 / 审查专用项目 → 纯导航", () => {
+    expect(canAutoStartOutline({ ...base, outlineDone: true })).toBe(false)
+    expect(canAutoStartOutline({ ...base, kind: "review" })).toBe(false)
   })
 })

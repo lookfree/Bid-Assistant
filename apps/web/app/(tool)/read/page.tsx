@@ -26,6 +26,7 @@ import { PackageSelector } from "@/components/tool/package-selector"
 import { stepNotApplicable, useStep } from "@/lib/use-step"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
+import { canAutoStartOutline } from "@/lib/content-tiers"
 import { clauseLocationIn, groupDocSections, type DocHeading, type DocSentence } from "@/lib/doc-sections"
 import { locateParamOf, pickLocateTarget } from "@/lib/tender-locate"
 import { cloneProject, exportPreview, phaseProgress, setProjectPackage, triggerDownload } from "@/lib/project"
@@ -100,7 +101,10 @@ export default function ReadPage() {
   const readCost = creditCostValue(overview, "read", 20)
   // 下一步按钮要**在按钮上写清费用**并直接授权（2026-08-17 用户口径：少让用户点一步）——
   // 费用不标就变成"点了才知道要扣钱"，那是计费红线里明令禁止的。
-  const outlineCost = creditCostValue(overview, "outline", 30)
+  // 但**口径没到手就不许写数字**（评审 2026-08-17 F3）：creditCostValue 的兜底 30 只适合
+  // 出现在说明文字里；印在一个「点了就扣钱」的按钮上，后台配成 50 时就是明晃晃的错价。
+  // useMembership 拉取失败后不重试，所以这里必须按「未确认态」处理：退回纯导航。
+  const outlineCost = overview ? creditCostValue(overview, "outline", 30) : null
   // 唯一允许的自动触发：从上传页「开始智能读标」跳转（URL 带 ?autostart=1，那一下点击即计费授权，
   // 费用已在上传按钮标注）。one-shot ref 保证只跑一次；其余场景一律走页面主按钮显式点击。
   const autoStarted = useRef(false)
@@ -185,6 +189,18 @@ export default function ReadPage() {
   // 可再投的包 = 全部包 − 兄弟项目已生成的包 − 本项目已生成的包（提纲已开跑即锁定占用）
   const outlineStarted = !!info?.steps.some((s) => s.step === "outline")
   const takenPackageIds = info?.takenPackageIds ?? []
+  // 多包件招标必须先选包：不选就跑提纲会被服务端 400 package_required 挡回来（不扣分，
+  // 但一个承诺付费的按钮把人直接丢进错误页，比多点一下糟）（评审 2026-08-17 F2）。
+  const needsPackage = packages.length > 1 && !selectedPackageId
+  // 直接授权跑提纲的前提（判据在 lib/content-tiers，与测试同源）：没生成过、不缺包件、
+  // 费用口径已到手（能写出准确数字）。
+  const canAutoOutline = canAutoStartOutline({
+    kind: info?.project.kind,
+    outlineDone,
+    packageCount: packages.length,
+    selectedPackageId,
+    outlineCost,
+  })
   const cloneCandidates = packages.filter(
     (pkg) => !takenPackageIds.includes(pkg.id) && !(outlineStarted && pkg.id === selectedPackageId),
   )
@@ -784,9 +800,9 @@ export default function ReadPage() {
         href={
           info?.project.kind === "review"
             ? "/risk"
-            : outlineDone
-              ? "/outline"
-              : "/outline?autostart=1"
+            : canAutoOutline
+              ? "/outline?autostart=1"
+              : "/outline"
         }
         className="fixed bottom-6 right-6 z-40 inline-flex items-center gap-2 rounded-full gradient-brand px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-primary/30 transition-opacity hover:opacity-90"
       >
@@ -795,7 +811,11 @@ export default function ReadPage() {
           ? "已知悉，去标书审查"
           : outlineDone
             ? "已知悉，去看投标文件大纲"
-            : `已知悉，生成投标文件大纲（${outlineCost} 积分）`}
+            : canAutoOutline
+              ? `已知悉，生成投标文件大纲（${outlineCost} 积分）`
+              : needsPackage
+                ? "请先选择投标包件"
+                : "已知悉，去生成投标文件大纲"}
         <ArrowRight className="size-4" />
       </Link>
       )}
