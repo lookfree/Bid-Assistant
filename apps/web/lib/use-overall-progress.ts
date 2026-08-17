@@ -4,14 +4,19 @@ import { useEffect, useRef, useState } from "react"
 
 import { overallPct, stepEta, type StepName, type StepPhase } from "./project"
 
+/** 一段进度：本阶段在整步里的百分比区间 + 段内真实完成度（没有就 null，交给时间插值）。 */
+type Seg = { base: number; ceil: number; exact: number | null }
+
 /** 整步进度（2026-08-17 用户口径：100% 是整个任务的，并要给出预估总时间）。
  *
- *  三条不可破的性质，逐条都是「假进度条」最招骂的地方：
- *  ① **单调不回退**：阶段切换、事件回放、重连都可能让原始数字倒退，一律取历史最大值；
+ *  四条不可破的性质，逐条都是「假进度条」最招骂的地方（评审 2026-08-17 逐条钉过）：
+ *  ① **单调不回退**：阶段切换、事件回放、断线重连都可能让原始数字倒退，一律取历史最大值；
  *  ② **时间驱动的部分永不自行走满**：没有真实分母的阶段按预估时间在自己的区间内插值，
- *     封顶在区间末 −1；100% 只由真正的完成（running 结束）来给；
- *  ③ **估不准就别硬撑**：跑过预估时间还没结束，条停在当前值不动，文案改成「即将完成」，
- *     绝不倒着走，也不假装还剩几秒。
+ *     封顶区间末 −1；整条最高 99%，100% 只由 running 结束来给；
+ *  ③ **段内 done=0 也要动**：真实分母只决定「至少到哪」，时间插值可以在它之上继续推进
+ *     ——否则解析阶段（done=0/total=N）会把条钉在段起点几分钟不动；
+ *  ④ **心跳不许清空区间**：模型流心跳每几秒发一条无区间的 phase，若让它覆盖，
+ *     插值失去区间依据，整条卡死在起点。区间按「最后一次带区间的事件」记住。
  */
 export function useOverallProgress(
   projectId: string | null,
@@ -20,30 +25,36 @@ export function useOverallProgress(
   phase: StepPhase | null,
   chapter?: { done: number; total: number; from?: number; to?: number } | null,
   targetChars?: number,
+  /** 本步真实开始时刻（毫秒）。刷新/切回页面时必须传，否则按挂载时刻算，
+   *  会告诉一个已经跑了 25 分钟的 run「还需 27 分钟」（评审 F6）。 */
+  startedAtMs?: number | null,
 ) {
-  const [etaSeconds, setEtaSeconds] = useState<number | null>(null)
+  const [eta, setEta] = useState<number | null>(null)
+  const [etaLoaded, setEtaLoaded] = useState(false)
   const [pct, setPct] = useState(0)
-  const startedAt = useRef<number | null>(null)
+  const fallbackStart = useRef<number | null>(null)
+  const lastSeg = useRef<Seg | null>(null)
   const maxPct = useRef(0)
 
-  // 预估总时长：本步开跑时取一次。取不到就没有 ETA（进度条仍按真实分母画，只是不显示剩余时间）。
   useEffect(() => {
     if (!projectId || !running) return
     let alive = true
+    setEtaLoaded(false)
     stepEta(projectId, step, targetChars)
-      .then((e) => alive && setEtaSeconds(e.seconds))
-      .catch(() => alive && setEtaSeconds(null))
+      .then((e) => alive && setEta(e.seconds))
+      .catch(() => alive && setEta(null))
+      .finally(() => alive && setEtaLoaded(true))
     return () => {
       alive = false
     }
   }, [projectId, step, running, targetChars])
 
-  // 本步一开跑就记起点；跑完清零，下一次运行重新计时（不清的话第二次跑会瞬间"超时"）。
   useEffect(() => {
     if (running) {
-      if (startedAt.current == null) startedAt.current = Date.now()
+      if (fallbackStart.current == null) fallbackStart.current = Date.now()
     } else {
-      startedAt.current = null
+      fallbackStart.current = null
+      lastSeg.current = null
       maxPct.current = 0
       setPct(0)
     }
@@ -52,36 +63,44 @@ export function useOverallProgress(
   useEffect(() => {
     if (!running) return
     const tick = () => {
-      const span = overallPct(phase)
-      // 逐章事件自带整步区间：章级 done/total 是真实分母，优先级最高
-      const chapterPct =
+      // 章级事件自带区间且有真实分母；phase 区间只在**带区间**时更新（心跳不清空，性质④）
+      const chapSeg: Seg | null =
         chapter && chapter.total > 0 && chapter.from != null && chapter.to != null
-          ? chapter.from + (chapter.to - chapter.from) * Math.min(1, chapter.done / chapter.total)
+          ? {
+              base: chapter.from,
+              ceil: chapter.to,
+              exact: chapter.from + (chapter.to - chapter.from) * Math.min(1, chapter.done / chapter.total),
+            }
           : null
-      let next = maxPct.current
-      if (chapterPct != null) next = Math.max(next, chapterPct)
-      else if (span?.exact != null) next = Math.max(next, span.exact)
-      else if (span) {
-        // 无真实分母：按预估时间在本阶段区间内插值，封顶区间末 −1（绝不替下一阶段宣布开始）
-        const elapsed = startedAt.current ? (Date.now() - startedAt.current) / 1000 : 0
-        const total = etaSeconds ?? 300
-        const ratio = Math.max(0, Math.min(1, elapsed / total))
-        next = Math.max(next, Math.min(span.ceil - 1, span.base + (span.ceil - span.base) * ratio))
+      const phaseSeg = overallPct(phase)
+      if (phaseSeg) lastSeg.current = phaseSeg
+      // 当前段 = 起点更靠后的那个：收尾段(92-100)一到，就不再听已经跑完的章级事件（性质②/评审 F4）
+      const cur =
+        chapSeg && (!lastSeg.current || chapSeg.base >= lastSeg.current.base) ? chapSeg : lastSeg.current
+      if (cur) {
+        const start = startedAtMs ?? fallbackStart.current ?? Date.now()
+        const elapsed = (Date.now() - start) / 1000
+        const ratio = Math.max(0, Math.min(1, elapsed / (eta ?? 300)))
+        // 真实分母给下限，时间插值在其上继续推进，封顶区间末 −1（性质③）
+        const timed = Math.min(cur.ceil - 1, cur.base + (cur.ceil - cur.base) * ratio)
+        maxPct.current = Math.min(99, Math.max(maxPct.current, cur.exact ?? cur.base, timed))
+        setPct(Math.round(maxPct.current))
       }
-      maxPct.current = Math.min(99, next) // 100% 只由 running 结束来给
-      setPct(Math.round(maxPct.current))
     }
     tick()
     const t = setInterval(tick, 1000)
     return () => clearInterval(t)
-  }, [running, phase, chapter, etaSeconds])
+  }, [running, phase, chapter, eta, startedAtMs])
 
-  const elapsed = startedAt.current ? Math.floor((Date.now() - startedAt.current) / 1000) : 0
-  const remain = etaSeconds != null ? etaSeconds - elapsed : null
+  const start = startedAtMs ?? fallbackStart.current
+  const elapsed = start ? Math.floor((Date.now() - start) / 1000) : 0
+  const remain = eta != null ? eta - elapsed : null
   return {
     pct: running ? pct : 0,
-    etaSeconds,
-    /** 「预计还需 X 分钟」；跑过预估时间后给 null，由调用方显示「即将完成」而不是负数 */
+    etaSeconds: eta,
+    /** ETA 是否已经问过服务端（不管成没成）。没问到之前不许说「即将完成」（评审 F5）。 */
+    etaLoaded,
+    /** 「预计还需 X 秒」；null=估不准或已超出预估，由调用方决定怎么说 */
     remainSeconds: remain != null && remain > 0 ? remain : null,
   }
 }

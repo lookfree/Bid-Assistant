@@ -32,6 +32,10 @@ const FALLBACK_SECONDS: Record<string, number> = {
 /** 中位数取样条数：太少会被一两次异常轮（端点抖动重试）带偏，太多又反映不了近期表现。 */
 const SAMPLE_LIMIT = 20
 const MIN_SAMPLES = 3
+/** 低于此秒数的行不算「跑过一次」：提纲沿用是零模型秒回、却同样记一条 done 的 outline 步
+ *  （评审 2026-08-17）——它们一多就把中位数拉到地板，用户看到「预计 30 秒」然后等 5 分钟。
+ *  缓存命中的读标/提纲同理。真生成没有 20 秒能跑完的。 */
+const MIN_REAL_SECONDS = 20
 
 /** 规模基准：以此为 1.0 倍。招标文件 1MB / 正文目标 4 万字 = 我们实测里的“中等偏大”。 */
 const BASE_TENDER_BYTES = 1_000_000
@@ -44,18 +48,27 @@ const clamp = (x: number) => Math.min(MAX_FACTOR, Math.max(MIN_FACTOR, x))
 
 /** 历史中位耗时（秒）：只取该步 done 且有 finished_at 的最近若干条。
  *  finished_at 是 2026-08-17 才加的列，之前的行全是 null——样本攒够之前一律走兜底常数。 */
-async function historyMedian(step: string): Promise<{ seconds: number | null; samples: number }> {
+async function historyMedian(step: string, userId?: string): Promise<{ seconds: number | null; samples: number }> {
+  // 优先用**这个用户自己的**历史：他常投的标书规模才代表他的等待时间（评审 F8 顺带治了
+  // 测试依赖全局行的脆弱：本用户的样本不受别的测试写入影响）。不够再退全局。
+  const scoped = userId
+    ? and(eq(projectSteps.step, step), eq(projectSteps.status, "done"), isNotNull(projectSteps.finishedAt),
+          eq(bidProjects.userId, userId))
+    : and(eq(projectSteps.step, step), eq(projectSteps.status, "done"), isNotNull(projectSteps.finishedAt))
   const rows = await getDb()
     .select({
       secs: sql<number>`extract(epoch from (${projectSteps.finishedAt} - ${projectSteps.createdAt}))`,
     })
     .from(projectSteps)
-    .where(and(eq(projectSteps.step, step), eq(projectSteps.status, "done"), isNotNull(projectSteps.finishedAt)))
+    .innerJoin(bidProjects, eq(bidProjects.id, projectSteps.projectId))
+    .where(scoped)
     .orderBy(desc(projectSteps.finishedAt))
     .limit(SAMPLE_LIMIT)
   // 异常样本剔除：≤0（时钟回拨/数据异常）与 >2h（用户中途睡着不算这一步的真实耗时——
   // 半途失败重试的行也可能落到这里）都不参与中位数。
-  const vals = rows.map((r) => Number(r.secs)).filter((v) => v > 0 && v < 7200).sort((a, b) => a - b)
+  const vals = rows.map((r) => Number(r.secs))
+    .filter((v) => v >= MIN_REAL_SECONDS && v < 7200)   // 秒回的沿用/缓存命中不算真跑过
+    .sort((a, b) => a - b)
   if (vals.length < MIN_SAMPLES) return { seconds: null, samples: vals.length }
   const mid = Math.floor(vals.length / 2)
   const med = vals.length % 2 ? vals[mid]! : (vals[mid - 1]! + vals[mid]!) / 2
@@ -84,11 +97,17 @@ async function scaleFactor(projectId: string, step: string, targetChars?: number
 }
 
 /** 该步预估总时长。历史样本够就用历史中位数，否则用实测常数；两者都乘规模因子。 */
-export async function stepEta(projectId: string, step: string, targetChars?: number): Promise<StepEta> {
-  const [{ seconds: med, samples }, factor] = await Promise.all([
-    historyMedian(step),
+export async function stepEta(
+  projectId: string,
+  step: string,
+  targetChars?: number,
+  userId?: string,
+): Promise<StepEta> {
+  let [{ seconds: med, samples }, factor] = await Promise.all([
+    historyMedian(step, userId),
     scaleFactor(projectId, step, targetChars),
   ])
+  if (med == null && userId) ({ seconds: med, samples } = await historyMedian(step))  // 退全局
   const base = med ?? FALLBACK_SECONDS[step] ?? 300
   return {
     seconds: Math.max(30, Math.round((base * factor) / 10) * 10),

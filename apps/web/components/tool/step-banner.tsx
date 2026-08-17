@@ -11,6 +11,7 @@ export function StepBanner({
   progress,
   overallPct,
   remainSeconds,
+  etaLoaded,
   onRetry,
   action,
 }: {
@@ -21,8 +22,10 @@ export function StepBanner({
   progress?: { done: number; total: number } | null
   /** **整步**进度百分比（2026-08-17 用户口径：100% 是整个任务的）。给了就优先于 progress。 */
   overallPct?: number | null
-  /** 预计剩余秒数；null=估不准/已超出预估，显示「即将完成」而不是负数或假精度。 */
+  /** 预计剩余秒数；null=估不准或已超出预估——具体哪种由 etaLoaded 区分（评审 F5）。 */
   remainSeconds?: number | null
+  /** ETA 是否已问到服务端。没问到之前**绝不**说「即将完成」——刚开跑就宣布快完了最招骂。 */
+  etaLoaded?: boolean
   onRetry: () => void
   /** 失败时的引导链接（如 402 积分不足 → 去充值），有则替代「重试」按钮 */
   action?: { href: string; label: string }
@@ -38,11 +41,13 @@ export function StepBanner({
   // 绝不显示秒级倒计时（估不到那个精度，显示了就是骗人）。
   const remainText = overallPct == null
     ? null
-    : remainSeconds == null
-      ? "即将完成"
-      : remainSeconds < 60
+    : remainSeconds != null
+      ? remainSeconds < 60
         ? "预计还需不到 1 分钟"
         : `预计还需约 ${Math.round(remainSeconds / 60)} 分钟`
+      : etaLoaded
+        ? "即将完成"      // 问到了预估、且已经跑过它 → 确实接近尾声
+        : null            // 预估还没到手（或接口不可用）→ 什么都不说，绝不假装快完了
   if (running)
     return (
       <div className="mb-4 rounded-2xl border border-primary/20 gradient-brand-soft px-4 py-3 text-sm font-medium text-primary">

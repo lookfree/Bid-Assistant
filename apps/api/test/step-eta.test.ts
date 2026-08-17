@@ -87,8 +87,10 @@ describe("步骤预估总时长", () => {
     expect(tiny.seconds).toBeGreaterThanOrEqual(1600 * 0.5 - 10)
   })
 
-  it("有足够历史样本时改用历史中位数（basis=history）", async () => {
-    // 造 3 条已完成的 outline 步：起止差 600 秒
+  it("有足够历史样本时改用历史中位数（basis=history），且**只看这个用户自己的**历史", async () => {
+    // 造 3 条该用户已完成的 outline 步：起止差 600 秒。
+    // 按用户取样是评审 F8 的修法：全局取样会被别的测试/别的用户新写入的行挤掉，
+    // 断言变成靠运气（本仓已有共享库污染的先例）。
     for (let i = 0; i < 3; i++) {
       const pid = await project(`历史${i}`, [[`u/${crypto.randomUUID()}.docx`, "h.docx", 1_000_000]])
       const start = new Date(Date.now() - 3600_000 - i * 1000)
@@ -100,9 +102,26 @@ describe("步骤预估总时长", () => {
         finishedAt: new Date(start.getTime() + 600_000),
       })
     }
-    const eta = await stepEta(bigId, "outline")
+    const eta = await stepEta(bigId, "outline", undefined, userId)
     expect(eta.basis).toBe("history")
     expect(eta.samples).toBeGreaterThanOrEqual(3)
     expect(eta.seconds).toBeGreaterThan(600) // 600s 中位 × 大标书规模因子
+  })
+
+  it("评审 F7：提纲沿用/缓存命中那种秒回的行不算样本——否则中位数被拉到地板", async () => {
+    const pid = await project("秒回项目", [[`u/${crypto.randomUUID()}.docx`, "r.docx", 1_000_000]])
+    for (let i = 0; i < 10; i++) {
+      const start = new Date(Date.now() - 60_000 - i * 1000)
+      await getDb().insert(projectSteps).values({
+        projectId: pid,
+        step: "review",       // 用没被别的用例占用的步，避免相互干扰
+        status: "done",
+        createdAt: start,
+        finishedAt: new Date(start.getTime() + 2_000),   // 2 秒 = 沿用/缓存命中
+      })
+    }
+    const eta = await stepEta(bigId, "review", undefined, userId)
+    expect(eta.basis).toBe("default")            // 全被剔除 → 回落兜底常数
+    expect(eta.seconds).toBeGreaterThan(60)
   })
 })

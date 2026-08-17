@@ -440,6 +440,9 @@ def make_read_node(ctx):
                 ctx, READ_SYSTEM_PROMPT, user,
                 "submit_read_result", ReadResult, "提交读标结构化结果",
                 extra_tools=None if clauses else [parse_document_tool])
+        # 汇总段（85-100）：分段读标的合并/压缩、结论落库前的收尾。不发事件的话进度条
+        # 会停在 85% 直到整步结束（评审 2026-08-17 F9：_SPAN_MERGE 定义了却没人用）。
+        await publish_phase(ctx, "汇总读标结论", 0, 1, span=_SPAN_MERGE)
         # RAG 索引后台执行,不挡结果交付:9273 条款标书实测索引要几十分钟(CPU 嵌入 ~11s/16条),
         # 用户花钱买的读标结论 20 分钟前就好了却在等一个 best-effort 的辅助索引。_index_tender 全程
         # try/except,后台失败只记警告;下游检索本就按"建好多少用多少"降级,索引未完不阻塞任何步骤。

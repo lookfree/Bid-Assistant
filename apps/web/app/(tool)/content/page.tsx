@@ -24,6 +24,7 @@ import { FlowNav } from "@/components/tool/flow-nav"
 import { StepPageHeader } from "@/components/tool/step-page-header"
 import { StepBanner } from "@/components/tool/step-banner"
 import { useOverallProgress } from "@/lib/use-overall-progress"
+import { stepStartedAt } from "@/lib/step-started"
 import { NoProjectGuide } from "@/components/tool/no-project-guide"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { StepPrereqGuide } from "@/components/tool/step-prereq-guide"
@@ -126,7 +127,8 @@ export default function ContentPage() {
   // 预估按用户选的目标字数缩放——同一份标书选 2 万和 8 万，耗时差一倍不止。
   const overall = useOverallProgress(projectId, "content", running, phase,
     progress ? { done: progress.done, total: progress.total, from: 0, to: 92 } : null,
-    projectId ? storedTargetFor(projectId) : undefined)
+    projectId ? storedTargetFor(projectId) : undefined,
+    stepStartedAt(info, "content"))
   // 正文运行态文案：心跳（每 5s 一条，「第 N 章成稿中·本章已 X 分」）让横幅持续动——单章一次长调用
   // 要 2~8 分钟，只靠章节事件横幅会定格几分钟，用户会读成"卡住了"（实测反馈）。
   // 心跳与逐章进度都在时拼着显示；都没有才给静态耗时预期。
@@ -516,6 +518,9 @@ export default function ContentPage() {
           running={running}
           error={error}
           runningText={contentRunningText}
+          overallPct={overall.pct || null}
+          remainSeconds={overall.remainSeconds}
+          etaLoaded={overall.etaLoaded}
           onRetry={() => void startContent()}
           action={errorAction ?? undefined}
         />
@@ -564,6 +569,7 @@ export default function ContentPage() {
         runningText={contentRunningText}
         overallPct={overall.pct || null}
         remainSeconds={overall.remainSeconds}
+        etaLoaded={overall.etaLoaded}
         onRetry={() => void startContent()}
         action={errorAction ?? undefined}
       />

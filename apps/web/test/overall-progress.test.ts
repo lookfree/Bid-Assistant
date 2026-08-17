@@ -33,3 +33,25 @@ describe("阶段区间换算成整步百分比", () => {
     expect(overallPct(phase({ from: 0, to: 92, done: 10, total: 10 }))?.exact).toBe(92)
   })
 })
+
+/* 评审 2026-08-17 对整步进度的六条。逐条都是「假进度条」的具体形态，
+   这里钉的是纯函数那层能钉的部分；时间插值/单调性由 useOverallProgress 承担，
+   其规则以注释形式写在 hook 里并由下面的换算契约支撑。 */
+describe("评审 F2-F4：区间来源与优先级", () => {
+  it("心跳事件（无区间）→ null，调用方必须沿用上一次带区间的事件，不能当成没区间", () => {
+    // 模型流心跳每几秒一条、只有 label；若让它覆盖区间，插值失去依据，整条卡死在起点
+    expect(overallPct(phase({ label: "AI 思考中" }))).toBeNull()
+  })
+
+  it("解析段 done=0：exact 落在段起点——所以时间插值必须能在它之上继续推进", () => {
+    const r = overallPct(phase({ from: 0, to: 35, done: 0, total: 3 }))
+    expect(r?.exact).toBe(0)
+    expect(r?.ceil).toBe(35)   // hook 按 ceil-1 封顶插值，不会替下一段宣布开始
+  })
+
+  it("收尾段（92-100）起点不低于逐章段终点：hook 据此让新段接管，不再听跑完的章级事件", () => {
+    const chapterDone = overallPct(phase({ from: 0, to: 92, done: 9, total: 9 }))!
+    const finishing = overallPct(phase({ from: 92, to: 100, done: 0, total: 1 }))!
+    expect(finishing.base).toBeGreaterThanOrEqual(chapterDone.exact!)
+  })
+})

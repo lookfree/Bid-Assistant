@@ -188,7 +188,16 @@ function dispatchStepFrame(f: string, onEvent: (e: StepLiveEvent) => void): bool
   return false
 }
 
-export type ProjectStep = { step: string; status: string; result: unknown; costPoints: number }
+export type ProjectStep = {
+  step: string
+  status: string
+  result: unknown
+  costPoints: number
+  /** 该步起步时刻（= running 占位行落库时间）。slim 响应一直都带，此前只是类型没声明；
+   *  进度条的「已跑多久/还需多久」必须按它算——按页面挂载时刻算的话，刷新或切回页面会
+   *  告诉一个跑了 25 分钟的 run「还需 27 分钟」（评审 2026-08-17 F6）。 */
+  createdAt?: string
+}
 export type ProjectInfo = {
   // name：项目名（spec314 落库，取上传时原始文件名；老数据可能为 null，展示侧兜底"我的项目"）
   project: {

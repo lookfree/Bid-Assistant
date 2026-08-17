@@ -646,7 +646,7 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
     // 目标字数是**前端按项目存的**（localStorage，随 run 请求下发），服务端库里没有，
     // 所以由调用方带上来；非法/缺省就按基准算，不因此报错。
     const tc = Number(c.req.query("targetChars"))
-    return c.json(await stepEta(p.id, step, Number.isFinite(tc) && tc > 0 ? tc : undefined))
+    return c.json(await stepEta(p.id, step, Number.isFinite(tc) && tc > 0 ? tc : undefined, c.get("user").id))
   })
 
   // 可沿用的历史提纲（2026-08-16）：同一用户、同一份招标文件、提纲步已完成的历史项目。
