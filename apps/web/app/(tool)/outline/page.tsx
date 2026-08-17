@@ -23,6 +23,7 @@ import type { OutlineItem, BidChapter } from "@/lib/bid-types"
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepPageHeader } from "@/components/tool/step-page-header"
 import { StepBanner } from "@/components/tool/step-banner"
+import { useOverallProgress } from "@/lib/use-overall-progress"
 import { TenderDocPanel } from "@/components/tool/tender-doc-panel"
 import { NoProjectGuide } from "@/components/tool/no-project-guide"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
@@ -96,6 +97,8 @@ export default function OutlinePage() {
   const router = useRouter()
   // 计费步绝不自动触发：该步未跑时停在显式生成入口，用户点击才跑
   const { projectId, info, data: real, dataLoading, running, phase, error, errorAction, start } = useStep<RealOutline>("outline")
+  // 整步进度 + 预估剩余（2026-08-17）：提纲内部是一次模型调用，按预估时间在 0-100 内插值
+  const overall = useOverallProgress(projectId, "outline", running, phase)
   // 可沿用的历史提纲（2026-08-16）：同一份招标文件、你自己的历史项目里改好的那版。
   // 只在「还没生成且轮到提纲步」时拉——别的状态下这个入口没有意义，也不该多打一次请求。
   const [reusable, setReusable] = useState<OutlineReuseCandidate[]>([])
@@ -375,7 +378,7 @@ export default function OutlinePage() {
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 sm:py-7">
       <FlowNav current="outline" info={info} />
-      {<StepBanner running={running} error={error} runningText={phase ? `AI 编排提纲：${phase.label}…` : "AI 正在基于读标结论搭建技术标/商务标提纲…"} onRetry={() => void start()} action={errorAction ?? undefined} />}
+      {<StepBanner running={running} error={error} runningText={phase ? `AI 编排提纲：${phase.label}…` : "AI 正在基于读标结论搭建技术标/商务标提纲…"} overallPct={overall.pct || null} remainSeconds={overall.remainSeconds} onRetry={() => void start()} action={errorAction ?? undefined} />}
       <StepPageHeader icon={ListTree} title="标书提纲" desc="对齐评分点自动生成投标大纲，可自由增删改，每条均可溯源到招标原文">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2.5 rounded-xl bg-muted/60 px-3 py-1.5 text-xs">

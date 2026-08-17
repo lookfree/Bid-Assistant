@@ -556,7 +556,10 @@ def make_content_node(ctx):
     async def content_node(state):
         from agent.agents.bidding_agent.nodes.content_pipeline import run_content_pipeline
         from agent.agents.bidding_agent.nodes.credentials_chapter import append_credentials_chapter
-        await publish_phase(ctx, "逐章撰写投标正文（代码编排）")
+        # 正文分两段：逐章撰写占 0-92（章级 done/total 是真实分母），收尾（证照就位/
+        # 同值填空/缺章补写）占 92-100——收尾在大标书上要跑一两分钟，不给区间的话
+        # 进度条会在 92% 处静止，看起来像卡死。
+        await publish_phase(ctx, "逐章撰写投标正文（代码编排）", span=(0, 92))
         chapters = await run_content_pipeline(ctx, state)
         await _log_length_telemetry(ctx, state.get("run_input") or {}, chapters)  # 超写系数的校准数据源（评审 F2）
         # 资格证明文件附录章（2026-08-09 附录系统章节设计,Plan A①）：命中条件时代码确定性拼出该章并追加进提纲，

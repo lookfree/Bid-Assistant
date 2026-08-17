@@ -109,7 +109,9 @@ export async function finalizeStepSuccess(opts: {
 }): Promise<number | null> {
   const flipped = await getDb()
     .update(projectSteps)
-    .set({ status: "done", result: opts.result })
+    // finished_at 与 status 同一条 UPDATE 落库（2026-08-17）：分两条写会在两次写之间留一个
+    // 「已 done 但没有耗时」的窗口，对账/统计各看各的。耗时统计正是 ETA 的唯一数据来源。
+    .set({ status: "done", result: opts.result, finishedAt: new Date() })
     .where(and(eq(projectSteps.id, opts.stepId), eq(projectSteps.status, "running")))
     // 一并取回 createdAt（= run 起步时刻）：导出收尾据此判断本次 run 期间内容有没有被改过，
     // 顺手带出来比事后再查一次省一趟往返。

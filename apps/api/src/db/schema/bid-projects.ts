@@ -60,6 +60,9 @@ export const projectSteps = pgTable(
     costPoints: integer("cost_points").notNull().default(0), // 计费 stub 记账
     status: text("status").notNull().default("pending"), // pending/running/done/failed
     createdAt: createdAt(),
+    // 结束时刻（2026-08-17）：收尾是原地 UPDATE 同一行，没有这一列就只有起步时刻，
+    // 「这一步实际跑了多久」无从统计——进度条的预估总时间就是拿它的历史中位数算的。
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
   },
   (t) => ({ projIdx: index("project_steps_proj_idx").on(t.projectId) }),
 )

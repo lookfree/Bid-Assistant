@@ -157,9 +157,11 @@ class _Progress:
         # 心跳计时口径=距上一章收稿：满载时 in_flight 的 0→1 永不再现,只在这里归零
         # 才不会显示"本批已 37 分"被读成卡死（评审 2026-08-08,当晚用户问过的正是这个）。
         self.batch_started = time.monotonic()
+        # from/to：本段（逐章撰写）在整步里的百分比区间，前端据此把「已写 N/M 章」
+        # 换算成整步进度（2026-08-17：100% 必须是整步完成，收尾段留给 92-100）。
         ev = {"type": "progress", "data": {"kind": "chapter", "chapterId": cid,
               "title": self.titles.get(cid, cid), "done": count, "total": self.total,
-              "doneIds": list(self.done)}}
+              "doneIds": list(self.done), "from": 0, "to": 92}}
         try:
             if self.ctx.redis and self.ctx.run_id:
                 from agent.runtime.channels import progress_stream
@@ -791,6 +793,11 @@ async def run_content_pipeline(ctx, state: dict) -> dict[str, str]:
     # 说明行会被图顶替**（用户口径:收图的框说明文字不要,更干净;导出复印机从招标 XML
     # 恢复框与文字,不受影响）；除框行替换外仍只追加。protected = 表单模板章：
     # 材料小节清空通路绝不动它们的文字（框行替换是唯一被授权的例外）。
+    # 收尾段的整步进度（2026-08-17）：证照就位/同值填空在大标书上要跑一两分钟，
+    # 不发事件的话进度条会停在 92% 一动不动，看起来像卡死。
+    await publish_event(getattr(ctx, "redis", None), getattr(ctx, "run_id", None),
+                        {"kind": "phase", "label": "收尾：证照就位与同值填空",
+                         "done": 0, "total": 1, "from": 92, "to": 100})
     out = place_certificates(out, state, protected=frozenset(
         cid for cid, tpl in (shared.get("templates") or {}).items() if (tpl or {}).get("raw")))
     if missing:

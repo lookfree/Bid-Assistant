@@ -25,6 +25,7 @@ import { credentialsRunInput, libraryRefsRunInput, type CredentialInput } from "
 import { SYS_CREDS_ID } from "../services/credentials-chapter"
 import * as credentialsChapter from "../services/credentials-chapter"
 import { outlineReuseCandidates, reusableOutline } from "../services/outline-reuse"
+import { stepEta } from "../services/step-eta"
 import { toCamel, toSnake } from "../lib/case"
 import { parsePagination, pagedBody, pagedResult } from "../lib/pagination"
 import { presignGet, deleteObject, listObjectKeys } from "../storage/s3"
@@ -630,6 +631,22 @@ export function projectRoutes(deps: Partial<ProjectDeps> = {}) {
         }
       } catch { /* agent 结束/掉线：正常收尾 */ }
     })
+  })
+
+  // 该步预估总时长（2026-08-17）：进度条覆盖整步，需要一个总时间才画得出「还剩多久」。
+  // 纯查询，不改状态、不计费；查不到就给兜底常数，绝不因为估不准而不给。
+  r.get("/:id/eta", async (c) => {
+    const id = c.req.param("id")
+    if (!isUuid(id)) return c.json({ error: "not_found" }, 404)
+    const step = c.req.query("step") ?? ""
+    if (!STEP_ORDER.includes(step as Step)) return c.json({ error: "invalid_input" }, 400)
+    const p = await ownedProject(id, c.get("user").id)
+    if (!p) return c.json({ error: "not_found" }, 404)
+    // 正文按用户自己选的目标字数缩放（同一份标书选 2 万和选 8 万耗时差一倍不止）。
+    // 目标字数是**前端按项目存的**（localStorage，随 run 请求下发），服务端库里没有，
+    // 所以由调用方带上来；非法/缺省就按基准算，不因此报错。
+    const tc = Number(c.req.query("targetChars"))
+    return c.json(await stepEta(p.id, step, Number.isFinite(tc) && tc > 0 ? tc : undefined))
   })
 
   // 可沿用的历史提纲（2026-08-16）：同一用户、同一份招标文件、提纲步已完成的历史项目。

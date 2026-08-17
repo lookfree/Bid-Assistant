@@ -41,12 +41,37 @@ export type ChapterProgress = { kind?: string; done: number; total: number; done
 /** 步骤运行阶段（node/phase 事件 → 人话标签，如「读标·技术第2/5块」「审查中」）。
  *  done/total：服务端**结构化**下发的当前阶段完成度，用来画进度条。
  *  别去正则解析 label 里的数字——文案随时会改（加个「(续跑复用 2)」后缀就打歪了），而且是静默打歪。 */
-export type StepPhase = { label: string; done?: number; total?: number }
+export type StepPhase = {
+  label: string
+  done?: number
+  total?: number
+  /** 本阶段在**整步**里占的百分比区间（2026-08-17：进度条 100% = 整步完成）。
+   *  服务端声明——只有节点自己知道后面还有几段、各段多重；前端不猜。 */
+  from?: number
+  to?: number
+}
 
 /** phase → 进度条入参。抽出来是因为读标页两处横幅 + 审查页共三处要用同一判据：
  *  各写一份，改判据时漏掉一处，同一次运行的不同视图就会一个有条一个没条。 */
 export function phaseProgress(phase: StepPhase | null): { done: number; total: number } | null {
   return phase?.total ? { done: phase.done ?? 0, total: phase.total } : null
+}
+
+/** 阶段进度 → **整步**百分比（2026-08-17 用户口径：100% 是整个任务的）。
+ *
+ *  · 有 from/to（服务端声明的整步区间）：在区间内按 done/total 定位；没有 done/total
+ *    就退到区间起点，剩下的交给调用方按预估时间插值。
+ *  · 没有 from/to（老事件/未标注阶段）：返回 null，调用方回落纯时间估算。
+ *  绝不自己猜区间——猜出来的百分比会在阶段切换时跳来跳去，比没有进度条更糟。 */
+export function overallPct(phase: StepPhase | null): { base: number; ceil: number; exact: number | null } | null {
+  if (!phase || phase.from == null || phase.to == null) return null
+  const from = Math.max(0, Math.min(100, phase.from))
+  const to = Math.max(from, Math.min(100, phase.to))
+  if (phase.total && phase.total > 0) {
+    const ratio = Math.max(0, Math.min(1, (phase.done ?? 0) / phase.total))
+    return { base: from, ceil: to, exact: Math.round(from + (to - from) * ratio) }
+  }
+  return { base: from, ceil: to, exact: null }
 }
 import type { DocHeading } from "./doc-sections"
 
@@ -135,10 +160,10 @@ function dispatchStepFrame(f: string, onEvent: (e: StepLiveEvent) => void): bool
   const data = (d as { data?: unknown }).data
   const kind = (data as { kind?: string })?.kind
   if (type === "progress" && kind === "chapter") {
-    onEvent({ kind: "chapter", progress: data as ChapterProgress })
+    onEvent({ kind: "chapter", progress: data as ChapterProgress })   // 含 from/to（整步区间）
   } else if (type === "progress" && kind === "phase") {
-    const ph = data as { label: string; done?: number; total?: number }
-    onEvent({ kind: "phase", phase: { label: ph.label, done: ph.done, total: ph.total } })
+    const ph = data as { label: string; done?: number; total?: number; from?: number; to?: number }
+    onEvent({ kind: "phase", phase: { label: ph.label, done: ph.done, total: ph.total, from: ph.from, to: ph.to } })
   } else if (type === "progress" && kind === "read_part") {
     // 分段读标每完成一轮推一条：整轮跑完前先把已解读的部分放上屏（大标书要十几分钟）。
     // 这是**展示态**，最终以 step.done 的合并结果整体覆盖——前端不复刻服务端的合并语义。
@@ -364,6 +389,16 @@ export async function deleteProject(projectId: string): Promise<void> {
 /** 可沿用的历史提纲（2026-08-16）：同一份招标文件、同一用户、提纲已完成的历史项目。
  *  空数组＝没有可沿用的，调用方据此不显示入口。纯查询，不改状态、不计费。 */
 export type OutlineReuseCandidate = { projectId: string; name: string; chapterCount: number; createdAt: string }
+
+/** 该步预估总时长（2026-08-17）：进度条覆盖整步就必须有个总时间，才谈得上「还剩多久」。
+ *  targetChars 只对正文步有意义（目标字数是前端按项目存的，服务端库里没有）。 */
+export type StepEta = { seconds: number; basis: "history" | "default"; samples: number }
+
+export async function stepEta(projectId: string, step: StepName, targetChars?: number): Promise<StepEta> {
+  const q = new URLSearchParams({ step })
+  if (targetChars) q.set("targetChars", String(targetChars))
+  return api.request<StepEta>(`/api/projects/${projectId}/eta?${q}`)
+}
 
 export async function outlineReuseCandidates(projectId: string): Promise<OutlineReuseCandidate[]> {
   const { items } = await api.request<{ items: OutlineReuseCandidate[] }>(

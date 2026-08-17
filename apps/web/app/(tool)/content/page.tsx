@@ -23,6 +23,7 @@ import { usePaywall } from "@/components/paywall"
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepPageHeader } from "@/components/tool/step-page-header"
 import { StepBanner } from "@/components/tool/step-banner"
+import { useOverallProgress } from "@/lib/use-overall-progress"
 import { NoProjectGuide } from "@/components/tool/no-project-guide"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
 import { StepPrereqGuide } from "@/components/tool/step-prereq-guide"
@@ -121,6 +122,11 @@ export default function ContentPage() {
 
   // outline 树 + content 各章 HTML → 构建章节树；计费步绝不自动触发，生成一律走显式按钮
   const { projectId, info, data: realBodies, dataLoading, running, progress, phase, error, errorAction, start } = useStep<RealChapters>("content")
+  // 整步进度 + 预估剩余（2026-08-17）：逐章 done/total 是真实分母（占 0-92），收尾段 92-100；
+  // 预估按用户选的目标字数缩放——同一份标书选 2 万和 8 万，耗时差一倍不止。
+  const overall = useOverallProgress(projectId, "content", running, phase,
+    progress ? { done: progress.done, total: progress.total, from: 0, to: 92 } : null,
+    projectId ? storedTargetFor(projectId) : undefined)
   // 正文运行态文案：心跳（每 5s 一条，「第 N 章成稿中·本章已 X 分」）让横幅持续动——单章一次长调用
   // 要 2~8 分钟，只靠章节事件横幅会定格几分钟，用户会读成"卡住了"（实测反馈）。
   // 心跳与逐章进度都在时拼着显示；都没有才给静态耗时预期。
@@ -556,6 +562,8 @@ export default function ContentPage() {
         running={running}
         error={error}
         runningText={contentRunningText}
+        overallPct={overall.pct || null}
+        remainSeconds={overall.remainSeconds}
         onRetry={() => void startContent()}
         action={errorAction ?? undefined}
       />

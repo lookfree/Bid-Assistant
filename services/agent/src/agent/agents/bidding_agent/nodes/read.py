@@ -56,6 +56,14 @@ def _tech_chunk_user(chunk: list[dict], idx: int, total: int) -> str:
             f"{json.dumps(chunk, ensure_ascii=False)}\n\n请读标。")
 
 
+# 整步进度分段（2026-08-17）：读标三段各占多少，取自 230 实测——解析(含 .doc 转换/OCR)
+# 在大标书上能占一半，提取轮是模型时间的大头，汇总很快。前端按这些区间把阶段进度
+# 换算成整步百分比，100% 只在整步真的完成时才到。
+_SPAN_PARSE = (0, 35)
+_SPAN_EXTRACT = (35, 85)
+_SPAN_MERGE = (85, 100)
+
+
 async def _seg_submit(ctx, user: str, hint: str, label: str) -> ReadResult:
     return await run_submit_agent(
         ctx, READ_SYSTEM_PROMPT, user + hint, "submit_read_result", ReadResult, label)
@@ -172,7 +180,8 @@ async def _segmented_read(ctx, user: str, clauses: list[dict]) -> ReadResult:
     total = 3 + len(chunks)
     done = 0
     sem = asyncio.Semaphore(SEG_CONCURRENCY)
-    await publish_phase(ctx, f"读标·并行提取中(共 {total} 轮:基础/格式/评分 + 技术 {len(chunks)} 块)", 0, total)
+    await publish_phase(ctx, f"读标·并行提取中(共 {total} 轮:基础/格式/评分 + 技术 {len(chunks)} 块)",
+                        0, total, span=_SPAN_EXTRACT)
 
     cached_hits = 0
 
@@ -188,7 +197,8 @@ async def _segmented_read(ctx, user: str, clauses: list[dict]) -> ReadResult:
             cached_hits += 1
         done += 1   # asyncio 单线程,计数无竞态
         suffix = f"(续跑复用 {cached_hits})" if cached_hits else ""
-        await publish_phase(ctx, f"读标·并行提取中 已完成 {done}/{total} 轮{suffix}", done, total)
+        await publish_phase(ctx, f"读标·并行提取中 已完成 {done}/{total} 轮{suffix}", done, total,
+                            span=_SPAN_EXTRACT)
         await _publish_part(ctx, part)   # 该轮已解读的内容立刻上屏（展示态，权威结果仍以 step.done 为准）
         return part
 
@@ -376,7 +386,12 @@ def make_read_node(ctx):
         extra: dict = {}
         headings: list[dict] = []   # 章节标题（左栏按层级渲染用；解析失败降级为空，页面回落旧的「第N部分」）
         if files:
+            # 解析阶段（含 .doc 转换/OCR，大标书上这段能占一半）：起止各发一条整步进度。
+            # 逐份进度需要 _parse_multi_files 回调，而该函数在多处测试里被整体替换成桩——
+            # 加参数会连桩一起要改；这里只在外层报起止，逐份细节留给它内部的 OCR 事件。
+            await publish_phase(ctx, f"解析招标文件（共 {len(files)} 份）", 0, len(files), span=_SPAN_PARSE)
             clauses, file_ranges, failed_files, headings = await _parse_multi_files(files)
+            await publish_phase(ctx, f"解析完成（{len(files)} 份）", len(files), len(files), span=_SPAN_PARSE)
             if not clauses:      # 全是文件本身的问题就当场失败，别让模型去兜一个兜不住的底
                 _fail_if_all_permanent(failed_files)
             # 全部预解析失败的兜底：列出各文件 key，模型才有 key 可调 parse_document 重试
@@ -390,6 +405,7 @@ def make_read_node(ctx):
             # boto3/解析皆同步 → 丢线程池。注意：工具兜底走的是同一个 read_and_parse——
             # 只对瞬时错误（存储/网络抖动）算二次机会；文件本身损坏则两路都失败，读标退化为无原文可引。
             name = state["file_key"].rsplit("/", 1)[-1]
+            await publish_phase(ctx, f"解析招标文件《{name}》", 0, 1, span=_SPAN_PARSE)
             try:
                 parsed = await asyncio.to_thread(read_and_parse, state["file_key"])
             except Exception as e:  # noqa: BLE001 瞬时错误降级让模型调 parse_document 重试
@@ -418,6 +434,8 @@ def make_read_node(ctx):
         if len(clauses) > SEGMENT_CLAUSE_THRESHOLD:
             result = await _segmented_read(ctx, user, clauses)   # 大标书:骨架轮+技术分块(输出上限硬约束)
         else:
+            # 小标书单轮：内部没有可拆的阶段，只发一条带区间的事件，前端按预估时间在区间内插值
+            await publish_phase(ctx, "读标·解读招标要求中", span=_SPAN_EXTRACT)
             result = await run_submit_agent(
                 ctx, READ_SYSTEM_PROMPT, user,
                 "submit_read_result", ReadResult, "提交读标结构化结果",

@@ -410,7 +410,7 @@ def make_outline_node(ctx):
         # 只认显式标志，不认「state 里碰巧有提纲」：同线程重试时状态里本来就有上一版。
         reused = state.get("outline") or {}
         if (state.get("run_input") or {}).get("reuse_outline") and reused.get("chapters"):
-            await publish_phase(ctx, "沿用既有提纲")
+            await publish_phase(ctx, "沿用既有提纲", 1, 1, span=(0, 100))
             # 构成引用必须重映射到**本轮读标**（评审 2026-08-16 F2）：沿用的提纲来自另一次
             # 读标，structure_ref 是那一轮读标模型自拟的 id、跨轮不稳——不映射就会让模板
             # 投递按错 ref 把别的表单原文发给某章，再被复印机逐字钉死（2026-08-12 云上江西
@@ -424,7 +424,9 @@ def make_outline_node(ctx):
             logger.info("提纲沿用：调用方下发既有提纲 %d 章，零模型、不写缓存",
                         len(reused["chapters"]))
             return {"outline": reused}
-        await publish_phase(ctx, "依据读标结论编排投标文件提纲")
+        # 提纲内部是**一次**模型调用，拆不出真实阶段——只声明整步区间，前端按预估时间
+        # 在区间内插值（封顶 99，真正完成由 step.done 收口）。硬拆成假阶段只会给出假进度。
+        await publish_phase(ctx, "依据读标结论编排投标文件提纲", span=(0, 100))
         # 选包时读标收窄到该包(spec324 优化):提纲只按该包的需求/评分/构成搭建,上下文大降。
         read_state = filter_read_by_package(state.get("read") or {}, state.get("run_input"))
         structure_now = read_state.get("required_structure") or []

@@ -76,6 +76,7 @@ type RealRead = {
 import { FlowNav } from "@/components/tool/flow-nav"
 import { StepPageHeader } from "@/components/tool/step-page-header"
 import { StepBanner } from "@/components/tool/step-banner"
+import { useOverallProgress } from "@/lib/use-overall-progress"
 import { TenderDocPanel } from "@/components/tool/tender-doc-panel"
 import { NoProjectGuide } from "@/components/tool/no-project-guide"
 import { StepPlaceholder } from "@/components/tool/step-placeholder"
@@ -90,6 +91,8 @@ import { readCategories } from "./categories"
 
 export default function ReadPage() {
   const { projectId, info, data: real, dataLoading, running, phase, partial, partialSections, partialHeadings, error, errorAction, start } = useStep<RealRead>("read")
+  // 整步进度 + 预估剩余（2026-08-17）：解析/提取/汇总各段由服务端声明自己的百分比区间
+  const overall = useOverallProgress(projectId, "read", running, phase)
   // 线下标书审查项目（无招标文件）不适用读标：绝不亮计费按钮（点了必 409）
   const notApplicable = stepNotApplicable(info, "read")
   const { overview } = useMembership()
@@ -315,8 +318,10 @@ export default function ReadPage() {
         <StepBanner
           running={running}
           error={error}
-          runningText={phase ? `AI 读标中：${phase.label}…` : "AI 正在通读招标文件，提取评分点与废标红线…（约 1–2 分钟）"}
+          runningText={phase ? `AI 读标中：${phase.label}…` : "AI 正在通读招标文件，提取评分点与废标红线…"}
           progress={phaseProgress(phase)}
+          overallPct={overall.pct || null}
+          remainSeconds={overall.remainSeconds}
           onRetry={() => void start()}
           action={errorAction ?? undefined}
         />
