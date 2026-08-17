@@ -2,12 +2,12 @@
 
 import type React from "react"
 
-import { useState, useEffect, useRef, Suspense } from "react"
+import { useState, Suspense } from "react"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Phone, ShieldCheck, Sparkles, ArrowRight, FileSearch, PenLine, Download, QrCode } from "lucide-react"
-import { api, captchaEnabled, captchaSceneId, captchaPrefix } from "@/lib/api"
-import { loadAliyunCaptcha, makeCaptchaVerifyHandler, initCaptcha, type CaptchaInstance } from "@/lib/captcha"
+import { api } from "@/lib/api"
+import { useSmsSender, phoneValid } from "@/lib/use-sms-sender"
 import { authErrorMessage } from "@/lib/auth-errors"
 import { renderWxLogin } from "@/lib/wechat-login"
 import { useAuth } from "@/components/auth/auth-provider"
@@ -29,94 +29,13 @@ function LoginContent() {
   const [tab, setTab] = useState<"phone" | "wechat">("phone")
   const [phone, setPhone] = useState("")
   const [code, setCode] = useState("")
-  const [countdown, setCountdown] = useState(0)
   const [agreed, setAgreed] = useState(false)
   const [msg, setMsg] = useState("")
   const [busy, setBusy] = useState(false)
-  const [captchaError, setCaptchaError] = useState(false) // SDK 加载失败 → fail-closed，禁止直接发码
-  const captchaInstance = useRef<CaptchaInstance | null>(null)
 
-  // 供滑块的 captchaVerifyCallback 读取最新手机号：SDK 在 init 时绑定一次回调，若直接闭包捕获 state
-  // 会永远读到挂载时的初始值（空串）；用 ref 保证每次拖动通过时读到的是当前输入框的号码。
-  const phoneRef = useRef(phone)
-  useEffect(() => {
-    phoneRef.current = phone
-  }, [phone])
-
-  useEffect(() => {
-    if (countdown <= 0) return
-    const timer = setTimeout(() => setCountdown(countdown - 1), 1000)
-    return () => clearTimeout(timer)
-  }, [countdown])
-
-  const phoneValid = /^1\d{10}$/.test(phone)
-  const canSend = phoneValid && countdown === 0
-  const canSubmit = phoneValid && code.length === 6 && agreed
-
-  // 初始化滑块 SDK（官方标准接法，现场逐一验证）：AliyunCaptchaConfig(region+prefix) 在脚本加载前设好
-  // （loadAliyunCaptcha 内部）；挂载 init 一次、拿到实例句柄。SDK 的 button 自动绑定在本页 React/HTTP 环境下
-  // 不弹窗（实测），故不靠它——由「获取验证码」onClick 调 instance.show()，且 show() 必须延后到下一个宏任务
-  // （见 handleSendCode）否则同步调用不弹。tab 切走时 destroy，切回手机号 tab（表单节点重建）时重新 init。
-  useEffect(() => {
-    if (!captchaEnabled || tab !== "phone") return
-    let cancelled = false
-    const sendAfterSlide = (param: string) => {
-      const currentPhone = phoneRef.current
-      if (!/^1\d{10}$/.test(currentPhone)) return Promise.reject(new Error("手机号无效"))
-      return api.authApi.sendSmsCode(currentPhone, param).then(() => undefined)
-    }
-    loadAliyunCaptcha({ region: "cn", prefix: captchaPrefix })
-      .then((initFn) => {
-        if (cancelled) return
-        initCaptcha({
-          initFn,
-          sceneId: captchaSceneId,
-          buttonSel: "#captcha-send-btn",
-          elementSel: "#captcha-box",
-          verifyHandler: makeCaptchaVerifyHandler(
-            sendAfterSlide,
-            () => {
-              setCountdown(60)
-              setMsg("验证码已发送")
-            },
-            (m) => setMsg(m),
-          ),
-          getInstance: (inst) => {
-            captchaInstance.current = inst
-          },
-        })
-      })
-      .catch(() => setCaptchaError(true))
-    return () => {
-      cancelled = true
-      captchaInstance.current?.destroy?.()
-      captchaInstance.current = null
-    }
-  }, [tab])
-
-  // 手机号为纯 11 位（+86 由后端 normalizePhone 补全）；滑块关闭时不带 captchaToken，后端 DevPass 放行。
-  // 滑块开启时：手动弹出拼图（instance.show()），拖动通过后由 captchaVerifyCallback 真正发码；
-  // SDK 加载失败则兜底报错，避免静默跳过验证（fail-closed）。
-  async function handleSendCode() {
-    if (!canSend) return
-    setMsg("")
-    if (!captchaEnabled) {
-      try {
-        await api.authApi.sendSmsCode(phone, undefined)
-        setCountdown(60)
-        setMsg("验证码已发送")
-      } catch (e) {
-        setMsg(authErrorMessage(e, "发送失败，请稍后重试"))
-      }
-      return
-    }
-    if (captchaError) {
-      setMsg("验证组件加载失败，请刷新重试")
-      return
-    }
-    // 弹出滑块：show() 必须延后到下一个宏任务（setTimeout 0）——同步调用不弹窗（现场实测）。
-    setTimeout(() => captchaInstance.current?.show?.(), 0)
-  }
+  // 发码（倒计时 + 滑块）与微信绑手机号页共用同一份实现，见 lib/use-sms-sender.ts
+  const { countdown, canSend, handleSendCode } = useSmsSender({ phone, enabled: tab === "phone", onMsg: setMsg })
+  const canSubmit = phoneValid(phone) && code.length === 6 && agreed
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -290,7 +209,9 @@ function LoginContent() {
                   <QrCode className="size-4" />
                   生成二维码
                 </button>
-                <p className="text-xs text-muted-foreground">微信扫码授权后将自动登录 / 注册</p>
+                <p className="text-xs text-muted-foreground">
+                  微信扫码授权后需绑定手机号；该手机号已注册的，将直接登录原账号
+                </p>
               </div>
             )}
 

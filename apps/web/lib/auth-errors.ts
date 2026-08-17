@@ -13,6 +13,9 @@ const AUTH_ERROR_MESSAGES: Record<string, string> = {
   code_expired: "验证码已失效，请重新获取",
   code_too_many_attempts: "验证码输错次数过多，已失效，请重新获取",
   account_banned: "该账号已被封禁，如有疑问请联系客服",
+  // 微信绑手机号（2026-08-17）：绑定态过期/已用完，或该手机号已属于另一个账号
+  invalid_state: "本次微信登录已超时，请返回登录页重新扫码",
+  phone_taken: "该手机号已绑定其他账号，请换一个手机号，或用手机号登录",
 }
 
 // 按 error code 取文案；429 特判带上重试秒数；其余回退到调用方给的兜底文案。

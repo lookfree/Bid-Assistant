@@ -23,6 +23,8 @@ afterAll(async () => {
 const service = makeWechatAuth(getRedis(), new DevWechatOAuthClient(), 30)
 const app = createApp({
   pingDb: async () => true,
+  // 微信登录必须绑手机号 → 短信服务是硬依赖，缺了整组路由不挂载
+  smsCode: { async request() { return { ok: true } }, async verify() { return "ok" as const } },
   wechat: { service, appId: "wxtest", redirectUri: "http://localhost:3000/login/wechat" },
 })
 
@@ -69,22 +71,17 @@ describe("/auth/wechat", () => {
     expect(((await res.json()) as { error: string }).error).toBe("invalid_state")
   })
 
-  it("同意协议 -> token + isNew=true；同 unionid 复登 isNew=false", async () => {
+  // 同意协议后新号进绑定态（不再直接发会话）——绑定与挂靠语义见 wechat-bind.test.ts
+  it("同意协议 -> 绑定态 bindToken，不发令牌", async () => {
     const r1 = await app.request("/auth/wechat/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ code, state: await getState(true) }),
     })
     expect(r1.status).toBe(200)
-    const b1 = (await r1.json()) as { token: string; isNew: boolean }
-    expect(b1.token).toMatch(/^[0-9a-f]{64}$/)
-    expect(b1.isNew).toBe(true)
-
-    const r2 = await app.request("/auth/wechat/login", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ code, state: await getState(false) }),
-    })
-    expect(((await r2.json()) as { isNew: boolean }).isNew).toBe(false) // 已存在，复登无需协议
+    const b1 = (await r1.json()) as { token?: string; bindToken?: string; needBindPhone?: boolean }
+    expect(b1.needBindPhone).toBe(true)
+    expect(b1.bindToken).toMatch(/^[0-9a-f]{64}$/)
+    expect(b1.token).toBeUndefined()
   })
 })

@@ -80,10 +80,11 @@ describe("封禁账号全线拒止（评审:封禁账号仍可正常使用投标
   })
 
   it("微信登录：封禁账号同一拦截（unionid 已绑定的老用户重登被拒）", async () => {
-    // 最小 redis 桩：只需 createState 的 set 与 login 的 getdel（state 一次性消费）
+    // 最小 redis 桩：createState 的 set、state/绑定态的一次性 getdel、绑定态的 get
     const store = new Map<string, string>()
     const redis = {
       set: async (k: string, v: string) => (store.set(k, v), "OK" as const),
+      get: async (k: string) => store.get(k) ?? null,
       getdel: async (k: string) => {
         const v = store.get(k) ?? null
         store.delete(k)
@@ -96,11 +97,13 @@ describe("封禁账号全线拒止（评审:封禁账号仍可正常使用投标
       { exchangeCode: async () => ({ openid: identifier, unionid: identifier, nickname: "封禁测试" }) } as never,
       30,
     )
-    // 先解封注册绑定 wechat 身份，再封禁后重登 → 必须被拒
+    // 先解封注册绑定 wechat 身份（微信登录必须绑手机号，账号在绑定这一步才建），再封禁后重登 → 必须被拒
     await unbanUser(userId, { operator: "ops_test" })
     const first = await wx.login("code1", await wx.createState(true), {})
-    madeUsers.push(first.user.id) // 新建的 wechat 账号（与手机号账号不同人）也要清理
-    await banUser(first.user.id, { operator: "ops_test" })
+    if (!first.needBindPhone) throw new Error("首个微信身份应进绑定态")
+    const bound = await wx.bindPhone(first.bindToken, uniquePhone(), {}, async () => "ok" as const)
+    madeUsers.push(bound.user.id) // 新建的微信账号（与手机号账号不同人）也要清理
+    await banUser(bound.user.id, { operator: "ops_test" })
     const again = wx.login("code2", await wx.createState(true), {})
     await expect(again).rejects.toBeInstanceOf(AccountBannedError)
   })

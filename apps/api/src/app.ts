@@ -71,13 +71,15 @@ export function createApp(deps: AppDeps) {
       }),
     )
   }
-  if (deps.wechat) {
+  // 微信登录必须绑手机号（2026-08-17）→ 没有短信服务就不该开放微信入口，否则用户扫完码卡在绑定态。
+  if (deps.wechat && deps.smsCode) {
     app.route(
       "/auth/wechat",
       wechatRoutes({
         wechat: deps.wechat.service,
         appId: deps.wechat.appId,
         redirectUri: deps.wechat.redirectUri,
+        smsCode: deps.smsCode,
       }),
     )
   }

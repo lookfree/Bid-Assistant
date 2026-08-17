@@ -45,6 +45,13 @@ export function createApiClient(opts: ApiClientOptions) {
   const post = <T>(path: string, data: unknown) =>
     request<T>(path, { method: "POST", body: JSON.stringify(data) })
 
+  // 登录成功的统一形状（手机号 / 微信绑定后共用）；phone 是**打码值**
+  type AuthSession = {
+    token: string
+    isNew: boolean
+    user: { id: string; nickname: string | null; phone: string | null }
+  }
+
   const authApi = {
     sendSmsCode: (phone: string, captchaToken?: string) =>
       post<{ ok: true }>("/auth/sms/send", { phone, captchaToken }).then(() => undefined),
@@ -60,11 +67,14 @@ export function createApiClient(opts: ApiClientOptions) {
       post<{ state: string; appId: string; scope: string; redirectUri: string }>("/auth/wechat/url", {
         agreedToTerms,
       }),
+    // 微信扫码后二选一：已绑手机号的老账号直接给令牌；新号只给一次性 bindToken，要先绑手机号（2026-08-17）
     wechatLogin: (code: string, state: string) =>
-      post<{ token: string; isNew: boolean; user: { id: string; nickname: string | null; phone: string | null } }>(
-        "/auth/wechat/login",
-        { code, state },
-      ),
+      post<{ needBindPhone?: boolean; bindToken?: string } & Partial<AuthSession>>("/auth/wechat/login", {
+        code,
+        state,
+      }),
+    wechatBindPhone: (bindToken: string, phone: string, code: string) =>
+      post<AuthSession>("/auth/wechat/bind-phone", { bindToken, phone, code }),
   }
 
   return { request, authApi }
