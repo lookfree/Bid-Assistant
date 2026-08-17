@@ -21,3 +21,13 @@ export function tiersCostText(tiers: ContentTier[]): string {
   )
   return `${parts.join(" · ")}${tail}`
 }
+
+/** 目标字数 → 该档积分（与后端 services/content-pricing.ts 的 costForChars 同构）。
+ *  阶梯为空/没有能覆盖该字数的档 → null：**绝不编一个价格**（宁可按钮上写计费口径，
+ *  也不能显示一个和实扣不符的数字——展示价与实扣价不符是计费红线）。 */
+export function costForChars(tiers: ContentTier[], chars: number): number | null {
+  if (!tiers.length) return null
+  const sorted = [...tiers].sort((a, b) => (a.maxChars ?? Infinity) - (b.maxChars ?? Infinity))
+  const hit = sorted.find((t) => t.maxChars === null || chars <= t.maxChars)
+  return hit ? hit.cost : null
+}

@@ -33,6 +33,9 @@ import { AiNotice } from "@/components/tool/ai-notice"
 import { stepNotApplicable, useStep, useOtherStepResult } from "@/lib/use-step"
 import { useMembership } from "@/lib/use-membership"
 import { creditCostValue } from "@/lib/membership-view"
+import { costForChars, tiersCostText } from "@/lib/content-tiers"
+import { storedTargetFor } from "@/lib/generation-config"
+import { GenerationConfigDialog } from "../content/generation-config"
 import { patchErrorMessage, patchStep } from "@/lib/project"
 import { clauseLocationIn, groupDocSections, type DocSentence } from "@/lib/doc-sections"
 import { outlineReuseCandidates, type OutlineReuseCandidate } from "@/lib/project"
@@ -98,6 +101,21 @@ export default function OutlinePage() {
   const router = useRouter()
   // 计费步绝不自动触发：该步未跑时停在显式生成入口，用户点击才跑
   const { projectId, info, data: real, dataLoading, running, phase, error, errorAction, start } = useStep<RealOutline>("outline")
+  // 唯一允许的自动触发：读标页「已知悉，生成投标文件大纲（N 积分）」跳转（?autostart=1）。
+  // 那一下点击即计费授权、按钮上已标注费用；这里只负责跑一次。
+  // one-shot ref + **立刻从地址栏摘掉参数**：ref 只活在本次挂载，刷新/登录态恢复会重挂载，
+  // 参数若留在 URL，一次授权会被重放成再扣一次（读标页同款处理，生产实测过的坑）。
+  const autoStarted = useRef(false)
+  useEffect(() => {
+    if (autoStarted.current || !projectId || !info || real || running) return
+    if (typeof window === "undefined") return
+    if (new URLSearchParams(window.location.search).get("autostart") !== "1") return
+    if (info.project.currentStep !== "outline") return   // 步序不对就别自动扣费撞墙
+    autoStarted.current = true
+    window.history.replaceState(null, "", window.location.pathname)
+    void start()
+  }, [projectId, info, real, running, start])
+
   // 整步进度 + 预估剩余（2026-08-17）：提纲内部是一次模型调用，按预估时间在 0-100 内插值
   const overall = useOverallProgress(projectId, "outline", running, phase, null, undefined, stepStartedAt(info, "outline"))
   // 可沿用的历史提纲（2026-08-16）：同一份招标文件、你自己的历史项目里改好的那版。
@@ -114,7 +132,7 @@ export default function OutlinePage() {
       alive = false
     }
   }, [projectId, canReuse])
-  const { overview } = useMembership()
+  const { overview, loading: membershipLoading } = useMembership()
   const outlineCost = creditCostValue(overview, "outline", 30)
 
   // 左栏原文：取 read 步结果的分句（按 id 前缀分组），未就绪为空（占位）
@@ -199,9 +217,23 @@ export default function OutlinePage() {
     !!real && JSON.stringify(buildOutlinePayload(techChapters, businessChapters, bizFirst)) !== savedRef.current
   const [leaveAsk, setLeaveAsk] = useState(false)
   const [going, setGoing] = useState(false)
+  // 正文生成的计费口径（与正文页同源，前端不写死价格）：阶梯没到手/未配置时按钮退回纯导航，
+  // 绝不亮一个算不出价的付费按钮（铁律：非确认态不渲染计费 CTA）。
+  const [genConfigOpen, setGenConfigOpen] = useState(false)
+  const tiers = overview?.contentTiers ?? []
+  const tiersConfigured = !membershipLoading && !!overview && tiers.length > 0
+  const storedTarget = projectId ? storedTargetFor(projectId) : undefined
+  const contentCost = storedTarget ? costForChars(tiers, storedTarget) : null
+  const contentDone = !!info?.steps.some((st) => st.step === "content" && st.status === "done")
 
   /** 「确认大纲，生成投标正文」：先把没落盘的存掉再跳。
-   *  存不下就不跳并弹窗说明——跳了改动就真没了，那正是本次要修的丢失。 */
+   *  存不下就不跳并弹窗说明——跳了改动就真没了，那正是本次要修的丢失。
+   *
+   *  2026-08-17 用户口径「少让用户点一步」：这一下不再是纯跳转。
+   *  · 本项目已设过目标字数 → 价格确定，按钮上就写着它，点击即授权，带 ?autostart=1
+   *    过去自动开跑（净省一次点击 + 一次页面往返）；
+   *  · 没设过 → 价格取决于字数，**必须先让用户选**：就地弹出同一个生成配置层
+   *    （价格显示在层里），确认后再跳并自动跑。绝不替用户挑一个字数去扣费。 */
   async function confirmAndGo() {
     if (going) return
     setGoing(true)
@@ -211,7 +243,13 @@ export default function OutlinePage() {
         return
       }
       setLeaveAsk(false)
-      router.push("/content")
+      if (contentDone || !tiersConfigured) {
+        router.push("/content")          // 已生成过 / 计费口径未就绪 → 纯导航，不授权
+      } else if (storedTarget) {
+        router.push("/content?autostart=1")
+      } else {
+        setGenConfigOpen(true)           // 先选字数（价格在弹层里），确认后再跳
+      }
     } finally {
       setGoing(false)
     }
@@ -678,7 +716,11 @@ export default function OutlinePage() {
           className="fixed bottom-6 right-6 z-40 inline-flex items-center gap-2 rounded-full gradient-brand px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-primary/30 transition-opacity hover:opacity-90 disabled:opacity-70"
         >
           {going ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
-          确认大纲，生成投标正文
+          {contentDone
+            ? "确认大纲，去看投标正文"
+            : contentCost != null
+              ? `确认大纲，生成投标正文（${contentCost} 积分）`
+              : "确认大纲，生成投标正文"}
           <ArrowRight className="size-4" />
         </button>
       )}
@@ -686,6 +728,21 @@ export default function OutlinePage() {
       {/* 只在**保存失败**时出现。正文按库里的提纲生成，此时放行等于用户改的标题、加的子项
           全部作废，事后回提纲页也看不到（2026-08-07 用户反馈的正是这一幕），所以宁可拦住。
           保存成功/仍在防抖窗口这两种常态不弹窗——confirmAndGo 会先存好再跳。 */}
+      {genConfigOpen && (
+        <GenerationConfigDialog
+          chapterCount={groups.reduce((n, g) => n + g.chapters.length, 0) || 10}
+          projectId={projectId}
+          info={info}
+          costText={tiersCostText(tiers)}
+          onConfirm={() => {
+            // 确认即授权：配置已由弹层存进 localStorage（按项目），正文页据此自动开跑
+            setGenConfigOpen(false)
+            router.push("/content?autostart=1")
+          }}
+          onClose={() => setGenConfigOpen(false)}
+        />
+      )}
+
       {leaveAsk && (
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-foreground/40 backdrop-blur-sm" onClick={() => setLeaveAsk(false)} aria-hidden />

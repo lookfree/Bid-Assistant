@@ -123,6 +123,21 @@ export default function ContentPage() {
 
   // outline 树 + content 各章 HTML → 构建章节树；计费步绝不自动触发，生成一律走显式按钮
   const { projectId, info, data: realBodies, dataLoading, running, progress, phase, error, errorAction, start } = useStep<RealChapters>("content")
+  // 唯一允许的自动触发：提纲页「确认大纲，生成投标正文（N 积分）」跳转（?autostart=1）。
+  // 那一下点击（或它弹出的字数配置层的确认）即计费授权，费用已在按钮/弹层上标注。
+  // one-shot ref + 立刻摘除参数：参数留在 URL 会被刷新/重挂载重放成再扣一次（读标页同款坑）。
+  const autoStarted = useRef(false)
+  useEffect(() => {
+    if (autoStarted.current || !projectId || !info || running) return
+    if (typeof window === "undefined") return
+    if (new URLSearchParams(window.location.search).get("autostart") !== "1") return
+    if (info.project.currentStep !== "content") return
+    if (info.steps.some((st) => st.step === "content" && st.status === "done")) return  // 已生成过不重跑
+    autoStarted.current = true
+    window.history.replaceState(null, "", window.location.pathname)
+    void startContent()
+  }, [projectId, info, running])
+
   // 整步进度 + 预估剩余（2026-08-17）：逐章 done/total 是真实分母（占 0-92），收尾段 92-100；
   // 预估按用户选的目标字数缩放——同一份标书选 2 万和 8 万，耗时差一倍不止。
   const overall = useOverallProgress(projectId, "content", running, phase,

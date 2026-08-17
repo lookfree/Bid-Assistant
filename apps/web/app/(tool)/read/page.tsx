@@ -98,6 +98,9 @@ export default function ReadPage() {
   const notApplicable = stepNotApplicable(info, "read")
   const { overview } = useMembership()
   const readCost = creditCostValue(overview, "read", 20)
+  // 下一步按钮要**在按钮上写清费用**并直接授权（2026-08-17 用户口径：少让用户点一步）——
+  // 费用不标就变成"点了才知道要扣钱"，那是计费红线里明令禁止的。
+  const outlineCost = creditCostValue(overview, "outline", 30)
   // 唯一允许的自动触发：从上传页「开始智能读标」跳转（URL 带 ?autostart=1，那一下点击即计费授权，
   // 费用已在上传按钮标注）。one-shot ref 保证只跑一次；其余场景一律走页面主按钮显式点击。
   const autoStarted = useRef(false)
@@ -115,6 +118,8 @@ export default function ReadPage() {
   // 数据一律来自真实 read 步结果；该步未跑时页面停在显式生成入口，绝不渲染示例。
   // 类目派生见 ./categories：合并去重 + 定序 + 补齐评分类目。跑完前先用分轮产出上屏——
   // 大标书 10 轮跑十几分钟，基础轮一两分钟就能出「项目概况/资格要求」，**只渲染分类解读这一栏**。
+  // 提纲是否已生成：已生成时下一步按钮退回纯导航（不标费用、不自动跑）
+  const outlineDone = !!info?.steps.some((st) => st.step === "outline" && st.status === "done")
   const scoringRows = useMemo(() => real?.scoring ?? [], [real])
   const categories = useMemo(
     () => readCategories<AnalysisItem>(real, partial, scoringRows.length > 0, (k) => CATEGORY_ICONS[k] ?? FileText),
@@ -769,14 +774,28 @@ export default function ReadPage() {
       )}
 
       {/* 右下角悬浮：进入大纲生成。**读标未完成不渲染**——此时页面上只有分轮的半截解读，
-          点进去会拿不完整的读标结论去生成提纲（服务端也会按步序拒掉，白让用户撞一次墙）。 */}
+          点进去会拿不完整的读标结论去生成提纲（服务端也会按步序拒掉，白让用户撞一次墙）。
+          2026-08-17 用户口径「少让用户点一步」：这一下点击**即计费授权**，带 ?autostart=1
+          过去让提纲页自动开跑，不必到那边再点一次「生成」。费用写在按钮上——不标费用的
+          授权按钮就是"点了才知道扣钱"，计费红线明令禁止。
+          提纲已生成过的项目不再标费用、也不自动跑（那是纯导航，点了不该花钱）。 */}
       {real && (
       <Link
-        href={info?.project.kind === "review" ? "/risk" : "/outline"}
+        href={
+          info?.project.kind === "review"
+            ? "/risk"
+            : outlineDone
+              ? "/outline"
+              : "/outline?autostart=1"
+        }
         className="fixed bottom-6 right-6 z-40 inline-flex items-center gap-2 rounded-full gradient-brand px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-primary/30 transition-opacity hover:opacity-90"
       >
         <CheckCircle2 className="size-4" />
-        {info?.project.kind === "review" ? "已知悉，去标书审查" : "已知悉，生成投标文件大纲"}
+        {info?.project.kind === "review"
+          ? "已知悉，去标书审查"
+          : outlineDone
+            ? "已知悉，去看投标文件大纲"
+            : `已知悉，生成投标文件大纲（${outlineCost} 积分）`}
         <ArrowRight className="size-4" />
       </Link>
       )}
