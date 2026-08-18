@@ -3,6 +3,14 @@
 # server 层继承的全部 add_header（nginx add_header 的继承规则）。
 include /etc/nginx/conf.d/_sec.inc;
 
+# HSTS（2026-08-18 域名成为正式入口后开启）。放在本片段而非 _tls.inc，是因为 `location /`
+# 与 `/_next/static/` 自带 add_header、会丢掉 server 层继承的头，而它们正是 HTML 响应的出口。
+# 明文 :80 的 server 也会发这一条，浏览器按规范**忽略非 TLS 上的 HSTS**，故无害。
+# max-age 先给 30 天而不是常见的 1 年：本证书**手动续期**（2027-03-04 到期），一旦漏续，
+# 长 max-age 会把访问过的浏览器长期锁死在打不开的 https 上，连临时降回 http 都做不到。
+# 不带 includeSubDomains/preload：子域（将来的 admin.）还没上 TLS，别提前替它们承诺。
+add_header Strict-Transport-Security "max-age=2592000" always;
+
 # CSP（2026-08-05 安全测试报告项）。指令含义与取舍见 _sec-admin.inc，此处只记与后台的差异。
 #
 # img-src 多一个 https:——支付二维码是收钱吧下单接口回的 qr_code_image_url，指向他们的图床，

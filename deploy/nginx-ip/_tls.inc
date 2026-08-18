@@ -11,5 +11,6 @@ ssl_session_cache shared:SSL:10m;
 ssl_session_timeout 1d;
 ssl_session_tickets off;
 
-# HSTS 暂不加：现在 http://117.131.84.2:18080 仍是主入口，HSTS 会把同一浏览器对该域名的
-# http 访问全部强制跳 https。等 443 实测通、且 18080 退役后再补 Strict-Transport-Security。
+# HSTS 不在这里发，在 _sec-site.inc 里：本文件只在 server 层 include，而 `location /`
+# 与 `/_next/static/` 各自带了 add_header —— 它们会丢掉 server 层继承的全部头，HTML 响应
+# （最该带 HSTS 的那个）恰好就落在其中。
