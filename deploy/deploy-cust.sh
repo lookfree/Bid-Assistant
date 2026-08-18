@@ -123,8 +123,13 @@ echo "=== 同步源码到 230（含 deploy/ 下的 nginx 配置与 compose）===
 git archive --format=tar HEAD | ssh $SSHOPT "$R230" 'tar xf - -C ~/bid/app' || abort "源码同步失败"
 
 echo "=== nginx 配置语法校验（接 compose 网络才解析得到上游）==="
-ssh $SSHOPT "$R230" 'docker run --rm --network bid_default \
-  -v /home/angeek/bid/app/deploy/nginx-ip:/etc/nginx/conf.d:ro --entrypoint sh \
+# 两处都是 2026-08-18 上 HTTPS 时暴露的：
+#  ① 证书目录必须一起挂：不挂就必报 cannot load certificate，校验的是一个线上不存在的形态；
+#  ② `... | tail -3` 让整条管道的退出码取自 tail（恒为 0），`|| abort` **从来没可能触发**——
+#     这个校验此前是纯装饰。set -o pipefail 之后它才真的拦得住。
+ssh $SSHOPT "$R230" 'set -o pipefail; docker run --rm --network bid_default \
+  -v /home/angeek/bid/app/deploy/nginx-ip:/etc/nginx/conf.d:ro \
+  -v /home/angeek/bid/certs:/etc/nginx/certs:ro --entrypoint sh \
   $(docker inspect bid-nginx-1 --format "{{.Config.Image}}") -c "nginx -t 2>&1" | tail -3' \
   || abort "nginx 配置校验失败，未动线上"
 
