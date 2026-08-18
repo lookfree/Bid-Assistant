@@ -14,4 +14,8 @@ include /etc/nginx/conf.d/_sec.inc;
 #
 # 其余方向与后台同样收紧：上传/下载走同源 /s3/ 代理（MINIO_PROXY_PREFIX=/s3），
 # 支付是扫码不跳转外部网关（form-action 'self' 安全），全站无 iframe（frame-ancestors 'none' 安全）。
-add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; media-src 'self' blob:" always;
+# 微信扫码登录要放行两个微信域（2026-08-18 上域名后接微信开放平台）：
+#   script-src res.wx.qq.com  → 官方 wxLogin.js（登录页按需加载，见 web/lib/wechat-login.ts）
+#   frame-src open.weixin.qq.com → 二维码本体是该域的 iframe，不放行则整块空白且只在控制台报 CSP
+# 二维码 iframe 内部的资源受它自己的源约束，与本站 CSP 无关，故只需这两条。
+add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-inline' https://res.wx.qq.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; frame-src https://open.weixin.qq.com; worker-src 'self' blob:; media-src 'self' blob:" always;
