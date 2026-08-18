@@ -26,4 +26,10 @@ add_header Strict-Transport-Security "max-age=2592000" always;
 #   script-src res.wx.qq.com  → 官方 wxLogin.js（登录页按需加载，见 web/lib/wechat-login.ts）
 #   frame-src open.weixin.qq.com → 二维码本体是该域的 iframe，不放行则整块空白且只在控制台报 CSP
 # 二维码 iframe 内部的资源受它自己的源约束，与本站 CSP 无关，故只需这两条。
-add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-inline' https://res.wx.qq.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; frame-src https://open.weixin.qq.com; worker-src 'self' blob:; media-src 'self' blob:" always;
+# 阿里云验证码2.0（滑块）同样要放行（2026-08-18 上 HTTPS 后重开滑块）：
+#   script-src / style-src *.alicdn.com → SDK 入口在 o.alicdn.com，但它自己还会拉
+#                                        g.alicdn.com / x.alicdn.com 的分片脚本与 main.css（2026-08-18 线上实测）
+#   connect-src *.aliyuncs.com          → 滑块的校验请求
+# 少放一条的后果不是「滑块不好用」而是**登录直接瘫**：前端是 fail-closed 的，SDK 加载不出来
+# 就不让发验证码（见 lib/use-sms-sender.ts 的 captchaError 分支）。
+add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-inline' https://res.wx.qq.com https://*.alicdn.com; style-src 'self' 'unsafe-inline' https://*.alicdn.com; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://*.aliyuncs.com; frame-src https://open.weixin.qq.com; worker-src 'self' blob:; media-src 'self' blob:" always;

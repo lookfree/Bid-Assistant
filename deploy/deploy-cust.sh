@@ -159,10 +159,22 @@ $DC build api agent-api 2>&1 | tail -3" || abort "api/agent 构建失败"
 
 if wants web || wants admin; then
   echo "=== mbp 交叉构建 web + admin (amd64) 并投送 ==="
+  # 滑块验证码的三个 NEXT_PUBLIC_* 是**构建期**注入的（Next 把它们编译进产物，运行时改环境变量无效），
+  # 所以必须在这里取。值只存 230 的 .env.deploy.local（唯一来源），不在 mbp 上再留一份会漂移的副本。
+  # 取不到就按关闭构建：宁可滑块不出现，也不能构建出一个「前端要求滑块、SDK 却没身份」的死局。
+  CAP_ARGS=""
+  if wants web; then
+    for k in NEXT_PUBLIC_CAPTCHA_ENABLED NEXT_PUBLIC_CAPTCHA_SCENE_ID NEXT_PUBLIC_CAPTCHA_PREFIX; do
+      v=$(ssh $SSHOPT "$R230" "grep -m1 '^$k=' ~/bid/app/deploy/.env.deploy.local | cut -d= -f2-" 2>/dev/null)
+      [ -n "$v" ] && CAP_ARGS="$CAP_ARGS --build-arg $k=$v"
+    done
+    echo "web 构建参数：$(echo "$CAP_ARGS" | sed 's/SCENE_ID=[^ ]*/SCENE_ID=***/')"
+  fi
   for app in web admin; do
     wants "$app" || continue
+    [ "$app" = web ] || CAP_ARGS=""   # 运营后台不接滑块
     run_build "$app" docker buildx build ${BUILDER:+--builder $BUILDER} --platform linux/amd64 \
-      -f "apps/$app/Dockerfile" -t "bid-$app:latest" --load .
+      $CAP_ARGS -f "apps/$app/Dockerfile" -t "bid-$app:latest" --load .
     docker image inspect "bid-$app:latest" --format "$app arch={{.Architecture}}"
     rm -f "/tmp/bid-$app.tar.gz"
     docker save "bid-$app:latest" | gzip > "/tmp/bid-$app.tar.gz" || abort "$app 导出失败"
