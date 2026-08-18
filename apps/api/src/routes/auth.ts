@@ -11,7 +11,10 @@ import type { SmsCodeService } from "../services/sms-code"
 const phoneRe = /^\+?\d{6,15}$/
 const sendSchema = z.object({
   phone: z.string().regex(phoneRe),
-  captchaToken: z.string().max(4096).optional(), // param 是 JSON 串几百字节，加上限防超大 body 滥用
+  // 阿里云的 captchaVerifyParam 是个 JSON 串，**实测远不止"几百字节"**：2026-08-18 滑块上线当天，
+  // 真实 token 超过原先的 4096 上限 → 整个 body 校验不过 → 谁都发不出验证码。上限只为挡超大 body
+  // 滥用（真正的体量闸是 nginx 的 client_max_body_size），给足余量即可，别再拿它当格式校验使。
+  captchaToken: z.string().max(32768).optional(),
 })
 const verifySchema = z.object({
   phone: z.string().regex(phoneRe),
@@ -36,7 +39,12 @@ export function authRoutes(deps: AuthRouteDeps) {
 
   r.post("/sms/send", async (c) => {
     const body = sendSchema.safeParse(await c.req.json().catch(() => ({})))
-    if (!body.success) return c.json({ error: "invalid_phone" }, 400)
+    if (!body.success) {
+      // 只有手机号那条不过才说手机号。此前不分字段一律回 invalid_phone，
+      // 结果 token 超长被显示成"手机号格式不正确"，号码明明是对的（2026-08-18 排查被带偏）。
+      const badPhone = body.error.issues.some((i) => i.path[0] === "phone")
+      return c.json({ error: badPhone ? "invalid_phone" : "invalid_captcha_token" }, 400)
+    }
     if (deps.captchaEnabled && !(await deps.verifyCaptcha(body.data.captchaToken))) {
       return c.json({ error: "captcha_required" }, 403)
     }

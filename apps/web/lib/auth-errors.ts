@@ -5,6 +5,8 @@ import { ApiError } from "./api-client"
 const AUTH_ERROR_MESSAGES: Record<string, string> = {
   invalid_phone: "手机号格式不正确",
   captcha_required: "请先完成人机验证",
+  // 人机验证的数据本身有问题：绝不能再复用手机号文案（2026-08-18 就是这么被带偏的）
+  invalid_captcha_token: "人机验证数据异常，请刷新页面后重试",
   terms_required: "请先同意《用户协议》和《隐私政策》后再登录",
   invalid_input: "手机号或验证码格式有误",
   // 三种情况必须分开说。合成一句「验证码错误或已过期」的话，输错一位的用户会被告知"已过期"，

@@ -41,6 +41,34 @@ describe("/auth flow", () => {
     expect(res.status).toBe(200)
   })
 
+  // 2026-08-18 线上事故：滑块开启后所有人发不出验证码。阿里云的 captchaVerifyParam 实测超过
+  // 当时的 4096 上限 → zod 整体不过 → 400，而且**文案说的是「手机号格式不正确」**，
+  // 手机号明明是对的，排查被带偏了半天。两条都要钉住。
+  it("滑块 token 很长也不许被当成手机号错误（真实 param 就是几 KB 的 JSON）", async () => {
+    const res = await app.request("/auth/sms/send", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ phone, captchaToken: "a".repeat(12000) }),
+    })
+    expect(res.status).toBe(200) // 本用例未开滑块校验；关键是别在长度上拒
+  })
+
+  it("真的手机号格式错才说手机号；其它字段不合格必须说别的，不能栽赃手机号", async () => {
+    const bad = await app.request("/auth/sms/send", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ phone: "abc" }),
+    })
+    expect(((await bad.json()) as { error: string }).error).toBe("invalid_phone")
+    const wrongType = await app.request("/auth/sms/send", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ phone, captchaToken: 12345 }),
+    })
+    expect(wrongType.status).toBe(400)
+    expect(((await wrongType.json()) as { error: string }).error).not.toBe("invalid_phone")
+  })
+
   it("verify with wrong code -> 401", async () => {
     // 带 agreedToTerms 以越过“先判协议”，真正测错码（terms-first：未同意协议不会消费码）
     const res = await app.request("/auth/sms/verify", {
