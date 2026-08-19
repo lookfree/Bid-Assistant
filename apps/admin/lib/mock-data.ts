@@ -256,6 +256,8 @@ export const orderStatusLabel: Record<OrderStatus, string> = {
 export interface OrderRow {
   id: string
   userId: string
+  /** 用户展示名（昵称 → 打码手机号 → id），退款前核对「这笔是谁的」；mock 行不带 */
+  userName?: string
   company: string
   type: OrderType
   /** 会员订单的「套餐 · 周期」展示串（如「专业版 · 包月」）；非会员订单为空串 */

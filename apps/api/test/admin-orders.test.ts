@@ -6,7 +6,7 @@ import { adminRoutes } from "../src/routes/admin"
 import { listOrders, getOrderDetail } from "../src/services/admin/admin-orders"
 import { getDb, closeDb } from "../src/db/client"
 import { users, adminUsers, paymentOrders, refunds, adminAuditLogs, plans } from "../src/db/schema"
-import { makeUserWithNickname, makeAdminSession, TEST_TIMEOUT_MS } from "./repos/helpers"
+import { makeUserWithNickname, makeAdminSession, createTestUser, uniquePhone, TEST_TIMEOUT_MS } from "./repos/helpers"
 
 setDefaultTimeout(TEST_TIMEOUT_MS) // 连远程 DB（跑法：./test-on-mbp.sh test/admin-orders.test.ts）
 
@@ -62,6 +62,39 @@ describe("spec310 订单列表带套餐与周期", () => {
     const o = await paidOrder(u, 100)
     const res = await listOrders({ userId: u, page: 1, pageSize: 20 })
     expect(res.items.find((r) => r.id === o.id)!.planName).toBeNull()
+  })
+})
+
+// 退款时运营要先确认「这笔是谁的」。列表此前只有 user_id（UUID），核对得去用户页反查，
+// 一单一查很容易退错人。展示名口径与账本页/用户选择器一致（userDisplayName）。
+describe("订单列表带用户展示名", () => {
+  it("有昵称 → 用昵称", async () => {
+    const u = await makeUserWithNickname(regU, `退款测试_${Date.now().toString(36)}`)
+    const o = await paidOrder(u)
+    const res = await listOrders({ userId: u, page: 1, pageSize: 20 })
+    expect(res.items.find((r) => r.id === o.id)!.userName).toMatch(/^退款测试_/)
+  })
+
+  it("无昵称 → 回落打码手机号（不是裸 UUID，也不泄露完整号码）", async () => {
+    const phone = uniquePhone()
+    const user = await createTestUser(phone)
+    regU(user.id)
+    const o = await paidOrder(user.id)
+    const res = await listOrders({ userId: user.id, page: 1, pageSize: 20 })
+    const name = res.items.find((r) => r.id === o.id)!.userName
+    expect(name).toBe(`${phone.slice(0, 3)}****${phone.slice(-4)}`)
+    expect(name).not.toBe(user.id)
+  })
+
+  it("全量视图下不同用户显示不同名字（同页混排也分得清）", async () => {
+    const a = await makeUserWithNickname(regU)
+    const b = await makeUserWithNickname(regU)
+    const oa = await paidOrder(a)
+    const ob = await paidOrder(b)
+    const res = await listOrders({ page: 1, pageSize: 200 })
+    const mine = res.items.filter((r) => r.id === oa.id || r.id === ob.id)
+    expect(mine).toHaveLength(2)
+    expect(new Set(mine.map((r) => r.userName)).size).toBe(2)
   })
 })
 

@@ -72,6 +72,7 @@ function apiOrderToRow(o: ApiOrder): OrderRow {
   return {
     id: o.id,
     userId: o.userId,
+    userName: o.userName || "-",
     company: "-",
     type: asOrderType(o.type),
     planLabel: orderPlanLabel(o),
@@ -122,6 +123,7 @@ export function OrdersClient() {
       const matchKw =
         !kw ||
         o.id.includes(kw) ||
+        (o.userName ?? "").includes(kw) ||
         o.company.includes(kw) ||
         o.alipayTradeNo.includes(kw)
       const matchType = type === "all" || o.type === type
@@ -189,7 +191,7 @@ export function OrdersClient() {
             <Input
               value={keyword}
               onChange={(e) => reset(setKeyword)(e.target.value)}
-              placeholder="搜索订单号 / 公司 / 支付宝交易号"
+              placeholder="搜索订单号 / 用户 / 支付宝交易号"
               className="pl-8"
             />
           </div>
@@ -233,6 +235,7 @@ export function OrdersClient() {
             <TableHeader>
               <TableRow>
                 <TableHead>订单号</TableHead>
+                <TableHead>用户</TableHead>
                 <TableHead>类型</TableHead>
                 <TableHead>套餐 / 周期</TableHead>
                 <TableHead className="text-right">金额</TableHead>
@@ -250,6 +253,7 @@ export function OrdersClient() {
                   onClick={() => setSelected(o)}
                 >
                   <TableCell className="font-mono text-xs">{o.id}</TableCell>
+                  <TableCell className="text-sm">{o.userName || "—"}</TableCell>
                   <TableCell className="text-sm">
                     {orderTypeLabel[o.type]}
                   </TableCell>
@@ -276,7 +280,7 @@ export function OrdersClient() {
               {paged.length === 0 && (
                 <TableRow>
                   <TableCell
-                    colSpan={8}
+                    colSpan={9}
                     className="h-24 text-center text-muted-foreground"
                   >
                     {loading ? "加载中…" : "没有匹配的订单"}
@@ -346,7 +350,7 @@ function OrderDetailDialog({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="font-mono text-base">{order.id}</DialogTitle>
-          <DialogDescription>{order.company}</DialogDescription>
+          <DialogDescription>{order.userName || order.company}</DialogDescription>
         </DialogHeader>
         <div className="flex flex-col">
           <Info label="订单类型" value={orderTypeLabel[order.type]} />
