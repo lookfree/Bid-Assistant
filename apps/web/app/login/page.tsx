@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState, Suspense } from "react"
+import { useState, useEffect, Suspense } from "react"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Phone, ShieldCheck, Sparkles, ArrowRight, FileSearch, PenLine, Download, QrCode } from "lucide-react"
@@ -53,24 +53,28 @@ function LoginContent() {
     }
   }
 
-  // 微信登录：先建 state（含协议同意位）→ 有真实 appId 则渲染官方二维码；开发期无凭据给出提示。
-  async function handleWechatQr() {
-    if (!agreed) {
-      setMsg("请先同意《用户协议》和《隐私政策》")
-      return
-    }
-    setMsg("")
-    try {
-      const { state, appId, scope, redirectUri } = await api.authApi.wechatAuthUrl(agreed)
-      if (!appId) {
-        setMsg("开发期未配置微信凭据，二维码暂不可用（真实凭据就绪后自动生效）")
-        return
+  // 微信登录：切到页签即自动出码，无需再点按钮（用户反馈）。协议同意位烙在 state 里，
+  // 勾选状态一变就重建 state 并重渲染二维码——老用户不勾也能扫码登录（服务端只对新号要求协议）。
+  useEffect(() => {
+    if (tab !== "wechat") return
+    let alive = true
+    ;(async () => {
+      try {
+        const { state, appId, scope, redirectUri } = await api.authApi.wechatAuthUrl(agreed)
+        if (!alive) return // 页签已切走/勾选又变了：别用旧 state 盖掉新二维码
+        if (!appId) {
+          setMsg("微信登录暂未配置，请用手机号登录")
+          return
+        }
+        await renderWxLogin({ id: "wx-qr", appid: appId, scope, redirect_uri: encodeURIComponent(redirectUri), state })
+      } catch (e) {
+        if (alive) setMsg(authErrorMessage(e, "二维码加载失败，请刷新重试"))
       }
-      await renderWxLogin({ id: "wx-qr", appid: appId, scope, redirect_uri: encodeURIComponent(redirectUri), state })
-    } catch (e) {
-      setMsg(authErrorMessage(e, "生成二维码失败，请重试"))
+    })()
+    return () => {
+      alive = false
     }
-  }
+  }, [tab, agreed])
 
   const switchTab = (t: "phone" | "wechat") => {
     setTab(t)
@@ -198,17 +202,9 @@ function LoginContent() {
                   className="flex min-h-[208px] w-full items-center justify-center rounded-lg border border-dashed border-input bg-background"
                 >
                   <span className="px-6 text-center text-sm text-muted-foreground">
-                    点击下方按钮生成微信登录二维码
+                    二维码加载中…
                   </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleWechatQr}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-6 py-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-                >
-                  <QrCode className="size-4" />
-                  生成二维码
-                </button>
                 <p className="text-xs text-muted-foreground">
                   微信扫码授权后需绑定手机号；该手机号已注册的，将直接登录原账号
                 </p>
