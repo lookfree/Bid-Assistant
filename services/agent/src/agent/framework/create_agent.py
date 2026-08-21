@@ -19,6 +19,15 @@ from agent.telemetry.tool_recorder import ToolCallRecorder
 # 单条 submit 事件里存的提交内容上限（字符）：足够看清结构/定位坏字段，又不让单行 jsonb 失控膨胀。
 _SUBMIT_LOG_MAX = 40_000
 
+# 带工具的图路径（agent ↔ tools 循环）的轮数上限，按超步计：**超步 = 2×工具轮 + 1**。
+# 正常路径（调一次工具 + 提交 + 收尾轮）= 5 超步；15 给到 7 个工具轮，是正常路径的 3 倍余量。
+# 为什么必须显式设：resilient_tool_node 把工具异常转成 error ToolMessage 回喂（不炸图），
+# 模型可以对同一个失败工具无限重试；而 LangGraph 1.x 的默认值是 **10007**
+# （langgraph/_internal/_config.py，不是老版的 25）——不设等于没有上限，而这条路上每一轮
+# 都是一次带整份招标文件的真实调用。超限抛 GraphRecursionError → 节点失败 → 既有失败退款链路接管。
+# 不做成运营后台旋钮：这是结构性安全边界，调低会误杀合法慢路径，调高是静默烧钱。
+TOOL_LOOP_RECURSION_LIMIT = 15
+
 
 def _clip(v: Any) -> str:
     """把任意提交内容/输入规整成有界字符串（超限截断加省略号），防单行 jsonb 失控膨胀。"""
@@ -169,7 +178,8 @@ async def run_submit_agent(ctx, prompt: str, user_msg: str,
         # 而它恰恰是出问题才会走到的兜底路径（预解析失败让模型自己调 parse_document），
         # 排查时最需要「调了哪个工具、参数是什么、报了什么错」，只能靠 token 表反推（2026-08-05）。
         await sub.ainvoke({"messages": [{"role": "user", "content": user_msg}]},
-                          config={"callbacks": [ToolCallRecorder(ctx, desc)]})
+                          config={"callbacks": [ToolCallRecorder(ctx, desc)],
+                                  "recursion_limit": TOOL_LOOP_RECURSION_LIMIT})
     else:
         await _forced_submit(ctx, prompt, user_msg, submit, tool_name, label=desc,
                              attempts=attempts, temperature=temperature)
