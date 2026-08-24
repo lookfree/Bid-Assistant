@@ -34,7 +34,7 @@ modelsRouter.put("/", requirePermission("config.write"), async (c) => {
   try {
     // 保存前对链路成员真实测活（生产实测：test.status 客户端自报,无效 key 带着旧 "passed" 上链当主力,
     // 首个 run 才 401 暴露）。每家 1~3s、管理操作低频,同步等待可接受;通过即盖新测试章。
-    await retestChain(merged, testModel)
+    await retestChain(merged, testModel, stored)   // stored 用于判定「链上成员这次动没动」
     await saveModelConfig(merged)
   } catch (e) {
     // 失败必须带具体原因（QA:只见「保存失败,请重试」,运营不知道错在哪个条目哪个字段）

@@ -220,21 +220,44 @@ export class ChainMemberTestFailedError extends Error {
   }
 }
 
+/** 本次保存是否改动了「我们实际会去调用的那个东西」——决定该成员要不要现场重测。
+ *  只看调用身份（服务商/模型名/端点/密钥）；temperature 之类的采样参数改了不影响可达性。 */
+function callTargetChanged(next: ModelEntry, prev: ModelEntry | undefined): boolean {
+  if (!prev) return true
+  return next.provider !== prev.provider || next.model !== prev.model ||
+    next.baseUrl !== prev.baseUrl || next.apiKey !== prev.apiKey
+}
+
 /** 保存前对链路成员**真实测活**并就地盖新测试章（2026-08-01 生产实测的闸门漏洞）：
  *  test.status 是客户端自报的——改 key/换链路时旧的 "passed" 原样随保存生效,无效 key(恒 401)
  *  照样进链路当主力。served 状态核不出"这个 passed 是不是对当前这把 key 测的",唯一可靠的判据
  *  是保存那一刻真的连一次。只测链路成员(库存条目不上链不拦,上链必经保存=必经这里);
- *  全部通过才允许保存,失败点名到条目。tester 注入便于测试(生产传 agent-client.testModel)。 */
+ *  全部通过才允许保存,失败点名到条目。tester 注入便于测试(生产传 agent-client.testModel)。
+ *
+ *  **测的是「本次被推上链或被改动」的成员**（stored 给出上一版用于比对）：链上原样未动的成员
+ *  不重测——闸是防未验证的东西上链,不是让一个坏成员冻结整份配置的编辑能力（2026-08-24 生产）。 */
 export async function retestChain(
   cfg: ModelConfig,
   tester: (opts: { provider: string; model?: string; base_url?: string; api_key?: string }) =>
     Promise<{ ok: boolean; latencyMs?: number; error?: string }>,
+  stored?: ModelConfig,
 ): Promise<void> {
   const byId = new Map(cfg.models.map((m) => [m.id, m]))
+  const prevById = new Map((stored?.models ?? []).map((m) => [m.id, m]))
+  const prevChain = new Set(stored?.chain ?? [])
   await Promise.all(
     [...new Set(cfg.chain)].map(async (id) => {
       const m = byId.get(id)
       if (!m) return // 链路引用缺失由 validateModelConfig 报,这里不重复
+      // 已在链上且这次一个字没动 ⇒ 不重测。闸的本意是防「未经验证的东西**被推上**链」,
+      // 而不是让链上一个坏成员冻结整份配置的编辑能力——2026-08-24 生产：自建 vLLM 端点崩了,
+      // 运营想加官方 DeepSeek 当备用救火,点「保存参数」一律 400,被那个坏模型连坐。
+      // 跳过时 test 一律以库里为准:客户端传上来的 passed 不作数(否则前端塞一个就绕过了闸)。
+      const prev = prevById.get(id)
+      if (prev && prevChain.has(id) && !callTargetChanged(m, prev)) {
+        m.test = prev.test
+        return
+      }
       let r: { ok: boolean; latencyMs?: number; error?: string }
       try {
         r = await tester({ provider: m.provider, model: m.model, base_url: m.baseUrl, api_key: m.apiKey })

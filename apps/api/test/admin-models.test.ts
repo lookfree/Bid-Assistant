@@ -74,6 +74,53 @@ describe("spec319 /admin-api/models", () => {
     expect(stored.models[0]!.test).toMatchObject({ status: "passed", latencyMs: 66 })
   })
 
+  // 2026-08-24 生产：链上主模型（自建 vLLM 端点）崩了，运营想加一个官方 DeepSeek 当备用来救火，
+  // 结果点「保存参数」一律 400——闸把「这次根本没动过的链上成员」也重测，用坏模型连坐了无关的保存。
+  // 闸的本意是防「未经验证的东西**被推上**链」，不是让一个坏成员冻结整份配置的编辑能力。
+  const M1 = { id: "m1", provider: "deepseek", model: "deepseek-chat", params: { temperature: 0.7, maxTokens: 8192, topP: 1 }, enabled: true, test: { status: "passed" } }
+
+  async function seedChain(headers: Record<string, string>) {
+    await clearAgentModel()
+    const res = await withAgentTest({ ok: true, latency_ms: 5 }, () =>
+      app.request("http://x/admin-api/models", { method: "PUT", headers, body: JSON.stringify({ models: [M1], chain: ["m1"] }) }))
+    expect(res.status).toBe(200)
+  }
+
+  it("PUT 链上成员原样未动 → 不重测，其故障不阻塞无关条目的保存", async () => {
+    const { headers } = await makeAdminSession("ops", regA)
+    await seedChain(headers)
+    // 此刻链上的 m1 已经坏了（测活必失败）；本次只想新增一个不上链的库存条目 m2
+    const m2 = { id: "m2", provider: "glm", model: "glm-4-flash", params: { temperature: 0.7, maxTokens: 4096, topP: 1 }, enabled: false, test: { status: "untested" } }
+    const res = await withAgentTest({ ok: false, error: "EngineCore encountered an issue" }, () =>
+      app.request("http://x/admin-api/models", { method: "PUT", headers, body: JSON.stringify({ models: [M1, m2], chain: ["m1"] }) }))
+    expect(res.status).toBe(200)
+    const stored = await getModelConfig()
+    expect(stored.models.map((m) => m.id).sort()).toEqual(["m1", "m2"])
+    expect(stored.chain).toEqual(["m1"])          // 链未被本次保存改动
+  })
+
+  it("PUT 改了链上成员的模型名 → 仍必须现场测活，坏了照样 400（不给绕过闸的口子）", async () => {
+    const { headers } = await makeAdminSession("ops", regA)
+    await seedChain(headers)
+    const changed = { ...M1, model: "deepseek-v4-pro" }   // 换了模型名 = 换了要调用的东西
+    const res = await withAgentTest({ ok: false, error: "model does not exist" }, () =>
+      app.request("http://x/admin-api/models", { method: "PUT", headers, body: JSON.stringify({ models: [changed], chain: ["m1"] }) }))
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ error: "chain_member_test_failed", id: "m1" })
+  })
+
+  it("PUT 跳过重测的成员，test 状态以库里为准（前端塞的 passed 不作数）", async () => {
+    const { headers } = await makeAdminSession("ops", regA)
+    await seedChain(headers)
+    const lying = { ...M1, test: { status: "passed", latencyMs: 999999, at: "2000-01-01T00:00:00.000Z" } }
+    const res = await withAgentTest({ ok: false, error: "should not be called" }, () =>
+      app.request("http://x/admin-api/models", { method: "PUT", headers, body: JSON.stringify({ models: [lying], chain: ["m1"] }) }))
+    expect(res.status).toBe(200)
+    const stored = await getModelConfig()
+    expect(stored.models[0]!.test.latencyMs).toBe(5)          // 库里那次真测的 5ms，不是客户端编的
+    expect(stored.models[0]!.test.at).not.toBe("2000-01-01T00:00:00.000Z")
+  })
+
   it("PUT 全合法 → 200 落库", async () => {
     const { headers } = await makeAdminSession("ops", regA)
     const body = {
