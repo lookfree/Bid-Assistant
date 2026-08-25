@@ -107,53 +107,31 @@ _OUTLINE_ARGS_REF = {"chapters": [
 ]}
 
 
-def test_same_tender_file_reuses_the_cached_outline(submit_gateway, monkeypatch):
-    """2026-08-14 用户实测：同一份招标书多跑几次，提纲 12↔15 章漂移。同文件字节哈希
-    命中缓存：第二次**零模型调用**、章数/标题逐字同第一次；structure_ref 按标题重映射
-    到本轮读标的构成项 id（构成项 id 由读标模型自拟，跨轮不稳）。"""
+def test_same_tender_file_regenerates_every_time(submit_gateway, monkeypatch):
+    """2026-08-25 用户口径：提纲不再缓存，每次都重新生成。同一份招标文件跑第二次，
+    **仍然调模型**，且全程不往 Redis 写任何提纲条目（收敛靠 temperature=0，不靠缓存）。"""
     import agent.agents.bidding_agent.nodes.outline as om
-    monkeypatch.setattr(om, "_read_file_bytes", lambda key: b"TENDER")
+    # 必须打桩：旧的缓存实现要读招标文件字节算哈希,不打桩会走真 MinIO 拿 NoSuchKey →
+    # digest=None → 缓存自我关闭 → 下面两条行为断言在旧代码下也会通过（=空断言）。
+    # raising=False：函数已随缓存删除,新代码下这行是无副作用的空操作。
+    monkeypatch.setattr(om, "_read_file_bytes", lambda key: b"TENDER", raising=False)
     r = _FakeRedis()
     gw1 = submit_gateway({"submit_outline": _OUTLINE_ARGS_REF})
-    node1 = make_outline_node(RunContext(run_id="r1", agent_type="bidding_agent",
-                                         thread_id="t1", gateway=gw1, redis=r))
-    st1 = {"files": [{"key": "u1/tender.docx"}],
-           "read": {"required_structure": [
-               {"id": "s-old", "title": "投标报价一览表", "kind": "form", "required": True}]}}
-    out1 = asyncio.run(node1(st1))
-    gw2 = submit_gateway({})            # 命中缓存就绝不会碰模型；碰了必然拿不到提交而炸
-    node2 = make_outline_node(RunContext(run_id="r2", agent_type="bidding_agent",
-                                         thread_id="t2", gateway=gw2, redis=r))
-    st2 = {"files": [{"key": "u2/另一次上传.docx"}],       # 不同上传 key，同字节
-           "read": {"required_structure": [
-               {"id": "s-new", "title": "投标报价一览表", "kind": "form", "required": True}]}}
-    out2 = asyncio.run(node2(st2))
-    assert [c["title"] for c in out2["outline"]["chapters"]] == \
-           [c["title"] for c in out1["outline"]["chapters"]], "同文件提纲不一致"
-    refs = [c.get("structure_ref") for c in out2["outline"]["chapters"]]
-    assert "s-new" in refs and "s-old" not in refs, "构成项引用没重映射到本轮读标"
-    assert not gw2.chats, "命中缓存还调了模型"
-
-
-def test_changed_tender_bytes_regenerate(submit_gateway, monkeypatch):
-    """文件字节变了（哪怕上传 key 相同）→ 缓存失效照常生成，不吃旧提纲。"""
-    import agent.agents.bidding_agent.nodes.outline as om
-    r = _FakeRedis()
-    monkeypatch.setattr(om, "_read_file_bytes", lambda key: b"V1")
-    gw1 = submit_gateway({"submit_outline": _OUTLINE_ARGS_REF})
+    st = {"files": [{"key": "u1/tender.docx"}],
+          "read": {"required_structure": [
+              {"id": "s-old", "title": "投标报价一览表", "kind": "form", "required": True}]}}
     asyncio.run(make_outline_node(RunContext(run_id="r1", agent_type="bidding_agent",
-                                             thread_id="t1", gateway=gw1, redis=r))(
-        {"files": [{"key": "k"}], "read": {}}))
-    monkeypatch.setattr(om, "_read_file_bytes", lambda key: b"V2")
-    gw2 = submit_gateway({"submit_outline": _OUTLINE_ARGS})
+                                             thread_id="t1", gateway=gw1, redis=r))(st))
+    gw2 = submit_gateway({"submit_outline": _OUTLINE_ARGS_REF})
     asyncio.run(make_outline_node(RunContext(run_id="r2", agent_type="bidding_agent",
-                                             thread_id="t2", gateway=gw2, redis=r))(
-        {"files": [{"key": "k"}], "read": {}}))
-    assert gw2.chats, "字节变了还吃旧缓存"
+                                             thread_id="t2", gateway=gw2, redis=r))(st))
+    assert gw2.chats, "同一份文件第二次没调模型——缓存还在"
+    assert r.store == {}, f"提纲仍在往 Redis 写缓存：{list(r.store)}"
+    assert not hasattr(om, "_cache_key"), "提纲缓存键函数应已随缓存一并移除"
 
 
 def test_outline_call_pins_temperature_zero(submit_gateway):
-    """提纲步采样收敛：temperature=0 随 get_chat 下发——缓存未命中时的首跑也要稳。"""
+    """提纲步采样收敛：temperature=0 随 get_chat 下发（提纲不缓存,每次都重新生成）。"""
     gw = submit_gateway({"submit_outline": _OUTLINE_ARGS})
     asyncio.run(make_outline_node(RunContext(run_id="r", agent_type="bidding_agent",
                                              thread_id="t", gateway=gw))({"read": {}}))
@@ -228,26 +206,6 @@ def test_folded_form_item_is_split_into_its_own_chapter(submit_gateway):
     # 规范占位（2026-08-15 拍板续）：表单章小节统一为一条占位，不保留模型写法
     assert [it["label"] for it in split["items"]] == ["一、法定代表人授权书（按招标格式填写）"]
     assert all("授权书" not in (it.get("label") or "") for it in chs[0]["items"])
-
-
-def test_poisoned_cached_outline_is_split_on_hit(submit_gateway, monkeypatch):
-    """生产事故形态：折叠提纲已被（旧代码）写进缓存——命中路径同样过拆章，
-    同文件再建项目拿到的是矫正后的提纲，不用清缓存。"""
-    import hashlib
-    import agent.agents.bidding_agent.nodes.outline as om
-    monkeypatch.setattr(om, "_read_file_bytes", lambda key: b"TENDER")
-    r = _FakeRedis()
-    state = {"files": [{"key": "k"}], "read": _folded_read()}
-    digest = hashlib.sha256(b"TENDER").hexdigest()[:24]
-    r.store[om._cache_key(digest, state)] = json.dumps(
-        {"outline": _FOLDED_ARGS, "ref_titles": {}}, ensure_ascii=False)
-    gw = submit_gateway({})             # 命中缓存绝不碰模型
-    node = make_outline_node(RunContext(run_id="r", agent_type="bidding_agent",
-                                        thread_id="t", gateway=gw, redis=r))
-    out = asyncio.run(node(state))
-    assert [c["title"] for c in out["outline"]["chapters"]] == \
-           ["响应函", "法定代表人授权书", "技术方案"]
-    assert not gw.chats
 
 
 def test_split_chapter_maps_ref_by_containment(submit_gateway):
@@ -328,15 +286,6 @@ def test_parent_items_are_renumbered_after_split(submit_gateway):
         "一、营业执照原件扫描件", "二、财务状况证明材料"]
 
 
-def test_cache_key_carries_correction_revision():
-    """评审 F1 CONFIRMED：8d28e64 曾把「已拆但无 after_id 锚」的提纲写入缓存——矫正
-    逻辑对它无从下手（父子关系信息已丢），错序钉满 30 天 TTL。矫正无法逆推旧形状时
-    必须升缓存版本换键，让这类条目自然失效重生成。"""
-    import agent.agents.bidding_agent.nodes.outline as om
-    key = om._cache_key("d" * 24, {})
-    assert key.endswith(f":{om._OUTLINE_REV}") and om._OUTLINE_REV >= "r3"
-
-
 def test_orphan_anchored_chapter_lands_at_its_group_tail():
     """评审 F2：锚章被编辑删除时，商务组的拆出章必须落**本组**末尾——
     落全书末尾等于跟在技术方案后面，文件顺序错乱。"""
@@ -412,24 +361,25 @@ def test_business_form_chapters_are_code_canonical(submit_gateway):
     assert filled["items"], "补出的章要有占位小节"
 
 
-def test_canonical_pass_is_idempotent_on_cache_hit(submit_gateway, monkeypatch):
-    """已定版的提纲缓存命中再过一遍：不重复补章、不重排、逐字一致。"""
-    import hashlib
-    import agent.agents.bidding_agent.nodes.outline as om
-    monkeypatch.setattr(om, "_read_file_bytes", lambda key: b"T")
+def test_canonical_pass_is_idempotent_across_runs(submit_gateway):
+    """定版管线幂等：**已定版的提纲再过一遍**不重复补章、不重排、逐字一致。
+    断言的是 f(f(x)) == f(x)——同一输入跑两次只能证明确定性,证不了幂等。"""
     r = _FakeRedis()
     state = {"files": [{"key": "k"}], "read": _forms_read()}
-    gw1 = submit_gateway({"submit_outline": {"chapters": [
+    _ARGS = {"chapters": [
         {"id": "b3", "no": "第一章", "title": "响应函", "group": "business", "sourced": True,
          "items": [{"id": "b3-1", "label": "一、响应函"}]},
         {"id": "t1", "no": "第二章", "title": "整体服务方案", "group": "tech", "sourced": True,
-         "items": [{"id": "t1-1", "label": "一、项目理解"}]}]}})
+         "items": [{"id": "t1-1", "label": "一、项目理解"}]}]}
+    gw1 = submit_gateway({"submit_outline": _ARGS})
     out1 = asyncio.run(make_outline_node(RunContext(
         run_id="r1", agent_type="bidding_agent", thread_id="t1", gateway=gw1, redis=r))(state))
-    gw2 = submit_gateway({})
-    out2 = asyncio.run(make_outline_node(RunContext(
-        run_id="r2", agent_type="bidding_agent", thread_id="t2", gateway=gw2, redis=r))(state))
-    assert not gw2.chats
+    # 把**已定版的成品**再喂回定版管线（原来靠缓存命中路径才走得到这一步）
+    import agent.agents.bidding_agent.nodes.outline as om
+    read_state = state["read"]
+    out2 = {"outline": om._normalize_outline(
+        json.loads(json.dumps(out1["outline"])), read_state,
+        read_state.get("required_structure") or [])}
     assert [c["title"] for c in out2["outline"]["chapters"]] == \
            [c["title"] for c in out1["outline"]["chapters"]]
     assert len(out2["outline"]["chapters"]) == len(out1["outline"]["chapters"])
@@ -599,13 +549,10 @@ def test_slot_gate_does_not_maim_real_names_or_drop_real_forms():
     assert not _is_form_slot("证证明", body), "只靠证明后缀蒙混的碎片仍要拒"
 
 
-def test_reuse_outline_skips_the_model_and_keeps_user_edits(submit_gateway, monkeypatch):
+def test_reuse_outline_skips_the_model_and_keeps_user_edits(submit_gateway):
     """2026-08-16 用户口径：提纲可编辑，改好的那版应能被同一份标书的下个项目沿用。
     App 显式请求时把那版随 state_overrides 灌进来 → 零模型原样返回；**不再过代码定版**
-    （用户改过的提纲用户说了算），也**不写缓存**（缓存全局按文件字节，写进去等于把一个
-    用户的编辑漏给所有人）。"""
-    import agent.agents.bidding_agent.nodes.outline as om
-    monkeypatch.setattr(om, "_read_file_bytes", lambda key: b"TENDER")
+    （用户改过的提纲用户说了算），且不产生任何 Redis 写入。"""
     r = _FakeRedis()
     edited = {"chapters": [
         {"id": "b1", "no": "第一章", "title": "我手改的响应函", "group": "business",
@@ -622,7 +569,7 @@ def test_reuse_outline_skips_the_model_and_keeps_user_edits(submit_gateway, monk
     assert [c["title"] for c in out["outline"]["chapters"]] == ["我手改的响应函", "技术方案"], \
         "沿用的提纲被代码定版改写了——用户的编辑必须原样保留"
     assert out["outline"]["chapters"][0]["items"][0]["label"] == "一、我自己写的小节"
-    assert not r.store, "沿用的（可能带用户编辑的）提纲被写进了全局缓存"
+    assert not r.store, "沿用路径不该产生任何 Redis 写入"
 
 
 def test_reuse_flag_without_an_outline_falls_back_to_generating(submit_gateway):
@@ -635,13 +582,11 @@ def test_reuse_flag_without_an_outline_falls_back_to_generating(submit_gateway):
     assert out["outline"]["chapters"]
 
 
-def test_reused_outline_remaps_structure_refs_to_this_read(submit_gateway, monkeypatch):
+def test_reused_outline_remaps_structure_refs_to_this_read(submit_gateway):
     """评审 2026-08-16 F2：沿用的提纲来自**另一次读标**，其 structure_ref 是那一轮读标模型
     自拟的 id（跨轮不稳，_remap_structure_refs 的文档串写明它正是为跨项目复用而生）。
     不重映射 → 模板投递按错 ref 把别的表单原文发给某章，再被复印机逐字钉死
     （2026-08-12 云上江西模板错位同一条路径）；偏离表判定同样按错 ref 走。"""
-    import agent.agents.bidding_agent.nodes.outline as om
-    monkeypatch.setattr(om, "_read_file_bytes", lambda key: b"TENDER")
     reused = {"chapters": [
         {"id": "b1", "no": "第一章", "title": "报价一览表", "group": "business", "sourced": True,
          "structure_ref": "s-old", "items": [{"id": "b1-1", "label": "一、报价一览表"}]},

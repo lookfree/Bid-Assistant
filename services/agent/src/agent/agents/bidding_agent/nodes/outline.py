@@ -1,13 +1,9 @@
 from __future__ import annotations
-import asyncio
-import hashlib
 import json
 import logging
 import re
 
-from agent.config import settings
 from agent.framework.create_agent import run_submit_agent
-from agent.parsing import storage_read
 from agent.agents.bidding_agent.nodes.common import slim_read, package_scope, filter_read_by_package, publish_phase
 from agent.agents.bidding_agent.schemas import Outline
 from agent.agents.bidding_agent.prompts.outline import OUTLINE_SYSTEM_PROMPT
@@ -24,48 +20,6 @@ def _structure_skeleton(items: list[dict]) -> str:
 
 
 logger = logging.getLogger(__name__)
-
-# 同一份招标文件 → 同一份提纲（2026-08-14 用户实测：同文件多跑几次,提纲 12↔15 章漂移,
-# 相差很大）。键=文件字节哈希+系统提示词哈希(改提示词自动失效,不再靠手动升版)
-# +范围域(选包/类别——不同包件的提纲本就该不同)。TTL 30 天。
-_OUTLINE_TTL_S = 30 * 24 * 3600
-
-
-def _read_file_bytes(key: str) -> bytes:
-    """独立小函数：测试可替换、失败面单一。"""
-    return storage_read.read_bytes(key)
-
-
-async def _tender_digest(state: dict) -> str | None:
-    """主招标文件字节哈希；取不到（无文件/存储抖动）返回 None＝本轮不缓存，绝不挡生成。"""
-    files = state.get("files") or []
-    key = str((files[0] or {}).get("key") or "") if files else ""
-    if not key:
-        return None
-    try:
-        data = await asyncio.to_thread(_read_file_bytes, key)
-        return hashlib.sha256(data).hexdigest()[:24]
-    except Exception:  # noqa: BLE001
-        logger.warning("提纲缓存：读取招标文件字节失败，本轮不缓存", exc_info=True)
-        return None
-
-
-# 提纲矫正逻辑版本（评审 2026-08-15 F1）：矫正在缓存命中后跑，通常升级**无需**动它；
-# 但某个历史版本写入过「矫正无法逆推」的形状时必须升版换键。升版让旧条目自然失效重生成。
-# r2：8d28e64 曾把「已拆但无 after_id 锚」的提纲入缓存，拆章对它无从下手（父子关系信息已丢）。
-# r3：e8b8e78~19a628a 之间，脏槽位（章标题/正文行/带★编号的名）补出的垃圾章已随**矫正后的
-#     成品**入缓存——_canonical_form_chapters 只补章不删章，收紧判定救不了已生成的那份。
-_OUTLINE_REV = "r3"
-
-
-def _cache_key(digest: str, state: dict) -> str:
-    scope = json.dumps({"package": (state.get("run_input") or {}).get("package"),
-                        "category": (state.get("run_input") or {}).get("bid_category")},
-                       ensure_ascii=False, sort_keys=True)
-    pv = hashlib.sha256(OUTLINE_SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:8]
-    sc = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:8]
-    return f"{settings.redis_prefix}outline:{digest}:{pv}:{sc}:{_OUTLINE_REV}"
-
 
 _CN_DIG = "零一二三四五六七八九"
 
@@ -84,12 +38,12 @@ def _reorder_chapters(outline: dict, structure: list[dict]) -> dict:
     表单中间、商务条款章掉到全书末尾——提示词写着「章序照抄构成顺序」，提示词只能请求，
     代码才能保证）。规则：商务组连续在前、技术组在后（与分册导出/预算的分组口径一致）；
     组内有构成项引用的按招标构成清单**文档序**，无引用的保持模型相对序缀在本组末；
-    重排后重编「第N章」。缓存命中的提纲同样过这里——旧缓存的乱序当场矫正。"""
+    重排后重编「第N章」。"""
     chapters = outline.get("chapters") or []
     if not chapters:
         return outline
     # after_id 锚（拆章产物）根本不进排序——引用不参与、也不能参与拆出章的座次
-    # （2026-08-15 生产实测 9016677d：缓存旧提纲的章全无引用，拆出章带引用被
+    # （2026-08-15 生产实测 9016677d：旧提纲的章全无引用，拆出章带引用被
     # 「有引用排前面」抬到组首，授权书成了第一章）。先摘后排，排完插回父章之后。
     anchored = [ch for ch in chapters
                 if ch.get("after_id") and ch.get("form_order") is None]  # 有槽位序的听槽位的
@@ -134,7 +88,7 @@ def _split_form_chapters(outline: dict, read_state: dict, index: list[dict]) -> 
     判定由 form_locate.folded_form_items 给出（强匹配全文表单索引、非本章自己那份、
     无独立章认领）；拆出的新章插在原章之后（无构成引用时 _reorder_chapters 按相对序
     保持相邻），构成引用按标题精确对回清单，重排重编号交给 _reorder_chapters。
-    生成后+缓存命中后都过：旧缓存里的折叠提纲命中即矫正，不用清缓存。幂等。"""
+    生成后即过一遍，幂等。"""
     from agent.agents.bidding_agent.nodes.form_locate import _match_tier, folded_form_items
     chapters = outline.get("chapters") or []
     if not chapters:
@@ -256,7 +210,7 @@ def _form_slots(index: list[dict]) -> list[dict]:
     """招标全文的**商务表单槽位**（文档序）。权威=全文表单索引——它来自解析器切分的
     doc_sections，不经模型，同一份文件必得同一份槽位表。这是「商务标章清单代码直出」
     的确定性根基。同名段按归一名去重取首现（评审 B：须知构成清单与格式章真表单同名，
-    不去重则第二个槽位没人认领、补章造出重复章并随缓存钉死）。"""
+    不去重则第二个槽位没人认领、补章造出重复章）。"""
     from agent.agents.bidding_agent.nodes.form_locate import segment_text
     slots, seen = [], set()
     for seg in index:
@@ -316,7 +270,7 @@ def _canonical_form_chapters(outline: dict, index: list[dict]) -> dict:
     ②补章：没人认领的槽位 → 代码补章（招标原文名+占位小节），绝不让招标要求的表单
       在提纲里消失。
     ③定序交给 _reorder_chapters：form_order 在商务组内最优先。
-    生成后+缓存命中后都过，幂等（补出的章下轮按名认领回自己的槽位）。"""
+    生成后即过一遍，幂等（补出的章下轮按名认领回自己的槽位）。"""
     from agent.agents.bidding_agent.nodes.form_locate import _core_form_name, _match_tier
     chapters = outline.get("chapters") or []
     slots = _form_slots(index) if chapters else []
@@ -388,8 +342,8 @@ def _remap_structure_refs(outline: dict, ref_titles: dict, structure: list[dict]
 
 
 def _normalize_outline(outline: dict, read_state: dict, structure: list[dict]) -> dict:
-    """生成后/缓存命中后共用的确定性矫正管线：拆章 → 商务表单章定版 → 定序重编号。
-    全文表单索引只建一次（评审 E：1MB 级标书两条路径各重建一遍是纯浪费，且该扫描
+    """生成后的确定性矫正管线：拆章 → 商务表单章定版 → 定序重编号。
+    全文表单索引只建一次（评审 E：1MB 级标书重复重建是纯浪费，且该扫描
     同步阻塞事件循环）。"""
     from agent.agents.bidding_agent.nodes.form_locate import build_form_index
     index = build_form_index(read_state)
@@ -406,7 +360,6 @@ def make_outline_node(ctx):
         # 沿用既有提纲（2026-08-16 用户口径：提纲可编辑，改好的那版应能被同一份标书的下个
         # 项目沿用）。App 显式请求时把那一版随 state_overrides 灌进来：零模型原样返回，
         # **不过代码定版**——用户改过的提纲用户说了算，定版只作用于模型刚吐出的那一瞬；
-        # 也**不写缓存**——缓存是全局按文件字节的，写进去等于把一个用户的编辑漏给所有人。
         # 只认显式标志，不认「state 里碰巧有提纲」：同线程重试时状态里本来就有上一版。
         reused = state.get("outline") or {}
         if (state.get("run_input") or {}).get("reuse_outline") and reused.get("chapters"):
@@ -421,7 +374,7 @@ def make_outline_node(ctx):
             ref_titles = {str(c.get("structure_ref")): str(c.get("title") or "")
                           for c in reused["chapters"] if c.get("structure_ref")}
             reused = _remap_structure_refs(reused, ref_titles, structure_now)
-            logger.info("提纲沿用：调用方下发既有提纲 %d 章，零模型、不写缓存",
+            logger.info("提纲沿用：调用方下发既有提纲 %d 章，零模型",
                         len(reused["chapters"]))
             return {"outline": reused}
         # 提纲内部是**一次**模型调用，拆不出真实阶段——只声明整步区间，前端按预估时间
@@ -430,20 +383,6 @@ def make_outline_node(ctx):
         # 选包时读标收窄到该包(spec324 优化):提纲只按该包的需求/评分/构成搭建,上下文大降。
         read_state = filter_read_by_package(state.get("read") or {}, state.get("run_input"))
         structure_now = read_state.get("required_structure") or []
-        digest = await _tender_digest(state)
-        key = _cache_key(digest, state) if digest else None
-        r = getattr(ctx, "redis", None)
-        if key and r:
-            try:
-                raw = await asyncio.to_thread(r.get, key)
-            except Exception:  # noqa: BLE001 缓存 best-effort
-                raw = None
-            if raw:
-                data = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
-                logger.info("提纲缓存命中（同文件同域），零模型复用")
-                cached_outline = _remap_structure_refs(
-                    data.get("outline") or {}, data.get("ref_titles") or {}, structure_now)
-                return {"outline": _normalize_outline(cached_outline, read_state, structure_now)}
         read = json.dumps(slim_read(read_state), ensure_ascii=False)
         user = f"读标结论：\n{read}\n请据此产出提纲。"
         structure = read_state.get("required_structure") or []
@@ -454,19 +393,14 @@ def make_outline_node(ctx):
         user += category_scope((state.get("run_input") or {}).get("bid_category"), "chapters")
         # attempts=5（评审 2026-08-14）：两组必非空的语义校验上线后，省力模型可能连吃几轮
         # 拒绝——3 轮耗尽=整步失败退款，比多跑两轮糟得多（present 骨架同因放宽的先例）。
-        # temperature=0（2026-08-14）：缓存未命中的首跑也要稳——提纲是结构决策,不该靠采样发挥
+        # temperature=0（2026-08-14）：提纲是结构决策,不该靠采样发挥。
+        # 提纲已不缓存,每次都重新生成（2026-08-25 用户口径）。**注意 temperature=0 只保证
+        # 同一输入稳定,不保证跨项目稳定**：读标分段缓存按 thread_id 隔离（read.py:_seg_cache_key）,
+        # 同一份标书在新项目里会重跑读标,required_structure 变了提纲就会变——2026-08-14
+        # 实测的「同文件 12↔15 章漂移」正是这条路径,当时靠提纲缓存压住,现在不再有该保护。
+        # 要跨项目一致,走用户显式的「沿用既有提纲」（run_input.reuse_outline）。
         result = await run_submit_agent(
             ctx, OUTLINE_SYSTEM_PROMPT, user,
             "submit_outline", Outline, "提交提纲", attempts=5, temperature=0.0)
-        outline = _normalize_outline(result.model_dump(), read_state, structure_now)
-        if key and r:
-            payload = json.dumps(
-                {"outline": outline,
-                 "ref_titles": {str(s.get("id")): str(s.get("title") or "") for s in structure_now}},
-                ensure_ascii=False)
-            try:
-                await asyncio.to_thread(r.set, key, payload, ex=_OUTLINE_TTL_S)
-            except Exception:  # noqa: BLE001
-                logger.warning("提纲缓存写入失败（不影响交付）", exc_info=True)
-        return {"outline": outline}
+        return {"outline": _normalize_outline(result.model_dump(), read_state, structure_now)}
     return outline_node
