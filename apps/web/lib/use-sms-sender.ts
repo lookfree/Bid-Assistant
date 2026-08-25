@@ -8,14 +8,26 @@ import { authErrorMessage } from "./auth-errors"
 
 export const phoneValid = (phone: string) => /^1\d{10}$/.test(phone)
 
+/** 「获取验证码」是否可点。consented 省略=已同意——微信绑手机号页在扫码那步就已经勾过，
+ *  不该再拦一次；登录页必须显式传入勾选状态（协议同意要发生在收集手机号**之前**）。 */
+export function canSendSms(o: { phone: string; countdown: number; consented?: boolean }): boolean {
+  return phoneValid(o.phone) && o.countdown === 0 && o.consented !== false
+}
+
 /** 「获取验证码」的完整行为：60s 倒计时 + 滑块（开启时）+ 发码。
  *
  *  抽成 hook 是因为它现在有两个入口——登录页和微信绑手机号页（2026-08-17）。
  *  两处各写一份的话，滑块那些现场踩出来的坑（show() 必须延后、fail-closed、切走要 destroy）
  *  迟早只在一处成立。挂载点固定为 #captcha-send-btn / #captcha-box，两页各自渲染这两个元素。
  */
-export function useSmsSender(opts: { phone: string; enabled: boolean; onMsg: (m: string) => void }) {
-  const { phone, enabled, onMsg } = opts
+export function useSmsSender(opts: {
+  phone: string
+  enabled: boolean
+  onMsg: (m: string) => void
+  /** 协议已勾选。省略=已同意（微信绑手机号页）；登录页必须传，否则没勾也能发短信。 */
+  consented?: boolean
+}) {
+  const { phone, enabled, onMsg, consented } = opts
   const [countdown, setCountdown] = useState(0)
   const [captchaError, setCaptchaError] = useState(false) // SDK 加载失败 → fail-closed，禁止直接发码
   const captchaInstance = useRef<CaptchaInstance | null>(null)
@@ -79,7 +91,7 @@ export function useSmsSender(opts: { phone: string; enabled: boolean; onMsg: (m:
     }
   }, [enabled])
 
-  const canSend = phoneValid(phone) && countdown === 0
+  const canSend = canSendSms({ phone, countdown, consented })
 
   // 手机号为纯 11 位（+86 由后端 normalizePhone 补全）；滑块关闭时不带 captchaToken，后端 DevPass 放行。
   // 滑块开启时：手动弹出拼图（instance.show()），拖动通过后由 captchaVerifyCallback 真正发码；

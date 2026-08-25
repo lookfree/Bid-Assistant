@@ -9,7 +9,7 @@ import { Phone, ShieldCheck, Sparkles, ArrowRight, FileSearch, PenLine, Download
 import { api } from "@/lib/api"
 import { useSmsSender, phoneValid } from "@/lib/use-sms-sender"
 import { authErrorMessage } from "@/lib/auth-errors"
-import { renderWxLogin } from "@/lib/wechat-login"
+import { renderWxLogin, shouldRenderWxQr } from "@/lib/wechat-login"
 import { useAuth } from "@/components/auth/auth-provider"
 
 const benefits = [
@@ -34,7 +34,9 @@ function LoginContent() {
   const [busy, setBusy] = useState(false)
 
   // 发码（倒计时 + 滑块）与微信绑手机号页共用同一份实现，见 lib/use-sms-sender.ts
-  const { countdown, canSend, handleSendCode } = useSmsSender({ phone, enabled: tab === "phone", onMsg: setMsg })
+  const { countdown, canSend, handleSendCode } = useSmsSender({
+    phone, enabled: tab === "phone", onMsg: setMsg, consented: agreed,
+  })
   const canSubmit = phoneValid(phone) && code.length === 6 && agreed
 
   async function handleSubmit(e: React.FormEvent) {
@@ -53,10 +55,11 @@ function LoginContent() {
     }
   }
 
-  // 微信登录：切到页签即自动出码，无需再点按钮（用户反馈）。协议同意位烙在 state 里，
-  // 勾选状态一变就重建 state 并重渲染二维码——老用户不勾也能扫码登录（服务端只对新号要求协议）。
+  // 微信登录：切到页签即自动出码，无需再点按钮（用户反馈）。**但必须先勾选协议**
+  // （2026-08-25）——不勾就出码的话，用户一路扫码授权完，才在服务端被 terms_required 拒，
+  // 同意发生在收集之后等于没拦。勾选状态一变就重建 state 并重渲染二维码。
   useEffect(() => {
-    if (tab !== "wechat") return
+    if (!shouldRenderWxQr(tab, agreed)) return
     let alive = true
     ;(async () => {
       try {
@@ -197,14 +200,23 @@ function LoginContent() {
             </form>
             ) : (
               <div className="mt-6 flex flex-col items-center gap-4">
-                <div
-                  id="wx-qr"
-                  className="flex min-h-[208px] w-full items-center justify-center rounded-lg border border-dashed border-input bg-background"
-                >
-                  <span className="px-6 text-center text-sm text-muted-foreground">
-                    二维码加载中…
-                  </span>
-                </div>
+                {/* 取消勾选要**卸载整个容器**，不能只是不再渲染：WxLogin 把二维码 iframe 注进
+                    #wx-qr，effect 提前返回不会清掉它——旧码留在页面上照样能扫。换成条件渲染，
+                    React 卸载该节点时连注入的 iframe 一起带走。 */}
+                {agreed ? (
+                  <div
+                    id="wx-qr"
+                    className="flex min-h-[208px] w-full items-center justify-center rounded-lg border border-dashed border-input bg-background"
+                  >
+                    <span className="px-6 text-center text-sm text-muted-foreground">二维码加载中…</span>
+                  </div>
+                ) : (
+                  <div className="flex min-h-[208px] w-full items-center justify-center rounded-lg border border-dashed border-input bg-background">
+                    <span className="px-6 text-center text-sm text-muted-foreground">
+                      请先勾选下方《用户协议》与《隐私政策》，勾选后自动显示二维码
+                    </span>
+                  </div>
+                )}
                 <p className="text-xs text-muted-foreground">
                   微信扫码授权后需绑定手机号；该手机号已注册的，将直接登录原账号
                 </p>

@@ -15,6 +15,12 @@ declare global {
 }
 
 // 按需加载官方脚本并把二维码渲染到 params.id 容器（先清空容器，避免叠加旧的、带不同 state 的二维码）。
+/** 是否该渲染微信二维码：在微信页签**且已勾选协议**。未勾选就出码的话，用户会一路扫码、
+ *  授权，直到服务端对新号回 terms_required 才被拒——同意发生在收集之后，等于没拦。 */
+export function shouldRenderWxQr(tab: string, agreed: boolean): boolean {
+  return tab === "wechat" && agreed
+}
+
 export async function renderWxLogin(params: WxLoginParams): Promise<void> {
   await loadScript()
   const Ctor = window.WxLogin
