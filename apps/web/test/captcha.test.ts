@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import {
+  initCaptcha,
+  CAPTCHA_TRIGGER_ID,
+  CAPTCHA_TRIGGER_SEL,
   makeCaptchaVerifyHandler,
   loadAliyunCaptcha,
-  initCaptcha,
   __resetAliyunCaptchaCache,
   type InitAliyunCaptcha,
 } from "../lib/captcha"
@@ -190,5 +192,36 @@ describe("initCaptcha", () => {
 
     const result = await capturedCallback!("param")
     expect(result).toEqual({ captchaResult: false })
+  })
+})
+
+
+/* 2026-08-26 生产实测：什么都没填点「获取验证码」，行内提示与滑块弹窗**同时**出现。
+   根因是 SDK 被绑在可见的发码按钮上——它给该元素挂自己的原生 click 监听，按钮一旦可点
+   就绕过我们的校验直接弹窗。（按钮此前是真 disabled、浏览器不派发 click 才没暴露；
+   为了「点灰按钮要给提示」改成 aria-disabled 之后，这条监听就活了。）
+   因此绑定目标必须是隐藏触发器，弹窗只允许来自我们显式的 instance.show()。 */
+describe("滑块绑定目标", () => {
+  it("绑的是隐藏触发器，不是可见的发码按钮", () => {
+    expect(CAPTCHA_TRIGGER_ID).toBe("captcha-trigger")
+    expect(CAPTCHA_TRIGGER_SEL).toBe("#captcha-trigger")
+    expect(CAPTCHA_TRIGGER_SEL).not.toBe("#captcha-send-btn")
+  })
+
+  it("initCaptcha 把 buttonSel 原样交给 SDK 的 button 参数（不会私自改绑）", () => {
+    let seen: Record<string, unknown> | null = null
+    initCaptcha({
+      initFn: ((cfg: Record<string, unknown>) => {
+        seen = cfg
+      }) as never,
+      sceneId: "s1",
+      buttonSel: CAPTCHA_TRIGGER_SEL,
+      elementSel: "#captcha-box",
+      verifyHandler: async () => true,
+      getInstance: () => {},
+    })
+    expect(seen).not.toBeNull()
+    expect((seen as unknown as { button: string }).button).toBe("#captcha-trigger")
+    expect((seen as unknown as { mode: string }).mode).toBe("popup")
   })
 })

@@ -105,6 +105,15 @@ export type InitCaptchaOptions = {
 
 // 薄封装：把 verifyHandler 的 boolean 结果包成 SDK 要求的 { captchaResult } 形状。
 // prefix 不在这里——它已随 region 进了 window.AliyunCaptchaConfig（loadAliyunCaptcha 里设，脚本加载前）。
+/** 滑块 SDK 的绑定目标：一个**隐藏的空按钮**，不是可见的「获取验证码」。
+ *  SDK 会给 button 选中的元素挂自己的原生 click 监听。绑在真按钮上时，只要按钮可点，
+ *  SDK 就会绕过我们的校验直接弹滑块——2026-08-26 生产实测：什么都没填点一下，
+ *  行内提示与滑块弹窗同时出现。（此前没暴露，是因为按钮当时是真 disabled、浏览器不派发
+ *  click；把它改成 aria-disabled 以便点击能给出提示之后，这条监听就活了。）
+ *  绑到隐藏触发器后，弹窗只可能来自我们显式调用的 instance.show()。 */
+export const CAPTCHA_TRIGGER_ID = "captcha-trigger"
+export const CAPTCHA_TRIGGER_SEL = `#${CAPTCHA_TRIGGER_ID}`
+
 export function initCaptcha(opts: InitCaptchaOptions): void {
   opts.initFn({
     SceneId: opts.sceneId,

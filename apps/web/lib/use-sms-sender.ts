@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 
 import { api, captchaEnabled, captchaSceneId, captchaPrefix } from "./api"
-import { loadAliyunCaptcha, makeCaptchaVerifyHandler, initCaptcha, type CaptchaInstance } from "./captcha"
+import { loadAliyunCaptcha, makeCaptchaVerifyHandler, initCaptcha, CAPTCHA_TRIGGER_SEL, type CaptchaInstance } from "./captcha"
 import { authErrorMessage } from "./auth-errors"
 
 export const phoneValid = (phone: string) => /^1\d{10}$/.test(phone)
@@ -38,7 +38,7 @@ export function sendSmsBlockReason(
  *
  *  抽成 hook 是因为它现在有两个入口——登录页和微信绑手机号页（2026-08-17）。
  *  两处各写一份的话，滑块那些现场踩出来的坑（show() 必须延后、fail-closed、切走要 destroy）
- *  迟早只在一处成立。挂载点固定为 #captcha-send-btn / #captcha-box，两页各自渲染这两个元素。
+ *  迟早只在一处成立。挂载点固定为 #captcha-trigger（隐藏触发器）/ #captcha-box，两页各自渲染。
  */
 export function useSmsSender(opts: {
   phone: string
@@ -88,7 +88,7 @@ export function useSmsSender(opts: {
         initCaptcha({
           initFn,
           sceneId: captchaSceneId,
-          buttonSel: "#captcha-send-btn",
+          buttonSel: CAPTCHA_TRIGGER_SEL,   // 隐藏触发器，绝不是可见的发码按钮（见 captcha.ts 注释）
           elementSel: "#captcha-box",
           verifyHandler: makeCaptchaVerifyHandler(
             sendAfterSlide,

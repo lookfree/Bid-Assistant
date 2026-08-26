@@ -116,7 +116,6 @@ function WechatCallbackContent() {
               className="w-full rounded-lg border border-input bg-background px-3 py-2.5 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/20"
             />
             <button
-              id="captcha-send-btn"
               type="button"
               onClick={trySendCode}
               aria-disabled={!canSend}
@@ -125,6 +124,9 @@ function WechatCallbackContent() {
               {countdown > 0 ? `${countdown}s 后重发` : "获取验证码"}
             </button>
           </div>
+          {/* 滑块 SDK 的绑定目标：隐藏空按钮。绝不能绑可见的发码按钮——SDK 会给它挂自己的
+              click 监听，绕过校验直接弹窗（2026-08-26 实测）。弹窗只走我们的 instance.show()。 */}
+          <button id="captcha-trigger" type="button" hidden aria-hidden="true" />
           {/* 阿里云验证码2.0 弹层容器：滑块关闭时始终为空 */}
           <div id="captcha-box" />
           <button
