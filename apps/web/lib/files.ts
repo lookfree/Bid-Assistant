@@ -18,8 +18,12 @@ export const UPLOAD_MAX_MB = 500
 /** 投标文件/标书：正文类文档。.doc 2026-08-15 起停收（LibreOffice 导入静默丢图，
  *  另存 .docx 是唯一保真路——见 DOC_UNSUPPORTED_MSG）。 */
 export const ACCEPT_BID = ".pdf,.docx"
-/** 招标文件：可能带清单/报价表格，故比标书多收 Excel。.doc 同上停收。 */
-export const ACCEPT_TENDER = ".pdf,.docx,.xlsx,.xls"
+/** 招标文件：可能带清单/报价表格，故比标书多收 Excel。.doc 同上停收。
+ *  **PDF 2026-08-26 起停收（用户拍板）**：表单模板的「复印机」复刻的是 docx 的 body XML，
+ *  PDF 没有这个东西、只能退到文本路径——页脚页码混进正文只是最显眼的症状（实测 16 页 PDF
+ *  的页码全部成了独立条款，「6 / 16」被复刻进投标文件），同路还有跨页断行、表格塌成文本行。
+ *  **只停招标文件这一侧**：ACCEPT_BID 那条链只读文字、不进复印机，PDF 仍收。 */
+export const ACCEPT_TENDER = ".docx,.xlsx,.xls"
 /** 述标 PPT 母版与参考稿（服务端白名单不含 .ppt，别放行）。 */
 export const ACCEPT_PPT = ".pptx,.potx"
 /** 资质证照等图片附件。 */
@@ -48,6 +52,11 @@ export function uploadHint(accept: string, opts: { multiple?: boolean } = {}): s
  *  （2026-08-14 实测：授权书四张证件图转丢一张，docx/odt/pdf 三条出口全少同一张
  *  ＝导入滤镜缺陷，升级/换出口路线均无效）——从"建议另存"升级为"停止支持"。 */
 export const DOC_UNSUPPORTED_MSG = "已不再支持 .doc：请用 Word/WPS 另存为 .docx 后上传"
+
+/** 招标文件收到 PDF 时的拒收文案。说清**为什么**——否则用户只会觉得我们功能缺失，
+ *  而实情是 PDF 拿不到版式，硬做出来的标书会带页码等噪声。 */
+export const PDF_UNSUPPORTED_MSG =
+  "招标文件已不再支持 PDF：PDF 只能取到文字、取不到版式，表单模板无法保真复刻（页码等页眉页脚会混进正文）。请上传 Word（.docx）版本"
 
 /** .doc 说明横幅文案（选中/项目文件里有 .doc 才出现；存量项目的旧 .doc 也靠它解释）。 */
 export function legacyDocAdvice(names: Array<string | null | undefined>): string | null {

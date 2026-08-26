@@ -7,13 +7,13 @@ import { ApiError } from "@/lib/api-client"
 describe("uploadHint", () => {
   it("同族扩展名合并，不啰嗦地列成 Word（.docx）、Word（.doc）", () => {
     expect(uploadHint(ACCEPT_BID)).toBe(`支持 PDF、Word · 单文件最大 ${UPLOAD_MAX_MB}MB`)
-    expect(uploadHint(ACCEPT_TENDER)).toBe(`支持 PDF、Word、Excel · 单文件最大 ${UPLOAD_MAX_MB}MB`)
+    expect(uploadHint(ACCEPT_TENDER)).toBe(`支持 Word、Excel · 单文件最大 ${UPLOAD_MAX_MB}MB`)   // PDF 2026-08-26 停收
     expect(uploadHint(ACCEPT_PPT)).toBe(`支持 PPT · 单文件最大 ${UPLOAD_MAX_MB}MB`)
   })
 
   it("多选入口追加同一句提示", () => {
     expect(uploadHint(ACCEPT_TENDER, { multiple: true })).toBe(
-      `支持 PDF、Word、Excel · 单文件最大 ${UPLOAD_MAX_MB}MB · 可一次选择多个文件`,
+      `支持 Word、Excel · 单文件最大 ${UPLOAD_MAX_MB}MB · 可一次选择多个文件`,
     )
   })
 
@@ -61,10 +61,10 @@ describe("uploadErrorMessage 网络失败", () => {
 import { checkFiles, DOC_UNSUPPORTED_MSG, legacyDocAdvice } from "@/lib/files"
 
 describe("doc 停收", () => {
-  it("两个 accept 列表都不再含 .doc；PDF/Word/Excel 照常", () => {
+  it("两个 accept 列表都不再含 .doc；Word/Excel 照常", () => {
     expect(ACCEPT_BID.includes(".doc,") || ACCEPT_BID.endsWith(".doc")).toBe(false)
     expect(ACCEPT_TENDER.includes(".doc,") || ACCEPT_TENDER.endsWith(".doc")).toBe(false)
-    expect(ACCEPT_TENDER).toContain(".pdf")
+    // 招标文件侧的 .pdf 另于 2026-08-26 停收（见 tender-accept.test.ts）；标书侧仍收
     expect(ACCEPT_TENDER).toContain(".docx")
     expect(ACCEPT_TENDER).toContain(".xlsx")
   })
