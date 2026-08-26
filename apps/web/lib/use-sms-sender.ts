@@ -11,7 +11,27 @@ export const phoneValid = (phone: string) => /^1\d{10}$/.test(phone)
 /** 「获取验证码」是否可点。consented 省略=已同意——微信绑手机号页在扫码那步就已经勾过，
  *  不该再拦一次；登录页必须显式传入勾选状态（协议同意要发生在收集手机号**之前**）。 */
 export function canSendSms(o: { phone: string; countdown: number; consented?: boolean }): boolean {
-  return phoneValid(o.phone) && o.countdown === 0 && o.consented !== false
+  return sendSmsBlockReason(o) === null
+}
+
+/** 不能发码的原因（可发时为 null）。**带 field 定位**——提示要出现在没填的那个控件旁边，
+ *  顶部横幅离出错处太远（2026-08-26 用户口径）。按用户自上而下填写的顺序只报最靠前的一条，
+ *  一次抛三条只会让人不知道先改哪个。
+ *  按钮据此用 aria-disabled 而非 disabled：**真 disabled 的按钮浏览器不派发 click**，
+ *  那样点下去毫无反应，用户只能干瞪眼。 */
+export type SmsBlock = { field: "phone" | "terms" | "countdown"; message: string }
+
+export function sendSmsBlockReason(
+  o: { phone: string; countdown: number; consented?: boolean },
+): SmsBlock | null {
+  if (!phoneValid(o.phone)) return { field: "phone", message: "请先填写 11 位手机号" }
+  if (o.consented === false) {
+    return { field: "terms", message: "请先勾选并同意《用户协议》与《隐私政策》" }
+  }
+  if (o.countdown > 0) {
+    return { field: "countdown", message: `验证码已发送，请 ${o.countdown} 秒后重试` }
+  }
+  return null
 }
 
 /** 「获取验证码」的完整行为：60s 倒计时 + 滑块（开启时）+ 发码。
@@ -97,7 +117,7 @@ export function useSmsSender(opts: {
   // 滑块开启时：手动弹出拼图（instance.show()），拖动通过后由 captchaVerifyCallback 真正发码；
   // SDK 加载失败则兜底报错，避免静默跳过验证（fail-closed）。
   async function handleSendCode() {
-    if (!canSend) return
+    if (!canSend) return          // 行内提示由调用页渲染（见 blockReason）
     onMsg("")
     if (!captchaEnabled) {
       try {
@@ -117,5 +137,5 @@ export function useSmsSender(opts: {
     setTimeout(() => captchaInstance.current?.show?.(), 0)
   }
 
-  return { countdown, canSend, handleSendCode }
+  return { countdown, canSend, handleSendCode, blockReason: sendSmsBlockReason({ phone, countdown, consented }) }
 }

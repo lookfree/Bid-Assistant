@@ -7,7 +7,7 @@ import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Phone, ShieldCheck, Sparkles, ArrowRight, FileSearch, PenLine, Download, QrCode } from "lucide-react"
 import { api } from "@/lib/api"
-import { useSmsSender, phoneValid } from "@/lib/use-sms-sender"
+import { useSmsSender, phoneValid, type SmsBlock } from "@/lib/use-sms-sender"
 import { authErrorMessage } from "@/lib/auth-errors"
 import { renderWxLogin, shouldRenderWxQr } from "@/lib/wechat-login"
 import { useAuth } from "@/components/auth/auth-provider"
@@ -34,9 +34,15 @@ function LoginContent() {
   const [busy, setBusy] = useState(false)
 
   // 发码（倒计时 + 滑块）与微信绑手机号页共用同一份实现，见 lib/use-sms-sender.ts
-  const { countdown, canSend, handleSendCode } = useSmsSender({
+  const { countdown, canSend, handleSendCode, blockReason } = useSmsSender({
     phone, enabled: tab === "phone", onMsg: setMsg, consented: agreed,
   })
+  // 点了灰按钮才点亮行内提示（未点过就红字满屏是另一种糟糕）；用户一改动对应项立即消失。
+  const [blocked, setBlocked] = useState<SmsBlock | null>(null)
+  function trySendCode() {
+    setBlocked(blockReason)
+    if (!blockReason) void handleSendCode()
+  }
   const canSubmit = phoneValid(phone) && code.length === 6 && agreed
 
   async function handleSubmit(e: React.FormEvent) {
@@ -153,11 +159,17 @@ function LoginContent() {
                     inputMode="numeric"
                     maxLength={11}
                     value={phone}
-                    onChange={(e) => setPhone(e.target.value.replace(/\D/g, ""))}
+                    onChange={(e) => {
+                      setPhone(e.target.value.replace(/\D/g, ""))
+                      setBlocked((b) => (b?.field === "phone" ? null : b))
+                    }}
                     placeholder="请输入手机号"
                     className="w-full bg-transparent px-3 py-2.5 text-sm text-foreground outline-none placeholder:text-muted-foreground"
                   />
                 </div>
+                {blocked?.field === "phone" && (
+                  <p className="mt-1.5 text-xs text-destructive">{blocked.message}</p>
+                )}
               </div>
 
               <div>
@@ -178,9 +190,9 @@ function LoginContent() {
                   <button
                     id="captcha-send-btn"
                     type="button"
-                    onClick={handleSendCode}
-                    disabled={!canSend}
-                    className="shrink-0 rounded-lg border border-input bg-background px-4 text-sm font-medium text-primary transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:text-muted-foreground"
+                    onClick={trySendCode}
+                    aria-disabled={!canSend}
+                    className="shrink-0 rounded-lg border border-input bg-background px-4 text-sm font-medium text-primary transition-colors hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:text-muted-foreground aria-disabled:hover:bg-background"
                   >
                     {countdown > 0 ? `${countdown}s 后重发` : "获取验证码"}
                   </button>
@@ -228,7 +240,10 @@ function LoginContent() {
               <input
                 type="checkbox"
                 checked={agreed}
-                onChange={(e) => setAgreed(e.target.checked)}
+                onChange={(e) => {
+                  setAgreed(e.target.checked)
+                  setBlocked((b) => (b?.field === "terms" ? null : b))
+                }}
                 className="mt-0.5 size-3.5 shrink-0 rounded border-input accent-primary"
               />
               <span>
@@ -242,6 +257,9 @@ function LoginContent() {
                 </a>
               </span>
             </label>
+            {blocked?.field === "terms" && (
+              <p className="mt-1.5 pl-5.5 text-xs text-destructive">{blocked.message}</p>
+            )}
           </div>
 
           {/* 价值点 */}

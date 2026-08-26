@@ -4,7 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation"
 import { Phone, ArrowRight } from "lucide-react"
 import { api } from "@/lib/api"
 import { authErrorMessage } from "@/lib/auth-errors"
-import { useSmsSender, phoneValid } from "@/lib/use-sms-sender"
+import { useSmsSender, phoneValid, type SmsBlock } from "@/lib/use-sms-sender"
 import { useAuth } from "@/components/auth/auth-provider"
 
 // 微信授权回跳页：读 code/state → 换登录。2026-08-17 起微信新号必须绑手机号——
@@ -20,7 +20,15 @@ function WechatCallbackContent() {
   const [busy, setBusy] = useState(false)
   const done = useRef(false) // 只换一次：state 是一次性的，StrictMode/重渲染二次触发会撞 invalid_state
 
-  const { countdown, canSend, handleSendCode } = useSmsSender({ phone, enabled: !!bindToken, onMsg: setMsg })
+  const { countdown, canSend, handleSendCode, blockReason } = useSmsSender({
+    phone, enabled: !!bindToken, onMsg: setMsg,
+  })
+  // 与登录页同一套：按钮是 aria-disabled（可点击），点了把原因渲染在手机号下方。
+  const [blocked, setBlocked] = useState<SmsBlock | null>(null)
+  function trySendCode() {
+    setBlocked(blockReason)
+    if (!blockReason) void handleSendCode()
+  }
 
   useEffect(() => {
     if (done.current) return
@@ -86,11 +94,17 @@ function WechatCallbackContent() {
               inputMode="numeric"
               maxLength={11}
               value={phone}
-              onChange={(e) => setPhone(e.target.value.replace(/\D/g, ""))}
+              onChange={(e) => {
+                setPhone(e.target.value.replace(/\D/g, ""))
+                setBlocked((b) => (b?.field === "phone" ? null : b))
+              }}
               placeholder="请输入手机号"
               className="w-full bg-transparent px-3 py-2.5 text-sm text-foreground outline-none placeholder:text-muted-foreground"
             />
           </div>
+          {blocked?.field === "phone" && (
+            <p className="-mt-2 text-xs text-destructive">{blocked.message}</p>
+          )}
           <div className="flex gap-2">
             <input
               type="text"
@@ -104,9 +118,9 @@ function WechatCallbackContent() {
             <button
               id="captcha-send-btn"
               type="button"
-              onClick={handleSendCode}
-              disabled={!canSend}
-              className="shrink-0 rounded-lg border border-input bg-background px-4 text-sm font-medium text-primary transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:text-muted-foreground"
+              onClick={trySendCode}
+              aria-disabled={!canSend}
+              className="shrink-0 rounded-lg border border-input bg-background px-4 text-sm font-medium text-primary transition-colors hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:text-muted-foreground aria-disabled:hover:bg-background"
             >
               {countdown > 0 ? `${countdown}s 后重发` : "获取验证码"}
             </button>
